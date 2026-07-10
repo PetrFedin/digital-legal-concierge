@@ -1,0 +1,21 @@
+{
+  "version": "v20",
+  "generated_at": "2026-07-02T19:01:07",
+  "pages": {
+    "health_center": "/health-center/ui",
+    "diagnostic_center": "/diagnostic-center/ui",
+    "recovery_center": "/recovery-center/ui",
+    "install_wizard": "/install-wizard/ui",
+    "operator": "/operator",
+    "admin": "/admin-ui",
+    "launch_assistant": "/launch-assistant"
+  },
+  "operator_commands": [
+    "./run.sh",
+    "./bot-control.sh",
+    "./backup.sh",
+    "./status.sh",
+    "./logs.sh"
+  ],
+  "priority": "Простой запуск, проверка готовности, диагностика, восстановление, demo mode."
+}

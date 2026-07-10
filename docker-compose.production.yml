@@ -1,0 +1,37 @@
+services:
+  bot:
+    build: .
+    container_name: legal-concierge-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./storage:/app/storage
+      - ./backups:/app/backups
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: legal-concierge-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: legal_concierge
+      POSTGRES_USER: legal_concierge
+      POSTGRES_PASSWORD: change_me_strong_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: legal-concierge-redis
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

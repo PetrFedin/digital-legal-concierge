@@ -1,0 +1,13 @@
+[Unit]
+Description=Digital Legal Concierge Telegram Bot
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/legal-concierge-bot
+ExecStart=/opt/legal-concierge-bot/.venv/bin/python -m app.main
+Restart=always
+RestartSec=5
+EnvironmentFile=/opt/legal-concierge-bot/.env
+
+[Install]
+WantedBy=multi-user.target

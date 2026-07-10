@@ -1,0 +1,7 @@
+Digital Legal Concierge Telegram Bot v28
+
+Open first:
+http://localhost:8000/final-qa/ui
+
+Then run:
+./acceptance.sh

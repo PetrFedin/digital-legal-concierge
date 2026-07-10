@@ -1,0 +1,17 @@
+DIGITAL LEGAL CONCIERGE - FINAL PACKAGE CHECK
+
+Completed checks:
+- Python source compilation: PASSED
+- v30 full static check: PASSED
+- Docker Compose YAML validation: PASSED
+- macOS launcher shell syntax: PASSED
+- Telegram polling startup removes an old webhook: ADDED
+- Persistent folders for database, documents, logs and backups: CONFIGURED
+- Bot token and RUN_BOT=true: CONFIGURED FOR INITIAL TEST
+- Payments: FAKE/TEST MODE
+
+Not executable in the build environment:
+- Live Telegram getMe/startPolling request (external DNS is unavailable here)
+- Docker image build (Docker engine is unavailable here)
+
+The package is prepared for a real run on a Mac/Windows/Linux machine with Docker Desktop/Engine and internet access.

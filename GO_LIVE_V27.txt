@@ -1,0 +1,18 @@
+Digital Legal Concierge Telegram Bot v27
+
+START:
+  ./run.sh
+
+OPEN:
+  http://localhost:8000/go-live/ui
+
+MAIN:
+  /admin-ui
+  /operator
+  /production-center/ui
+  /settings-ui
+  /acceptance-center/ui
+
+CHECK:
+  ./acceptance.sh
+  python scripts/full_check_v27.py

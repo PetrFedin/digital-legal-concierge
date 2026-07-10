@@ -1,0 +1,44 @@
+### Health
+GET http://localhost:8000/health
+
+### Runtime snapshot
+GET http://localhost:8000/runtime/snapshot
+x-admin-token: dev-admin-token
+
+### Admin dashboard
+GET http://localhost:8000/admin/dashboard
+x-admin-token: dev-admin-token
+
+### Cases
+GET http://localhost:8000/admin/cases
+x-admin-token: dev-admin-token
+
+### Queue
+GET http://localhost:8000/admin/queue
+x-admin-token: dev-admin-token
+
+### Settings
+GET http://localhost:8000/admin/settings
+x-admin-token: dev-admin-token
+
+### Update initial payment
+POST http://localhost:8000/admin/settings/payments.m1_initial_payment
+x-admin-token: dev-admin-token
+Content-Type: application/json
+
+{"value":45000}
+
+### Lawyers
+GET http://localhost:8000/admin/lawyers
+x-admin-token: dev-admin-token
+
+### Create lawyer
+POST http://localhost:8000/admin/lawyers
+x-admin-token: dev-admin-token
+Content-Type: application/json
+
+{"full_name":"Иван Петров","email":"ivan@example.com","workload_limit":20}
+
+### Run scheduler once
+POST http://localhost:8000/admin/scheduler/run-once
+x-admin-token: dev-admin-token

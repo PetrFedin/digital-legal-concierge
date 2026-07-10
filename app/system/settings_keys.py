@@ -1,0 +1,10 @@
+class SettingKey:
+    M1_INITIAL_PAYMENT = "payments.m1_initial_payment"
+    M1_COURT_PAYMENT = "payments.m1_court_payment"
+    M1_SUCCESS_FEE_PERCENT = "payments.m1_success_fee_percent"
+    M2_CONSULTATION_PAYMENT = "payments.m2_consultation_payment"
+    CLAIM_WAITING_DAYS = "deadlines.claim_waiting_days"
+    SLOT_HOLD_MINUTES = "consultations.slot_hold_minutes"
+    PAYMENT_REMINDER_HOURS = "notifications.payment_reminder_hours"
+    BOT_WELCOME_TEXT = "texts.bot_welcome"
+    LEGAL_DISCLAIMER = "texts.legal_disclaimer"

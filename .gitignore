@@ -1,0 +1,34 @@
+# Секреты
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Базы и пользовательские данные
+legal_bot.db
+*.db
+*.sqlite
+*.sqlite3
+storage/
+data/
+logs/
+backups/
+
+# Python
+__pycache__/
+*/__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Системные файлы
+.DS_Store
+.idea/
+.vscode/
+
+# Временные обновления
+admin_roles_update/
+*.backup
