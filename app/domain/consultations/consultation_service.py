@@ -57,9 +57,14 @@ class ConsultationService:
         return consultation
 
     async def reserve_slot(self, *, consultation, case, client_id: int, slot_id: int):
-        if consultation.slot_id:
-            await self.slots.release_slot(consultation.slot_id, consultation.id)
+        previous_slot_id = consultation.slot_id
+        if previous_slot_id == slot_id:
+            slot = await self.slots.get_slot(slot_id)
+            if slot and slot.consultation_id == consultation.id and slot.status in {"held", "booked"}:
+                return consultation, slot
         slot = await self.slots.hold_slot(slot_id, client_id, consultation.id)
+        if previous_slot_id and previous_slot_id != slot.id:
+            await self.slots.release_slot(previous_slot_id, consultation.id)
         consultation.slot_id = slot.id
         consultation.lawyer_id = slot.lawyer_id
         consultation.scheduled_at = slot.starts_at
