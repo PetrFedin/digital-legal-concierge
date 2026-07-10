@@ -26,9 +26,19 @@ class ConsultationService:
         await self.db.flush()
         return consultation
 
-    async def save_description(self, *, consultation, case, client_id: int, description: str, subject_type: str = "existing_case"):
+    async def save_description(
+        self,
+        *,
+        consultation,
+        case,
+        client_id: int,
+        description: str,
+        subject_type: str = "new_or_other",
+        related_case_id: int | None = None,
+    ):
         consultation.client_description = description
         consultation.subject_type = subject_type
+        consultation.related_case_id = related_case_id
         consultation.status = ConsultationStatus.DOCUMENTS_OPTIONAL
         await add_case_history_event(
             self.db,
@@ -36,7 +46,11 @@ class ConsultationService:
             actor_id=client_id,
             case_id=case.id,
             action="CONSULTATION_DESCRIPTION_SAVED",
-            new_value={"description": description, "subject_type": subject_type},
+            new_value={
+                "description": description,
+                "subject_type": subject_type,
+                "related_case_id": related_case_id,
+            },
         )
         await self.db.flush()
         return consultation
