@@ -66,10 +66,10 @@ async def run_bot() -> None:
 
     retry_delay = 5
     max_retry_delay = 60
+    dispatcher = build_dispatcher()
 
     while True:
         bot = Bot(token=settings.bot_token)
-        dispatcher = build_dispatcher()
         try:
             logger.info("Подключение к Telegram API...")
             await bot.delete_webhook(drop_pending_updates=False, request_timeout=30)
@@ -81,6 +81,7 @@ async def run_bot() -> None:
                 allowed_updates=dispatcher.resolve_used_update_types(),
                 polling_timeout=30,
                 handle_signals=False,
+                close_bot_session=False,
             )
         except TelegramRetryAfter as exc:
             wait_seconds = max(int(exc.retry_after), retry_delay)
