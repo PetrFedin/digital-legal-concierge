@@ -39,7 +39,8 @@ class ConsultationService:
         consultation.client_description = description
         consultation.subject_type = subject_type
         consultation.related_case_id = related_case_id
-        consultation.status = ConsultationStatus.DOCUMENTS_OPTIONAL
+        if consultation.status != ConsultationStatus.BOOKED:
+            consultation.status = ConsultationStatus.DOCUMENTS_OPTIONAL
         await add_case_history_event(
             self.db,
             actor_type="client",
