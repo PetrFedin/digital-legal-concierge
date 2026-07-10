@@ -6,6 +6,7 @@ from app.models.calculation import Calculation
 from app.models.document import Document
 from app.models.payment import Payment
 from app.models.consultation import Consultation
+from app.models.consultation_slot import ConsultationSlot
 from app.models.message import Message
 from app.models.notification import Notification
 from app.models.admin_user import AdminUser

@@ -13,7 +13,24 @@ from app.config import settings
 ROLE_ADMIN = "admin"
 ROLE_SUPERADMIN = "superadmin"
 ROLE_LAWYER = "lawyer"
-VALID_ROLES = {ROLE_ADMIN, ROLE_SUPERADMIN, ROLE_LAWYER}
+ROLE_OPERATOR = "operator"
+ROLE_TESTER = "tester"
+
+VALID_ROLES = {
+    ROLE_ADMIN,
+    ROLE_SUPERADMIN,
+    ROLE_LAWYER,
+    ROLE_OPERATOR,
+    ROLE_TESTER,
+}
+
+ROLE_LABELS = {
+    ROLE_ADMIN: "Администратор",
+    ROLE_SUPERADMIN: "Суперадминистратор",
+    ROLE_LAWYER: "Юрист",
+    ROLE_OPERATOR: "Оператор",
+    ROLE_TESTER: "Тестировщик",
+}
 
 
 def normalize_roles(value: str | Iterable[str] | None) -> list[str]:
@@ -40,6 +57,11 @@ def has_role(value: str | Iterable[str] | None, role: str) -> bool:
     if role == ROLE_ADMIN:
         return bool(roles & {ROLE_ADMIN, ROLE_SUPERADMIN})
     return role in roles
+
+
+def has_any_role(value: str | Iterable[str] | None, required: Iterable[str]) -> bool:
+    roles = set(normalize_roles(value))
+    return any(has_role(roles, role) for role in required)
 
 
 def hash_password(password: str, salt: str | None = None) -> str:
@@ -90,7 +112,13 @@ def decode_access_token(token: str | None) -> dict[str, Any] | None:
     if not token:
         return None
     if hmac.compare_digest(str(token), str(settings.admin_api_token)):
-        return {"uid": 0, "username": settings.admin_username or "admin", "roles": [ROLE_SUPERADMIN, ROLE_ADMIN], "role": ROLE_SUPERADMIN, "legacy": True}
+        return {
+            "uid": 0,
+            "username": settings.admin_username or "admin",
+            "roles": [ROLE_SUPERADMIN, ROLE_ADMIN],
+            "role": ROLE_SUPERADMIN,
+            "legacy": True,
+        }
     try:
         prefix, body, signature = token.split(".", 2)
         if prefix != "dlc1":
