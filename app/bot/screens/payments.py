@@ -46,12 +46,16 @@ async def start_payment(callback: CallbackQuery, db, code):
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     case = await ctx.case_service.get_active_case_for_user(user.id)
+    if not case:
+        await callback.answer("Сначала выберите дату и время консультации.", show_alert=True)
+        return
     service = PaymentService(db)
     payment = await service.get_or_create_payment(case=case, payment_code=code)
     payment = await service.create_payment_link(payment)
     await db.commit()
     await callback.message.edit_text(
-        f"💳 {payment.title}\n\nСумма: {money(payment.amount)}",
+        f"💳 {payment.title}\n\nСумма: {money(payment.amount)}\n\n"
+        "После подтверждения оплаты слот станет окончательно вашим.",
         reply_markup=one(
             ("Перейти к оплате", "noop"),
             ("✅ DEV подтвердить оплату", f"pay_fake_success:{payment.id}"),
@@ -65,7 +69,10 @@ async def open_payment(callback: CallbackQuery, db):
     payment = await PaymentService(db).get_payment(int(callback.data.split(":")[1]))
     await callback.message.edit_text(
         f"💳 {payment.title}\nСумма: {money(payment.amount)}\nСтатус: {payment.status}",
-        reply_markup=one(("✅ DEV подтвердить оплату", f"pay_fake_success:{payment.id}"), ("📁 Мое дело", "my_case_open")),
+        reply_markup=one(
+            ("✅ DEV подтвердить оплату", f"pay_fake_success:{payment.id}"),
+            ("📁 Мое дело", "my_case_open"),
+        ),
     )
 
 
@@ -81,6 +88,17 @@ async def fake(callback: CallbackQuery, db):
         provider_payload={"dev": True},
     )
     await db.commit()
+    if payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT:
+        await callback.message.edit_text(
+            "✅ Оплата подтверждена, консультация забронирована.\n\n"
+            "Теперь выберите, к какому делу относится встреча, и напишите конкретный вопрос для юриста.",
+            reply_markup=one(
+                ("📝 Указать дело и вопрос", "consult_subject_start"),
+                ("👨‍⚖ Открыть запись", "consultation_booked_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
     await callback.message.edit_text(
         "✅ Оплата подтверждена. Следующий этап открыт автоматически.",
         reply_markup=one(("📁 Мое дело", "my_case_open"), ("🏠 Главная", "nav_home")),
