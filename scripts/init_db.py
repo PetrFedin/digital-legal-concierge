@@ -69,6 +69,29 @@ async def migrate_consultations(db):
     await db.commit()
 
 
+async def migrate_multi_case_support(db):
+    """Backward-compatible migration for local SQLite installations.
+
+    Production PostgreSQL will use Alembic. This migration keeps existing local
+    databases bootable while the production migration layer is introduced.
+    """
+    if not settings.database_url.startswith("sqlite"):
+        return
+
+    user_columns = await table_columns(db, "users")
+    if user_columns and "selected_case_id" not in user_columns:
+        await db.execute(text("ALTER TABLE users ADD COLUMN selected_case_id INTEGER"))
+
+    case_columns = await table_columns(db, "cases")
+    if case_columns and "is_archived" not in case_columns:
+        await db.execute(text("ALTER TABLE cases ADD COLUMN is_archived BOOLEAN NOT NULL DEFAULT 0"))
+
+    if case_columns:
+        await db.execute(text("UPDATE cases SET is_archived=0 WHERE is_archived IS NULL"))
+
+    await db.commit()
+
+
 async def get_or_create_admin(db):
     result = await db.execute(select(AdminUser).where(AdminUser.email == "admin@example.com"))
     admin = result.scalars().first()
@@ -98,6 +121,7 @@ async def main():
     async with AsyncSessionLocal() as db:
         await migrate_admin_users(db)
         await migrate_consultations(db)
+        await migrate_multi_case_support(db)
         await get_or_create_lawyer(db)
         await get_or_create_admin(db)
         await SettingsService(db).bootstrap_defaults()
