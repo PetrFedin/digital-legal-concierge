@@ -1,4 +1,4 @@
-from sqlalchemy import ForeignKey, String, Text
+from sqlalchemy import Boolean, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -17,6 +17,7 @@ class Case(Base, TimestampMixin):
     assigned_lawyer_id: Mapped[int | None] = mapped_column(ForeignKey("lawyers.id"), nullable=True, index=True)
     next_action: Mapped[str | None] = mapped_column(String(255), nullable=True)
     internal_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
 
     client = relationship("User", back_populates="cases")
     lawyer = relationship("Lawyer", back_populates="cases")
