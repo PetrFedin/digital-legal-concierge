@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_history import add_case_history_event
+from app.domain.cases.workflow_engine import WorkflowEngine
 from app.domain.statuses.case_statuses import CaseStatus, RouteCode
 from app.models.case import Case
 from app.models.user import User
@@ -19,6 +20,7 @@ def generate_case_number(case_id: int) -> str:
 class CaseService:
     def __init__(self, db: AsyncSession):
         self.db = db
+        self.workflow = WorkflowEngine(db)
 
     async def list_cases_for_user(self, user_id: int, *, include_archived: bool = False) -> list[Case]:
         query = select(Case).where(Case.client_id == user_id)
@@ -53,9 +55,7 @@ class CaseService:
         return fallback
 
     async def get_active_case_for_user(self, user_id: int) -> Case | None:
-        result = await self.db.execute(
-            select(User).where(User.id == user_id)
-        )
+        result = await self.db.execute(select(User).where(User.id == user_id))
         user = result.scalars().first()
         if not user:
             return None
@@ -115,6 +115,7 @@ class CaseService:
                 "selected": select_created,
             },
         )
+        await self.workflow.apply_case_status(case, str(status))
         await self.db.flush()
         return case
 
@@ -153,6 +154,7 @@ class CaseService:
             old_value={"is_archived": True},
             new_value={"is_archived": False, "selected_case_id": case.id},
         )
+        await self.workflow.apply_case_status(case, str(case.status))
         await self.db.flush()
         return case
 
@@ -183,6 +185,7 @@ class CaseService:
             new_value={"status": case.status, "route": case.route, "next_action": case.next_action},
             comment=comment,
         )
+        await self.workflow.apply_case_status(case, str(next_status))
         await self.db.flush()
         return case
 
@@ -198,6 +201,16 @@ class CaseService:
             old_value=old,
             new_value={"assigned_lawyer_id": lawyer_id},
         )
+        assigned_tasks = await self.workflow.assign_unassigned_tasks(case)
+        if assigned_tasks:
+            await add_case_history_event(
+                self.db,
+                actor_type="system",
+                actor_id=None,
+                case_id=case.id,
+                action="WORKFLOW_TASKS_ASSIGNED",
+                new_value={"assigned_lawyer_id": lawyer_id, "tasks_count": assigned_tasks},
+            )
         await self.db.flush()
         return case
 
@@ -214,6 +227,7 @@ class CaseService:
             new_value={"route": "M2", "status": case.status, "reason": reason},
             comment=reason,
         )
+        await self.workflow.apply_case_status(case, str(case.status))
         await self.db.flush()
         return case
 
@@ -230,6 +244,7 @@ class CaseService:
             new_value={"route": "M1", "status": case.status},
             comment=comment,
         )
+        await self.workflow.apply_case_status(case, str(case.status))
         await self.db.flush()
         return case
 
