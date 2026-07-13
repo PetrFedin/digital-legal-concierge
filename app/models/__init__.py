@@ -13,3 +13,4 @@ from app.models.admin_user import AdminUser
 from app.models.audit_log import AuditLog
 from app.models.analytics_event import AnalyticsEvent
 from app.models.system_setting import SystemSetting
+from app.models.task import Task
