@@ -60,6 +60,8 @@ class CaseTimelineService:
                         "status": item.status,
                         "document_type": item.document_type,
                         "file_name": item.file_name,
+                        "version": item.version,
+                        "lawyer_comment": item.lawyer_comment,
                     },
                 )
             )
@@ -71,11 +73,17 @@ class CaseTimelineService:
             events.append(
                 self._event(
                     event_type="payment",
-                    title=f"Платеж: {item.amount} {item.currency}",
+                    title=f"Платеж: {item.title}",
                     occurred_at=item.created_at,
                     entity_type="payment",
                     entity_id=item.id,
-                    details={"status": item.status, "purpose": item.purpose},
+                    details={
+                        "payment_code": item.payment_code,
+                        "amount": str(item.amount),
+                        "currency": item.currency,
+                        "status": item.status,
+                        "provider": item.provider,
+                    },
                 )
             )
 
