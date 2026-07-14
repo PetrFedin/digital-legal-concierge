@@ -15,3 +15,8 @@ class DocumentUploadStates(StatesGroup):
 class ConsultationDescriptionStates(StatesGroup):
     waiting_subject_choice = State()
     waiting_description = State()
+
+
+class AdminLoginStates(StatesGroup):
+    waiting_password = State()
+    authenticated = State()
