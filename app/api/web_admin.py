@@ -52,7 +52,7 @@ ADMIN_HTML = r"""
 <body>
   <header>
     <h1>⚖ Digital Legal Concierge — Admin v19</h1><div><a style="color:white;margin-right:12px" href="/login">Вход</a><form style="display:inline" method="post" action="/logout"><button style="background:#374151">Выход</button></form></div>
-    <input id="token" placeholder="x-admin-token" value="dev-admin-token" oninput="localStorage.setItem('admin_token', this.value)" />
+    <input id="token" type="hidden" />
   </header>
   <main>
     <section class="tabs">
@@ -79,7 +79,7 @@ ADMIN_HTML = r"""
 <script>
 document.getElementById('token').value = localStorage.getItem('admin_token') || '';
 async function loadSession(){const r=await fetch('/auth/session'); if(!r.ok){location.href='/login'; return;} const s=await r.json(); document.getElementById('token').value=s.api_token; localStorage.setItem('admin_token',s.api_token);}
-loadSession();
+
 const api = async (path, opts={}) => {
   const token = document.getElementById('token').value || 'dev-admin-token';
   const res = await fetch(path, { ...opts, headers: { 'x-admin-token': token, 'Content-Type':'application/json', ...(opts.headers||{}) }});
@@ -133,7 +133,9 @@ async function loadNotifications(){ const rows = await api('/admin/notifications
 function loadExports(){ const token = encodeURIComponent(document.getElementById('token').value || 'dev-admin-token'); document.getElementById('content').innerHTML = `<h3>Экспорт CSV</h3><p class="muted">Скачивание данных для контроля, сверки и резервной операционной выгрузки.</p><div class="actions"><a href="/admin/export/cases.csv?token=${token}" target="_blank"><button>Дела</button></a><a href="/admin/export/clients.csv?token=${token}" target="_blank"><button>Клиенты</button></a><a href="/admin/export/payments.csv?token=${token}" target="_blank"><button>Оплаты</button></a><a href="/admin/export/documents.csv?token=${token}" target="_blank"><button>Документы</button></a></div><p class="muted">В проде лучше выключить ALLOW_TOKEN_QUERY и пользоваться API с заголовком x-admin-token.</p>`; }
 async function loadReady(){ const r = await fetch('/ready').then(x=>x.json()); document.getElementById('content').innerHTML = '<h3>Готовность сервиса</h3><pre>'+esc(JSON.stringify(r,null,2))+'</pre>'; document.getElementById('raw').textContent = JSON.stringify(r,null,2); }
 async function runScheduler(){ await api('/admin/scheduler/run-once',{method:'POST'}); document.getElementById('content').innerHTML = '<h3>Проверки выполнены</h3><p>Scheduler run-once завершен.</p>'; }
-loadDashboard().catch(e => document.getElementById('content').innerHTML = '<b>Ошибка:</b> '+esc(e.message));
+loadSession()
+  .then(() => loadDashboard())
+  .catch(e => document.getElementById('content').innerHTML = '<b>Ошибка:</b> '+esc(e.message));
 </script>
 </body>
 </html>
