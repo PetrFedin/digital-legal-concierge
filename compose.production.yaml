@@ -17,6 +17,7 @@ services:
 
     networks:
       - proxy
+      - telegram_v6
 
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
@@ -27,4 +28,6 @@ services:
 
 networks:
   proxy:
+    external: true
+  telegram_v6:
     external: true
