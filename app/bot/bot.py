@@ -9,7 +9,7 @@ from aiogram.exceptions import (
     TelegramServerError,
 )
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BotCommand, BotCommandScopeDefault, CallbackQuery
+from aiogram.types import BotCommand, BotCommandScopeDefault, CallbackQuery, Message
 
 from app.bot.screens import (
     calculator,
@@ -22,6 +22,7 @@ from app.bot.screens import (
     my_case,
     payments,
 )
+from app.bot.security import SlidingWindowRateLimiter
 from app.config import settings
 from app.db.session import AsyncSessionLocal
 
@@ -35,6 +36,37 @@ class DbMiddleware:
             return await handler(event, data)
 
 
+class FloodControlMiddleware:
+    """Limit rapid Telegram actions from one user without blocking normal use."""
+
+    def __init__(self, *, max_events: int = 8, window_seconds: int = 10):
+        self.limiter = SlidingWindowRateLimiter(
+            max_events=max_events,
+            window_seconds=window_seconds,
+        )
+
+    async def __call__(self, handler, event, data):
+        user = getattr(event, "from_user", None)
+        if not user:
+            return await handler(event, data)
+        decision = self.limiter.check(user.id)
+        if decision.allowed:
+            return await handler(event, data)
+
+        text = (
+            "Слишком много действий подряд. "
+            f"Подождите {decision.retry_after_seconds} сек. и повторите."
+        )
+        try:
+            if isinstance(event, CallbackQuery):
+                await event.answer(text, show_alert=True)
+            elif isinstance(event, Message):
+                await event.answer(text)
+        except (TelegramBadRequest, TelegramNetworkError, TelegramServerError):
+            logger.warning("Не удалось отправить уведомление об ограничении частоты.")
+        return None
+
+
 class CallbackAcknowledgeMiddleware:
     """Always close Telegram's loading spinner after callback processing."""
 
@@ -46,8 +78,6 @@ class CallbackAcknowledgeMiddleware:
                 try:
                     await event.answer()
                 except TelegramBadRequest:
-                    # The callback may already have been answered with an alert,
-                    # or it may have expired while the handler was running.
                     pass
                 except (TelegramNetworkError, TelegramServerError):
                     logger.warning("Не удалось подтвердить callback Telegram.")
@@ -67,6 +97,9 @@ async def setup_telegram_commands(bot: Bot) -> None:
 def build_dispatcher() -> Dispatcher:
     dispatcher = Dispatcher(storage=MemoryStorage())
     dispatcher.update.middleware(DbMiddleware())
+    flood_control = FloodControlMiddleware()
+    dispatcher.message.middleware(flood_control)
+    dispatcher.callback_query.middleware(flood_control)
     dispatcher.callback_query.middleware(CallbackAcknowledgeMiddleware())
     for router in [
         common.router,
