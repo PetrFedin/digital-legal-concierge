@@ -105,4 +105,29 @@ async def run_bot() -> None:
                 allowed_updates=dispatcher.resolve_used_update_types(),
                 polling_timeout=30,
                 handle_signals=False,
-                close_bot_session=False
+                close_bot_session=False,
+            )
+        except TelegramRetryAfter as exc:
+            wait_seconds = max(int(exc.retry_after), retry_delay)
+            logger.warning("Telegram ограничил запросы. Повтор через %s сек.", wait_seconds)
+            await asyncio.sleep(wait_seconds)
+        except (TelegramNetworkError, TelegramServerError, TimeoutError, OSError) as exc:
+            logger.warning(
+                "Telegram временно недоступен: %s. Повтор подключения через %s сек.",
+                exc,
+                retry_delay,
+            )
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, max_retry_delay)
+        except asyncio.CancelledError:
+            logger.info("Остановка Telegram-бота.")
+            raise
+        except Exception:
+            logger.exception(
+                "Неожиданная ошибка Telegram-бота. Повтор подключения через %s сек.",
+                retry_delay,
+            )
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, max_retry_delay)
+        finally:
+            await bot.session.close()
