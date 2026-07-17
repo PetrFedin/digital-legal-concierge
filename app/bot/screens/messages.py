@@ -15,7 +15,8 @@ class MessageStates(StatesGroup):
 
 
 @router.callback_query(lambda c: c.data == "contact_lawyer")
-async def contact_lawyer(callback: CallbackQuery, db):
+async def contact_lawyer(callback: CallbackQuery, db, state: FSMContext):
+    await state.clear()
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     case = await ctx.case_service.get_active_case_for_user(user.id)
@@ -23,7 +24,7 @@ async def contact_lawyer(callback: CallbackQuery, db):
         await callback.message.edit_text(
             "💬 Связаться с юристом\n\n"
             "Можно написать сообщение по текущему делу или записаться на платную консультацию. "
-            "Для записи сначала выбираются свободные дата и время.",
+            "Сообщение будет зарегистрировано в истории дела.",
             reply_markup=one(
                 ("✉️ Написать по текущему делу", "message_create"),
                 ("📅 Записаться на консультацию", "consult_booking_start"),
@@ -46,26 +47,46 @@ async def contact_lawyer(callback: CallbackQuery, db):
 async def message_create(callback: CallbackQuery, state: FSMContext):
     await state.set_state(MessageStates.waiting_message)
     await callback.message.edit_text(
-        "✉️ Напишите вопрос по делу. Сообщение будет сохранено в истории.",
-        reply_markup=one(("Отмена", "nav_home")),
+        "✉️ Напишите вопрос по текущему делу.\n\n"
+        "Укажите, что произошло, какой результат вы ожидаете и есть ли срочный срок. "
+        "Сообщение будет сохранено в истории дела.",
+        reply_markup=one(("Отменить действие", "nav_cancel")),
     )
 
 
 @router.message(MessageStates.waiting_message)
 async def message_send(message: Message, state: FSMContext, db):
     text = (message.text or "").strip()
-    if len(text) < 2:
-        await message.answer("Введите текст сообщения.")
+    if len(text) < 10:
+        await message.answer(
+            "Опишите вопрос подробнее — минимум 10 символов.",
+            reply_markup=one(("Отменить действие", "nav_cancel")),
+        )
         return
+
     ctx = BotContextService(db)
     user = await ctx.get_user_from_message(message)
     case = await ctx.case_service.get_active_case_for_user(user.id)
     if not case:
         case = await ctx.get_or_create_active_case_for_user(user)
-    await MessageService(db).create_client_message(case=case, user_id=user.id, text=text)
+
+    created = await MessageService(db).create_client_message(
+        case=case,
+        user_id=user.id,
+        text=text,
+    )
     await db.commit()
     await state.clear()
+
     await message.answer(
-        "✅ Сообщение сохранено и передано команде.",
-        reply_markup=one(("📁 Мое дело", "my_case_open"), ("🏠 Главная", "nav_home")),
+        "✅ Вопрос зарегистрирован.\n\n"
+        f"Номер сообщения: #{created.id}\n"
+        f"Дело: {case.case_number}\n"
+        "Статус: ожидает просмотра командой.\n\n"
+        "Ответ появится в Telegram после обработки юристом.",
+        reply_markup=one(
+            ("✉️ Написать еще", "message_create"),
+            ("📁 Мое дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ),
     )
