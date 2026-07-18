@@ -9,3 +9,7 @@ from app.models.consultation import Consultation
 
 class ConsultationService:
     def __init__(self, db: AsyncSession):
+        self.db = db
+        self.slots = SlotService(db)
+
+    async def get_or
