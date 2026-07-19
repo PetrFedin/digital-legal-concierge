@@ -2,7 +2,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from sqlalchemy import select, text
+from sqlalchemy import inspect, select, text
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
@@ -69,6 +69,87 @@ async def migrate_consultations(db):
     await db.commit()
 
 
+PAYMENT_MIGRATION_COLUMN_DDL = {
+    "sqlite": {
+        "processing_outcome": (
+            "ALTER TABLE payments ADD COLUMN processing_outcome VARCHAR(50)"
+        ),
+        "processed_at": "ALTER TABLE payments ADD COLUMN processed_at DATETIME",
+        "manual_review_required": (
+            "ALTER TABLE payments ADD COLUMN manual_review_required "
+            "BOOLEAN NOT NULL DEFAULT 0"
+        ),
+        "processing_error": "ALTER TABLE payments ADD COLUMN processing_error TEXT",
+    },
+    "postgresql": {
+        "processing_outcome": (
+            "ALTER TABLE payments ADD COLUMN processing_outcome VARCHAR(50)"
+        ),
+        "processed_at": "ALTER TABLE payments ADD COLUMN processed_at TIMESTAMPTZ",
+        "manual_review_required": (
+            "ALTER TABLE payments ADD COLUMN manual_review_required "
+            "BOOLEAN NOT NULL DEFAULT FALSE"
+        ),
+        "processing_error": "ALTER TABLE payments ADD COLUMN processing_error TEXT",
+    },
+}
+
+PAYMENT_PROVIDER_UNIQUE_INDEX_DDL = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_payments_provider_payment_id "
+    "ON payments(provider, provider_payment_id) "
+    "WHERE provider IS NOT NULL AND provider_payment_id IS NOT NULL"
+)
+
+
+class DuplicateProviderPaymentError(RuntimeError):
+    """Raised when legacy provider payment duplicates block the unique index."""
+
+
+async def portable_table_columns(db, table_name: str) -> set[str]:
+    connection = await db.connection()
+
+    def load_columns(sync_connection):
+        inspector = inspect(sync_connection)
+        if not inspector.has_table(table_name):
+            return set()
+        return {column["name"] for column in inspector.get_columns(table_name)}
+
+    return await connection.run_sync(load_columns)
+
+
+async def migrate_payments(db):
+    dialect_name = db.bind.dialect.name
+    additions = PAYMENT_MIGRATION_COLUMN_DDL.get(dialect_name)
+    if additions is None:
+        return
+    columns = await portable_table_columns(db, "payments")
+    if not columns:
+        return
+    for name, statement in additions.items():
+        if name not in columns:
+            await db.execute(text(statement))
+    duplicate = (
+        await db.execute(
+            text(
+                "SELECT provider, provider_payment_id, COUNT(*) AS duplicate_count "
+                "FROM payments "
+                "WHERE provider IS NOT NULL AND provider_payment_id IS NOT NULL "
+                "GROUP BY provider, provider_payment_id "
+                "HAVING COUNT(*) > 1 LIMIT 1"
+            )
+        )
+    ).first()
+    if duplicate:
+        raise DuplicateProviderPaymentError(
+            "Cannot create payment provider uniqueness index: "
+            f"duplicate ({duplicate.provider!r}, {duplicate.provider_payment_id!r})"
+        )
+    await db.execute(
+        text(PAYMENT_PROVIDER_UNIQUE_INDEX_DDL)
+    )
+    await db.commit()
+
+
 async def get_or_create_admin(db):
     result = await db.execute(select(AdminUser).where(AdminUser.email == "admin@example.com"))
     admin = result.scalars().first()
@@ -98,6 +179,7 @@ async def main():
     async with AsyncSessionLocal() as db:
         await migrate_admin_users(db)
         await migrate_consultations(db)
+        await migrate_payments(db)
         await get_or_create_lawyer(db)
         await get_or_create_admin(db)
         await SettingsService(db).bootstrap_defaults()
