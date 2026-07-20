@@ -167,10 +167,16 @@ async def begin_m2_description_flow(
         )
     else:
         text = "Запись на консультацию уже оформлена. Откройте её в разделе «Мое дело»."
-    await callback.message.edit_text(
-        text,
-        reply_markup=one(("📁 Мое дело", "my_case_open"), ("🏠 Главная", "nav_home")),
+    reply_markup = (
+        one(
+            ("📎 Приложить документы", "m2_documents_open"),
+            ("⏭ Пропустить", "m2_documents_skip"),
+            ("🏠 Главная", "nav_home"),
+        )
+        if status == ConsultationStatus.DOCUMENTS_OPTIONAL
+        else one(("📁 Мое дело", "my_case_open"), ("🏠 Главная", "nav_home"))
     )
+    await callback.message.edit_text(text, reply_markup=reply_markup)
 
 
 @router.callback_query(lambda c: c.data in {"consult_booking_start", "consult_slot_open"})
@@ -425,7 +431,11 @@ async def save_description(message: Message, state: FSMContext, db):
     await state.clear()
     await message.answer(
         DESCRIPTION_SAVED_TEXT,
-        reply_markup=one(("🏠 Главная", "nav_home")),
+        reply_markup=one(
+            ("📎 Приложить документы", "m2_documents_open"),
+            ("⏭ Пропустить", "m2_documents_skip"),
+            ("🏠 Главная", "nav_home"),
+        ),
     )
 
 
