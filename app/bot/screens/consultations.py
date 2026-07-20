@@ -1,5 +1,6 @@
 from collections import defaultdict
 from datetime import timezone
+import logging
 
 from aiogram import Router
 from aiogram.fsm.context import FSMContext
@@ -9,12 +10,36 @@ from sqlalchemy import select
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.states import ConsultationDescriptionStates
-from app.domain.consultations.consultation_service import ConsultationService
+from app.domain.consultations.consultation_service import (
+    ActiveConsultationConflictError,
+    ConsultationDescriptionError,
+    ConsultationNotFoundError,
+    ConsultationService,
+)
 from app.domain.consultations.slot_service import SlotService, SlotUnavailableError
+from app.domain.consultations.state_machine import InvalidConsultationTransition
+from app.domain.statuses.case_statuses import RouteCode
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.models.case import Case
+from app.models.consultation import Consultation
 
 router = Router()
+logger = logging.getLogger(__name__)
+
+DESCRIPTION_PROMPT = (
+    "Опишите вашу ситуацию и вопрос для юриста одним сообщением.\n\n"
+    "Не указывайте данные банковских карт, пароли и другие секретные сведения."
+)
+DESCRIPTION_SAVED_TEXT = (
+    "Описание сохранено.\n\n"
+    "Теперь вы можете приложить документы или пропустить этот шаг."
+)
+M2_DOMAIN_ERRORS = (
+    ConsultationNotFoundError,
+    ConsultationDescriptionError,
+    ActiveConsultationConflictError,
+    InvalidConsultationTransition,
+)
 
 
 def format_date(value):
@@ -33,6 +58,118 @@ async def ensure_booking_case(ctx, user):
         client=user,
         route=None,
         title="Запись на юридическую консультацию",
+    )
+
+
+def _case_belongs_to_user(case, user) -> bool:
+    return bool(case and case.client_id == user.id)
+
+
+async def _set_description_state(state: FSMContext, *, case_id: int, consultation_id: int):
+    await state.clear()
+    await state.update_data(case_id=case_id, consultation_id=consultation_id)
+    await state.set_state(ConsultationDescriptionStates.waiting_description)
+
+
+async def begin_m2_description_flow(
+    *,
+    callback: CallbackQuery,
+    state: FSMContext,
+    db,
+    reason: str,
+):
+    """Start or resume the strict M2 description step for the current user."""
+    try:
+        ctx = BotContextService(db)
+        user = await ctx.get_user_from_callback(callback)
+        case = await ctx.get_or_create_active_case_for_user(user)
+        if not _case_belongs_to_user(case, user):
+            raise ConsultationNotFoundError("Дело не принадлежит текущему клиенту.")
+        if case.route not in {RouteCode.M2, RouteCode.M2.value}:
+            await ctx.case_service.transfer_to_m2(
+                case=case,
+                actor_type="client",
+                actor_id=user.id,
+                reason=reason,
+            )
+        consultation = await ConsultationService(db).create_or_get_m2_consultation(
+            case=case,
+            actor_type="client",
+            actor_id=user.id,
+            source="telegram",
+        )
+        await db.commit()
+    except M2_DOMAIN_ERRORS:
+        await db.rollback()
+        await callback.message.edit_text(
+            "Не удалось продолжить оформление консультации. Попробуйте ещё раз немного позже.",
+            reply_markup=one(("🏠 Главная", "nav_home")),
+        )
+        return
+    except Exception:
+        await db.rollback()
+        logger.exception(
+            "Unexpected error while starting the Telegram M2 description flow"
+        )
+        await callback.message.edit_text(
+            "Не удалось продолжить оформление консультации. Попробуйте ещё раз немного позже.",
+            reply_markup=one(("🏠 Главная", "nav_home")),
+        )
+        return
+
+    try:
+        status = ConsultationStatus(consultation.status)
+    except (TypeError, ValueError):
+        logger.error(
+            "Unsupported consultation status after starting Telegram M2 flow",
+            extra={"consultation_id": consultation.id},
+        )
+        await state.clear()
+        await callback.message.edit_text(
+            "Не удалось определить текущий шаг консультации. "
+            "Откройте её в разделе «Мое дело».",
+            reply_markup=one(
+                ("📁 Мое дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+    if status == ConsultationStatus.DESCRIPTION_PENDING:
+        await _set_description_state(
+            state,
+            case_id=case.id,
+            consultation_id=consultation.id,
+        )
+        await callback.message.edit_text(
+            DESCRIPTION_PROMPT,
+            reply_markup=one(("Отмена", "nav_home")),
+        )
+        return
+
+    await state.clear()
+    if status == ConsultationStatus.DOCUMENTS_OPTIONAL:
+        text = (
+            "Описание уже сохранено. Следующий шаг — приложить документы "
+            "или пропустить их."
+        )
+    elif status == ConsultationStatus.SLOT_PENDING:
+        text = (
+            "Описание и документный шаг уже завершены. "
+            "Продолжите оформление из раздела «Мое дело»."
+        )
+    elif status in {
+        ConsultationStatus.SLOT_RESERVED,
+        ConsultationStatus.PAYMENT_PENDING,
+    }:
+        text = (
+            "Консультация уже перешла к выбору времени или оплате. "
+            "Текущий шаг доступен в разделе «Мое дело»."
+        )
+    else:
+        text = "Запись на консультацию уже оформлена. Откройте её в разделе «Мое дело»."
+    await callback.message.edit_text(
+        text,
+        reply_markup=one(("📁 Мое дело", "my_case_open"), ("🏠 Главная", "nav_home")),
     )
 
 
@@ -118,6 +255,27 @@ async def choose_slot(callback: CallbackQuery, db):
 async def subject_start(callback: CallbackQuery, db, state: FSMContext):
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
+    active_case = await ctx.case_service.get_active_case_for_user(user.id)
+    if not _case_belongs_to_user(active_case, user):
+        await callback.message.edit_text(
+            "Активная консультация не найдена.",
+            reply_markup=one(("🏠 Главная", "nav_home")),
+        )
+        return
+    active_consultation = (
+        await db.execute(
+            select(Consultation)
+            .where(Consultation.case_id == active_case.id)
+            .where(Consultation.status == ConsultationStatus.BOOKED.value)
+            .order_by(Consultation.created_at.desc())
+        )
+    ).scalars().first()
+    if not active_consultation:
+        await callback.message.edit_text(
+            "Активная консультация не найдена.",
+            reply_markup=one(("🏠 Главная", "nav_home")),
+        )
+        return
     cases = (
         await db.execute(
             select(Case)
@@ -130,6 +288,12 @@ async def subject_start(callback: CallbackQuery, db, state: FSMContext):
         label = case.title or case.case_number
         buttons.append((f"📁 {case.case_number}: {label[:35]}", f"consult_subject_case:{case.id}"))
     buttons.append(("➕ Другое или новое дело", "consult_subject_new"))
+    await state.clear()
+    await state.update_data(
+        case_id=active_case.id,
+        consultation_id=active_consultation.id,
+        legacy_booked_description=True,
+    )
     await state.set_state(ConsultationDescriptionStates.waiting_subject_choice)
     await callback.message.edit_text(
         "К какому вопросу относится консультация?\n\n"
@@ -162,50 +326,106 @@ async def subject_new_case(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(lambda c: c.data == "consult_description_start")
-async def legacy_description_start(callback: CallbackQuery, state: FSMContext):
-    await state.update_data(subject_type="new_or_other", related_case_id=None)
-    await state.set_state(ConsultationDescriptionStates.waiting_description)
-    await callback.message.edit_text(
-        "📝 Опишите ситуацию и конкретный вопрос для юриста.",
-        reply_markup=one(("Отмена", "nav_home")),
+async def legacy_description_start(callback: CallbackQuery, state: FSMContext, db):
+    await begin_m2_description_flow(
+        callback=callback,
+        state=state,
+        db=db,
+        reason="Клиент продолжил оформление консультации",
     )
 
 
 @router.message(ConsultationDescriptionStates.waiting_description)
 async def save_description(message: Message, state: FSMContext, db):
-    text = (message.text or "").strip()
-    if len(text) < 20:
-        await message.answer("Опишите вопрос чуть подробнее — минимум 20 символов.")
+    if not message.text or not message.text.strip():
+        await message.answer("Пожалуйста, отправьте описание текстовым сообщением.")
         return
+    text = message.text.strip()
     data = await state.get_data()
-    ctx = BotContextService(db)
-    user = await ctx.get_user_from_message(message)
-    case = await ensure_booking_case(ctx, user)
-    consultation = await ConsultationService(db).get_or_create_for_case(case)
-    if consultation.status != ConsultationStatus.BOOKED:
+    try:
+        ctx = BotContextService(db)
+        user = await ctx.get_user_from_message(message)
+        case = await ctx.case_service.get_active_case_for_user(user.id)
+        if not _case_belongs_to_user(case, user):
+            raise ConsultationNotFoundError("Активное дело клиента не найдено.")
+        if data.get("case_id") != case.id:
+            raise ConsultationNotFoundError("FSM относится к другому делу.")
+        service = ConsultationService(db)
+        if data.get("legacy_booked_description"):
+            consultation = await service.get_or_create_for_case(case)
+            subject_type = data.get("subject_type")
+            related_case_id = data.get("related_case_id")
+            if subject_type == "existing_case":
+                related_case = (
+                    await db.execute(
+                        select(Case).where(
+                            Case.id == related_case_id,
+                            Case.client_id == user.id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if related_case is None:
+                    raise ConsultationNotFoundError(
+                        "Связанное дело клиента не найдено."
+                    )
+            elif subject_type == "new_or_other":
+                related_case_id = None
+            else:
+                raise ConsultationNotFoundError(
+                    "Тип вопроса консультации не выбран."
+                )
+        else:
+            consultation = await service.create_or_get_m2_consultation(
+                case=case,
+                actor_type="client",
+                actor_id=user.id,
+                source="telegram",
+            )
+            subject_type = "new_or_other"
+            related_case_id = None
+        if data.get("consultation_id") != consultation.id:
+            raise ConsultationNotFoundError("FSM относится к другой консультации.")
+        await service.save_description(
+            consultation=consultation,
+            case=case,
+            client_id=user.id,
+            description=text,
+            subject_type=subject_type,
+            related_case_id=related_case_id,
+            actor_type="client",
+            source="telegram",
+        )
+        await db.commit()
+    except ConsultationDescriptionError:
+        await db.rollback()
         await message.answer(
-            "Сначала выберите и оплатите время консультации.",
-            reply_markup=one(("📅 Выбрать дату и время", "consult_booking_start")),
+            "Не удалось сохранить описание. Проверьте текст и попробуйте ещё раз."
         )
         return
-    await ConsultationService(db).save_description(
-        consultation=consultation,
-        case=case,
-        client_id=user.id,
-        description=text,
-        subject_type=data.get("subject_type", "new_or_other"),
-        related_case_id=data.get("related_case_id"),
-    )
-    await db.commit()
+    except (
+        ConsultationNotFoundError,
+        ActiveConsultationConflictError,
+        InvalidConsultationTransition,
+    ):
+        await db.rollback()
+        await message.answer(
+            "Не удалось продолжить оформление консультации. Попробуйте ещё раз немного позже."
+        )
+        return
+    except Exception:
+        await db.rollback()
+        logger.exception(
+            "Unexpected error while saving a Telegram consultation description"
+        )
+        await message.answer(
+            "Не удалось продолжить оформление консультации. Попробуйте ещё раз немного позже."
+        )
+        return
+
     await state.clear()
     await message.answer(
-        "✅ Вопрос сохранён и будет передан юристу до встречи.\n\n"
-        "При необходимости добавьте документы, которые помогут подготовиться к консультации.",
-        reply_markup=one(
-            ("📄 Добавить документы", "documents_open"),
-            ("👨‍⚖ Открыть запись", "consultation_booked_open"),
-            ("🏠 Главная", "nav_home"),
-        ),
+        DESCRIPTION_SAVED_TEXT,
+        reply_markup=one(("🏠 Главная", "nav_home")),
     )
 
 

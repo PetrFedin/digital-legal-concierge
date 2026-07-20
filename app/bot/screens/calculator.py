@@ -7,6 +7,7 @@ from aiogram.fsm.context import FSMContext
 
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
+from app.bot.screens.consultations import begin_m2_description_flow
 from app.bot.states import CalculatorStates
 from app.domain.calculator.penalty_calculator import parse_money
 from app.domain.calculator.calculator_service import CalculatorService
@@ -147,17 +148,12 @@ def result_kb():
 
 @router.callback_query(lambda c: c.data in {"calc_unknown_price", "calc_unknown_date"})
 async def unknown_calc_data(callback: CallbackQuery, state: FSMContext, db):
-    await state.clear()
-    ctx = BotContextService(db)
-    user = await ctx.get_user_from_callback(callback)
-    case = await ctx.get_or_create_active_case_for_user(user)
     reason = "Клиент не знает стоимость" if callback.data == "calc_unknown_price" else "Клиент не знает дату передачи"
-    await ctx.case_service.transfer_to_m2(case=case, actor_type="client", actor_id=user.id, reason=reason)
-    await db.commit()
-    await callback.message.edit_text(
-        "Без этих данных расчет будет неточным. Переведем обращение в консультационный маршрут М2.\n\n"
-        "Опишите ситуацию — юрист поможет разобраться по документам и срокам.",
-        reply_markup=one(("Описать ситуацию", "consult_description_start"), ("🏠 Главная", "nav_home")),
+    await begin_m2_description_flow(
+        callback=callback,
+        state=state,
+        db=db,
+        reason=reason,
     )
 
 
@@ -182,20 +178,12 @@ async def to_m1(callback: CallbackQuery, db):
 
 
 @router.callback_query(lambda c: c.data == "calc_to_m2")
-async def to_m2(callback: CallbackQuery, db):
-    ctx = BotContextService(db)
-    user = await ctx.get_user_from_callback(callback)
-    case = await ctx.get_or_create_active_case_for_user(user)
-    await ctx.case_service.transfer_to_m2(
-        case=case,
-        actor_type="client",
-        actor_id=user.id,
+async def to_m2(callback: CallbackQuery, state: FSMContext, db):
+    await begin_m2_description_flow(
+        callback=callback,
+        state=state,
+        db=db,
         reason="Клиент выбрал консультацию",
-    )
-    await db.commit()
-    await callback.message.edit_text(
-        "💬 Опишите ситуацию своими словами. Юрист увидит описание перед консультацией.",
-        reply_markup=one(("Описать ситуацию", "consult_description_start"), ("🏠 Главная", "nav_home")),
     )
 
 
