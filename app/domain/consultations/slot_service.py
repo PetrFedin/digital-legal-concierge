@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import and_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_history import add_case_history_event
@@ -11,6 +12,7 @@ from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
+from app.models.lawyer import Lawyer
 
 
 class SlotUnavailableError(RuntimeError):
@@ -28,7 +30,7 @@ class SlotService:
 
         A slot hold, its consultation and its case form one logical reservation.
         Releasing only the slot leaves ``Consultation.slot_id`` behind and can
-        prevent the slot from being assigned again.  Keep all three records in
+        prevent the slot from being assigned again. Keep all three records in
         the same transaction; the caller remains responsible for committing.
         """
         now = datetime.now(timezone.utc)
@@ -108,9 +110,11 @@ class SlotService:
     ) -> list[ConsultationSlot]:
         await self.release_expired_holds()
         now = datetime.now(timezone.utc)
+        inactive_lawyer_ids = select(Lawyer.id).where(Lawyer.is_active.is_(False))
         conditions = [
             ConsultationSlot.status == "available",
             ConsultationSlot.starts_at > now,
+            ~ConsultationSlot.lawyer_id.in_(inactive_lawyer_ids),
         ]
         if lawyer_id is not None:
             conditions.append(ConsultationSlot.lawyer_id == lawyer_id)
@@ -137,26 +141,88 @@ class SlotService:
         consultation_id: int,
     ) -> ConsultationSlot:
         await self.release_expired_holds()
-        hold_expires_at = datetime.now(timezone.utc) + timedelta(
-            minutes=self.HOLD_MINUTES
-        )
-        result = await self.db.execute(
-            update(ConsultationSlot)
-            .where(
-                ConsultationSlot.id == slot_id,
-                ConsultationSlot.status == "available",
+        now = datetime.now(timezone.utc)
+
+        # All production callers pass a real Consultation. Locking that row
+        # serializes attempts to reserve two different slots for the same
+        # consultation. The optional fallback preserves old isolated tests that
+        # used synthetic consultation ids without creating parent records.
+        locked_consultation = (
+            await self.db.execute(
+                select(Consultation)
+                .where(Consultation.id == consultation_id)
+                .execution_options(populate_existing=True)
+                .with_for_update()
             )
-            .values(
-                status="held",
-                held_by_user_id=user_id,
-                consultation_id=consultation_id,
-                hold_expires_at=hold_expires_at,
+        ).scalars().first()
+
+        existing_hold = (
+            await self.db.execute(
+                select(ConsultationSlot)
+                .where(
+                    ConsultationSlot.consultation_id == consultation_id,
+                    ConsultationSlot.status.in_({"held", "booked"}),
+                )
+                .order_by(ConsultationSlot.id.asc())
+                .with_for_update()
             )
-        )
-        if result.rowcount != 1:
-            raise SlotUnavailableError("Это время уже занято. Выберите другой слот.")
-        await self.db.flush()
-        slot = await self.get_slot(slot_id)
+        ).scalars().first()
+
+        if existing_hold is not None:
+            if (
+                existing_hold.id == slot_id
+                and existing_hold.status == "held"
+                and existing_hold.held_by_user_id == user_id
+                and existing_hold.hold_expires_at is not None
+                and self._as_utc(existing_hold.hold_expires_at) > now
+            ):
+                return existing_hold
+            raise SlotUnavailableError(
+                "За консультацией уже удерживается другой слот."
+            )
+
+        if locked_consultation is not None and locked_consultation.slot_id is not None:
+            raise SlotUnavailableError(
+                "За консультацией уже удерживается другой слот."
+            )
+
+        hold_expires_at = now + timedelta(minutes=self.HOLD_MINUTES)
+        inactive_lawyer_ids = select(Lawyer.id).where(Lawyer.is_active.is_(False))
+
+        try:
+            async with self.db.begin_nested():
+                result = await self.db.execute(
+                    update(ConsultationSlot)
+                    .where(
+                        ConsultationSlot.id == slot_id,
+                        ConsultationSlot.status == "available",
+                        ConsultationSlot.starts_at > now,
+                        ~ConsultationSlot.lawyer_id.in_(inactive_lawyer_ids),
+                    )
+                    .values(
+                        status="held",
+                        held_by_user_id=user_id,
+                        consultation_id=consultation_id,
+                        hold_expires_at=hold_expires_at,
+                    )
+                )
+                if result.rowcount != 1:
+                    raise SlotUnavailableError(
+                        "Это время уже занято или недоступно. Выберите другой слот."
+                    )
+                await self.db.flush()
+        except IntegrityError as exc:
+            raise SlotUnavailableError(
+                "Это время уже занято или для консультации выбран другой слот."
+            ) from exc
+
+        slot = (
+            await self.db.execute(
+                select(ConsultationSlot)
+                .where(ConsultationSlot.id == slot_id)
+                .execution_options(populate_existing=True)
+            )
+        ).scalars().first()
         if not slot:
             raise SlotUnavailableError("Слот не найден.")
         return slot
@@ -209,3 +275,9 @@ class SlotService:
             )
         )
         await self.db.flush()
+
+    @staticmethod
+    def _as_utc(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
