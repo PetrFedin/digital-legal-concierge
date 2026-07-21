@@ -1,5 +1,5 @@
 from collections import defaultdict
-from datetime import timezone
+from datetime import date
 import logging
 
 from aiogram import Router
@@ -15,10 +15,11 @@ from app.domain.consultations.consultation_service import (
     ConsultationDescriptionError,
     ConsultationNotFoundError,
     ConsultationService,
+    ConsultationSlotError,
 )
-from app.domain.consultations.slot_service import SlotService, SlotUnavailableError
+from app.domain.consultations.slot_service import SlotService
 from app.domain.consultations.state_machine import InvalidConsultationTransition
-from app.domain.statuses.case_statuses import RouteCode
+from app.domain.statuses.case_statuses import CaseStatus, RouteCode
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.models.case import Case
 from app.models.consultation import Consultation
@@ -37,6 +38,7 @@ DESCRIPTION_SAVED_TEXT = (
 M2_DOMAIN_ERRORS = (
     ConsultationNotFoundError,
     ConsultationDescriptionError,
+    ConsultationSlotError,
     ActiveConsultationConflictError,
     InvalidConsultationTransition,
 )
@@ -50,19 +52,84 @@ def format_time(value):
     return value.strftime("%H:%M")
 
 
-async def ensure_booking_case(ctx, user):
-    case = await ctx.case_service.get_active_case_for_user(user.id)
-    if case:
-        return case
-    return await ctx.case_service.create_case(
-        client=user,
-        route=None,
-        title="Запись на юридическую консультацию",
-    )
-
-
 def _case_belongs_to_user(case, user) -> bool:
     return bool(case and case.client_id == user.id)
+
+
+async def _load_m2_slot_context(callback: CallbackQuery, db, *, allow_reserved: bool):
+    """Load the single active M2 consultation allowed to use the slot flow."""
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    case = await ctx.case_service.get_active_case_for_user(user.id)
+    if not _case_belongs_to_user(case, user):
+        raise ConsultationNotFoundError("Активное дело клиента не найдено.")
+    if case.route not in {RouteCode.M2, RouteCode.M2.value}:
+        raise ActiveConsultationConflictError("Выбор времени доступен только для маршрута М2.")
+
+    allowed_case_statuses = {CaseStatus.M2_SLOT_PENDING.value}
+    allowed_consultation_statuses = {ConsultationStatus.SLOT_PENDING}
+    if allow_reserved:
+        allowed_case_statuses.add(CaseStatus.M2_PAYMENT_PENDING.value)
+        allowed_consultation_statuses.add(ConsultationStatus.SLOT_RESERVED)
+    if case.status not in allowed_case_statuses:
+        raise ActiveConsultationConflictError(
+            "Текущее состояние дела не допускает выбор времени консультации."
+        )
+
+    active = list(
+        (
+            await db.execute(
+                select(Consultation)
+                .where(Consultation.case_id == case.id)
+                .where(
+                    Consultation.status.notin_(ConsultationService.INACTIVE_STATUSES)
+                )
+                .order_by(Consultation.created_at.desc(), Consultation.id.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if len(active) != 1:
+        raise ActiveConsultationConflictError(
+            "Для дела должна существовать ровно одна активная консультация М2."
+        )
+    consultation = active[0]
+    try:
+        consultation_status = ConsultationStatus(consultation.status)
+    except (TypeError, ValueError) as exc:
+        raise ActiveConsultationConflictError(
+            "Неизвестный статус консультации не допускает выбор времени."
+        ) from exc
+    if consultation_status not in allowed_consultation_statuses:
+        raise ActiveConsultationConflictError(
+            "Текущий шаг консультации не допускает выбор времени."
+        )
+    if (
+        consultation_status == ConsultationStatus.SLOT_PENDING
+        and case.status != CaseStatus.M2_SLOT_PENDING.value
+    ):
+        raise ActiveConsultationConflictError(
+            "Статусы дела и консультации не согласованы."
+        )
+    if (
+        consultation_status == ConsultationStatus.SLOT_RESERVED
+        and case.status != CaseStatus.M2_PAYMENT_PENDING.value
+    ):
+        raise ActiveConsultationConflictError(
+            "Статусы дела и консультации не согласованы."
+        )
+    return user, case, consultation
+
+
+async def _show_slot_flow_unavailable(callback: CallbackQuery):
+    await callback.message.edit_text(
+        "Выбор времени сейчас недоступен. Откройте «Мое дело», чтобы продолжить с текущего шага.",
+        reply_markup=one(
+            ("📁 Мое дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ),
+    )
 
 
 async def _set_description_state(state: FSMContext, *, case_id: int, consultation_id: int):
@@ -181,11 +248,27 @@ async def begin_m2_description_flow(
 
 @router.callback_query(lambda c: c.data in {"consult_booking_start", "consult_slot_open"})
 async def booking_start(callback: CallbackQuery, db):
-    slots = await SlotService(db).get_available_slots(limit=60)
+    try:
+        await _load_m2_slot_context(callback, db, allow_reserved=False)
+        slots = await SlotService(db).get_available_slots(limit=60)
+        await db.commit()
+    except M2_DOMAIN_ERRORS:
+        await db.rollback()
+        await _show_slot_flow_unavailable(callback)
+        return
+    except Exception:
+        await db.rollback()
+        logger.exception("Unexpected error while opening Telegram M2 slot dates")
+        await _show_slot_flow_unavailable(callback)
+        return
+
     if not slots:
         await callback.message.edit_text(
-            "Сейчас свободных слотов нет. Юристы добавят новые даты, и они появятся здесь.",
-            reply_markup=one(("🏠 Главная", "nav_home")),
+            "Сейчас свободных слотов нет. Попробуйте обновить список немного позже.",
+            reply_markup=one(
+                ("📁 Мое дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
         )
         return
     dates = []
@@ -197,15 +280,35 @@ async def booking_start(callback: CallbackQuery, db):
             dates.append((f"📅 {format_date(slot.starts_at)}", f"consult_date:{key}"))
     await callback.message.edit_text(
         "📅 Выберите доступную дату консультации.",
-        reply_markup=one(*dates, ("🏠 Главная", "nav_home")),
+        reply_markup=one(*dates, ("📁 Мое дело", "my_case_open"), ("🏠 Главная", "nav_home")),
     )
 
 
 @router.callback_query(lambda c: c.data.startswith("consult_date:"))
 async def choose_date(callback: CallbackQuery, db):
-    date_key = callback.data.split(":", 1)[1]
-    slots = await SlotService(db).get_available_slots(limit=100)
-    selected = [slot for slot in slots if slot.starts_at.date().isoformat() == date_key]
+    raw_date = callback.data.split(":", 1)[1]
+    try:
+        selected_date = date.fromisoformat(raw_date)
+    except (TypeError, ValueError):
+        await callback.answer("Некорректная дата. Откройте список заново.", show_alert=True)
+        await booking_start(callback, db)
+        return
+
+    try:
+        await _load_m2_slot_context(callback, db, allow_reserved=False)
+        slots = await SlotService(db).get_available_slots(limit=100)
+        await db.commit()
+    except M2_DOMAIN_ERRORS:
+        await db.rollback()
+        await _show_slot_flow_unavailable(callback)
+        return
+    except Exception:
+        await db.rollback()
+        logger.exception("Unexpected error while opening Telegram M2 slot times")
+        await _show_slot_flow_unavailable(callback)
+        return
+
+    selected = [slot for slot in slots if slot.starts_at.date() == selected_date]
     if not selected:
         await callback.answer("На эту дату свободное время уже закончилось.", show_alert=True)
         await booking_start(callback, db)
@@ -219,39 +322,128 @@ async def choose_date(callback: CallbackQuery, db):
     ]
     await callback.message.edit_text(
         f"🕐 Выберите свободное время на {format_date(selected[0].starts_at)}.",
-        reply_markup=one(*buttons, ("← Другие даты", "consult_booking_start")),
+        reply_markup=one(*buttons, ("← Другие даты", "consult_slot_open")),
     )
 
 
 @router.callback_query(lambda c: c.data.startswith("consult_slot_select:"))
 async def choose_slot(callback: CallbackQuery, db):
-    slot_id = int(callback.data.split(":", 1)[1])
-    ctx = BotContextService(db)
-    user = await ctx.get_user_from_callback(callback)
-    case = await ensure_booking_case(ctx, user)
-    consultation = await ConsultationService(db).get_or_create_for_case(case)
+    raw_slot_id = callback.data.split(":", 1)[1]
     try:
-        consultation, slot = await ConsultationService(db).reserve_slot(
+        slot_id = int(raw_slot_id)
+        if slot_id <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        await callback.answer("Некорректное время. Выберите слот заново.", show_alert=True)
+        await booking_start(callback, db)
+        return
+
+    try:
+        user, case, consultation = await _load_m2_slot_context(
+            callback,
+            db,
+            allow_reserved=True,
+        )
+        consultation, slot = await ConsultationService(db).reserve_pre_payment_slot(
             consultation=consultation,
             case=case,
             client_id=user.id,
             slot_id=slot_id,
+            actor_type="client",
+            source="telegram",
         )
-    except SlotUnavailableError as exc:
+        await db.commit()
+    except ConsultationSlotError as exc:
         await db.rollback()
         await callback.answer(str(exc), show_alert=True)
         await booking_start(callback, db)
         return
-    await db.commit()
+    except M2_DOMAIN_ERRORS:
+        await db.rollback()
+        await _show_slot_flow_unavailable(callback)
+        return
+    except Exception:
+        await db.rollback()
+        logger.exception("Unexpected error while reserving Telegram M2 slot")
+        await callback.message.edit_text(
+            "Не удалось удержать выбранное время. Попробуйте выбрать другой слот.",
+            reply_markup=one(
+                ("📅 Выбрать время", "consult_slot_open"),
+                ("📁 Мое дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    hold_until = (
+        format_time(slot.hold_expires_at)
+        if slot.hold_expires_at is not None
+        else "в течение 20 минут"
+    )
+    try:
+        await callback.message.edit_text(
+            "✅ Время временно удерживается за вами.\n\n"
+            f"Дата: {format_date(slot.starts_at)}\n"
+            f"Время: {format_time(slot.starts_at)}–{format_time(slot.ends_at)}\n"
+            f"Резерв действует до: {hold_until}.\n\n"
+            "Следующий шаг будет доступен в разделе «Мое дело».",
+            reply_markup=one(
+                ("📁 Мое дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+    except Exception:
+        logger.exception(
+            "Telegram response failed after M2 slot reservation commit",
+            extra={"consultation_id": consultation.id, "slot_id": slot.id},
+        )
+
+
+@router.callback_query(lambda c: c.data == "consult_slot_reserved_open")
+async def reserved_slot_open(callback: CallbackQuery, db):
+    try:
+        user, case, consultation = await _load_m2_slot_context(
+            callback,
+            db,
+            allow_reserved=True,
+        )
+        if ConsultationStatus(consultation.status) != ConsultationStatus.SLOT_RESERVED:
+            raise ActiveConsultationConflictError(
+                "Консультация уже перешла к другому шагу."
+            )
+        if consultation.slot_id is None:
+            raise ConsultationSlotError("У консультации нет удерживаемого слота.")
+        service = ConsultationService(db)
+        slot = await service.slots.get_slot(consultation.slot_id)
+        current_hold = service._is_current_hold(slot, consultation, user.id)
+        await db.commit()
+    except M2_DOMAIN_ERRORS:
+        await db.rollback()
+        await _show_slot_flow_unavailable(callback)
+        return
+    except Exception:
+        await db.rollback()
+        logger.exception("Unexpected error while opening reserved Telegram M2 slot")
+        await _show_slot_flow_unavailable(callback)
+        return
+
+    if not current_hold:
+        await callback.message.edit_text(
+            "Срок удержания времени истёк. Выберите новый свободный слот.",
+            reply_markup=one(
+                ("📅 Выбрать время", "consult_slot_open"),
+                ("📁 Мое дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
     await callback.message.edit_text(
-        "✅ Время временно удерживается за вами.\n\n"
+        "🕐 Выбранное время консультации\n\n"
         f"Дата: {format_date(slot.starts_at)}\n"
-        f"Время: {format_time(slot.starts_at)}–{format_time(slot.ends_at)}\n\n"
-        "Чтобы слот не занимали без намерения прийти, запись подтверждается оплатой. "
-        "Резерв действует 20 минут.",
+        f"Время: {format_time(slot.starts_at)}–{format_time(slot.ends_at)}\n"
+        f"Резерв действует до: {format_time(slot.hold_expires_at)}.",
         reply_markup=one(
-            ("💳 Оплатить и подтвердить", "consult_pay"),
-            ("Выбрать другое время", "consult_booking_start"),
+            ("📁 Мое дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         ),
     )
