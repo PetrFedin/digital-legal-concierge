@@ -28,13 +28,13 @@ def main_menu(case_exists: bool = False):
     return kb.as_markup()
 
 
-def home_kb():
-    return main_menu(False)
-
-
 def one(*items):
+    """Build a one-column inline keyboard from callback values or HTTP URLs."""
     kb = InlineKeyboardBuilder()
-    for text, cb in items:
-        kb.button(text=text, callback_data=cb)
+    for text, target in items:
+        if isinstance(target, str) and target.startswith(("https://", "http://")):
+            kb.button(text=text, url=target)
+        else:
+            kb.button(text=text, callback_data=target)
     kb.adjust(1)
     return kb.as_markup()
