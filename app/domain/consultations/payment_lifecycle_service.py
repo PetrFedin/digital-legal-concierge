@@ -20,6 +20,7 @@ from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.lawyer import Lawyer
+from app.models.notification import Notification
 
 
 class ConsultationPaymentLifecycleError(RuntimeError):
@@ -28,6 +29,8 @@ class ConsultationPaymentLifecycleError(RuntimeError):
 
 class ConsultationPaymentLifecycleService:
     """Keep M2 slot, payment and lawyer-confirmation states coherent."""
+
+    CLIENT_BOOKED_EVENT = "M2_CONSULTATION_CONFIRMED"
 
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -235,6 +238,12 @@ class ConsultationPaymentLifecycleService:
                 "Неизвестный статус консультации."
             ) from exc
         if current == ConsultationStatus.BOOKED:
+            await self._ensure_client_booking_notification(
+                case=case,
+                consultation=consultation,
+                lawyer=lawyer,
+            )
+            await self.db.flush()
             return consultation
         if current not in {
             ConsultationStatus.PAID_PENDING_CONFIRMATION,
@@ -294,5 +303,56 @@ class ConsultationPaymentLifecycleService:
                 "source": source,
             },
         )
+        await self._ensure_client_booking_notification(
+            case=case,
+            consultation=consultation,
+            lawyer=lawyer,
+        )
         await self.db.flush()
         return consultation
+
+    async def _ensure_client_booking_notification(
+        self,
+        *,
+        case: Case,
+        consultation: Consultation,
+        lawyer: Lawyer,
+    ) -> Notification:
+        existing = (
+            await self.db.execute(
+                select(Notification)
+                .where(
+                    Notification.case_id == case.id,
+                    Notification.user_id == case.client_id,
+                    Notification.channel == "telegram",
+                    Notification.event_code == self.CLIENT_BOOKED_EVENT,
+                )
+                .order_by(Notification.id.asc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return existing
+
+        scheduled_at = consultation.scheduled_at
+        scheduled_text = (
+            scheduled_at.isoformat()
+            if scheduled_at is not None
+            else "время будет уточнено"
+        )
+        notification = Notification(
+            case_id=case.id,
+            user_id=case.client_id,
+            channel="telegram",
+            event_code=self.CLIENT_BOOKED_EVENT,
+            title="Консультация подтверждена",
+            text=(
+                f"Юрист {lawyer.full_name} подтвердил консультацию по делу "
+                f"{case.case_number}. Дата и время: {scheduled_text}."
+            ),
+            status="PENDING",
+            is_sent=False,
+        )
+        self.db.add(notification)
+        await self.db.flush()
+        return notification
