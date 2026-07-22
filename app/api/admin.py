@@ -7,6 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.admin.admin_dashboard import AdminDashboardService
 from app.db.session import get_db
 from app.domain.assignment.assignment_engine import AssignmentEngine
+from app.domain.cases.case_operations import (
+    build_case_operational_summary,
+    load_case_history,
+    load_status_started_at,
+)
 from app.domain.cases.case_service import CaseAssignmentError, CaseService
 from app.domain.payments.payment_webhook_service import PaymentWebhookService
 from app.domain.statuses.case_statuses import CaseStatus
@@ -65,13 +70,77 @@ def _payment_payload(payment: Payment) -> dict:
     }
 
 
+def _case_payload(case: Case, status_started_at) -> dict:
+    summary = build_case_operational_summary(
+        case,
+        status_started_at=status_started_at,
+    )
+    return {
+        "id": case.id,
+        "number": case.case_number,
+        "route": case.route,
+        "status": case.status,
+        "lawyer_id": case.assigned_lawyer_id,
+        "next_action": case.next_action,
+        "created_at": case.created_at.isoformat() if case.created_at else None,
+        "updated_at": case.updated_at.isoformat() if case.updated_at else None,
+        "sla": summary["sla"],
+    }
+
+
+async def _load_operational_cases(
+    db: AsyncSession,
+    *,
+    limit: int = 500,
+) -> list[dict]:
+    cases_list = list(
+        (
+            await db.execute(
+                select(Case)
+                .where(Case.status.notin_(CaseService.CLOSED_STATUSES))
+                .order_by(Case.updated_at.asc(), Case.id.asc())
+                .limit(max(1, min(limit, 1000)))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    started_at = await load_status_started_at(db, cases_list)
+    return [
+        _case_payload(case, started_at.get(case.id))
+        for case in cases_list
+    ]
+
+
 @router.get("/dashboard")
 async def dashboard(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
     check(x_admin_token)
-    return await AdminDashboardService(db).build()
+    data = dict(await AdminDashboardService(db).build())
+    operational = await _load_operational_cases(db)
+    data.update(
+        {
+            "sla_overdue": sum(
+                1 for item in operational if item["sla"]["state"] == "overdue"
+            ),
+            "sla_due_soon": sum(
+                1 for item in operational if item["sla"]["state"] == "due_soon"
+            ),
+            "waiting_client": sum(
+                1
+                for item in operational
+                if item["sla"]["state"] == "waiting_client"
+            ),
+            "legal_terms_elapsed": sum(
+                1
+                for item in operational
+                if item["sla"]["state"] == "legal_term_elapsed"
+            ),
+        }
+    )
+    return data
 
 
 @router.get("/settings")
@@ -115,20 +184,50 @@ async def cases(
     x_admin_token: str | None = Header(default=None),
 ):
     check(x_admin_token)
-    result = await db.execute(
-        select(Case).order_by(Case.created_at.desc()).limit(200)
+    cases_list = list(
+        (
+            await db.execute(
+                select(Case).order_by(Case.created_at.desc()).limit(200)
+            )
+        )
+        .scalars()
+        .all()
     )
+    started_at = await load_status_started_at(db, cases_list)
     return [
-        {
-            "id": case.id,
-            "number": case.case_number,
-            "route": case.route,
-            "status": case.status,
-            "lawyer_id": case.assigned_lawyer_id,
-            "next_action": case.next_action,
-        }
-        for case in result.scalars().all()
+        _case_payload(case, started_at.get(case.id))
+        for case in cases_list
     ]
+
+
+@router.get("/sla/cases")
+async def sla_cases(
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    """Operational SLA queue for active M1 and M2 cases."""
+
+    check(x_admin_token)
+    rows = await _load_operational_cases(db)
+    priority = {
+        "overdue": 0,
+        "legal_term_elapsed": 1,
+        "due_soon": 2,
+        "on_track": 3,
+        "monitoring": 4,
+        "legal_wait": 5,
+        "waiting_client": 6,
+        "completed": 7,
+    }
+    return sorted(
+        rows,
+        key=lambda item: (
+            priority.get(item["sla"]["state"], 99),
+            -float(item["sla"].get("overdue_hours") or 0),
+            item["sla"].get("due_at") or "9999",
+            item["id"],
+        ),
+    )
 
 
 @router.get("/queue")
@@ -137,22 +236,23 @@ async def queue(
     x_admin_token: str | None = Header(default=None),
 ):
     check(x_admin_token)
-    result = await db.execute(
-        select(Case)
-        .where(Case.assigned_lawyer_id.is_(None))
-        .where(Case.status.notin_(CaseService.CLOSED_STATUSES))
-        .order_by(Case.created_at.asc())
-        .limit(100)
+    cases_list = list(
+        (
+            await db.execute(
+                select(Case)
+                .where(Case.assigned_lawyer_id.is_(None))
+                .where(Case.status.notin_(CaseService.CLOSED_STATUSES))
+                .order_by(Case.created_at.asc())
+                .limit(100)
+            )
+        )
+        .scalars()
+        .all()
     )
+    started_at = await load_status_started_at(db, cases_list)
     return [
-        {
-            "id": case.id,
-            "number": case.case_number,
-            "route": case.route,
-            "status": case.status,
-            "next_action": case.next_action,
-        }
-        for case in result.scalars().all()
+        _case_payload(case, started_at.get(case.id))
+        for case in cases_list
     ]
 
 
@@ -366,25 +466,37 @@ async def case_detail(
     client = (
         await db.execute(select(User).where(User.id == case.client_id))
     ).scalars().first()
-    payments = (
-        await db.execute(
-            select(Payment)
-            .where(Payment.case_id == case.id)
-            .order_by(Payment.created_at.desc(), Payment.id.desc())
+    payments = list(
+        (
+            await db.execute(
+                select(Payment)
+                .where(Payment.case_id == case.id)
+                .order_by(Payment.created_at.desc(), Payment.id.desc())
+            )
         )
-    ).scalars().all()
-    documents = (
-        await db.execute(select(Document).where(Document.case_id == case.id))
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
+    documents = list(
+        (
+            await db.execute(
+                select(Document)
+                .where(Document.case_id == case.id)
+                .order_by(Document.created_at.desc(), Document.id.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    status_started = await load_status_started_at(db, [case])
+    history = await load_case_history(
+        db,
+        case_id=case.id,
+        limit=100,
+        client_view=False,
+    )
     return {
-        "case": {
-            "id": case.id,
-            "number": case.case_number,
-            "route": case.route,
-            "status": case.status,
-            "next_action": case.next_action,
-            "lawyer_id": case.assigned_lawyer_id,
-        },
+        "case": _case_payload(case, status_started.get(case.id)),
         "client": (
             {
                 "id": client.id,
@@ -404,9 +516,15 @@ async def case_detail(
                 "file_name": document.file_name,
                 "status": document.status,
                 "version": document.version,
+                "created_at": (
+                    document.created_at.isoformat()
+                    if document.created_at
+                    else None
+                ),
             }
             for document in documents
         ],
+        "history": history,
     }
 
 
