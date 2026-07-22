@@ -8,7 +8,7 @@ from app.domain.statuses.case_statuses import CaseStatus, RouteCode
 
 
 class M1PaymentLifecycleError(RuntimeError):
-    """A successful M1 payment cannot be safely applied to the case."""
+    """An M1 payment cannot be safely created or applied to the case."""
 
 
 @dataclass(frozen=True)
@@ -88,7 +88,7 @@ M1_PAYMENT_PLANS = {
 
 
 class M1PaymentLifecycleService:
-    """Apply M1 payment transitions without skipping unrelated case stages."""
+    """Validate and apply M1 payments without skipping unrelated case stages."""
 
     def __init__(self, db):
         self.db = db
@@ -121,6 +121,32 @@ class M1PaymentLifecycleService:
                 "Текущий статус дела не поддерживает автоматическую обработку платежа."
             ) from exc
 
+    @classmethod
+    def validate_payment_request(cls, *, case, payment_code: str) -> M1PaymentPlan:
+        """Reject stale or forged checkout callbacks before a payment link is created."""
+
+        cls._validate_route(case)
+        plan = cls._plan(payment_code)
+        current_index = cls._status_index(case.status)
+        earliest_entry_index = min(
+            cls._status_index(status) for status in plan.entry_statuses
+        )
+        final_index = cls._status_index(plan.transitions[-1])
+
+        if current_index > final_index:
+            raise M1PaymentLifecycleError(
+                "Этот этап оплаты уже завершён. Откройте «Моё дело», чтобы увидеть текущий шаг."
+            )
+        if current_index < earliest_entry_index:
+            raise M1PaymentLifecycleError(
+                "Платёж пока недоступен: сначала необходимо завершить предыдущие этапы дела."
+            )
+        if case.status not in plan.entry_statuses:
+            raise M1PaymentLifecycleError(
+                "Платёж не соответствует текущему этапу дела. Обновите карточку дела или обратитесь к менеджеру."
+            )
+        return plan
+
     async def apply_successful_payment(
         self,
         *,
@@ -135,6 +161,7 @@ class M1PaymentLifecycleService:
         current_index = self._status_index(case.status)
         final_index = self._status_index(plan.transitions[-1])
 
+        # A delayed provider retry after the case has already moved forward is harmless.
         if current_index > final_index:
             return []
 
