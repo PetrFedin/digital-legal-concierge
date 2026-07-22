@@ -15,7 +15,7 @@ ADMIN_HTML = r"""
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Digital Legal Concierge — Admin v19</title>
+  <title>Digital Legal Concierge — Admin v20</title>
   <style>
     :root { --bg:#f5f6fa; --card:#fff; --text:#111827; --muted:#6b7280; --line:#e5e7eb; --blue:#2563eb; --green:#16a34a; --red:#dc2626; --yellow:#ca8a04; }
     * { box-sizing:border-box; }
@@ -24,7 +24,7 @@ ADMIN_HTML = r"""
     header h1 { margin:0; font-size:18px; }
     header input { width:340px; max-width:55vw; padding:10px 12px; border-radius:10px; border:1px solid #374151; background:#030712; color:white; }
     main { padding:22px; display:grid; gap:16px; }
-    .grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; }
+    .grid { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:12px; }
     .layout { display:grid; grid-template-columns:1.3fr .9fr; gap:16px; align-items:start; }
     .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; box-shadow:0 1px 2px rgba(0,0,0,.04); }
     .metric { font-size:28px; font-weight:800; margin-top:6px; }
@@ -35,6 +35,7 @@ ADMIN_HTML = r"""
     button.green { background:var(--green); }
     button.red { background:var(--red); }
     button.yellow { background:var(--yellow); }
+    .table-wrap { width:100%; overflow:auto; }
     table { width:100%; border-collapse:collapse; font-size:14px; }
     th,td { border-bottom:1px solid var(--line); text-align:left; padding:9px 8px; vertical-align:top; }
     th { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.04em; }
@@ -43,22 +44,25 @@ ADMIN_HTML = r"""
     .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .row > * { flex:1; }
     .pill { display:inline-block; padding:4px 8px; border-radius:999px; background:#eef2ff; color:#3730a3; font-size:12px; font-weight:700; }
+    .pill.pending { background:#fef3c7; color:#92400e; }
     .actions { display:flex; flex-wrap:wrap; gap:6px; }
     pre { white-space:pre-wrap; background:#0b1020; color:#d1e7ff; border-radius:12px; padding:12px; max-height:260px; overflow:auto; }
-    @media (max-width: 1000px) { .grid { grid-template-columns:1fr 1fr; } .layout { grid-template-columns:1fr; } }
+    @media (max-width: 1200px) { .grid { grid-template-columns:repeat(3,1fr); } }
+    @media (max-width: 1000px) { .layout { grid-template-columns:1fr; } }
     @media (max-width: 560px) { .grid { grid-template-columns:1fr; } header { flex-direction:column; align-items:flex-start; } header input { max-width:100%; width:100%; } }
   </style>
 </head>
 <body>
   <header>
-    <h1>⚖ Digital Legal Concierge — Admin v19</h1><div><a style="color:white;margin-right:12px" href="/login">Вход</a><form style="display:inline" method="post" action="/logout"><button style="background:#374151">Выход</button></form></div>
+    <h1>⚖ Digital Legal Concierge — Admin v20</h1><div><a style="color:white;margin-right:12px" href="/login">Вход</a><form style="display:inline" method="post" action="/logout"><button style="background:#374151">Выход</button></form></div>
     <input id="token" type="hidden" />
   </header>
   <main>
     <section class="tabs">
       <button onclick="loadDashboard()">Дашборд</button>
       <button onclick="loadCases()" class="secondary">Дела</button>
-      <button onclick="loadQueue()" class="secondary">Очередь</button>
+      <button onclick="loadQueue()" class="secondary">Очередь без юриста</button>
+      <button onclick="loadPendingConfirmations()" class="yellow">M2: ждут юриста</button>
       <button onclick="loadPayments()" class="secondary">Оплаты</button>
       <button onclick="loadDocuments()" class="secondary">Документы</button>
       <button onclick="loadLawyers()" class="secondary">Юристы</button>
@@ -89,15 +93,21 @@ const api = async (path, opts={}) => {
   return data;
 };
 function esc(v) { return String(v ?? '').replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s])); }
-function metric(title, value, note='') { return `<div class="card"><div class="muted">${title}</div><div class="metric">${value}</div><div class="muted">${note}</div></div>`; }
+function formatDateTime(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('ru-RU', {dateStyle:'medium', timeStyle:'short'}).format(date);
+}
+function metric(title, value, note='') { return `<div class="card"><div class="muted">${title}</div><div class="metric">${value ?? 0}</div><div class="muted">${note}</div></div>`; }
 function table(rows, cols, extra=''){
   if (!rows.length) return '<p class="muted">Нет данных.</p>';
-  return `<table><thead><tr>${cols.map(c=>`<th>${c}</th>`).join('')}${extra?'<th>Действия</th>':''}</tr></thead><tbody>${rows.map(r=>`<tr>${cols.map(c=>`<td>${esc(r[c])}</td>`).join('')}${extra?`<td>${extra.replaceAll('__ID__', esc(r.id))}</td>`:''}</tr>`).join('')}</tbody></table>`;
+  return `<div class="table-wrap"><table><thead><tr>${cols.map(c=>`<th>${c}</th>`).join('')}${extra?'<th>Действия</th>':''}</tr></thead><tbody>${rows.map(r=>`<tr>${cols.map(c=>`<td>${esc(r[c])}</td>`).join('')}${extra?`<td>${extra.replaceAll('__ID__', esc(r.id))}</td>`:''}</tr>`).join('')}</tbody></table></div>`;
 }
 async function loadDashboard(){
   const d = await api('/admin/dashboard');
-  document.getElementById('dashboard').innerHTML = metric('Новые дела', d.new_cases) + metric('Активные дела', d.active_cases) + metric('Ожидают оплату', d.waiting_payment) + metric('Консультации', d.consultations_booked) + metric('Закрытые', d.closed_cases);
-  document.getElementById('content').innerHTML = '<h3>Дашборд</h3><p>Панель контроля Telegram-бота. Начните с очереди или списка дел.</p>';
+  document.getElementById('dashboard').innerHTML = metric('Новые дела', d.new_cases) + metric('Активные дела', d.active_cases) + metric('Ожидают оплату', d.waiting_payment) + metric('M2 ждут юриста', d.consultations_pending_confirmation, 'Оплачены, но не подтверждены') + metric('Консультации назначены', d.consultations_booked) + metric('Закрытые', d.closed_cases);
+  document.getElementById('content').innerHTML = `<h3>Дашборд</h3><p>Панель контроля Telegram-бота. Оплаченные консультации без подтверждения: <b>${esc(d.consultations_pending_confirmation ?? 0)}</b>.</p><div class="actions"><button class="yellow" onclick="loadPendingConfirmations()">Открыть очередь M2</button><button onclick="loadQueue()">Очередь без юриста</button></div>`;
 }
 async function loadCases(){
   const rows = await api('/admin/cases');
@@ -107,13 +117,19 @@ async function loadQueue(){
   const rows = await api('/admin/queue');
   document.getElementById('content').innerHTML = '<h3>Очередь без юриста</h3>'+table(rows, ['id','number','route','status','next_action'], '<button onclick="autoAssign(__ID__)" class="green">Автоназначить</button> <button onclick="openCase(__ID__)">Открыть</button>');
 }
+async function loadPendingConfirmations(){
+  const rows = await api('/admin/consultations/pending-confirmation');
+  const body = rows.map(row => `<tr><td>${esc(row.consultation_id)}</td><td><button class="secondary" onclick="openCase(${Number(row.case_id)})">${esc(row.case_number)}</button><div class="muted">${esc(row.case_title || '')}</div></td><td>${esc(row.lawyer_name)}<div class="muted">${esc(row.lawyer_email || '')}</div></td><td>${esc(formatDateTime(row.scheduled_at))}</td><td>${esc(row.consultation_type || '—')}</td><td><span class="pill pending">Ожидает подтверждения</span></td></tr>`).join('');
+  document.getElementById('content').innerHTML = `<div class="row"><div><h3>M2 — ожидают подтверждения юриста</h3><p class="muted">Оплата получена, слот забронирован, но назначенный юрист ещё не подтвердил консультацию.</p></div><div style="text-align:right"><button class="secondary" onclick="loadPendingConfirmations()">Обновить</button></div></div>${rows.length ? `<div class="table-wrap"><table><thead><tr><th>Консультация</th><th>Дело</th><th>Юрист</th><th>Дата и время</th><th>Формат</th><th>Статус</th></tr></thead><tbody>${body}</tbody></table></div>` : '<p class="muted">Все оплаченные консультации подтверждены.</p>'}`;
+  document.getElementById('side').innerHTML = `<h3>Контроль M2</h3><p><span class="pill pending">${rows.length}</span> консультаций ожидают юриста.</p><p class="muted">Подтверждение выполняется назначенным юристом в его рабочем кабинете. Административная очередь предназначена для контроля и связи с юристом, а не для обхода подтверждения.</p>`;
+}
 async function openCase(id){
   const d = await api('/admin/cases/'+id);
   const c = d.case, cl = d.client || {};
   document.getElementById('side').innerHTML = `<h3>Дело ${esc(c.number)}</h3><p><span class="pill">${esc(c.route||'—')}</span> <span class="pill">${esc(c.status)}</span></p><p><b>Клиент:</b><br>${esc(cl.name)}<br>@${esc(cl.username)}<br>TG: ${esc(cl.telegram_id)}</p><p><b>Следующий шаг:</b><br>${esc(c.next_action)}</p><h4>Быстрые действия</h4><div class="actions"><button class="green" onclick="autoAssign(${id})">Автоназначить</button><button onclick="setStatus(${id})">Сменить статус</button><button class="yellow" onclick="openPaymentsForCase(${id})">Оплаты</button></div>`;
   const pay = d.payments.map(p=>`<tr><td>${p.id}</td><td>${esc(p.title)}</td><td>${p.amount}</td><td>${esc(p.status)}</td><td><button onclick="confirmPayment(${p.id}, ${id})" class="green">Подтвердить</button></td></tr>`).join('') || '<tr><td colspan="5">Нет платежей</td></tr>';
   const docs = d.documents.map(x=>`<tr><td>${x.id}</td><td>${esc(x.title)}</td><td>${esc(x.file_name)}</td><td>${esc(x.status)}</td><td>v${x.version}</td></tr>`).join('') || '<tr><td colspan="5">Нет документов</td></tr>';
-  document.getElementById('content').innerHTML = `<h3>Карточка дела</h3><p><b>${esc(c.number)}</b></p><h4>Платежи</h4><table><tr><th>ID</th><th>Название</th><th>Сумма</th><th>Статус</th><th></th></tr>${pay}</table><h4>Документы</h4><table><tr><th>ID</th><th>Тип</th><th>Файл</th><th>Статус</th><th>Версия</th></tr>${docs}</table>`;
+  document.getElementById('content').innerHTML = `<h3>Карточка дела</h3><p><b>${esc(c.number)}</b></p><h4>Платежи</h4><div class="table-wrap"><table><tr><th>ID</th><th>Название</th><th>Сумма</th><th>Статус</th><th></th></tr>${pay}</table></div><h4>Документы</h4><div class="table-wrap"><table><tr><th>ID</th><th>Тип</th><th>Файл</th><th>Статус</th><th>Версия</th></tr>${docs}</table></div>`;
 }
 async function setStatus(id){
   const statuses = await api('/admin/statuses');
