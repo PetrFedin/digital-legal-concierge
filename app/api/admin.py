@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.admin.admin_dashboard import AdminDashboardService
 from app.db.session import get_db
 from app.domain.assignment.assignment_engine import AssignmentEngine
-from app.domain.cases.case_service import CaseService
+from app.domain.cases.case_service import CaseAssignmentError, CaseService
 from app.domain.payments.payment_webhook_service import PaymentWebhookService
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.consultation_statuses import ConsultationStatus
@@ -19,15 +19,50 @@ from app.models.notification import Notification
 from app.models.payment import Payment
 from app.models.user import User
 from app.scheduler.scheduler import AppScheduler
-from app.security.access_control import verify_access_token
+from app.security.access_control import (
+    ROLE_ADMIN,
+    decode_access_token,
+    has_role,
+)
 from app.system.settings_service import SettingsService
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
-def check(token: str | None):
-    if not verify_access_token(token):
+def check(token: str | None) -> dict:
+    payload = decode_access_token(token)
+    if not payload or not has_role(payload.get("roles"), ROLE_ADMIN):
         raise HTTPException(status_code=401, detail="bad token")
+    try:
+        payload["uid"] = int(payload.get("uid", 0))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=401, detail="bad token") from exc
+    return payload
+
+
+def _outcome_value(payment: Payment) -> str | None:
+    outcome = payment.processing_outcome
+    return outcome.value if outcome is not None else None
+
+
+def _payment_payload(payment: Payment) -> dict:
+    return {
+        "id": payment.id,
+        "case_id": payment.case_id,
+        "code": payment.payment_code,
+        "title": payment.title,
+        "amount": float(payment.amount),
+        "currency": payment.currency,
+        "status": payment.status,
+        "provider": payment.provider,
+        "provider_payment_id": payment.provider_payment_id,
+        "processing_outcome": _outcome_value(payment),
+        "manual_review_required": payment.manual_review_required,
+        "processing_error": payment.processing_error,
+        "processed_at": (
+            payment.processed_at.isoformat() if payment.processed_at else None
+        ),
+    }
 
 
 @router.get("/dashboard")
@@ -64,11 +99,11 @@ async def set_setting(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    check(x_admin_token)
+    admin = check(x_admin_token)
     setting = await SettingsService(db).set_value(
         key=key,
         value=payload.get("value"),
-        actor_id=0,
+        actor_id=admin["uid"],
     )
     await db.commit()
     return {"key": setting.key, "value": setting.value}
@@ -105,7 +140,7 @@ async def queue(
     result = await db.execute(
         select(Case)
         .where(Case.assigned_lawyer_id.is_(None))
-        .where(Case.status.notin_(["M1_CLOSED", "M2_CLOSED", "ARCHIVED"]))
+        .where(Case.status.notin_(CaseService.CLOSED_STATUSES))
         .order_by(Case.created_at.asc())
         .limit(100)
     )
@@ -126,14 +161,14 @@ async def pending_consultation_confirmations(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    """Operational, read-only queue of paid M2 consultations awaiting a lawyer."""
+    """Operational queue of paid M2 consultations awaiting a lawyer."""
 
     check(x_admin_token)
     rows = (
         await db.execute(
             select(Consultation, Case, Lawyer)
             .join(Case, Case.id == Consultation.case_id)
-            .join(Lawyer, Lawyer.id == Consultation.lawyer_id)
+            .outerjoin(Lawyer, Lawyer.id == Consultation.lawyer_id)
             .where(
                 Consultation.status
                 == ConsultationStatus.PAID_PENDING_CONFIRMATION.value
@@ -154,9 +189,20 @@ async def pending_consultation_confirmations(
             "case_number": case.case_number,
             "case_title": case.title,
             "case_status": case.status,
-            "lawyer_id": lawyer.id,
-            "lawyer_name": lawyer.full_name,
-            "lawyer_email": lawyer.email,
+            "case_assigned_lawyer_id": case.assigned_lawyer_id,
+            "lawyer_id": lawyer.id if lawyer else consultation.lawyer_id,
+            "lawyer_name": lawyer.full_name if lawyer else None,
+            "lawyer_email": lawyer.email if lawyer else None,
+            "lawyer_active": lawyer.is_active if lawyer else False,
+            "integrity_issue": (
+                "lawyer_missing"
+                if lawyer is None
+                else "lawyer_inactive"
+                if not lawyer.is_active
+                else "case_assignment_mismatch"
+                if case.assigned_lawyer_id not in {None, lawyer.id}
+                else None
+            ),
             "scheduled_at": (
                 consultation.scheduled_at.isoformat()
                 if consultation.scheduled_at
@@ -200,13 +246,23 @@ async def create_lawyer(
     x_admin_token: str | None = Header(default=None),
 ):
     check(x_admin_token)
+    full_name = str(payload.get("full_name") or "").strip()
+    if not full_name:
+        raise HTTPException(400, "full_name required")
+    try:
+        workload_limit = int(payload.get("workload_limit", 30))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "invalid workload_limit") from exc
+    if workload_limit < 1:
+        raise HTTPException(400, "workload_limit must be positive")
+
     lawyer = Lawyer(
-        full_name=payload["full_name"],
+        full_name=full_name,
         phone=payload.get("phone"),
         email=payload.get("email"),
         specialization=payload.get("specialization"),
-        workload_limit=payload.get("workload_limit", 30),
-        is_active=payload.get("is_active", True),
+        workload_limit=workload_limit,
+        is_active=bool(payload.get("is_active", True)),
     )
     db.add(lawyer)
     await db.commit()
@@ -220,22 +276,26 @@ async def assign(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    check(x_admin_token)
+    admin = check(x_admin_token)
     case = (
         await db.execute(select(Case).where(Case.id == case_id))
     ).scalars().first()
-    lawyer = (
-        await db.execute(select(Lawyer).where(Lawyer.id == lawyer_id))
-    ).scalars().first()
-    if not case or not lawyer:
-        raise HTTPException(404, "not found")
-    await CaseService(db).assign_lawyer(
-        case=case,
-        lawyer_id=lawyer.id,
-        actor_id=0,
-    )
+    if not case:
+        raise HTTPException(404, "case not found")
+    try:
+        assigned_case = await CaseService(db).assign_lawyer(
+            case=case,
+            lawyer_id=lawyer_id,
+            actor_id=admin["uid"],
+        )
+    except CaseAssignmentError as exc:
+        raise HTTPException(409, str(exc)) from exc
     await db.commit()
-    return {"ok": True}
+    return {
+        "ok": True,
+        "case_id": assigned_case.id,
+        "lawyer_id": assigned_case.assigned_lawyer_id,
+    }
 
 
 @router.post("/cases/{case_id}/auto-assign")
@@ -244,16 +304,22 @@ async def auto_assign(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    check(x_admin_token)
+    admin = check(x_admin_token)
     case = (
         await db.execute(select(Case).where(Case.id == case_id))
     ).scalars().first()
     if not case:
         raise HTTPException(404, "case not found")
-    lawyer = await AssignmentEngine(db).assign_best_lawyer(case=case, actor_id=0)
-    await db.commit()
+    try:
+        lawyer = await AssignmentEngine(db).assign_best_lawyer(
+            case=case,
+            actor_id=admin["uid"],
+        )
+    except CaseAssignmentError as exc:
+        raise HTTPException(409, str(exc)) from exc
     if not lawyer:
         return {"ok": False, "message": "Нет доступных юристов"}
+    await db.commit()
     return {"ok": True, "lawyer_id": lawyer.id, "lawyer": lawyer.full_name}
 
 
@@ -301,7 +367,11 @@ async def case_detail(
         await db.execute(select(User).where(User.id == case.client_id))
     ).scalars().first()
     payments = (
-        await db.execute(select(Payment).where(Payment.case_id == case.id))
+        await db.execute(
+            select(Payment)
+            .where(Payment.case_id == case.id)
+            .order_by(Payment.created_at.desc(), Payment.id.desc())
+        )
     ).scalars().all()
     documents = (
         await db.execute(select(Document).where(Document.case_id == case.id))
@@ -325,16 +395,7 @@ async def case_detail(
             if client
             else None
         ),
-        "payments": [
-            {
-                "id": payment.id,
-                "code": payment.payment_code,
-                "title": payment.title,
-                "amount": float(payment.amount),
-                "status": payment.status,
-            }
-            for payment in payments
-        ],
+        "payments": [_payment_payload(payment) for payment in payments],
         "documents": [
             {
                 "id": document.id,
@@ -356,10 +417,13 @@ async def manual_status(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    check(x_admin_token)
+    admin = check(x_admin_token)
     next_status = payload.get("status")
+    valid_statuses = {status.value for status in CaseStatus}
     if not next_status:
         raise HTTPException(400, "status required")
+    if next_status not in valid_statuses:
+        raise HTTPException(400, "unknown status")
     case = (
         await db.execute(select(Case).where(Case.id == case_id))
     ).scalars().first()
@@ -369,7 +433,7 @@ async def manual_status(
         case=case,
         next_status=next_status,
         actor_type="admin",
-        actor_id=0,
+        actor_id=admin["uid"],
         force=True,
         comment=(
             payload.get("comment")
@@ -392,29 +456,49 @@ async def manual_confirm_payment(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    check(x_admin_token)
+    admin = check(x_admin_token)
     payment = (
-        await db.execute(select(Payment).where(Payment.id == payment_id))
+        await db.execute(
+            select(Payment).where(Payment.id == payment_id).with_for_update()
+        )
     ).scalars().first()
     if not payment:
         raise HTTPException(404, "payment not found")
     case = (
-        await db.execute(select(Case).where(Case.id == payment.case_id))
+        await db.execute(
+            select(Case).where(Case.id == payment.case_id).with_for_update()
+        )
     ).scalars().first()
     if not case:
         raise HTTPException(404, "case not found")
+
     await PaymentWebhookService(db).process_successful_payment(
         payment=payment,
         case=case,
-        provider_payload={"source": "admin_manual_confirm"},
+        provider_payload={
+            "source": "admin_manual_confirm",
+            "admin_user_id": admin["uid"],
+            "admin_username": admin.get("username"),
+        },
+        allow_reprocess=True,
+        actor_type="admin",
+        actor_id=admin["uid"],
+        source="admin_manual_confirm",
     )
     await db.commit()
-    return {
-        "ok": True,
+
+    response = {
+        "ok": not payment.manual_review_required,
         "payment_id": payment.id,
         "status": payment.status,
         "case_status": case.status,
+        "processing_outcome": _outcome_value(payment),
+        "manual_review_required": payment.manual_review_required,
+        "processing_error": payment.processing_error,
     }
+    if payment.manual_review_required:
+        raise HTTPException(status_code=409, detail=response)
+    return response
 
 
 @router.get("/payments")
@@ -426,18 +510,7 @@ async def all_payments(
     result = await db.execute(
         select(Payment).order_by(Payment.created_at.desc()).limit(200)
     )
-    return [
-        {
-            "id": payment.id,
-            "case_id": payment.case_id,
-            "code": payment.payment_code,
-            "title": payment.title,
-            "amount": float(payment.amount),
-            "status": payment.status,
-            "provider": payment.provider,
-        }
-        for payment in result.scalars().all()
-    ]
+    return [_payment_payload(payment) for payment in result.scalars().all()]
 
 
 @router.get("/documents")
