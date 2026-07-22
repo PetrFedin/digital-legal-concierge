@@ -1,15 +1,17 @@
 from datetime import datetime, timezone
 
 from app.domain.cases.case_history import add_case_history_event
-from app.domain.cases.case_service import CaseService
 from app.domain.consultations.payment_lifecycle_service import (
     ConsultationPaymentLifecycleError,
     ConsultationPaymentLifecycleService,
 )
+from app.domain.payments.m1_payment_lifecycle_service import (
+    M1PaymentLifecycleError,
+    M1PaymentLifecycleService,
+)
 from app.domain.payments.payment_processing_outcomes import PaymentProcessingOutcome
 from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
-from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
 
 
@@ -17,7 +19,6 @@ class PaymentWebhookService:
     def __init__(self, db):
         self.db = db
         self.payments = PaymentService(db)
-        self.cases = CaseService(db)
 
     @staticmethod
     def _validate_payment_case(*, payment, case) -> None:
@@ -124,22 +125,9 @@ class PaymentWebhookService:
                 actor_id=actor_id,
             )
 
-        mapping = {
-            PaymentCode.M1_INITIAL_PAYMENT: [
-                CaseStatus.M1_PAYMENT_30000_RECEIVED,
-                CaseStatus.M1_POWER_OF_ATTORNEY,
-            ],
-            PaymentCode.M1_COURT_PAYMENT: [
-                CaseStatus.M1_PAYMENT_70000_RECEIVED,
-                CaseStatus.M1_ENFORCEMENT,
-            ],
-            PaymentCode.M1_SUCCESS_FEE: [
-                CaseStatus.M1_SUCCESS_FEE_RECEIVED,
-                CaseStatus.M1_CLOSED,
-            ],
-        }
-
         consultation = None
+        m1_transitions: list[str] = []
+
         if payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT:
             try:
                 consultation = await ConsultationPaymentLifecycleService(
@@ -158,15 +146,30 @@ class PaymentWebhookService:
                     actor_type=actor_type,
                     actor_id=actor_id,
                 )
-        elif payment.payment_code in mapping:
-            for status in mapping[payment.payment_code]:
-                await self.cases.change_status(
+        elif payment.payment_code in {
+            PaymentCode.M1_INITIAL_PAYMENT,
+            PaymentCode.M1_COURT_PAYMENT,
+            PaymentCode.M1_SUCCESS_FEE,
+        }:
+            try:
+                m1_transitions = await M1PaymentLifecycleService(
+                    self.db
+                ).apply_successful_payment(
                     case=case,
-                    next_status=status,
+                    payment_code=payment.payment_code,
                     actor_type=actor_type,
                     actor_id=actor_id,
-                    force=True,
-                    comment=f"Автопереход после оплаты {payment.payment_code}",
+                    source=source,
+                )
+            except M1PaymentLifecycleError as exc:
+                return await self._mark_manual_review(
+                    payment=payment,
+                    case=case,
+                    outcome=PaymentProcessingOutcome.CONFLICT,
+                    error=str(exc),
+                    provider_payload=provider_payload,
+                    actor_type=actor_type,
+                    actor_id=actor_id,
                 )
         else:
             return await self._mark_manual_review(
@@ -198,6 +201,7 @@ class PaymentWebhookService:
                 ),
                 "manual_reprocess": allow_reprocess,
                 "consultation_id": consultation.id if consultation else None,
+                "m1_transitions": m1_transitions,
                 "source": source,
                 "payload": provider_payload or {},
             },
