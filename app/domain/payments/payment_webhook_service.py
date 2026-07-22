@@ -51,16 +51,27 @@ class PaymentWebhookService:
         outcome: PaymentProcessingOutcome,
         error: str,
         provider_payload=None,
+        actor_type: str = "payment_provider",
+        actor_id: int | None = None,
     ):
+        already_recorded = (
+            payment.processing_outcome == outcome
+            and payment.processing_error == error
+            and payment.manual_review_required is True
+        )
         self._mark_processing_result(
             payment,
             outcome=outcome,
             error=error,
         )
+        if already_recorded:
+            await self.db.flush()
+            return payment
+
         await add_case_history_event(
             self.db,
-            actor_type="payment_provider",
-            actor_id=None,
+            actor_type=actor_type,
+            actor_id=actor_id,
             case_id=case.id,
             action="PAYMENT_WEBHOOK_REQUIRES_MANUAL_REVIEW",
             new_value={
@@ -80,18 +91,37 @@ class PaymentWebhookService:
         payment,
         case,
         provider_payload=None,
+        allow_reprocess: bool = False,
+        actor_type: str = "payment_provider",
+        actor_id: int | None = None,
+        source: str = "payment_webhook",
     ):
         self._validate_payment_case(payment=payment, case=case)
 
-        # Provider retries must not repeat domain transitions or history events.
-        if payment.status == PaymentStatus.PAID and payment.processing_outcome is not None:
+        previous_outcome = payment.processing_outcome
+
+        # Provider retries must not repeat completed domain transitions or history events.
+        if (
+            payment.status == PaymentStatus.PAID
+            and payment.processing_outcome == PaymentProcessingOutcome.PROCESSED
+        ):
+            return payment
+
+        # A conflict or manual-review result is stable for provider retries, but an
+        # authenticated administrator may retry after correcting the underlying data.
+        if (
+            payment.status == PaymentStatus.PAID
+            and payment.processing_outcome is not None
+            and not allow_reprocess
+        ):
             return payment
 
         if payment.status != PaymentStatus.PAID:
             await self.payments.mark_paid(
                 payment=payment,
                 case=case,
-                actor_type="payment_provider",
+                actor_type=actor_type,
+                actor_id=actor_id,
             )
 
         mapping = {
@@ -116,7 +146,7 @@ class PaymentWebhookService:
                     self.db
                 ).mark_paid_pending_confirmation(
                     case=case,
-                    source="payment_webhook",
+                    source=source,
                 )
             except ConsultationPaymentLifecycleError as exc:
                 return await self._mark_manual_review(
@@ -125,14 +155,16 @@ class PaymentWebhookService:
                     outcome=PaymentProcessingOutcome.CONFLICT,
                     error=str(exc),
                     provider_payload=provider_payload,
+                    actor_type=actor_type,
+                    actor_id=actor_id,
                 )
         elif payment.payment_code in mapping:
             for status in mapping[payment.payment_code]:
                 await self.cases.change_status(
                     case=case,
                     next_status=status,
-                    actor_type="system",
-                    actor_id=None,
+                    actor_type=actor_type,
+                    actor_id=actor_id,
                     force=True,
                     comment=f"Автопереход после оплаты {payment.payment_code}",
                 )
@@ -143,6 +175,8 @@ class PaymentWebhookService:
                 outcome=PaymentProcessingOutcome.MANUAL_REVIEW_REQUIRED,
                 error="Для кода платежа не настроена доменная обработка.",
                 provider_payload=provider_payload,
+                actor_type=actor_type,
+                actor_id=actor_id,
             )
 
         self._mark_processing_result(
@@ -151,15 +185,20 @@ class PaymentWebhookService:
         )
         await add_case_history_event(
             self.db,
-            actor_type="payment_provider",
-            actor_id=None,
+            actor_type=actor_type,
+            actor_id=actor_id,
             case_id=case.id,
             action="PAYMENT_WEBHOOK_PROCESSED",
             new_value={
                 "payment_id": payment.id,
                 "payment_code": payment.payment_code,
                 "processing_outcome": payment.processing_outcome.value,
+                "previous_processing_outcome": (
+                    previous_outcome.value if previous_outcome is not None else None
+                ),
+                "manual_reprocess": allow_reprocess,
                 "consultation_id": consultation.id if consultation else None,
+                "source": source,
                 "payload": provider_payload or {},
             },
         )
