@@ -17,24 +17,12 @@ from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.lawyer import Lawyer
 from app.security.access_control import (
-    ROLE_ADMIN,
     ROLE_LAWYER,
-    ROLE_SUPERADMIN,
     decode_access_token,
     normalize_roles,
 )
 
 router = APIRouter(prefix="/lawyer", tags=["lawyer"])
-
-
-def require_staff(token: str | None) -> dict:
-    payload = decode_access_token(token)
-    roles = set(normalize_roles(payload.get("roles") if payload else None))
-    if not payload or not roles.intersection(
-        {ROLE_SUPERADMIN, ROLE_ADMIN, ROLE_LAWYER}
-    ):
-        raise HTTPException(403, "Доступ только для юриста или администратора")
-    return payload
 
 
 async def resolve_authenticated_lawyer(
@@ -45,7 +33,7 @@ async def resolve_authenticated_lawyer(
     payload = decode_access_token(token)
     roles = set(normalize_roles(payload.get("roles") if payload else None))
     if not payload or ROLE_LAWYER not in roles:
-        raise HTTPException(403, "Подтверждение доступно только юристу")
+        raise HTTPException(403, "Действие доступно только юристу")
 
     try:
         admin_user_id = int(payload.get("uid"))
@@ -54,7 +42,7 @@ async def resolve_authenticated_lawyer(
     if admin_user_id <= 0:
         raise HTTPException(
             403,
-            "Для подтверждения войдите под персональным аккаунтом юриста",
+            "Для работы войдите под персональным аккаунтом юриста",
         )
 
     admin_user = (
@@ -97,13 +85,29 @@ async def resolve_authenticated_lawyer(
     return lawyers[0]
 
 
-async def get_case_or_404(*, case_id: int, db: AsyncSession) -> Case:
-    case = (
-        await db.execute(select(Case).where(Case.id == case_id))
-    ).scalar_one_or_none()
+async def get_case_or_404(
+    *,
+    case_id: int,
+    db: AsyncSession,
+    for_update: bool = False,
+) -> Case:
+    statement = select(Case).where(Case.id == case_id)
+    if for_update:
+        statement = statement.with_for_update()
+    case = (await db.execute(statement)).scalar_one_or_none()
     if case is None:
         raise HTTPException(404, "Дело не найдено")
     return case
+
+
+def ensure_case_assigned_to_lawyer(*, case: Case, lawyer: Lawyer) -> None:
+    if case.assigned_lawyer_id is None:
+        raise HTTPException(
+            409,
+            "Дело ещё не назначено юристу. Обратитесь к администратору",
+        )
+    if case.assigned_lawyer_id != lawyer.id:
+        raise HTTPException(403, "Дело назначено другому юристу")
 
 
 @router.get("/ui", response_class=HTMLResponse)
@@ -165,7 +169,11 @@ async def confirm_consultation(
         token=x_admin_token,
         db=db,
     )
-    case = await get_case_or_404(case_id=case_id, db=db)
+    case = await get_case_or_404(
+        case_id=case_id,
+        db=db,
+        for_update=True,
+    )
     try:
         consultation = await ConsultationPaymentLifecycleService(
             db
@@ -198,40 +206,64 @@ async def confirm_consultation(
 @router.post("/cases/{case_id}/accept")
 async def accept(
     case_id: int,
-    lawyer_id: int = 1,
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    require_staff(x_admin_token)
-    case = await get_case_or_404(case_id=case_id, db=db)
+    lawyer = await resolve_authenticated_lawyer(
+        token=x_admin_token,
+        db=db,
+    )
+    case = await get_case_or_404(
+        case_id=case_id,
+        db=db,
+        for_update=True,
+    )
+    ensure_case_assigned_to_lawyer(case=case, lawyer=lawyer)
     await LawyerDecisionService(db).accept_m1_case(
         case=case,
-        lawyer_id=lawyer_id,
+        lawyer_id=lawyer.id,
     )
     await db.commit()
-    return {"ok": True}
+    return {
+        "ok": True,
+        "case_id": case.id,
+        "case_status": case.status,
+        "lawyer_id": lawyer.id,
+    }
 
 
 @router.post("/cases/{case_id}/request-documents")
 async def request_docs(
     case_id: int,
     payload: dict,
-    lawyer_id: int = 1,
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    require_staff(x_admin_token)
-    case = await get_case_or_404(case_id=case_id, db=db)
+    lawyer = await resolve_authenticated_lawyer(
+        token=x_admin_token,
+        db=db,
+    )
+    case = await get_case_or_404(
+        case_id=case_id,
+        db=db,
+        for_update=True,
+    )
+    ensure_case_assigned_to_lawyer(case=case, lawyer=lawyer)
     comment = str(payload.get("comment") or "").strip()
     if not comment:
         comment = "Нужны дополнительные документы"
     await LawyerDecisionService(db).request_more_documents(
         case=case,
-        lawyer_id=lawyer_id,
+        lawyer_id=lawyer.id,
         comment=comment,
     )
     await db.commit()
-    return {"ok": True}
+    return {
+        "ok": True,
+        "case_id": case.id,
+        "case_status": case.status,
+        "lawyer_id": lawyer.id,
+    }
 
 
 LAWYER_UI_HTML = r"""
