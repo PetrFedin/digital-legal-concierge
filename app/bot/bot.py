@@ -14,6 +14,7 @@ from aiogram.types import BotCommand, BotCommandScopeDefault, CallbackQuery, Mes
 from app.bot.screens import (
     calculator,
     common,
+    consultation_entry,
     consultations,
     documents,
     history,
@@ -250,7 +251,7 @@ async def setup_telegram_commands(bot: Bot) -> None:
     commands = [
         BotCommand(command="start", description="Запустить бота"),
         BotCommand(command="menu", description="Главное меню"),
-        BotCommand(command="status", description="Мое дело и текущий статус"),
+        BotCommand(command="status", description="Моё дело и текущий статус"),
         BotCommand(command="help", description="Помощь"),
         BotCommand(command="cancel", description="Отменить текущее действие"),
     ]
@@ -269,6 +270,7 @@ def build_dispatcher() -> Dispatcher:
     dispatcher.callback_query.middleware(CallbackAcknowledgeMiddleware())
     for router in [
         common.router,
+        consultation_entry.router,
         calculator.router,
         my_case.router,
         documents.router,
