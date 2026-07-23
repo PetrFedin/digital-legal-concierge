@@ -6,6 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth_dependencies import require_admin, require_crm_reader
 from app.db.session import get_db
+from app.domain.crm.case_archive_service import CRMCaseArchiveService
+from app.domain.crm.client_archive_service import CRMClientArchiveService
 from app.domain.crm.crm_service import CRMService
 
 
@@ -14,6 +16,31 @@ router = APIRouter(prefix="/admin/crm", tags=["admin-crm"])
 
 class ArchiveClientRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=500)
+
+
+async def _set_client_archive_state(
+    *,
+    db: AsyncSession,
+    user_id: int,
+    archived: bool,
+    actor: dict,
+    reason: str | None,
+) -> dict:
+    try:
+        result = await CRMClientArchiveService(db).set_state(
+            user_id=user_id,
+            archived=archived,
+            actor_id=actor.get("uid"),
+            reason=reason,
+        )
+        await db.commit()
+        return result
+    except LookupError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception:
+        await db.rollback()
+        raise
 
 
 @router.get("/clients")
@@ -71,21 +98,13 @@ async def archive_client(
     db: AsyncSession = Depends(get_db),
     actor: dict = Depends(require_admin),
 ):
-    try:
-        result = await CRMService(db).archive_client(
-            user_id=user_id,
-            archived=True,
-            actor_id=actor.get("uid"),
-            reason=body.reason,
-        )
-        await db.commit()
-        return result
-    except LookupError as exc:
-        await db.rollback()
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except Exception:
-        await db.rollback()
-        raise
+    return await _set_client_archive_state(
+        db=db,
+        user_id=user_id,
+        archived=True,
+        actor=actor,
+        reason=body.reason,
+    )
 
 
 @router.post("/clients/{user_id}/restore")
@@ -95,21 +114,13 @@ async def restore_client(
     db: AsyncSession = Depends(get_db),
     actor: dict = Depends(require_admin),
 ):
-    try:
-        result = await CRMService(db).archive_client(
-            user_id=user_id,
-            archived=False,
-            actor_id=actor.get("uid"),
-            reason=body.reason,
-        )
-        await db.commit()
-        return result
-    except LookupError as exc:
-        await db.rollback()
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except Exception:
-        await db.rollback()
-        raise
+    return await _set_client_archive_state(
+        db=db,
+        user_id=user_id,
+        archived=False,
+        actor=actor,
+        reason=body.reason,
+    )
 
 
 @router.get("/cases/archive")
@@ -134,7 +145,7 @@ async def archived_case_card(
     _: dict = Depends(require_crm_reader),
 ):
     try:
-        return await CRMService(db).case_archive_card(case_id)
+        return await CRMCaseArchiveService(db).get_card(case_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
