@@ -1,8 +1,9 @@
 import asyncio
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from app.api.acceptance_center import router as acceptance_center_router
 from app.api.access_management import router as access_management_router
@@ -46,13 +47,48 @@ from app.api.task_center import router as task_center_router
 from app.api.template_builder import router as template_builder_router
 from app.api.web_admin import router as web_admin_router
 from app.config import settings
+from app.security.http_security import HttpSecurityMiddleware
 
 
-APP_VERSION = "1.0.0-v32"
+APP_VERSION = "1.0.0-v33"
+
+
+def _readiness_snapshot() -> tuple[dict[str, bool], dict[str, bool]]:
+    """Return required dependency checks separately from optional feature flags."""
+
+    required = {
+        "bot_configuration_valid": (
+            bool(settings.bot_token and settings.bot_token != "CHANGE_ME")
+            if settings.run_bot
+            else True
+        ),
+        "storage_dir_exists": Path(settings.storage_dir).exists(),
+        "database_url_configured": bool(str(settings.database_url or "").strip()),
+        "payment_provider_configured": (
+            settings.payment_provider == "fake"
+            or bool(settings.yookassa_shop_id and settings.yookassa_secret_key)
+        ),
+        "production_admin_token_hardened": (
+            settings.app_env != "production"
+            or bool(
+                settings.admin_api_token
+                and settings.admin_api_token != "dev-admin-token"
+            )
+        ),
+    }
+    features = {
+        "bot_enabled": bool(settings.run_bot),
+        "scheduler_enabled": bool(settings.run_scheduler),
+        "demo_mode": bool(settings.demo_mode),
+        "recovery_actions_enabled": bool(settings.enable_recovery_actions),
+    }
+    return required, features
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Digital Legal Concierge Bot", version=APP_VERSION)
+    app.add_middleware(HttpSecurityMiddleware)
+
     routers = (
         maintenance_center_router,
         final_handover_center_router,
@@ -109,30 +145,24 @@ def create_app() -> FastAPI:
 
     @app.get("/ready")
     async def ready():
-        from pathlib import Path
-
-        checks = {
-            "bot_token_configured": bool(
-                settings.bot_token and settings.bot_token != "CHANGE_ME"
-            )
-            or not settings.run_bot,
-            "admin_token_configured": bool(
-                settings.admin_api_token
-                and settings.admin_api_token != "dev-admin-token"
-            ),
-            "storage_dir_exists": Path(settings.storage_dir).exists(),
-            "database_url_configured": bool(settings.database_url),
-            "scheduler_enabled": settings.run_scheduler,
-            "bot_enabled": settings.run_bot,
-            "payment_provider_configured": settings.payment_provider == "fake"
-            or bool(settings.yookassa_shop_id and settings.yookassa_secret_key),
+        checks, features = _readiness_snapshot()
+        is_ready = all(checks.values())
+        payload = {
+            "ok": is_ready,
+            "checks": checks,
+            "features": features,
+            "version": APP_VERSION,
         }
-        return {"ok": all(checks.values()), "checks": checks, "version": APP_VERSION}
+        return JSONResponse(payload, status_code=200 if is_ready else 503)
 
     @app.get("/launch-check")
     async def launch_check():
+        checks, features = _readiness_snapshot()
         return {
             "version": APP_VERSION,
+            "ready": all(checks.values()),
+            "checks": checks,
+            "features": features,
             "handover": "/handover",
             "security_check": "/security-check",
             "launch_assistant": "/launch-assistant",
@@ -142,9 +172,7 @@ def create_app() -> FastAPI:
             "access_management": "/access/ui",
             "consultation_slots_api": "/consultation-slots",
             "health": "/health",
-            "ready": "/ready",
-            "bot_enabled": settings.run_bot,
-            "scheduler_enabled": settings.run_scheduler,
+            "ready_endpoint": "/ready",
             "payment_provider": settings.payment_provider,
             "storage_dir": settings.storage_dir,
         }
