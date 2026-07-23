@@ -5,7 +5,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.consultations.consultation_service import ConsultationService
-from app.domain.statuses.case_statuses import CaseStatus, RouteCode
+from app.domain.statuses.case_statuses import (
+    CLOSED_CASE_STATUSES,
+    CaseStatus,
+    RouteCode,
+)
 from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.lawyer import Lawyer
@@ -21,13 +25,7 @@ def generate_case_number(case_id: int) -> str:
 
 
 class CaseService:
-    CLOSED_STATUSES = frozenset(
-        {
-            CaseStatus.M1_CLOSED.value,
-            CaseStatus.M2_CLOSED.value,
-            CaseStatus.ARCHIVED.value,
-        }
-    )
+    CLOSED_STATUSES = CLOSED_CASE_STATUSES
 
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -46,14 +44,14 @@ class CaseService:
         *,
         client: User,
         route: str | None = None,
-        status: str = CaseStatus.NEW,
+        status: str = CaseStatus.NEW.value,
         title: str | None = None,
     ):
         case = Case(
             case_number="TEMP",
             client_id=client.id,
             route=route,
-            status=status,
+            status=str(status),
             title=title or "Обращение по ДДУ",
             next_action=self.get_next_action(status),
         )
@@ -69,7 +67,7 @@ class CaseService:
             new_value={
                 "case_number": case.case_number,
                 "route": route,
-                "status": status,
+                "status": case.status,
             },
         )
         await self.db.flush()
@@ -90,12 +88,13 @@ class CaseService:
             "route": case.route,
             "next_action": case.next_action,
         }
-        case.status = next_status
-        if str(next_status).startswith("M1_"):
-            case.route = RouteCode.M1
-        if str(next_status).startswith("M2_"):
-            case.route = RouteCode.M2
-        case.next_action = self.get_next_action(next_status)
+        normalized_status = str(next_status)
+        case.status = normalized_status
+        if normalized_status.startswith("M1_"):
+            case.route = RouteCode.M1.value
+        if normalized_status.startswith("M2_"):
+            case.route = RouteCode.M2.value
+        case.next_action = self.get_next_action(normalized_status)
         await add_case_history_event(
             self.db,
             actor_type=actor_type,
@@ -202,8 +201,8 @@ class CaseService:
         actor_id: int | None,
         reason: str,
     ):
-        case.route = RouteCode.M2
-        case.status = CaseStatus.M2_DESCRIPTION_PENDING
+        case.route = RouteCode.M2.value
+        case.status = CaseStatus.M2_DESCRIPTION_PENDING.value
         case.next_action = self.get_next_action(case.status)
         await add_case_history_event(
             self.db,
@@ -212,7 +211,7 @@ class CaseService:
             case_id=case.id,
             action="CASE_TRANSFERRED_TO_M2",
             new_value={
-                "route": "M2",
+                "route": RouteCode.M2.value,
                 "status": case.status,
                 "reason": reason,
             },
@@ -229,8 +228,8 @@ class CaseService:
         actor_id: int | None,
         comment: str | None = None,
     ):
-        case.route = RouteCode.M1
-        case.status = CaseStatus.M1_DOCUMENTS_PENDING
+        case.route = RouteCode.M1.value
+        case.status = CaseStatus.M1_DOCUMENTS_PENDING.value
         case.next_action = self.get_next_action(case.status)
         await add_case_history_event(
             self.db,
@@ -238,34 +237,52 @@ class CaseService:
             actor_id=actor_id,
             case_id=case.id,
             action="CASE_TRANSFERRED_TO_M1",
-            new_value={"route": "M1", "status": case.status},
+            new_value={"route": RouteCode.M1.value, "status": case.status},
             comment=comment,
         )
         await self.db.flush()
         return case
 
     @staticmethod
-    def get_next_action(status: str) -> str:
+    def get_next_action(status: str | CaseStatus) -> str:
+        value = str(status)
         actions = {
-            CaseStatus.NEW: "Начать расчет или связаться с юристом",
-            CaseStatus.CALCULATED: "Выбрать дальнейший маршрут",
-            CaseStatus.M1_DOCUMENTS_PENDING: "Загрузить документы",
-            CaseStatus.M1_LAWYER_REVIEW: "Ожидать проверки юристом",
-            CaseStatus.M1_CONTRACT_READY: "Подписать договор",
-            CaseStatus.M1_WAITING_PAYMENT_30000: "Оплатить первый платеж",
-            CaseStatus.M1_POWER_OF_ATTORNEY: "Оформить доверенность",
-            CaseStatus.M1_CLAIM_SENT: "Ожидать 30 дней после претензии",
-            CaseStatus.M1_COURT_STAGE: "Следить за судебным этапом",
-            CaseStatus.M1_WAITING_PAYMENT_70000: "Оплатить второй платеж",
-            CaseStatus.M1_ENFORCEMENT: "Ожидать исполнения решения",
-            CaseStatus.M1_WAITING_SUCCESS_FEE: "Оплатить финальный процент",
-            CaseStatus.M1_CLOSED: "Дело завершено",
-            CaseStatus.M2_DESCRIPTION_PENDING: "Описать ситуацию",
-            CaseStatus.M2_DOCUMENTS_OPTIONAL: "Загрузить документы при наличии",
-            CaseStatus.M2_SLOT_PENDING: "Выбрать время консультации",
-            CaseStatus.M2_PAYMENT_PENDING: "Оплатить консультацию",
-            CaseStatus.M2_CONSULTATION_BOOKED: "Ожидать консультации",
-            CaseStatus.M2_CONSULTATION_DONE: "Ожидать решения юриста",
-            CaseStatus.M2_CLOSED: "Обращение закрыто",
+            CaseStatus.NEW.value: "Начать расчет или связаться с юристом",
+            CaseStatus.CALCULATOR_STARTED.value: "Завершить ввод данных для расчета",
+            CaseStatus.CALCULATED.value: "Проверить расчет и выбрать дальнейший маршрут",
+            CaseStatus.CLIENT_DECISION.value: "Выбрать полное ведение дела или консультацию",
+            CaseStatus.M1_DOCUMENTS_PENDING.value: "Загрузить документы по делу",
+            CaseStatus.M1_DOCUMENTS_RECEIVED.value: "Ожидать первичной проверки документов",
+            CaseStatus.M1_LAWYER_REVIEW.value: "Ожидать решения юриста по делу",
+            CaseStatus.M1_DOCS_REQUESTED.value: "Загрузить недостающие документы",
+            CaseStatus.M1_ACCEPTED.value: "Ознакомиться с условиями ведения дела",
+            CaseStatus.M1_REJECTED.value: "Выбрать консультацию или создать новое обращение",
+            CaseStatus.M1_CONTRACT_READY.value: "Подписать договор",
+            CaseStatus.M1_WAITING_PAYMENT_30000.value: "Оплатить первый платеж",
+            CaseStatus.M1_PAYMENT_30000_RECEIVED.value: "Оформить доверенность",
+            CaseStatus.M1_POWER_OF_ATTORNEY.value: "Загрузить оформленную доверенность",
+            CaseStatus.M1_POA_RECEIVED.value: "Ожидать подготовки претензии",
+            CaseStatus.M1_CLAIM_PREPARATION.value: "Ожидать готовности претензии",
+            CaseStatus.M1_CLAIM_SENT.value: "Контролировать дату получения претензии",
+            CaseStatus.M1_WAITING_30_DAYS.value: "Ожидать окончания установленного срока",
+            CaseStatus.M1_COURT_STAGE.value: "Следить за судебным этапом",
+            CaseStatus.M1_WAITING_PAYMENT_70000.value: "Оплатить судебный этап",
+            CaseStatus.M1_PAYMENT_70000_RECEIVED.value: "Ожидать подготовки документов в суд",
+            CaseStatus.M1_ENFORCEMENT.value: "Следить за исполнением решения",
+            CaseStatus.M1_MONEY_RECEIVED.value: "Подтвердить получение денежных средств",
+            CaseStatus.M1_WAITING_SUCCESS_FEE.value: "Оплатить итоговое вознаграждение",
+            CaseStatus.M1_SUCCESS_FEE_RECEIVED.value: "Ожидать закрытия дела",
+            CaseStatus.M1_CLOSED.value: "Дело завершено; доступна история и архив",
+            CaseStatus.M2_CONSULTATION_ROUTE.value: "Перейти к описанию ситуации",
+            CaseStatus.M2_DESCRIPTION_PENDING.value: "Описать ситуацию для юриста",
+            CaseStatus.M2_DOCUMENTS_OPTIONAL.value: "Загрузить документы или перейти к выбору времени",
+            CaseStatus.M2_SLOT_PENDING.value: "Выбрать время консультации",
+            CaseStatus.M2_PAYMENT_PENDING.value: "Оплатить консультацию",
+            CaseStatus.M2_CONSULTATION_BOOKED.value: "Ожидать консультации в выбранное время",
+            CaseStatus.M2_CONSULTATION_DONE.value: "Ознакомиться с итогом и выбрать следующий шаг",
+            CaseStatus.M2_TO_M1.value: "Подтвердить переход к полному ведению дела",
+            CaseStatus.M2_CLOSED.value: "Консультация завершена; доступна история",
+            CaseStatus.ERROR.value: "Связаться с поддержкой или повторить безопасный шаг",
+            CaseStatus.ARCHIVED.value: "Открыть архив дела или создать новое обращение",
         }
-        return actions.get(status, "Ожидать следующего действия")
+        return actions.get(value, "Связаться с поддержкой для определения следующего шага")
