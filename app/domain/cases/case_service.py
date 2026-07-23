@@ -24,20 +24,89 @@ def generate_case_number(case_id: int) -> str:
     return f"DLC-{datetime.now().year}-{case_id:06d}"
 
 
+def _enum_value(value) -> str:
+    return value.value if hasattr(value, "value") else str(value)
+
+
 class CaseService:
     CLOSED_STATUSES = CLOSED_CASE_STATUSES
+    M2_REUSABLE_UNROUTED_STATUSES = frozenset(
+        {
+            CaseStatus.NEW.value,
+            CaseStatus.CALCULATOR_STARTED.value,
+            CaseStatus.CALCULATED.value,
+            CaseStatus.CLIENT_DECISION.value,
+        }
+    )
 
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def get_active_case_for_user(self, user_id: int):
-        result = await self.db.execute(
+    async def list_active_cases_for_user(
+        self,
+        user_id: int,
+        *,
+        route: str | RouteCode | None = None,
+    ) -> list[Case]:
+        statement = (
             select(Case)
             .where(Case.client_id == user_id)
             .where(Case.status.notin_(self.CLOSED_STATUSES))
-            .order_by(Case.created_at.desc())
         )
-        return result.scalars().first()
+        if route is not None:
+            statement = statement.where(Case.route == _enum_value(route))
+        result = await self.db.execute(
+            statement.order_by(Case.created_at.desc(), Case.id.desc())
+        )
+        return list(result.scalars().all())
+
+    async def get_active_case_for_user(
+        self,
+        user_id: int,
+        *,
+        route: str | RouteCode | None = None,
+    ):
+        cases = await self.list_active_cases_for_user(user_id, route=route)
+        return cases[0] if cases else None
+
+    async def get_or_create_m2_case_for_user(self, client: User) -> Case:
+        """Return an active M2 case without mutating an existing M1 case.
+
+        An unrouted intake/calculation may safely become M2. A live M1 case is
+        preserved and a dedicated consultation case is created instead.
+        """
+
+        existing_m2 = await self.get_active_case_for_user(
+            client.id,
+            route=RouteCode.M2,
+        )
+        if existing_m2 is not None:
+            return existing_m2
+
+        active_cases = await self.list_active_cases_for_user(client.id)
+        reusable = next(
+            (
+                case
+                for case in active_cases
+                if case.route is None
+                and case.status in self.M2_REUSABLE_UNROUTED_STATUSES
+            ),
+            None,
+        )
+        if reusable is not None:
+            return await self.transfer_to_m2(
+                case=reusable,
+                actor_type="client",
+                actor_id=client.id,
+                reason="Клиент начал оформление юридической консультации",
+            )
+
+        return await self.create_case(
+            client=client,
+            route=RouteCode.M2.value,
+            status=CaseStatus.M2_DESCRIPTION_PENDING.value,
+            title="Юридическая консультация",
+        )
 
     async def create_case(
         self,
@@ -47,13 +116,15 @@ class CaseService:
         status: str = CaseStatus.NEW.value,
         title: str | None = None,
     ):
+        normalized_status = _enum_value(status)
+        normalized_route = _enum_value(route) if route is not None else None
         case = Case(
             case_number="TEMP",
             client_id=client.id,
-            route=route,
-            status=str(status),
+            route=normalized_route,
+            status=normalized_status,
             title=title or "Обращение по ДДУ",
-            next_action=self.get_next_action(status),
+            next_action=self.get_next_action(normalized_status),
         )
         self.db.add(case)
         await self.db.flush()
@@ -66,7 +137,7 @@ class CaseService:
             action="CASE_CREATED",
             new_value={
                 "case_number": case.case_number,
-                "route": route,
+                "route": normalized_route,
                 "status": case.status,
             },
         )
@@ -83,12 +154,15 @@ class CaseService:
         comment: str | None = None,
         force: bool = True,
     ):
+        normalized_status = _enum_value(next_status)
+        if case.status == normalized_status:
+            return case
+
         old = {
             "status": case.status,
             "route": case.route,
             "next_action": case.next_action,
         }
-        normalized_status = str(next_status)
         case.status = normalized_status
         if normalized_status.startswith("M1_"):
             case.route = RouteCode.M1.value
@@ -201,6 +275,19 @@ class CaseService:
         actor_id: int | None,
         reason: str,
     ):
+        if case.route == RouteCode.M1.value:
+            raise ValueError("Действующее дело М1 нельзя преобразовать в консультацию М2.")
+        if (
+            case.route == RouteCode.M2.value
+            and case.status == CaseStatus.M2_DESCRIPTION_PENDING.value
+        ):
+            return case
+
+        old = {
+            "route": case.route,
+            "status": case.status,
+            "next_action": case.next_action,
+        }
         case.route = RouteCode.M2.value
         case.status = CaseStatus.M2_DESCRIPTION_PENDING.value
         case.next_action = self.get_next_action(case.status)
@@ -210,6 +297,7 @@ class CaseService:
             actor_id=actor_id,
             case_id=case.id,
             action="CASE_TRANSFERRED_TO_M2",
+            old_value=old,
             new_value={
                 "route": RouteCode.M2.value,
                 "status": case.status,
@@ -245,7 +333,7 @@ class CaseService:
 
     @staticmethod
     def get_next_action(status: str | CaseStatus) -> str:
-        value = str(status)
+        value = _enum_value(status)
         actions = {
             CaseStatus.NEW.value: "Начать расчет или связаться с юристом",
             CaseStatus.CALCULATOR_STARTED.value: "Завершить ввод данных для расчета",
@@ -257,11 +345,11 @@ class CaseService:
             CaseStatus.M1_DOCS_REQUESTED.value: "Загрузить недостающие документы",
             CaseStatus.M1_ACCEPTED.value: "Ознакомиться с условиями ведения дела",
             CaseStatus.M1_REJECTED.value: "Выбрать консультацию или создать новое обращение",
-            CaseStatus.M1_CONTRACT_READY.value: "Подписать договор",
+            CaseStatus.M1_CONTRACT_READY.value: "Ознакомиться с договором и подтвердить решение",
             CaseStatus.M1_WAITING_PAYMENT_30000.value: "Оплатить первый платеж",
             CaseStatus.M1_PAYMENT_30000_RECEIVED.value: "Оформить доверенность",
             CaseStatus.M1_POWER_OF_ATTORNEY.value: "Загрузить оформленную доверенность",
-            CaseStatus.M1_POA_RECEIVED.value: "Ожидать подготовки претензии",
+            CaseStatus.M1_POA_RECEIVED.value: "Ожидать проверки доверенности сотрудником",
             CaseStatus.M1_CLAIM_PREPARATION.value: "Ожидать готовности претензии",
             CaseStatus.M1_CLAIM_SENT.value: "Контролировать дату получения претензии",
             CaseStatus.M1_WAITING_30_DAYS.value: "Ожидать окончания установленного срока",
