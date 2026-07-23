@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.auth_dependencies import parse_access_payload
 from app.config import settings
 from app.db.session import get_db
 from app.models.admin_user import AdminUser
@@ -13,7 +14,6 @@ from app.security.access_control import (
     ROLE_LAWYER,
     ROLE_SUPERADMIN,
     create_access_token,
-    decode_access_token,
     normalize_roles,
     verify_password,
 )
@@ -47,7 +47,7 @@ def default_workspace_for_roles(roles: list[str]) -> str:
 
 @router.get("/login", response_class=HTMLResponse)
 async def login_page():
-    return HTMLResponse(LOGIN_HTML)
+    return HTMLResponse(LOGIN_HTML, headers={"Cache-Control": "no-store"})
 
 
 @router.post("/login")
@@ -81,6 +81,7 @@ async def login(
     response = RedirectResponse(
         url=default_workspace_for_roles(roles),
         status_code=303,
+        headers={"Cache-Control": "no-store"},
     )
     response.set_cookie(
         key=settings.admin_session_cookie,
@@ -89,6 +90,7 @@ async def login(
         samesite="lax",
         secure=settings.app_env == "production",
         max_age=60 * 60 * 12,
+        path="/",
     )
     return response
 
@@ -96,24 +98,38 @@ async def login(
 @router.get("/auth/session")
 async def auth_session(request: Request):
     token = request.cookies.get(settings.admin_session_cookie)
-    payload = decode_access_token(token)
-    if not payload:
-        raise HTTPException(status_code=401, detail="Требуется вход")
-    roles = payload.get("roles", [payload.get("role")])
-    return {
-        "authenticated": True,
-        "username": payload.get("username"),
-        "role": payload.get("role"),
-        "roles": roles,
-        "workspace": default_workspace_for_roles(normalize_roles(roles)),
-        "api_token": token,
-    }
+    payload = parse_access_payload(token)
+    roles = normalize_roles(payload.get("roles", [payload.get("role")]))
+    if not roles:
+        raise HTTPException(status_code=403, detail="Для аккаунта не назначена рабочая роль")
+
+    return JSONResponse(
+        {
+            "authenticated": True,
+            "user_id": payload.get("uid"),
+            "username": payload.get("username"),
+            "role": payload.get("role"),
+            "roles": roles,
+            "workspace": default_workspace_for_roles(roles),
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.post("/logout")
 async def logout():
-    response = RedirectResponse(url="/login", status_code=303)
-    response.delete_cookie(settings.admin_session_cookie)
+    response = RedirectResponse(
+        url="/login",
+        status_code=303,
+        headers={"Cache-Control": "no-store"},
+    )
+    response.delete_cookie(
+        settings.admin_session_cookie,
+        path="/",
+        secure=settings.app_env == "production",
+        httponly=True,
+        samesite="lax",
+    )
     return response
 
 
@@ -121,5 +137,5 @@ LOGIN_HTML = """
 <!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Вход в Digital Legal Concierge</title><style>
 body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;background:#f3f4f6;color:#111827;display:grid;place-items:center;min-height:100vh}.card{background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:24px;width:min(440px,92vw);box-shadow:0 8px 30px rgba(0,0,0,.08)}input{width:100%;box-sizing:border-box;margin:8px 0 14px;padding:12px;border:1px solid #d1d5db;border-radius:12px}button{width:100%;border:0;border-radius:12px;background:#111827;color:#fff;padding:12px;font-weight:800}.muted{color:#6b7280;font-size:13px}</style></head>
-<body><form class="card" method="post" action="/login"><h1>⚖ Вход в систему</h1><p class="muted">После входа система откроет рабочее пространство согласно назначенным ролям. Один пользователь может одновременно быть юристом и администратором.</p><label>Логин или email</label><input name="username" value="admin" autocomplete="username" required><label>Пароль</label><input name="password" type="password" autocomplete="current-password" required><button>Войти</button></form></body></html>
+<body><form class="card" method="post" action="/login"><h1>⚖ Вход в систему</h1><p class="muted">После входа система откроет рабочее пространство согласно назначенным ролям. Один пользователь может одновременно быть юристом и администратором.</p><label>Логин или email</label><input name="username" autocomplete="username" required autofocus><label>Пароль</label><input name="password" type="password" autocomplete="current-password" required><button>Войти</button></form></body></html>
 """
