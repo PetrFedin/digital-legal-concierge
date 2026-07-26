@@ -12,6 +12,7 @@ from app.domain.statuses.case_statuses import (
 )
 from app.models.case import Case
 from app.models.consultation import Consultation
+from app.models.consultation_slot import ConsultationSlot
 from app.models.lawyer import Lawyer
 from app.models.user import User
 
@@ -240,15 +241,44 @@ class CaseService:
                 "Сначала устраните конфликт данных."
             )
         if active_consultations:
-            consultation_lawyer_id = active_consultations[0].lawyer_id
-            if (
-                consultation_lawyer_id is not None
-                and consultation_lawyer_id != lawyer_id
-            ):
+            consultation = active_consultations[0]
+            if consultation.lawyer_id is not None and consultation.lawyer_id != lawyer_id:
                 raise CaseAssignmentError(
-                    "Дело связано со слотом другого юриста. "
+                    "Дело связано с консультацией другого юриста. "
                     "Сначала перенесите консультацию на новый слот."
                 )
+
+            if consultation.slot_id is not None:
+                slot = (
+                    await self.db.execute(
+                        select(ConsultationSlot)
+                        .where(ConsultationSlot.id == consultation.slot_id)
+                        .with_for_update()
+                    )
+                ).scalar_one_or_none()
+                if slot is None:
+                    raise CaseAssignmentError(
+                        "Связанный с консультацией слот не найден. "
+                        "Сначала устраните конфликт данных."
+                    )
+                if slot.consultation_id not in {None, consultation.id}:
+                    raise CaseAssignmentError(
+                        "Выбранный слот связан с другой консультацией. "
+                        "Сначала устраните конфликт данных."
+                    )
+                if slot.lawyer_id != lawyer_id:
+                    raise CaseAssignmentError(
+                        "Дело связано со слотом другого юриста. "
+                        "Сначала перенесите консультацию на новый слот."
+                    )
+                if (
+                    consultation.lawyer_id is not None
+                    and consultation.lawyer_id != slot.lawyer_id
+                ):
+                    raise CaseAssignmentError(
+                        "Юрист консультации не совпадает с юристом выбранного слота. "
+                        "Сначала устраните конфликт данных."
+                    )
 
         if locked_case.assigned_lawyer_id == lawyer_id:
             return locked_case
