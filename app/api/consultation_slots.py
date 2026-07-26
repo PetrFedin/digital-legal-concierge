@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import HTMLResponse
@@ -8,9 +8,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
+from app.models.admin_user import AdminUser
 from app.models.consultation_slot import ConsultationSlot
 from app.models.lawyer import Lawyer
-from app.security.access_control import ROLE_ADMIN, ROLE_LAWYER, ROLE_SUPERADMIN, decode_access_token, normalize_roles
+from app.security.access_control import (
+    ROLE_ADMIN,
+    ROLE_LAWYER,
+    ROLE_SUPERADMIN,
+    decode_access_token,
+    normalize_roles,
+)
 
 router = APIRouter(prefix="/consultation-slots", tags=["consultation-slots"])
 
@@ -23,13 +30,50 @@ def require_staff(token: str | None) -> dict:
     return payload
 
 
+def _is_admin(payload: dict) -> bool:
+    roles = set(normalize_roles(payload.get("roles")))
+    return bool(roles.intersection({ROLE_SUPERADMIN, ROLE_ADMIN}))
+
+
+async def _resolve_actor_lawyer(db: AsyncSession, payload: dict) -> Lawyer | None:
+    if _is_admin(payload):
+        return None
+    user_id = int(payload.get("uid") or 0)
+    if not user_id:
+        raise HTTPException(403, "Не удалось определить учётную запись юриста")
+    admin_user = await db.get(AdminUser, user_id)
+    if not admin_user or not admin_user.is_active:
+        raise HTTPException(403, "Учётная запись юриста неактивна")
+    lawyer = (
+        await db.execute(
+            select(Lawyer).where(
+                Lawyer.email == admin_user.email,
+                Lawyer.is_active.is_(True),
+            )
+        )
+    ).scalars().first()
+    if not lawyer:
+        raise HTTPException(403, "Профиль юриста не найден или неактивен")
+    return lawyer
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        raise HTTPException(400, "Дата и время должны содержать часовой пояс")
+    return value.astimezone(timezone.utc)
+
+
 @router.get("/lawyers")
 async def list_lawyers(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    require_staff(x_admin_token)
-    rows = (await db.execute(select(Lawyer).where(Lawyer.is_active.is_(True)).order_by(Lawyer.full_name.asc()))).scalars().all()
+    actor = require_staff(x_admin_token)
+    actor_lawyer = await _resolve_actor_lawyer(db, actor)
+    query = select(Lawyer).where(Lawyer.is_active.is_(True))
+    if actor_lawyer:
+        query = query.where(Lawyer.id == actor_lawyer.id)
+    rows = (await db.execute(query.order_by(Lawyer.full_name.asc()))).scalars().all()
     return [{"id": row.id, "full_name": row.full_name, "email": row.email} for row in rows]
 
 
@@ -39,7 +83,12 @@ async def list_slots(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    require_staff(x_admin_token)
+    actor = require_staff(x_admin_token)
+    actor_lawyer = await _resolve_actor_lawyer(db, actor)
+    if actor_lawyer:
+        if lawyer_id is not None and lawyer_id != actor_lawyer.id:
+            raise HTTPException(403, "Юрист может просматривать только собственные слоты")
+        lawyer_id = actor_lawyer.id
     query = select(ConsultationSlot).order_by(ConsultationSlot.starts_at.asc())
     if lawyer_id is not None:
         query = query.where(ConsultationSlot.lawyer_id == lawyer_id)
@@ -66,15 +115,29 @@ async def create_slot(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    require_staff(x_admin_token)
+    actor = require_staff(x_admin_token)
+    actor_lawyer = await _resolve_actor_lawyer(db, actor)
     try:
         lawyer_id = int(payload["lawyer_id"])
-        starts_at = datetime.fromisoformat(str(payload["starts_at"]).replace("Z", "+00:00"))
-        ends_at = datetime.fromisoformat(str(payload["ends_at"]).replace("Z", "+00:00"))
+        starts_at = _as_utc(
+            datetime.fromisoformat(str(payload["starts_at"]).replace("Z", "+00:00"))
+        )
+        ends_at = _as_utc(
+            datetime.fromisoformat(str(payload["ends_at"]).replace("Z", "+00:00"))
+        )
     except (KeyError, TypeError, ValueError):
         raise HTTPException(400, "Передайте lawyer_id, starts_at и ends_at в ISO-формате")
+
+    if actor_lawyer and lawyer_id != actor_lawyer.id:
+        raise HTTPException(403, "Юрист может создавать слоты только для себя")
+    lawyer = await db.get(Lawyer, lawyer_id)
+    if not lawyer or not lawyer.is_active:
+        raise HTTPException(404, "Активный юрист не найден")
+    if starts_at <= datetime.now(timezone.utc):
+        raise HTTPException(400, "Нельзя создать слот в прошлом")
     if ends_at <= starts_at:
         raise HTTPException(400, "Время окончания должно быть позже времени начала")
+
     overlap = (
         await db.execute(
             select(ConsultationSlot).where(
@@ -87,6 +150,7 @@ async def create_slot(
     ).scalars().first()
     if overlap:
         raise HTTPException(409, "У юриста уже есть пересекающийся слот")
+
     slot = ConsultationSlot(
         lawyer_id=lawyer_id,
         starts_at=starts_at,
@@ -106,12 +170,15 @@ async def delete_slot(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    require_staff(x_admin_token)
-    slot = (await db.execute(select(ConsultationSlot).where(ConsultationSlot.id == slot_id))).scalars().first()
+    actor = require_staff(x_admin_token)
+    actor_lawyer = await _resolve_actor_lawyer(db, actor)
+    slot = await db.get(ConsultationSlot, slot_id)
     if not slot:
         raise HTTPException(404, "Слот не найден")
-    if slot.status in {"held", "booked"}:
-        raise HTTPException(409, "Нельзя удалить удерживаемый или забронированный слот")
+    if actor_lawyer and slot.lawyer_id != actor_lawyer.id:
+        raise HTTPException(403, "Юрист может удалять только собственные слоты")
+    if slot.status in {"held", "booked"} or slot.consultation_id is not None:
+        raise HTTPException(409, "Нельзя удалить слот, связанный с консультацией")
     await db.delete(slot)
     await db.commit()
     return {"ok": True}
@@ -132,8 +199,8 @@ SLOTS_HTML = r"""
 let token='';let lawyers={};
 async function api(path,opts={}){const r=await fetch(path,{...opts,headers:{'x-admin-token':token,'Content-Type':'application/json',...(opts.headers||{})}});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||'Ошибка');return d}
 async function boot(){const r=await fetch('/auth/session');if(!r.ok){location.href='/login';return}const s=await r.json();token=s.api_token;const ls=await api('/consultation-slots/lawyers');lawyer.innerHTML=ls.map(x=>`<option value="${x.id}">${esc(x.full_name)}</option>`).join('');lawyers=Object.fromEntries(ls.map(x=>[x.id,x.full_name]));await loadSlots()}
-async function loadSlots(){const rows=await api('/consultation-slots');slots.innerHTML=rows.length?rows.map(x=>`<div class="row"><div><b>${esc(lawyers[x.lawyer_id]||('Юрист #'+x.lawyer_id))}</b><br><span class="muted">${esc(x.note||'')}</span></div><div>${fmt(x.starts_at)} — ${fmt(x.ends_at)}</div><div><span class="badge">${esc(x.status)}</span></div><div>${x.status==='available'?`<button class="danger" onclick="removeSlot(${x.id})">Удалить</button>`:''}</div></div>`).join(''):'Свободных слотов пока нет.'}
-async function createSlot(){try{await api('/consultation-slots',{method:'POST',body:JSON.stringify({lawyer_id:lawyer.value,starts_at:new Date(starts.value).toISOString(),ends_at:new Date(ends.value).toISOString(),note:note.value})});message.textContent='Слот добавлен';await loadSlots()}catch(e){message.textContent=e.message}}
+async function loadSlots(){const rows=await api('/consultation-slots');slots.innerHTML=rows.length?rows.map(x=>`<div class="row"><div><b>${esc(lawyers[x.lawyer_id]||('Юрист #'+x.lawyer_id))}</b><br><span class="muted">${esc(x.note||'')}</span></div><div>${fmt(x.starts_at)} — ${fmt(x.ends_at)}</div><div><span class="badge">${esc(x.status)}</span></div><div>${x.status==='available'&&!x.consultation_id?`<button class="danger" onclick="removeSlot(${x.id})">Удалить</button>`:''}</div></div>`).join(''):'Свободных слотов пока нет.'}
+async function createSlot(){try{if(!starts.value||!ends.value)throw new Error('Укажите начало и окончание');await api('/consultation-slots',{method:'POST',body:JSON.stringify({lawyer_id:lawyer.value,starts_at:new Date(starts.value).toISOString(),ends_at:new Date(ends.value).toISOString(),note:note.value})});message.textContent='Слот добавлен';await loadSlots()}catch(e){message.textContent=e.message}}
 async function removeSlot(id){if(!confirm('Удалить свободный слот?'))return;try{await api('/consultation-slots/'+id,{method:'DELETE'});await loadSlots()}catch(e){alert(e.message)}}
 function fmt(v){return new Date(v).toLocaleString('ru-RU')}
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
