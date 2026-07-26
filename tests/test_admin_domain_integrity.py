@@ -218,7 +218,7 @@ async def test_admin_reprocess_recovers_payment_after_data_fix(tmp_path):
     await engine.dispose()
 
 
-async def _seed_assignment_case(session):
+async def _seed_assignment_case(session, *, with_slot: bool = False):
     user = User(
         telegram_id=920002,
         telegram_username="assignment_integrity_client",
@@ -253,29 +253,59 @@ async def _seed_assignment_case(session):
     session.add(case)
     await session.flush()
 
+    scheduled_at = datetime.now(timezone.utc) + timedelta(days=3)
     consultation = Consultation(
         case_id=case.id,
         lawyer_id=slot_lawyer.id,
         status=ConsultationStatus.PAID_PENDING_CONFIRMATION.value,
-        scheduled_at=datetime.now(timezone.utc) + timedelta(days=3),
+        scheduled_at=scheduled_at,
         client_description="Проверка целостности назначения.",
     )
     session.add(consultation)
+    await session.flush()
+
+    slot_id = None
+    if with_slot:
+        slot = ConsultationSlot(
+            lawyer_id=slot_lawyer.id,
+            starts_at=scheduled_at,
+            ends_at=scheduled_at + timedelta(hours=1),
+            status="booked",
+            held_by_user_id=user.id,
+            consultation_id=consultation.id,
+        )
+        session.add(slot)
+        await session.flush()
+        consultation.slot_id = slot.id
+        slot_id = slot.id
+
     await session.commit()
-    return case.id, slot_lawyer.id, other_lawyer.id, inactive_lawyer.id
+    return (
+        case.id,
+        consultation.id,
+        slot_id,
+        slot_lawyer.id,
+        other_lawyer.id,
+        inactive_lawyer.id,
+    )
 
 
 @pytest.mark.asyncio
-async def test_assignment_rejects_inactive_and_slot_mismatched_lawyers(tmp_path):
+async def test_assignment_rejects_inactive_and_consultation_mismatched_lawyers(tmp_path):
     engine, session_factory = await _create_test_database(
         tmp_path,
         "assignment-integrity.db",
     )
 
     async with session_factory() as session:
-        case_id, slot_lawyer_id, other_lawyer_id, inactive_lawyer_id = (
-            await _seed_assignment_case(session)
-        )
+        (
+            case_id,
+            _consultation_id,
+            _slot_id,
+            slot_lawyer_id,
+            other_lawyer_id,
+            inactive_lawyer_id,
+        ) = await _seed_assignment_case(session)
 
     async with session_factory() as session:
         case = await session.get(Case, case_id)
@@ -288,7 +318,7 @@ async def test_assignment_rejects_inactive_and_slot_mismatched_lawyers(tmp_path)
                 actor_id=41,
             )
 
-        with pytest.raises(CaseAssignmentError, match="слотом другого юриста"):
+        with pytest.raises(CaseAssignmentError, match="консультацией другого юриста"):
             await service.assign_lawyer(
                 case=case,
                 lawyer_id=other_lawyer_id,
@@ -334,6 +364,48 @@ async def test_assignment_rejects_inactive_and_slot_mismatched_lawyers(tmp_path)
             case_id=case.id,
             action="LAWYER_ASSIGNED",
         ) == 1
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_assignment_rejects_corrupted_slot_ownership(tmp_path):
+    engine, session_factory = await _create_test_database(
+        tmp_path,
+        "assignment-slot-integrity.db",
+    )
+
+    async with session_factory() as session:
+        (
+            case_id,
+            consultation_id,
+            slot_id,
+            slot_lawyer_id,
+            other_lawyer_id,
+            _inactive_lawyer_id,
+        ) = await _seed_assignment_case(session, with_slot=True)
+        slot = await session.get(ConsultationSlot, slot_id)
+        slot.lawyer_id = other_lawyer_id
+        await session.commit()
+
+    async with session_factory() as session:
+        case = await session.get(Case, case_id)
+        consultation = await session.get(Consultation, consultation_id)
+        assert consultation.slot_id == slot_id
+
+        with pytest.raises(CaseAssignmentError, match="слотом другого юриста"):
+            await CaseService(session).assign_lawyer(
+                case=case,
+                lawyer_id=slot_lawyer_id,
+                actor_id=42,
+            )
+
+        assert case.assigned_lawyer_id is None
+        assert await _count_action(
+            session,
+            case_id=case.id,
+            action="LAWYER_ASSIGNED",
+        ) == 0
 
     await engine.dispose()
 
