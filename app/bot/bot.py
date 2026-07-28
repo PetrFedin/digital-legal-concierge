@@ -109,6 +109,16 @@ def _callback_screen(callback_data: str) -> str:
     return value.split(":", 1)[0][:80] or "unknown"
 
 
+def _callback_action(callback_data: str) -> str:
+    """Return analytics-safe action without database references or payloads."""
+    parts = [part for part in callback_data.split(":") if part]
+    if not parts:
+        return "unknown"
+    if parts[0] == "consult_select" and len(parts) >= 2:
+        return ":".join(parts[:2])[:100]
+    return parts[0][:100]
+
+
 def _message_analytics(message: Message) -> tuple[str, dict]:
     text = message.text or message.caption or ""
     stripped = text.strip()
@@ -167,7 +177,7 @@ def _message_analytics(message: Message) -> tuple[str, dict]:
 
 
 def _callback_analytics(callback: CallbackQuery) -> tuple[str, dict]:
-    callback_data = str(callback.data or "")[:500]
+    callback_data = str(callback.data or "")
     screen = _callback_screen(callback_data)
     lowered = callback_data.lower()
     if lowered.startswith(("pay", "payment", "m1_pay", "consult_pay")):
@@ -181,7 +191,8 @@ def _callback_analytics(callback: CallbackQuery) -> tuple[str, dict]:
     else:
         event_name = BOT_NAVIGATION
     return event_name, {
-        "callback_data": callback_data,
+        "callback_action": _callback_action(callback_data),
+        "callback_length": len(callback_data),
         "screen": screen,
         "navigation_type": "inline_button",
         "message_id": callback.message.message_id if callback.message else None,
@@ -212,7 +223,9 @@ class BotActivityMiddleware:
             elif isinstance(event, Message):
                 event_name, payload = _message_analytics(event)
             else:
-                event_name, payload = BOT_ACTION, {"update_type": type(event).__name__}
+                event_name, payload = BOT_ACTION, {
+                    "update_type": type(event).__name__
+                }
 
             await ActivityService(db).record_bot_interaction(
                 event_name=event_name,
@@ -297,7 +310,10 @@ async def run_bot() -> None:
         bot = Bot(token=settings.bot_token)
         try:
             logger.info("Подключение к Telegram API...")
-            await bot.delete_webhook(drop_pending_updates=False, request_timeout=30)
+            await bot.delete_webhook(
+                drop_pending_updates=False,
+                request_timeout=30,
+            )
             await setup_telegram_commands(bot)
             logger.info("Telegram-бот запущен в polling-режиме.")
             retry_delay = 5
@@ -310,11 +326,20 @@ async def run_bot() -> None:
             )
         except TelegramRetryAfter as exc:
             wait_seconds = max(int(exc.retry_after), retry_delay)
-            logger.warning("Telegram ограничил запросы. Повтор через %s сек.", wait_seconds)
-            await asyncio.sleep(wait_seconds)
-        except (TelegramNetworkError, TelegramServerError, TimeoutError, OSError) as exc:
             logger.warning(
-                "Telegram временно недоступен: %s. Повтор подключения через %s сек.",
+                "Telegram ограничил запросы. Повтор через %s сек.",
+                wait_seconds,
+            )
+            await asyncio.sleep(wait_seconds)
+        except (
+            TelegramNetworkError,
+            TelegramServerError,
+            TimeoutError,
+            OSError,
+        ) as exc:
+            logger.warning(
+                "Telegram временно недоступен: %s. "
+                "Повтор подключения через %s сек.",
                 exc,
                 retry_delay,
             )
@@ -325,7 +350,8 @@ async def run_bot() -> None:
             raise
         except Exception:
             logger.exception(
-                "Неожиданная ошибка Telegram-бота. Повтор подключения через %s сек.",
+                "Неожиданная ошибка Telegram-бота. "
+                "Повтор подключения через %s сек.",
                 retry_delay,
             )
             await asyncio.sleep(retry_delay)
