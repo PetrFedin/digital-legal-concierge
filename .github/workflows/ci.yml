@@ -2,14 +2,17 @@ name: CI
 
 on:
   push:
-    branches: [main, feature/multi-role-access]
+    branches:
+      - main
+      - feature/multi-role-access
+      - feat/m2-slot-domain-integrity
   pull_request:
     branches: [main]
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       APP_ENV: test
       DATABASE_URL: sqlite+aiosqlite:///./ci_test.db
@@ -34,6 +37,9 @@ jobs:
 
       - name: Compile source
         run: python -m compileall -q app scripts tests
+
+      - name: Ruff
+        run: ruff check app scripts tests
 
       - name: Initialize database
         run: python scripts/init_db.py
