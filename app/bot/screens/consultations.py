@@ -18,6 +18,9 @@ from app.domain.consultations.consultation_service import (
     ConsultationService,
     ConsultationSlotError,
 )
+from app.domain.consultations.reschedule_service import (
+    ConsultationRescheduleService,
+)
 from app.domain.consultations.slot_service import SlotService
 from app.domain.consultations.state_machine import InvalidConsultationTransition
 from app.domain.statuses.case_statuses import CaseStatus, RouteCode
@@ -874,18 +877,33 @@ async def consultation_booked_open(callback: CallbackQuery, db):
     )
 
 
+async def _load_reschedule_slots(callback: CallbackQuery, db):
+    user, case, consultation = await _load_owned_consultation(
+        callback,
+        db,
+        allowed_statuses={
+            ConsultationStatus.CONFIRMED,
+            ConsultationStatus.BOOKED,
+        },
+    )
+    if consultation.lawyer_id is None:
+        raise ConsultationSlotError(
+            "Для консультации не определён текущий юрист."
+        )
+    slots = await SlotService(db).get_available_slots(
+        lawyer_id=consultation.lawyer_id,
+        limit=100,
+    )
+    return user, case, consultation, slots
+
+
 @router.callback_query(lambda c: c.data == "consult_reschedule")
 async def consult_reschedule(callback: CallbackQuery, db):
     try:
-        await _load_owned_consultation(
-            callback,
-            db,
-            allowed_statuses={
-                ConsultationStatus.CONFIRMED,
-                ConsultationStatus.BOOKED,
-            },
-        )
+        _, _, consultation, slots = await _load_reschedule_slots(callback, db)
+        await db.commit()
     except M2_DOMAIN_ERRORS:
+        await db.rollback()
         await callback.message.edit_text(
             "Изменение времени сейчас недоступно.",
             reply_markup=one(
@@ -895,15 +913,157 @@ async def consult_reschedule(callback: CallbackQuery, db):
         )
         return
 
+    if not slots:
+        await callback.message.edit_text(
+            "У текущего юриста пока нет другого свободного времени. "
+            "Текущая запись сохранена.",
+            reply_markup=one(
+                ("🔄 Обновить", "consult_reschedule"),
+                ("💬 Связаться с менеджером", "contact_lawyer"),
+                ("⬅ Оставить текущее время", "consultation_booked_open"),
+            ),
+        )
+        return
+
+    dates = []
+    seen = set()
+    for slot in slots:
+        key = slot.starts_at.date().isoformat()
+        if key not in seen:
+            seen.add(key)
+            dates.append(
+                (
+                    f"📅 {format_date(slot.starts_at)}",
+                    f"consult_reschedule_date:{key}",
+                )
+            )
     await callback.message.edit_text(
         "🔄 Изменение времени\n\n"
-        "Чтобы не потерять текущую запись, перенос выполняется после проверки "
-        "нового времени менеджером. Текущий слот остаётся за вами до "
-        "подтверждения замены.",
+        "Выберите новую дату. Текущая запись сохранится до успешного "
+        "подтверждения нового времени.",
         reply_markup=one(
-            ("💬 Связаться с менеджером", "contact_lawyer"),
+            *dates,
             ("⬅ Оставить текущее время", "consultation_booked_open"),
             ("📁 Моё дело", "my_case_open"),
+        ),
+    )
+
+
+@router.callback_query(lambda c: c.data.startswith("consult_reschedule_date:"))
+async def consult_reschedule_date(callback: CallbackQuery, db):
+    try:
+        selected_date = date.fromisoformat(callback.data.split(":", 1)[1])
+        _, _, _, slots = await _load_reschedule_slots(callback, db)
+        await db.commit()
+    except (TypeError, ValueError, *M2_DOMAIN_ERRORS):
+        await db.rollback()
+        await callback.answer(
+            "Дата недоступна. Откройте список переноса заново.",
+            show_alert=True,
+        )
+        return
+
+    selected = [slot for slot in slots if slot.starts_at.date() == selected_date]
+    if not selected:
+        await callback.answer(
+            "На эту дату свободного времени больше нет.",
+            show_alert=True,
+        )
+        await consult_reschedule(callback, db)
+        return
+    buttons = [
+        (
+            f"{format_time(slot.starts_at)}–{format_time(slot.ends_at)}",
+            f"consult_reschedule_slot:{slot.id}",
+        )
+        for slot in selected
+    ]
+    await callback.message.edit_text(
+        f"Выберите новое время на {format_date(selected[0].starts_at)}.\n\n"
+        "Текущая запись будет освобождена только после успешной замены.",
+        reply_markup=one(
+            *buttons,
+            ("← Другие даты", "consult_reschedule"),
+            ("📁 Моё дело", "my_case_open"),
+        ),
+    )
+
+
+@router.callback_query(lambda c: c.data.startswith("consult_reschedule_slot:"))
+async def consult_reschedule_slot(callback: CallbackQuery, db):
+    try:
+        new_slot_id = int(callback.data.split(":", 1)[1])
+        if new_slot_id <= 0:
+            raise ValueError
+        user, case, consultation = await _load_owned_consultation(
+            callback,
+            db,
+            allowed_statuses={
+                ConsultationStatus.CONFIRMED,
+                ConsultationStatus.BOOKED,
+            },
+            for_update=True,
+        )
+        consultation, new_slot = await ConsultationRescheduleService(db).reschedule(
+            consultation=consultation,
+            case=case,
+            client_id=user.id,
+            new_slot_id=new_slot_id,
+            actor_type="client",
+            actor_id=user.id,
+            source="telegram",
+        )
+        await db.commit()
+    except (TypeError, ValueError):
+        await db.rollback()
+        await callback.answer(
+            "Некорректное время. Откройте список переноса заново.",
+            show_alert=True,
+        )
+        return
+    except ConsultationSlotError as exc:
+        await db.rollback()
+        await callback.message.edit_text(
+            f"{str(exc)}\n\nВыберите другой свободный вариант.",
+            reply_markup=one(
+                ("📅 Выбрать другое время", "consult_reschedule"),
+                ("📋 Текущая запись", "consultation_booked_open"),
+                ("📁 Моё дело", "my_case_open"),
+            ),
+        )
+        return
+    except M2_DOMAIN_ERRORS:
+        await db.rollback()
+        await callback.message.edit_text(
+            "Перенос недоступен. Текущая запись не изменена.",
+            reply_markup=one(
+                ("📋 Текущая запись", "consultation_booked_open"),
+                ("📁 Моё дело", "my_case_open"),
+            ),
+        )
+        return
+    except Exception:
+        await db.rollback()
+        logger.exception("Unexpected error while rescheduling consultation")
+        await callback.message.edit_text(
+            "Не удалось изменить время. Текущая запись сохранена.",
+            reply_markup=one(
+                ("📋 Текущая запись", "consultation_booked_open"),
+                ("📁 Моё дело", "my_case_open"),
+            ),
+        )
+        return
+
+    await callback.message.edit_text(
+        "✅ Время консультации изменено\n\n"
+        f"Дата: {format_date(new_slot.starts_at)}\n"
+        f"Время: {format_time(new_slot.starts_at)}–"
+        f"{format_time(new_slot.ends_at)}\n\n"
+        "Оплата сохранена. Новая запись доступна в разделе «Моё дело».",
+        reply_markup=one(
+            ("📋 Детали консультации", "consultation_booked_open"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
         ),
     )
 
