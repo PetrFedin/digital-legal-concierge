@@ -3,7 +3,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from app.bot.context import BotContextService
-from app.bot.keyboards import main_menu, reply_main_menu, one
+from app.bot.keyboards import main_menu, one, reply_main_menu
 from app.domain.cases.case_timeline import get_client_visible_status
 
 router = Router()
@@ -11,7 +11,10 @@ router = Router()
 
 async def _home_text(db, message_or_callback) -> tuple[str, bool]:
     ctx = BotContextService(db)
-    if hasattr(message_or_callback, "from_user") and hasattr(message_or_callback, "message"):
+    if hasattr(message_or_callback, "from_user") and hasattr(
+        message_or_callback,
+        "message",
+    ):
         user = await ctx.get_user_from_callback(message_or_callback)
     else:
         user = await ctx.get_user_from_message(message_or_callback)
@@ -27,8 +30,8 @@ async def _home_text(db, message_or_callback) -> tuple[str, bool]:
         return text, True
     text = (
         "🏠 Добро пожаловать\n\n"
-        "Я помогу предварительно рассчитать неустойку по ДДУ, передать документы юристу "
-        "и отслеживать ход дела прямо в Telegram.\n\n"
+        "Я помогу предварительно рассчитать неустойку по ДДУ, передать "
+        "документы юристу и отслеживать ход дела прямо в Telegram.\n\n"
         "Расчет предварительный и не является юридическим заключением."
     )
     return text, False
@@ -46,25 +49,49 @@ async def start(message: Message, db, state: FSMContext):
 @router.message(lambda m: m.text == "🧮 Рассчитать неустойку")
 async def menu_calc(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("Открываю калькулятор.", reply_markup=one(("Начать расчет", "calc_start"), ("🏠 Главная", "nav_home")))
+    await message.answer(
+        "Открываю калькулятор.",
+        reply_markup=one(
+            ("Начать расчет", "calc_start"),
+            ("🏠 Главная", "nav_home"),
+        ),
+    )
 
 
 @router.message(lambda m: m.text == "📁 Мое дело")
 async def menu_my_case(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("Открыть раздел «Мое дело».", reply_markup=one(("📁 Мое дело", "my_case_open"), ("🏠 Главная", "nav_home")))
+    await message.answer(
+        "Открыть раздел «Мое дело».",
+        reply_markup=one(
+            ("📁 Мое дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ),
+    )
 
 
 @router.message(lambda m: m.text == "📄 Документы")
 async def menu_documents(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("Открыть раздел документов.", reply_markup=one(("📄 Документы", "documents_open"), ("🏠 Главная", "nav_home")))
+    await message.answer(
+        "Открыть раздел документов.",
+        reply_markup=one(
+            ("📄 Документы", "documents_open"),
+            ("🏠 Главная", "nav_home"),
+        ),
+    )
 
 
 @router.message(lambda m: m.text == "💬 Связаться с юристом")
 async def menu_lawyer(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("Связь с юристом.", reply_markup=one(("💬 Открыть", "contact_lawyer"), ("🏠 Главная", "nav_home")))
+    await message.answer(
+        "Связь с юристом.",
+        reply_markup=one(
+            ("💬 Открыть", "contact_lawyer"),
+            ("🏠 Главная", "nav_home"),
+        ),
+    )
 
 
 @router.message(lambda m: m.text == "/help")
@@ -87,21 +114,33 @@ async def status_command(message: Message, db):
     user = await ctx.get_user_from_message(message)
     case = await ctx.case_service.get_active_case_for_user(user.id)
     if not case:
-        await message.answer("Активного дела пока нет.", reply_markup=one(("🧮 Рассчитать", "calc_start"), ("💬 Консультация", "calc_to_m2")))
+        await message.answer(
+            "Активного дела пока нет.",
+            reply_markup=one(
+                ("🧮 Рассчитать", "calc_start"),
+                ("💬 Консультация", "calc_to_m2"),
+            ),
+        )
         return
     await message.answer(
         f"📁 {case.case_number}\n"
         f"Маршрут: {case.route or '—'}\n"
         f"Статус: {get_client_visible_status(case.status)}\n"
         f"Следующий шаг: {case.next_action or 'ожидать обновления'}",
-        reply_markup=one(("📁 Мое дело", "my_case_open"), ("🏠 Главная", "nav_home")),
+        reply_markup=one(
+            ("📁 Мое дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ),
     )
 
 
 @router.message(lambda m: m.text in ["/cancel", "Отмена"])
 async def cancel_message(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("Действие отменено. Уже сохраненные данные не удалены.", reply_markup=reply_main_menu())
+    await message.answer(
+        "Действие отменено. Уже сохраненные данные не удалены.",
+        reply_markup=reply_main_menu(),
+    )
 
 
 @router.callback_query(lambda c: c.data == "nav_home")
@@ -113,7 +152,10 @@ async def home(callback: CallbackQuery, db, state: FSMContext):
 
 @router.callback_query(lambda c: c.data == "noop")
 async def noop(callback: CallbackQuery):
-    await callback.answer("В тестовом режиме используйте кнопку DEV подтверждения оплаты.", show_alert=True)
+    await callback.answer(
+        "Это действие сейчас недоступно. Откройте актуальный шаг в разделе «Моё дело».",
+        show_alert=True,
+    )
 
 
 @router.callback_query(lambda c: c.data == "nav_cancel")
