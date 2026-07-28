@@ -5,7 +5,6 @@ from aiogram.types import CallbackQuery
 
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
-from app.config import settings
 from app.domain.consultations.payment_lifecycle_service import (
     ConsultationPaymentLifecycleError,
     ConsultationPaymentLifecycleService,
@@ -35,30 +34,50 @@ PAYMENT_STATUS_TITLES = {
 
 PAYMENT_STATUS_DESCRIPTIONS = {
     PaymentStatus.PENDING.value: "Счёт выставлен, но подтверждение оплаты ещё не получено.",
-    PaymentStatus.WAITING_CONFIRMATION.value: "Платёж поступил и проходит техническую или ручную проверку.",
-    PaymentStatus.PAID.value: "Оплата подтверждена. Связанный этап дела уже открыт или будет обновлён автоматически.",
-    PaymentStatus.FAILED.value: "Провайдер не подтвердил оплату. Можно повторить попытку или обратиться к менеджеру.",
-    PaymentStatus.CANCELLED.value: "Платёж отменён. Новая ссылка будет создана только на актуальном этапе дела.",
-    PaymentStatus.REFUNDED.value: "Средства возвращены плательщику. Подробности можно уточнить у менеджера.",
-    PaymentStatus.EXPIRED.value: "Срок действия ссылки закончился. Откройте текущий шаг дела для новой попытки.",
+    PaymentStatus.WAITING_CONFIRMATION.value: (
+        "Платёж поступил и проходит техническую или ручную проверку."
+    ),
+    PaymentStatus.PAID.value: (
+        "Оплата подтверждена. Связанный этап дела уже открыт или будет "
+        "обновлён автоматически."
+    ),
+    PaymentStatus.FAILED.value: (
+        "Провайдер не подтвердил оплату. Можно повторить попытку или "
+        "обратиться к менеджеру."
+    ),
+    PaymentStatus.CANCELLED.value: (
+        "Платёж отменён. Новая ссылка будет создана только на актуальном "
+        "этапе дела."
+    ),
+    PaymentStatus.REFUNDED.value: (
+        "Средства возвращены плательщику. Подробности можно уточнить у менеджера."
+    ),
+    PaymentStatus.EXPIRED.value: (
+        "Срок действия ссылки закончился. Откройте текущий шаг дела для "
+        "новой попытки."
+    ),
 }
 
 PAYMENT_PURPOSES = {
     PaymentCode.M1_INITIAL_PAYMENT.value: (
         "Первый этап полного ведения дела",
-        "После подтверждения оплаты откроется оформление доверенности и претензионная работа.",
+        "После подтверждения оплаты откроется оформление доверенности и "
+        "претензионная работа.",
     ),
     PaymentCode.M1_COURT_PAYMENT.value: (
         "Судебный этап полного ведения дела",
-        "После подтверждения оплаты юрист сможет продолжить судебную работу и дальнейшее исполнение решения.",
+        "После подтверждения оплаты юрист сможет продолжить судебную работу "
+        "и дальнейшее исполнение решения.",
     ),
     PaymentCode.M1_SUCCESS_FEE.value: (
         "Итоговое вознаграждение по результату",
-        "После подтверждения оплаты финансовые обязательства будут закрыты, а дело перейдёт к завершению.",
+        "После подтверждения оплаты финансовые обязательства будут закрыты, "
+        "а дело перейдёт к завершению.",
     ),
     PaymentCode.M2_CONSULTATION_PAYMENT.value: (
         "Юридическая консультация",
-        "После оплаты выбранное время закрепляется за вами и ожидает подтверждения назначенного юриста.",
+        "После оплаты выбранное время закрепляется за вами и ожидает "
+        "подтверждения назначенного юриста.",
     ),
 }
 
@@ -80,8 +99,9 @@ def _status_title(payment) -> str:
 def _status_description(payment) -> str:
     if getattr(payment, "manual_review_required", False):
         return (
-            "Платёж сохранён, но автоматическое продолжение остановлено для безопасной проверки. "
-            "Повторно платить не нужно, пока сотрудник не уточнит статус."
+            "Платёж сохранён, но автоматическое продолжение остановлено для "
+            "безопасной проверки. Повторно платить не нужно, пока сотрудник "
+            "не уточнит статус."
         )
     return PAYMENT_STATUS_DESCRIPTIONS.get(
         _value(payment.status),
@@ -92,19 +112,19 @@ def _status_description(payment) -> str:
 def _payment_purpose(payment_code) -> tuple[str, str]:
     return PAYMENT_PURPOSES.get(
         _value(payment_code),
-        ("Оплата по делу", "После подтверждения платежа статус дела будет обновлён."),
+        (
+            "Оплата по делу",
+            "После подтверждения платежа статус дела будет обновлён.",
+        ),
     )
 
 
 def _payment_card(payment, *, compact: bool = False) -> str:
     purpose, next_step = _payment_purpose(payment.payment_code)
     if compact:
-        return (
-            f"• #{payment.id} — {purpose}\n"
-            f"  {money(payment.amount)} · {_status_title(payment)}"
-        )
+        return f"• {purpose}\n  {money(payment.amount)} · {_status_title(payment)}"
     return (
-        f"💳 Платёж № {payment.id}\n"
+        "💳 Платёж\n"
         "━━━━━━━━━━━━━━━━\n"
         f"Назначение: {purpose}\n"
         f"Сумма: {money(payment.amount)}\n"
@@ -119,17 +139,12 @@ def _payment_card(payment, *, compact: bool = False) -> str:
 def _payment_buttons(payment):
     items = []
     status = _value(payment.status)
-    payable = status not in {
-        PaymentStatus.PAID.value,
-        PaymentStatus.REFUNDED.value,
-        PaymentStatus.CANCELLED.value,
+    payable = status in {
+        PaymentStatus.PENDING.value,
+        PaymentStatus.WAITING_CONFIRMATION.value,
     }
     if payable and payment.payment_url and not payment.manual_review_required:
         items.append(("💳 Перейти к безопасной оплате", payment.payment_url))
-    if settings.app_env == "local" and status != PaymentStatus.PAID.value:
-        items.append(
-            ("✅ DEV подтвердить оплату", f"pay_fake_success:{payment.id}")
-        )
     if payment.manual_review_required:
         items.append(("💬 Уточнить у менеджера", "contact_lawyer"))
     items.extend(
@@ -170,7 +185,8 @@ async def payments(callback: CallbackQuery, db):
     if case is None:
         await _show_payment_error(
             callback,
-            "Активное дело не найдено. Платежи доступны только внутри вашего текущего дела.",
+            "Активное дело не найдено. Платежи доступны только внутри вашего "
+            "текущего дела.",
         )
         return
 
@@ -187,13 +203,16 @@ async def payments(callback: CallbackQuery, db):
         text = (
             f"💳 Оплаты по делу № {case.case_number}\n"
             "━━━━━━━━━━━━━━━━\n"
-            + "\n\n".join(_payment_card(payment, compact=True) for payment in payments_list)
-            + "\n\nОткройте нужный платёж, чтобы увидеть назначение, статус и дальнейшие действия."
+            + "\n\n".join(
+                _payment_card(payment, compact=True) for payment in payments_list
+            )
+            + "\n\nОткройте нужный платёж, чтобы увидеть назначение, статус "
+            "и дальнейшие действия."
         )
         items = [
             (
-                f"{('✅' if _value(payment.status) == PaymentStatus.PAID.value else '💳')} "
-                f"Платёж № {payment.id}",
+                f"{'✅' if _value(payment.status) == PaymentStatus.PAID.value else '💳'} "
+                f"{_payment_purpose(payment.payment_code)[0][:35]}",
                 f"pay_open:{payment.id}",
             )
             for payment in payments_list
@@ -223,7 +242,8 @@ async def consult_pay(callback: CallbackQuery, db):
     if case is None:
         await _show_payment_error(
             callback,
-            "Активное дело не найдено. Откройте «Моё дело» и продолжите с текущего шага.",
+            "Активное дело не найдено. Откройте «Моё дело» и продолжите с "
+            "текущего шага.",
         )
         return
 
@@ -250,7 +270,8 @@ async def consult_pay(callback: CallbackQuery, db):
         logger.exception("Unexpected error while preparing Telegram M2 payment")
         await _show_payment_error(
             callback,
-            "Не удалось подготовить оплату. Проверьте выбранное время и попробуйте ещё раз.",
+            "Не удалось подготовить оплату. Проверьте выбранное время и "
+            "попробуйте ещё раз.",
         )
         return
 
@@ -275,7 +296,8 @@ async def start_payment(callback: CallbackQuery, db, code):
     if case is None:
         await _show_payment_error(
             callback,
-            "Активное дело не найдено. Откройте карточку дела и продолжите с актуального этапа.",
+            "Активное дело не найдено. Откройте карточку дела и продолжите с "
+            "актуального этапа.",
         )
         return
 
@@ -303,7 +325,8 @@ async def start_payment(callback: CallbackQuery, db, code):
         )
         await _show_payment_error(
             callback,
-            "Не удалось сформировать ссылку. Попробуйте немного позже или обратитесь к менеджеру.",
+            "Не удалось сформировать ссылку. Попробуйте немного позже или "
+            "обратитесь к менеджеру.",
         )
         return
 
@@ -337,8 +360,10 @@ async def open_payment(callback: CallbackQuery, db):
 
 @router.callback_query(lambda c: c.data.startswith("pay_fake_success:"))
 async def fake(callback: CallbackQuery, db):
+    from app.config import settings
+
     if settings.app_env != "local":
-        await callback.answer("DEV-подтверждение отключено.", show_alert=True)
+        await callback.answer("Тестовое подтверждение отключено.", show_alert=True)
         return
 
     try:
