@@ -12,6 +12,7 @@ from app.domain.consultations.consultation_service import (
     ConsultationNotFoundError,
     ConsultationSlotError,
 )
+from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.models.case import Case
 from app.models.consultation import Consultation
@@ -128,8 +129,13 @@ class ConsultationRescheduleService:
             raise ConsultationSlotError(
                 "Юрист выбранного времени сейчас недоступен."
             )
-        expected_lawyer_id = case.assigned_lawyer_id or locked_consultation.lawyer_id
-        if expected_lawyer_id is not None and new_slot.lawyer_id != expected_lawyer_id:
+        expected_lawyer_id = (
+            case.assigned_lawyer_id or locked_consultation.lawyer_id
+        )
+        if (
+            expected_lawyer_id is not None
+            and new_slot.lawyer_id != expected_lawyer_id
+        ):
             raise ConsultationSlotError(
                 "Новое время относится к другому юристу. "
                 "Прежняя запись сохранена."
@@ -197,6 +203,12 @@ class ConsultationRescheduleService:
                         "scheduled_at": new_slot.starts_at.isoformat(),
                         "source": source,
                     },
+                )
+                await NotificationEngine(self.db).emit(
+                    event_code="CONSULTATION_RESCHEDULED",
+                    case_id=case.id,
+                    user_id=client_id,
+                    payload={"date": new_slot.starts_at.isoformat()},
                 )
                 await self.db.flush()
         except IntegrityError as exc:
