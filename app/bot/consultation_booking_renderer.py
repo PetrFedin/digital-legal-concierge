@@ -203,6 +203,21 @@ def render_lawyer_card(lawyer: ClientLawyerOption):
     )
 
 
+def render_assigned_lawyer_empty():
+    return (
+        "👤 Мой юрист\n\n"
+        "У назначенного по делу юриста пока нет свободного времени. "
+        "Юрист по делу не изменён, скрытого переназначения не произошло.\n\n"
+        "Согласуйте дополнительное время с менеджером или вернитесь в карточку дела.",
+        one(
+            ("💬 Согласовать время", "contact_lawyer"),
+            ("📁 Моё дело", "my_case_open"),
+            ("⬅ Назад", "consult_slot_open"),
+            ("🏠 Главное меню", "nav_home"),
+        ),
+    )
+
+
 def render_dates(
     dates: tuple[ClientDateOption, ...],
     *,
