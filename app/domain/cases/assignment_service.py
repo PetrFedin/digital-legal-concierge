@@ -3,17 +3,17 @@ from __future__ import annotations
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.cases.case_service import CaseAssignmentError, CaseService
+from app.domain.cases.case_service import CaseService
 from app.models.case import Case
 from app.models.lawyer import Lawyer
 
 
 class CaseAssignmentService:
-    """Capacity-aware facade for assigning lawyers to cases.
+    """Workload-aware facade around the canonical case assignment service.
 
-    ``CaseService`` remains the source of truth for assignment integrity and
-    audit events. This facade adds workload visibility and prevents new cases
-    from being assigned to lawyers who have reached their configured limit.
+    Read models for admin, CRM and automatic assignment are built here. The
+    actual state mutation, row locking, capacity enforcement, integrity checks
+    and audit event are owned exclusively by ``CaseService.assign_lawyer``.
     """
 
     def __init__(self, db: AsyncSession):
@@ -77,49 +77,6 @@ class CaseAssignmentService:
         lawyer_id: int,
         actor_id: int | None,
     ) -> Case:
-        if case is None:
-            raise CaseAssignmentError("Дело для назначения не найдено.")
-
-        lawyer = (
-            await self.db.execute(
-                select(Lawyer)
-                .where(
-                    Lawyer.id == lawyer_id,
-                    Lawyer.is_active.is_(True),
-                )
-                .with_for_update()
-            )
-        ).scalar_one_or_none()
-        if lawyer is None:
-            raise CaseAssignmentError("Активный юрист для назначения не найден.")
-
-        # Repeating the same assignment is idempotent and must not fail merely
-        # because the lawyer is now exactly at the configured capacity.
-        if case.assigned_lawyer_id == lawyer_id:
-            return await CaseService(self.db).assign_lawyer(
-                case=case,
-                lawyer_id=lawyer_id,
-                actor_id=actor_id,
-            )
-
-        workload_limit = max(int(lawyer.workload_limit or 0), 0)
-        current_workload = int(
-            (
-                await self.db.execute(
-                    select(func.count(Case.id)).where(
-                        Case.assigned_lawyer_id == lawyer_id,
-                        Case.status.notin_(CaseService.CLOSED_STATUSES),
-                    )
-                )
-            ).scalar_one()
-            or 0
-        )
-        if current_workload >= workload_limit:
-            raise CaseAssignmentError(
-                "Нельзя назначить юриста: достигнут лимит активных дел "
-                f"({current_workload}/{workload_limit})."
-            )
-
         return await CaseService(self.db).assign_lawyer(
             case=case,
             lawyer_id=lawyer_id,
