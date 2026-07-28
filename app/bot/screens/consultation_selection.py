@@ -22,6 +22,7 @@ from app.domain.consultations.slot_selection_service import (
     ConsultationSlotSelectionError,
     ConsultationSlotSelectionService,
 )
+from app.domain.consultations.slot_service import SlotService
 from app.domain.statuses.case_statuses import CaseStatus, RouteCode
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.models.consultation import Consultation
@@ -37,6 +38,10 @@ async def _load_selection(
     *,
     lawyer_reference: int | None = None,
 ):
+    # Expired holds must not hide slots until the next scheduler tick. Reuse
+    # the canonical idempotent cleanup before every server-side refresh.
+    await SlotService(db).release_expired_holds()
+
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     if user.is_blocked:
