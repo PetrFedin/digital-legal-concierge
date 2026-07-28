@@ -12,6 +12,7 @@ from app.domain.statuses.case_statuses import CaseStatus, RouteCode
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.models.case import Case
 from app.models.consultation import Consultation
+from app.models.consultation_slot import ConsultationSlot
 
 
 class ConsultationNotFoundError(LookupError):
@@ -162,10 +163,13 @@ class ConsultationService:
         self._ensure_consultation_belongs_to_case(consultation, case)
         normalized = (description or "").strip()
         if not normalized:
-            raise ConsultationDescriptionError("Описание консультации не может быть пустым.")
+            raise ConsultationDescriptionError(
+                "Описание консультации не может быть пустым."
+            )
         if len(normalized) > self.DESCRIPTION_MAX_LENGTH:
             raise ConsultationDescriptionError(
-                f"Описание консультации не должно превышать {self.DESCRIPTION_MAX_LENGTH} символов."
+                f"Описание консультации не должно превышать "
+                f"{self.DESCRIPTION_MAX_LENGTH} символов."
             )
 
         current = ConsultationStatus(consultation.status)
@@ -193,7 +197,8 @@ class ConsultationService:
             if consultation.client_description == normalized:
                 return consultation
             raise ConsultationDescriptionError(
-                "Описание уже сохранено; изменение после завершения шага требует отдельной операции."
+                "Описание уже сохранено; изменение после завершения шага "
+                "требует отдельной операции."
             )
 
         validated_status = ConsultationStateMachine.transition(
@@ -294,7 +299,11 @@ class ConsultationService:
 
         try:
             async with self.db.begin_nested():
-                slot = await self.slots.hold_slot(slot_id, client_id, consultation.id)
+                slot = await self.slots.hold_slot(
+                    slot_id,
+                    client_id,
+                    consultation.id,
+                )
                 consultation.slot_id = slot.id
                 consultation.lawyer_id = slot.lawyer_id
                 consultation.scheduled_at = slot.starts_at
@@ -324,8 +333,15 @@ class ConsultationService:
             ) from exc
         return consultation, slot
 
-    async def reserve_slot(self, *, consultation, case, client_id: int, slot_id: int):
-        """Legacy slot selection retained until Telegram uses the M2 pre-payment flow."""
+    async def reserve_slot(
+        self,
+        *,
+        consultation,
+        case,
+        client_id: int,
+        slot_id: int,
+    ):
+        """Legacy slot selection retained until Telegram uses M2 pre-payment."""
         previous_slot_id = consultation.slot_id
         if previous_slot_id == slot_id:
             slot = await self.slots.get_slot(slot_id)
@@ -413,8 +429,11 @@ class ConsultationService:
     async def mark_booked_after_payment(self, *, consultation, case):
         if not consultation.slot_id:
             raise ValueError("Для консультации не выбран слот")
-        slot = await self.slots.confirm_booking(consultation.slot_id, consultation.id)
-        consultation.status = ConsultationStatus.BOOKED
+        slot = await self.slots.confirm_booking(
+            consultation.slot_id,
+            consultation.id,
+        )
+        consultation.status = ConsultationStatus.BOOKED.value
         consultation.lawyer_id = slot.lawyer_id
         consultation.scheduled_at = slot.starts_at
         await add_case_history_event(
@@ -433,24 +452,112 @@ class ConsultationService:
         await self.db.flush()
         return consultation
 
-    async def cancel(self, *, consultation, case, actor_type: str, actor_id: int | None, comment: str):
-        if consultation.slot_id:
-            await self.slots.release_slot(consultation.slot_id, consultation.id)
-        consultation.status = ConsultationStatus.CANCELLED
+    async def cancel(
+        self,
+        *,
+        consultation,
+        case,
+        actor_type: str,
+        actor_id: int | None,
+        comment: str,
+    ) -> Consultation:
+        """Cancel a consultation and release only its linked slot atomically.
+
+        The caller controls the outer transaction. Repeating cancellation is
+        idempotent; completed and declined consultations cannot be reopened or
+        cancelled through this operation.
+        """
+        self._ensure_consultation_belongs_to_case(consultation, case)
+        locked = (
+            await self.db.execute(
+                select(Consultation)
+                .where(
+                    Consultation.id == consultation.id,
+                    Consultation.case_id == case.id,
+                )
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if locked is None:
+            raise ConsultationNotFoundError("Консультация не найдена.")
+
+        try:
+            current = ConsultationStatus(locked.status)
+        except (TypeError, ValueError) as exc:
+            raise ActiveConsultationConflictError(
+                "Неизвестный статус консультации не допускает отмену."
+            ) from exc
+        if current == ConsultationStatus.CANCELLED:
+            return locked
+        if current in {
+            ConsultationStatus.DONE,
+            ConsultationStatus.CLOSED,
+            ConsultationStatus.DECLINED,
+        }:
+            raise ActiveConsultationConflictError(
+                "Завершённую консультацию нельзя отменить."
+            )
+
+        previous_slot_id = locked.slot_id
+        previous_case_status = case.status
+        if previous_slot_id is not None:
+            slot = (
+                await self.db.execute(
+                    select(ConsultationSlot)
+                    .where(
+                        ConsultationSlot.id == previous_slot_id,
+                        ConsultationSlot.consultation_id == locked.id,
+                    )
+                    .execution_options(populate_existing=True)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if slot is None:
+                raise ConsultationSlotError(
+                    "Связанный слот консультации не найден или принадлежит "
+                    "другой записи."
+                )
+            await self.slots.release_slot(previous_slot_id, locked.id)
+            locked.slot_id = None
+
+        locked.status = ConsultationStatus.CANCELLED.value
+        if case.route in {RouteCode.M2, RouteCode.M2.value}:
+            case.status = CaseStatus.M2_CLOSED.value
+            case.next_action = "Консультация отменена"
         await add_case_history_event(
             self.db,
             actor_type=actor_type,
             actor_id=actor_id,
             case_id=case.id,
             action="CONSULTATION_CANCELLED",
-            new_value={"consultation_id": consultation.id},
+            old_value={
+                "consultation_id": locked.id,
+                "consultation_status": current.value,
+                "case_status": previous_case_status,
+                "slot_id": previous_slot_id,
+            },
+            new_value={
+                "consultation_id": locked.id,
+                "consultation_status": locked.status,
+                "case_status": case.status,
+                "slot_id": None,
+            },
             comment=comment,
         )
         await self.db.flush()
-        return consultation
+        return locked
 
-    async def mark_done(self, *, consultation, case, lawyer_id: int, result: str, decision: str):
-        consultation.status = ConsultationStatus.DONE
+    async def mark_done(
+        self,
+        *,
+        consultation,
+        case,
+        lawyer_id: int,
+        result: str,
+        decision: str,
+    ):
+        consultation.status = ConsultationStatus.DONE.value
         consultation.lawyer_id = lawyer_id
         consultation.lawyer_result = result
         consultation.decision = decision
@@ -467,7 +574,8 @@ class ConsultationService:
             case_status, next_action = self._CASE_STATE_BY_CONSULTATION[status]
         except KeyError as exc:
             raise ActiveConsultationConflictError(
-                f"Статус консультации {status.value} не относится к pre-payment этапу М2."
+                f"Статус консультации {status.value} не относится к "
+                "pre-payment этапу М2."
             ) from exc
         case.route = RouteCode.M2.value
         case.status = case_status.value
