@@ -1,9 +1,13 @@
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_history import add_case_history_event
+from app.domain.cases.lawyer_capacity_service import (
+    LawyerCapacityError,
+    LawyerCapacityService,
+)
 from app.domain.consultations.consultation_service import ConsultationService
 from app.domain.statuses.case_statuses import (
     CLOSED_CASE_STATUSES,
@@ -13,7 +17,6 @@ from app.domain.statuses.case_statuses import (
 from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
-from app.models.lawyer import Lawyer
 from app.models.user import User
 
 
@@ -193,6 +196,7 @@ class CaseService:
         case: Case,
         lawyer_id: int,
         actor_id: int | None,
+        actor_type: str = "admin",
     ):
         if case is None:
             raise CaseAssignmentError("Дело для назначения не найдено.")
@@ -207,41 +211,17 @@ class CaseService:
         if locked_case.status in self.CLOSED_STATUSES:
             raise CaseAssignmentError("Нельзя назначить юриста на закрытое дело.")
 
-        lawyer = (
-            await self.db.execute(
-                select(Lawyer)
-                .where(
-                    Lawyer.id == lawyer_id,
-                    Lawyer.is_active.is_(True),
+        capacity = LawyerCapacityService(self.db)
+        try:
+            if locked_case.assigned_lawyer_id == lawyer_id:
+                await capacity.lock_active_lawyer(lawyer_id)
+            else:
+                await capacity.ensure_available(
+                    lawyer_id=lawyer_id,
+                    exclude_case_id=locked_case.id,
                 )
-                .with_for_update()
-            )
-        ).scalar_one_or_none()
-        if lawyer is None:
-            raise CaseAssignmentError("Активный юрист для назначения не найден.")
-
-        # The same assignment is idempotent and remains valid even when the
-        # lawyer is exactly at the configured limit. Every new assignment is
-        # checked while the lawyer row is locked, so admin, CRM and automatic
-        # flows cannot bypass capacity through a direct CaseService call.
-        if locked_case.assigned_lawyer_id != lawyer_id:
-            workload_limit = max(int(lawyer.workload_limit or 0), 0)
-            current_workload = int(
-                (
-                    await self.db.execute(
-                        select(func.count(Case.id)).where(
-                            Case.assigned_lawyer_id == lawyer_id,
-                            Case.status.notin_(self.CLOSED_STATUSES),
-                        )
-                    )
-                ).scalar_one()
-                or 0
-            )
-            if current_workload >= workload_limit:
-                raise CaseAssignmentError(
-                    "Нельзя назначить юриста: достигнут лимит активных дел "
-                    f"({current_workload}/{workload_limit})."
-                )
+        except LawyerCapacityError as exc:
+            raise CaseAssignmentError(str(exc)) from exc
 
         active_consultations = list(
             (
@@ -312,7 +292,7 @@ class CaseService:
         locked_case.assigned_lawyer_id = lawyer_id
         await add_case_history_event(
             self.db,
-            actor_type="admin",
+            actor_type=actor_type,
             actor_id=actor_id,
             case_id=locked_case.id,
             action="LAWYER_ASSIGNED",
