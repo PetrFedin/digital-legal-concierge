@@ -18,6 +18,59 @@ from app.security.file_uploads import (
 RETRYABLE_SECURITY_STATUSES = {"LEGACY_UNVERIFIED", "SCAN_ERROR"}
 
 
+async def _find_duplicate(
+    db: AsyncSession,
+    *,
+    document: Document,
+    sha256: str | None,
+) -> Document | None:
+    if not sha256:
+        return None
+    return (
+        await db.execute(
+            select(Document)
+            .where(
+                Document.case_id == document.case_id,
+                Document.sha256 == sha256,
+                Document.id != document.id,
+            )
+            .order_by(Document.id.asc())
+        )
+    ).scalars().first()
+
+
+async def _mark_duplicate(
+    db: AsyncSession,
+    *,
+    document: Document,
+    duplicate: Document,
+    sha256: str,
+) -> None:
+    current_path = Path(document.file_path)
+    duplicate_path = Path(duplicate.file_path)
+    if current_path != duplicate_path:
+        try:
+            current_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    document.file_path = duplicate.file_path
+    document.sha256 = None
+    document.security_status = "DUPLICATE"
+    document.security_reason = f"duplicate_of:{duplicate.id};sha256:{sha256}"[:255]
+    await add_case_history_event(
+        db,
+        actor_type="system",
+        actor_id=None,
+        case_id=document.case_id,
+        action="DOCUMENT_SECURITY_RESCAN_DUPLICATE",
+        new_value={
+            "document_id": document.id,
+            "duplicate_of_document_id": duplicate.id,
+            "sha256": sha256,
+        },
+    )
+
+
 async def rescan_legacy_documents(db: AsyncSession, *, limit: int = 100) -> dict[str, int]:
     documents = (
         await db.execute(
@@ -33,6 +86,7 @@ async def rescan_legacy_documents(db: AsyncSession, *, limit: int = 100) -> dict
         "verified": 0,
         "quarantined": 0,
         "missing": 0,
+        "duplicate": 0,
         "scan_error": 0,
     }
     max_bytes = max(1, int(settings.max_document_upload_mb)) * 1024 * 1024
@@ -61,6 +115,21 @@ async def rescan_legacy_documents(db: AsyncSession, *, limit: int = 100) -> dict
                 max_bytes=max_bytes,
             )
         except UploadSecurityError as error:
+            duplicate = await _find_duplicate(
+                db,
+                document=document,
+                sha256=error.sha256,
+            )
+            if duplicate and error.sha256:
+                await _mark_duplicate(
+                    db,
+                    document=document,
+                    duplicate=duplicate,
+                    sha256=error.sha256,
+                )
+                result["duplicate"] += 1
+                continue
+
             quarantine_path = None
             if settings.quarantine_rejected_uploads:
                 try:
@@ -100,6 +169,21 @@ async def rescan_legacy_documents(db: AsyncSession, *, limit: int = 100) -> dict
             document.security_reason = type(error).__name__[:255]
             result["scan_error"] += 1
         else:
+            duplicate = await _find_duplicate(
+                db,
+                document=document,
+                sha256=inspection.sha256,
+            )
+            if duplicate:
+                await _mark_duplicate(
+                    db,
+                    document=document,
+                    duplicate=duplicate,
+                    sha256=inspection.sha256,
+                )
+                result["duplicate"] += 1
+                continue
+
             document.file_name = inspection.safe_name
             document.mime_type = inspection.mime_type
             document.file_size = inspection.size_bytes
