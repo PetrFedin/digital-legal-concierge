@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import re
 from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
+from app.api.security_event_center import require_security_superadmin
 from app.config import settings
 from app.security.backup_encryption import (
     BACKUP_SUFFIX,
@@ -13,10 +15,12 @@ from app.security.backup_encryption import (
     inspect_encrypted_backup,
     verify_encrypted_backup,
 )
-from app.api.security_event_center import require_security_superadmin
 from app.security.security_events import record_security_event_best_effort
 
 router = APIRouter(tags=["backup-center"])
+ARCHIVE_NAME_RE = re.compile(
+    r"^legal_concierge_[0-9]{8}_[0-9]{6}(?:_[0-9]+)?\.dlcbak$"
+)
 
 
 def _token(request: Request, header_token: str | None) -> str | None:
@@ -27,11 +31,21 @@ def _require_backup_admin(request: Request, header_token: str | None) -> dict:
     return require_security_superadmin(_token(request, header_token))
 
 
+def _safe_backup_root() -> Path:
+    root = Path(settings.backup_dir)
+    if root.exists() and (root.is_symlink() or not root.is_dir()):
+        raise BackupSecurityError("Каталог резервных копий имеет небезопасный тип")
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        root.chmod(0o700)
+    except OSError:
+        pass
+    return root
+
+
 def _safe_archive(root: Path, archive_name: str) -> Path:
-    if not archive_name or Path(archive_name).name != archive_name:
+    if not ARCHIVE_NAME_RE.fullmatch(str(archive_name or "")):
         raise HTTPException(400, "Некорректное имя резервной копии")
-    if not archive_name.endswith(BACKUP_SUFFIX):
-        raise HTTPException(400, "Поддерживаются только зашифрованные .dlcbak")
     candidate = root / archive_name
     if candidate.is_symlink() or not candidate.is_file():
         raise HTTPException(404, "Резервная копия не найдена")
@@ -39,14 +53,34 @@ def _safe_archive(root: Path, archive_name: str) -> Path:
 
 
 def backup_inventory() -> dict:
-    root = Path(settings.backup_dir)
-    root.mkdir(parents=True, exist_ok=True)
     try:
-        root.chmod(0o700)
-    except OSError:
-        pass
+        root = _safe_backup_root()
+    except BackupSecurityError:
+        return {
+            "ok": False,
+            "backup_dir_exists": False,
+            "backup_dir_secure": False,
+            "encrypted_backups_count": 0,
+            "insecure_legacy_backups_count": 0,
+            "unreadable_encrypted_backups_count": 0,
+            "unsafe_archive_names_count": 0,
+            "latest": [],
+            "database_url_configured": bool(settings.database_url),
+            "storage_exists": Path(settings.storage_dir).exists(),
+            "encryption_key_id": settings.backup_encryption_key_id,
+            "max_backup_mb": settings.max_backup_mb,
+            "retention_days": settings.backup_retention_days,
+            "secrets_included": False,
+            "restore_mode": "verified_staging_only",
+        }
+    all_encrypted = [
+        path
+        for path in root.glob(f"*{BACKUP_SUFFIX}")
+        if path.is_file() and not path.is_symlink()
+    ]
+    unsafe_names = [path for path in all_encrypted if not ARCHIVE_NAME_RE.fullmatch(path.name)]
     encrypted = sorted(
-        [path for path in root.glob(f"*{BACKUP_SUFFIX}") if path.is_file() and not path.is_symlink()],
+        [path for path in all_encrypted if ARCHIVE_NAME_RE.fullmatch(path.name)],
         key=lambda path: path.stat().st_mtime,
         reverse=True,
     )
@@ -63,7 +97,7 @@ def backup_inventory() -> dict:
         reverse=True,
     )
     latest: list[dict] = []
-    unreadable = 0
+    unreadable = len(unsafe_names)
     for path in encrypted[:10]:
         try:
             metadata = inspect_encrypted_backup(path)
@@ -91,9 +125,11 @@ def backup_inventory() -> dict:
     return {
         "ok": unreadable == 0 and len(insecure) == 0,
         "backup_dir_exists": root.exists(),
+        "backup_dir_secure": True,
         "encrypted_backups_count": len(encrypted),
         "insecure_legacy_backups_count": len(insecure),
         "unreadable_encrypted_backups_count": unreadable,
+        "unsafe_archive_names_count": len(unsafe_names),
         "latest": latest,
         "database_url_configured": bool(settings.database_url),
         "storage_exists": Path(settings.storage_dir).exists(),
@@ -128,7 +164,10 @@ async def verify_backup_archive(
     x_admin_token: str | None = Header(default=None),
 ):
     actor = _require_backup_admin(request, x_admin_token)
-    root = Path(settings.backup_dir)
+    try:
+        root = _safe_backup_root()
+    except BackupSecurityError as error:
+        raise HTTPException(409, "Каталог резервных копий небезопасен") from error
     candidate = _safe_archive(root, archive_name)
     try:
         metadata = verify_encrypted_backup(candidate)
@@ -178,7 +217,7 @@ function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 function size(v){if(v===null||v===undefined)return '—';if(v<1024)return v+' Б';if(v<1048576)return (v/1024).toFixed(1)+' КБ';return (v/1048576).toFixed(1)+' МБ'}
 async function api(path,opts={}){const response=await fetch(path,{...opts,headers:{'x-admin-token':token,'Content-Type':'application/json',...(opts.headers||{})}});const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.detail||'Ошибка');return data}
 async function boot(){const session=await fetch('/auth/session');if(!session.ok){location.href='/login';return}const data=await session.json();if(!(data.roles||[data.role]).includes('superadmin')||!data.mfa){document.body.innerHTML='<main><div class="card bad">Требуется MFA-сессия суперадминистратора.</div></main>';return}token=data.api_token;await load()}
-async function load(){try{const data=await api('/backup-center/status');summary.innerHTML=`<div class="card"><b>Зашифрованные</b><p class="ok">${esc(data.encrypted_backups_count)}</p></div><div class="card"><b>Небезопасные старые</b><p class="${data.insecure_legacy_backups_count?'bad':'ok'}">${esc(data.insecure_legacy_backups_count)}</p></div><div class="card"><b>Нечитаемые</b><p class="${data.unreadable_encrypted_backups_count?'bad':'ok'}">${esc(data.unreadable_encrypted_backups_count)}</p></div>`;files.innerHTML=data.latest.length?`<table><tr><th>Файл</th><th>Ключ / дата</th><th>Размер</th><th></th></tr>${data.latest.map(x=>`<tr><td>${esc(x.name)}</td><td>${esc(x.key_id||'не распознан')}<br><span class="muted">${esc(x.created_at||'')}</span></td><td>${esc(size(x.encrypted_size))}</td><td><button onclick="verifyArchive('${esc(x.name)}',this)">Полная проверка</button></td></tr>`).join('')}</table>`:'Копий пока нет.'}catch(error){message.className='bad';message.textContent=error.message}}
+async function load(){try{const data=await api('/backup-center/status');summary.innerHTML=`<div class="card"><b>Зашифрованные</b><p class="ok">${esc(data.encrypted_backups_count)}</p></div><div class="card"><b>Небезопасные старые</b><p class="${data.insecure_legacy_backups_count?'bad':'ok'}">${esc(data.insecure_legacy_backups_count)}</p></div><div class="card"><b>Нечитаемые</b><p class="${data.unreadable_encrypted_backups_count?'bad':'ok'}">${esc(data.unreadable_encrypted_backups_count)}</p></div>`;files.innerHTML=data.latest.length?`<table><tr><th>Файл</th><th>Ключ / дата</th><th>Размер</th><th></th></tr>${data.latest.map(x=>`<tr><td>${esc(x.name)}</td><td>${esc(x.key_id||'не распознан')}<br><span class="muted">${esc(x.created_at||'')}</span></td><td>${esc(size(x.encrypted_size))}</td><td><button data-archive="${esc(x.name)}">Полная проверка</button></td></tr>`).join('')}</table>`:'Копий пока нет.';files.querySelectorAll('button[data-archive]').forEach(button=>button.addEventListener('click',()=>verifyArchive(button.dataset.archive,button)))}catch(error){message.className='bad';message.textContent=error.message}}
 async function verifyArchive(name,button){button.disabled=true;message.className='muted';message.textContent='Расшифрование и проверка manifest…';try{const data=await api('/backup-center/verify/'+encodeURIComponent(name),{method:'POST',body:'{}'});message.className='ok';message.textContent='Проверка успешна: '+data.plaintext_sha256.slice(0,16)+'…'}catch(error){message.className='bad';message.textContent=error.message}finally{button.disabled=false}}
 boot();
 </script>
