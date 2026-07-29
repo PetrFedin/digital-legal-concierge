@@ -33,6 +33,18 @@ async def table_columns(db, table_name: str) -> set[str]:
     return {row[1] for row in rows}
 
 
+async def portable_table_columns(db, table_name: str) -> set[str]:
+    connection = await db.connection()
+
+    def load_columns(sync_connection):
+        inspector = inspect(sync_connection)
+        if not inspector.has_table(table_name):
+            return set()
+        return {column["name"] for column in inspector.get_columns(table_name)}
+
+    return await connection.run_sync(load_columns)
+
+
 async def migrate_admin_users(db):
     if not settings.database_url.startswith("sqlite"):
         return
@@ -43,6 +55,45 @@ async def migrate_admin_users(db):
         await db.execute(text("ALTER TABLE admin_users ADD COLUMN username VARCHAR(100)"))
     if "telegram_id" not in columns:
         await db.execute(text("ALTER TABLE admin_users ADD COLUMN telegram_id BIGINT"))
+    await db.commit()
+
+
+CASE_ACTIVE_M2_UNIQUE_INDEX_DDL = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_cases_active_m2_client "
+    "ON cases(client_id) "
+    "WHERE route = 'M2' AND status NOT IN "
+    "('M1_REJECTED', 'M1_CLOSED', 'M2_CLOSED', 'ARCHIVED')"
+)
+
+
+class DuplicateActiveM2CaseError(RuntimeError):
+    """Raised when legacy active M2 case duplicates block the unique index."""
+
+
+async def migrate_cases(db):
+    columns = await portable_table_columns(db, "cases")
+    if not columns:
+        return
+
+    duplicate = (
+        await db.execute(
+            text(
+                "SELECT client_id, COUNT(*) AS duplicate_count "
+                "FROM cases "
+                "WHERE route = 'M2' AND status NOT IN "
+                "('M1_REJECTED', 'M1_CLOSED', 'M2_CLOSED', 'ARCHIVED') "
+                "GROUP BY client_id HAVING COUNT(*) > 1 LIMIT 1"
+            )
+        )
+    ).first()
+    if duplicate:
+        raise DuplicateActiveM2CaseError(
+            "Cannot create active M2 case uniqueness index: "
+            f"client_id={duplicate.client_id!r} has "
+            f"{duplicate.duplicate_count} active M2 cases"
+        )
+
+    await db.execute(text(CASE_ACTIVE_M2_UNIQUE_INDEX_DDL))
     await db.commit()
 
 
@@ -145,18 +196,6 @@ class DuplicateOpenPaymentError(RuntimeError):
     """Raised when legacy open stage payments block the unique index."""
 
 
-async def portable_table_columns(db, table_name: str) -> set[str]:
-    connection = await db.connection()
-
-    def load_columns(sync_connection):
-        inspector = inspect(sync_connection)
-        if not inspector.has_table(table_name):
-            return set()
-        return {column["name"] for column in inspector.get_columns(table_name)}
-
-    return await connection.run_sync(load_columns)
-
-
 async def migrate_payments(db):
     dialect_name = db.bind.dialect.name
     additions = PAYMENT_MIGRATION_COLUMN_DDL.get(dialect_name)
@@ -240,6 +279,7 @@ async def main():
         await connection.run_sync(Base.metadata.create_all)
     async with AsyncSessionLocal() as db:
         await migrate_admin_users(db)
+        await migrate_cases(db)
         await migrate_consultations(db)
         await migrate_payments(db)
         await get_or_create_lawyer(db)
