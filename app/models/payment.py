@@ -32,6 +32,14 @@ class Payment(Base, TimestampMixin):
             sqlite_where=text("provider IS NOT NULL AND provider_payment_id IS NOT NULL"),
             postgresql_where=text("provider IS NOT NULL AND provider_payment_id IS NOT NULL"),
         ),
+        Index(
+            "uq_payments_open_case_code",
+            "case_id",
+            "payment_code",
+            unique=True,
+            sqlite_where=text("status IN ('PENDING', 'WAITING_CONFIRMATION')"),
+            postgresql_where=text("status IN ('PENDING', 'WAITING_CONFIRMATION')"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
