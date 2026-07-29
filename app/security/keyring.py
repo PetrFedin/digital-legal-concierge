@@ -161,6 +161,15 @@ def mfa_encryption_ring() -> KeyRing:
     )
 
 
+def audit_integrity_ring() -> KeyRing:
+    return _build_ring(
+        purpose="audit-integrity",
+        active_id=settings.audit_integrity_key_id,
+        active_secret=settings.audit_integrity_key,
+        previous=settings.audit_integrity_previous_keys,
+    )
+
+
 def hmac_digest(entry: KeyEntry, message: bytes) -> str:
     return hmac.new(entry.secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
 
@@ -182,11 +191,13 @@ def security_key_status() -> dict[str, object]:
         "session_signing": session_signing_ring(),
         "security_hmac": security_hmac_ring(),
         "mfa_encryption": mfa_encryption_ring(),
+        "audit_integrity": audit_integrity_ring(),
     }
     configured = {
         "session_signing": bool(str(settings.session_signing_key or "").strip()),
         "security_hmac": bool(str(settings.security_hmac_key or "").strip()),
         "mfa_encryption": bool(str(settings.mfa_encryption_key or "").strip()),
+        "audit_integrity": bool(str(settings.audit_integrity_key or "").strip()),
     }
     active_entries = [ring.active for ring in rings.values() if ring.active]
     strong = {

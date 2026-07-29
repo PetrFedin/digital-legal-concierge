@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     mfa_encryption_key_id: str = "mfa-v1"
     mfa_encryption_key: str = ""
     mfa_encryption_previous_keys: str = ""
+    audit_integrity_key_id: str = "audit-v1"
+    audit_integrity_key: str = ""
+    audit_integrity_previous_keys: str = ""
     allow_legacy_security_key_fallback: bool = False
 
     legal_key_rate: float = 0.16
