@@ -26,7 +26,11 @@ class AdminSessionGuardMiddleware(BaseHTTPMiddleware):
         return response
 
     async def dispatch(self, request: Request, call_next):
-        if request.url.path.startswith(("/login", "/mfa", "/logout")):
+        path = request.url.path
+        challenge_route = path.startswith(
+            ("/mfa/setup", "/mfa/verify", "/mfa/qr")
+        )
+        if path.startswith("/login") or path.startswith("/logout") or challenge_route:
             return await call_next(request)
 
         token = request.headers.get("x-admin-token") or request.cookies.get(
