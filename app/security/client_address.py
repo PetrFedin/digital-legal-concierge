@@ -27,7 +27,9 @@ def _parse_networks(raw: str) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Net
         try:
             result.append(ipaddress.ip_network(value, strict=False))
         except ValueError as error:
-            raise RuntimeError(f"Некорректная сеть TRUSTED_PROXY_CIDRS: {value}") from error
+            raise RuntimeError(
+                f"Некорректная сеть TRUSTED_PROXY_CIDRS: {value}"
+            ) from error
     return tuple(result)
 
 
@@ -63,7 +65,10 @@ def _is_trusted(
     address: ipaddress.IPv4Address | ipaddress.IPv6Address,
     networks: Iterable[ipaddress.IPv4Network | ipaddress.IPv6Network],
 ) -> bool:
-    return any(address.version == network.version and address in network for network in networks)
+    return any(
+        address.version == network.version and address in network
+        for network in networks
+    )
 
 
 def _header_values(scope: dict, name: bytes) -> list[str]:
@@ -113,7 +118,17 @@ def resolve_client_address(scope: dict) -> ClientAddressResolution:
             error="invalid_direct_peer",
         )
 
-    networks = trusted_proxy_networks()
+    try:
+        networks = trusted_proxy_networks()
+    except RuntimeError:
+        return ClientAddressResolution(
+            direct_peer=str(direct),
+            client_ip=str(direct),
+            trusted_proxy_applied=False,
+            forwarded_headers_present=forwarded_present,
+            forwarded_headers_ignored=forwarded_present,
+            error="invalid_trusted_proxy_config",
+        )
     if not networks or not _is_trusted(direct, networks):
         return ClientAddressResolution(
             direct_peer=str(direct),
@@ -168,20 +183,23 @@ def resolve_client_address(scope: dict) -> ClientAddressResolution:
     )
 
 
-def _trusted_forwarded_proto(scope: dict, resolution: ClientAddressResolution) -> str | None:
+def _trusted_forwarded_proto(
+    scope: dict,
+    resolution: ClientAddressResolution,
+) -> tuple[str | None, str | None]:
     if not resolution.trusted_proxy_applied or not settings.trust_forwarded_proto:
-        return None
+        return None, None
     values = _header_values(scope, b"x-forwarded-proto")
     if not values:
-        return None
+        return None, None
     parts = [part.strip().lower() for part in ",".join(values).split(",")]
     if not parts or any(part not in {"http", "https"} for part in parts):
-        return None
-    return parts[0]
+        return None, "invalid_forwarded_proto"
+    return parts[0], None
 
 
 class TrustedProxyClientAddressMiddleware:
-    """Trust forwarding headers only when the direct peer is in an explicit CIDR allowlist."""
+    """Trust forwarding headers only for direct peers in an explicit CIDR allowlist."""
 
     def __init__(self, app):
         self.app = app
@@ -192,23 +210,24 @@ class TrustedProxyClientAddressMiddleware:
             return
 
         resolution = resolve_client_address(scope)
+        trusted_proto, proto_error = _trusted_forwarded_proto(scope, resolution)
+        effective_error = resolution.error or proto_error
         state = scope.setdefault("state", {})
         state["direct_peer_ip"] = resolution.direct_peer
         state["client_ip"] = resolution.client_ip
         state["trusted_proxy_applied"] = resolution.trusted_proxy_applied
         state["forwarded_headers_present"] = resolution.forwarded_headers_present
         state["forwarded_headers_ignored"] = resolution.forwarded_headers_ignored
-        state["forwarded_header_error"] = resolution.error
+        state["forwarded_header_error"] = effective_error
 
         if resolution.client_ip and scope.get("client"):
             scope["client"] = (resolution.client_ip, scope["client"][1])
-        trusted_proto = _trusted_forwarded_proto(scope, resolution)
         if trusted_proto:
             scope["scheme"] = trusted_proto
 
         await self.app(scope, receive, send)
 
-        if resolution.error and resolution.forwarded_headers_present:
+        if effective_error and resolution.forwarded_headers_present:
             await record_security_event_best_effort(
                 action="security.forwarded_header_rejected",
                 severity="warning",
@@ -216,7 +235,7 @@ class TrustedProxyClientAddressMiddleware:
                 client_address=resolution.direct_peer,
                 resource_type="http_request",
                 details={
-                    "reason": resolution.error,
+                    "reason": effective_error,
                     "trusted_proxy_applied": resolution.trusted_proxy_applied,
                 },
                 comment="Forwarded-заголовок не прошёл строгую проверку proxy-chain",
