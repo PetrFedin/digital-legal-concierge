@@ -72,17 +72,17 @@ def upgrade() -> None:
             op.add_column("documents", column)
 
     indexes = _index_names(bind, "documents")
-    for index_name, index_columns in [
-        ("ix_documents_sha256", ["sha256"]),
-        ("ix_documents_security_status", ["security_status"]),
-        ("ix_documents_case_sha256", ["case_id", "sha256"]),
+    for index_name, index_columns, unique in [
+        ("ix_documents_sha256", ["sha256"], False),
+        ("ix_documents_security_status", ["security_status"], False),
+        ("ix_documents_case_sha256", ["case_id", "sha256"], True),
     ]:
         if index_name not in indexes:
             op.create_index(
                 index_name,
                 "documents",
                 index_columns,
-                unique=False,
+                unique=unique,
             )
 
 
