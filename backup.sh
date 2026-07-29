@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
-mkdir -p backups
-TS=$(date +%Y%m%d_%H%M%S)
-ARCHIVE="backups/legal_bot_backup_${TS}.tar.gz"
-tar -czf "$ARCHIVE" legal_bot.db storage .env 2>/dev/null || tar -czf "$ARCHIVE" storage .env
-printf 'Backup создан: %s\n' "$ARCHIVE"
+
+# Creates only a .dlcbak container encrypted with BACKUP_ENCRYPTION_KEY.
+# The temporary plaintext payload is created with mode 0600 and always removed.
+# .env and other secret files are deliberately excluded from the archive.
+exec python -m app.security.backup_cli create "$@"
