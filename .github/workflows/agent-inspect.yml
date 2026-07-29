@@ -20,7 +20,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify and apply patch atomically
+      - name: Verify and apply code patch atomically
         shell: bash
         run: |
           set -euo pipefail
@@ -29,9 +29,8 @@ jobs:
           gzip --decompress --stdout /tmp/quality.patch.gz > /tmp/quality.patch
           echo "e203b6aae1158ef1c3888a07e7adc5d3e43dd3cb7a900cdba142cd5bf1ac377e  /tmp/quality.patch" | sha256sum --check --strict
 
-          rm -f .github/workflows/agent-inspect.yml
-          git apply --check /tmp/quality.patch
-          git apply /tmp/quality.patch
+          git apply --check --exclude=.github/workflows/ci.yml /tmp/quality.patch
+          git apply --exclude=.github/workflows/ci.yml /tmp/quality.patch
           rm -rf .agent-patch
 
           python -m compileall -q app scripts migrations tests
