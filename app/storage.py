@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -9,6 +8,12 @@ from pathlib import Path
 from aiogram import Bot
 
 from app.config import settings
+from app.security.document_encryption import (
+    ENCRYPTION_STATUS,
+    DocumentEncryptionError,
+    decrypt_file_bytes,
+    encrypt_file,
+)
 from app.security.file_uploads import (
     UploadSecurityError,
     inspect_upload,
@@ -28,23 +33,27 @@ class StoredFile:
     detected_type: str | None = None
     security_status: str = "VERIFIED"
     scanned_at: datetime | None = None
+    encryption_status: str = ENCRYPTION_STATUS
+    encryption_key_id: str | None = None
+    encrypted_at: datetime | None = None
 
 
 class LocalStorageService:
-    """Local storage with an isolated incoming area and content verification.
+    """Verified local storage with authenticated encryption at rest.
 
-    Client-controlled names are never used as storage keys. A file becomes
-    visible in a case directory only after size, signature and format checks
-    complete successfully. Rejected downloaded content is moved into an
-    inaccessible quarantine area for short-lived incident analysis.
+    Client-controlled names are never used as storage keys. Incoming bytes are
+    isolated, validated, encrypted with AES-GCM and only then moved into a case
+    directory. Stored paths are resolved below the configured base directory to
+    prevent traversal and symlink reads.
     """
 
     def __init__(self, base_dir: str | None = None):
-        self.base_dir = Path(base_dir or settings.storage_dir)
+        self.base_dir = Path(base_dir or settings.storage_dir).resolve()
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.incoming_dir = self.base_dir / ".incoming"
         self.incoming_dir.mkdir(parents=True, exist_ok=True)
         try:
+            self.base_dir.chmod(0o700)
             self.incoming_dir.chmod(0o700)
         except OSError:
             pass
@@ -52,6 +61,34 @@ class LocalStorageService:
     @property
     def max_upload_bytes(self) -> int:
         return max(1, int(settings.max_document_upload_mb)) * 1024 * 1024
+
+    def resolve_storage_path(self, storage_path: str | Path) -> Path:
+        candidate = Path(storage_path)
+        if not candidate.is_absolute():
+            candidate = self.base_dir / candidate
+        resolved = candidate.resolve(strict=False)
+        try:
+            resolved.relative_to(self.base_dir)
+        except ValueError as error:
+            raise DocumentEncryptionError(
+                "Путь документа находится вне защищённого хранилища"
+            ) from error
+        if resolved.is_symlink():
+            raise DocumentEncryptionError("Символьные ссылки для документов запрещены")
+        return resolved
+
+    def read_document_bytes(
+        self,
+        storage_path: str | Path,
+        *,
+        expected_sha256: str | None = None,
+    ) -> bytes:
+        resolved = self.resolve_storage_path(storage_path)
+        plaintext, _ = decrypt_file_bytes(
+            resolved,
+            expected_sha256=expected_sha256,
+        )
+        return plaintext
 
     async def save_telegram_file(
         self,
@@ -88,17 +125,26 @@ class LocalStorageService:
             except OSError:
                 pass
 
-            # The storage key contains no user-controlled data. A deterministic
-            # digest key also prevents duplicate bytes from consuming space.
-            target = case_dir / f"{inspection.sha256}{inspection.extension}"
+            # The storage key contains no user-controlled data. The extension is
+            # deliberately detached from the original type so encrypted bytes are
+            # never accidentally opened as a plain PDF, DOCX or image.
+            target = case_dir / f"{inspection.sha256}.dlcenc"
             if target.exists():
-                temporary.unlink(missing_ok=True)
+                _, encryption = decrypt_file_bytes(
+                    target,
+                    expected_sha256=inspection.sha256,
+                )
             else:
-                os.replace(temporary, target)
-                try:
-                    target.chmod(0o600)
-                except OSError:
-                    pass
+                encryption = encrypt_file(
+                    temporary,
+                    target,
+                    expected_sha256=inspection.sha256,
+                )
+            temporary.unlink(missing_ok=True)
+            try:
+                target.chmod(0o600)
+            except OSError:
+                pass
 
             return StoredFile(
                 original_name=inspection.safe_name,
@@ -109,6 +155,9 @@ class LocalStorageService:
                 detected_type=inspection.detected_type,
                 security_status="VERIFIED",
                 scanned_at=inspection.scanned_at,
+                encryption_status=ENCRYPTION_STATUS,
+                encryption_key_id=encryption.key_id,
+                encrypted_at=encryption.encrypted_at,
             )
         except UploadSecurityError as error:
             if temporary.exists():
