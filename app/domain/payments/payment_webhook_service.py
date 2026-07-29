@@ -13,6 +13,14 @@ from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models.payment import Payment
 
 
+PROTECTED_RECEIVED_PAYMENT_STATUSES = {
+    PaymentStatus.PAID_REVIEW,
+    PaymentStatus.REFUND_PENDING,
+    PaymentStatus.REFUND_DECLINED,
+    PaymentStatus.REFUNDED,
+}
+
+
 class PaymentWebhookService:
     def __init__(self, db):
         self.db = db
@@ -80,7 +88,7 @@ class PaymentWebhookService:
     ):
         payment = await self._lock_payment(payment.id)
 
-        if payment.status == PaymentStatus.PAID_REVIEW:
+        if payment.status in PROTECTED_RECEIVED_PAYMENT_STATUSES:
             return payment
 
         if payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT:
@@ -227,8 +235,7 @@ class PaymentWebhookService:
         payment = await self._lock_payment(payment.id)
         if payment.status in {
             PaymentStatus.PAID,
-            PaymentStatus.PAID_REVIEW,
-            PaymentStatus.REFUNDED,
+            *PROTECTED_RECEIVED_PAYMENT_STATUSES,
         }:
             await add_case_history_event(
                 self.db,
