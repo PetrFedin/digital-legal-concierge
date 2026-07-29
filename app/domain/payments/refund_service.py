@@ -50,6 +50,7 @@ class ConsultationRefundService:
                         [
                             PaymentStatus.PAID,
                             PaymentStatus.REFUND_PENDING,
+                            PaymentStatus.REFUND_DECLINED,
                             PaymentStatus.REFUNDED,
                         ]
                     ),
@@ -79,7 +80,11 @@ class ConsultationRefundService:
         if (
             consultation.status == ConsultationStatus.CANCELLED
             and payment.status
-            in {PaymentStatus.REFUND_PENDING, PaymentStatus.REFUNDED}
+            in {
+                PaymentStatus.REFUND_PENDING,
+                PaymentStatus.REFUND_DECLINED,
+                PaymentStatus.REFUNDED,
+            }
         ):
             return consultation, payment
 
@@ -194,9 +199,15 @@ class ConsultationRefundService:
         if payment.payment_code != PaymentCode.M2_CONSULTATION_PAYMENT:
             raise ValueError("Этот платёж не относится к консультации")
 
-        if normalized_decision == "refunded" and payment.status == PaymentStatus.REFUNDED:
+        if (
+            normalized_decision == "refunded"
+            and payment.status == PaymentStatus.REFUNDED
+        ):
             return payment
-        if normalized_decision == "declined" and payment.status == PaymentStatus.PAID:
+        if (
+            normalized_decision == "declined"
+            and payment.status == PaymentStatus.REFUND_DECLINED
+        ):
             return payment
         if payment.status != PaymentStatus.REFUND_PENDING:
             raise ValueError(
@@ -211,7 +222,7 @@ class ConsultationRefundService:
         payment.status = (
             PaymentStatus.REFUNDED
             if normalized_decision == "refunded"
-            else PaymentStatus.PAID
+            else PaymentStatus.REFUND_DECLINED
         )
         action = (
             "CONSULTATION_REFUND_COMPLETED"
