@@ -35,6 +35,13 @@ class AdminDashboardService:
                     Payment.status == "PAID_REVIEW"
                 )
             ),
+            "sla_overdue": await count(
+                select(func.count(Case.id)).where(
+                    Case.sla_status.in_(
+                        ["FIRST_RESPONSE_OVERDUE", "ACTION_OVERDUE"]
+                    )
+                )
+            ),
             "consultations_booked": await count(
                 select(func.count(Consultation.id)).where(
                     Consultation.status == "BOOKED"
