@@ -16,7 +16,9 @@ from app.system.settings_service import SettingsService
 
 
 async def get_or_create_lawyer(db):
-    result = await db.execute(select(Lawyer).where(Lawyer.email == "lawyer@example.com"))
+    result = await db.execute(
+        select(Lawyer).where(Lawyer.email == "lawyer@example.com")
+    )
     lawyer = result.scalars().first()
     if not lawyer:
         db.add(
@@ -40,9 +42,30 @@ async def migrate_admin_users(db):
     if not columns:
         return
     if "username" not in columns:
-        await db.execute(text("ALTER TABLE admin_users ADD COLUMN username VARCHAR(100)"))
+        await db.execute(
+            text("ALTER TABLE admin_users ADD COLUMN username VARCHAR(100)")
+        )
     if "telegram_id" not in columns:
-        await db.execute(text("ALTER TABLE admin_users ADD COLUMN telegram_id BIGINT"))
+        await db.execute(
+            text("ALTER TABLE admin_users ADD COLUMN telegram_id BIGINT")
+        )
+    await db.commit()
+
+
+async def migrate_lawyers(db):
+    if not settings.database_url.startswith("sqlite"):
+        return
+    columns = await table_columns(db, "lawyers")
+    if not columns:
+        return
+    if "telegram_id" not in columns:
+        await db.execute(text("ALTER TABLE lawyers ADD COLUMN telegram_id BIGINT"))
+    await db.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_lawyers_telegram_id "
+            "ON lawyers (telegram_id) WHERE telegram_id IS NOT NULL"
+        )
+    )
     await db.commit()
 
 
@@ -59,7 +82,9 @@ async def migrate_consultations(db):
     }
     for name, ddl in additions.items():
         if name not in columns:
-            await db.execute(text(f"ALTER TABLE consultations ADD COLUMN {name} {ddl}"))
+            await db.execute(
+                text(f"ALTER TABLE consultations ADD COLUMN {name} {ddl}")
+            )
     await db.execute(
         text(
             "UPDATE consultations SET subject_type='new_or_other' "
@@ -88,8 +113,63 @@ async def migrate_payments(db):
     await db.commit()
 
 
+async def migrate_notifications(db):
+    if not settings.database_url.startswith("sqlite"):
+        return
+    columns = await table_columns(db, "notifications")
+    if not columns:
+        return
+    additions = {
+        "recipient_type": "VARCHAR(50)",
+        "target_chat_id": "BIGINT",
+        "dedupe_key": "VARCHAR(255)",
+        "attempt_count": "INTEGER DEFAULT 0",
+        "last_error": "TEXT",
+        "next_attempt_at": "DATETIME",
+        "sent_at": "DATETIME",
+    }
+    for name, ddl in additions.items():
+        if name not in columns:
+            await db.execute(
+                text(f"ALTER TABLE notifications ADD COLUMN {name} {ddl}")
+            )
+    await db.execute(
+        text(
+            "UPDATE notifications SET attempt_count=0 "
+            "WHERE attempt_count IS NULL"
+        )
+    )
+    await db.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_notifications_recipient_type "
+            "ON notifications (recipient_type)"
+        )
+    )
+    await db.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_notifications_target_chat_id "
+            "ON notifications (target_chat_id)"
+        )
+    )
+    await db.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_notifications_next_attempt_at "
+            "ON notifications (next_attempt_at)"
+        )
+    )
+    await db.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_notifications_dedupe_key "
+            "ON notifications (dedupe_key) WHERE dedupe_key IS NOT NULL"
+        )
+    )
+    await db.commit()
+
+
 async def get_or_create_admin(db):
-    result = await db.execute(select(AdminUser).where(AdminUser.email == "admin@example.com"))
+    result = await db.execute(
+        select(AdminUser).where(AdminUser.email == "admin@example.com")
+    )
     admin = result.scalars().first()
     initial_password = settings.admin_password or settings.admin_api_token
     if not admin:
@@ -116,8 +196,10 @@ async def main():
         await connection.run_sync(Base.metadata.create_all)
     async with AsyncSessionLocal() as db:
         await migrate_admin_users(db)
+        await migrate_lawyers(db)
         await migrate_consultations(db)
         await migrate_payments(db)
+        await migrate_notifications(db)
         await get_or_create_lawyer(db)
         await get_or_create_admin(db)
         await SettingsService(db).bootstrap_defaults()
