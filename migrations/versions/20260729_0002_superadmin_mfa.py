@@ -81,6 +81,10 @@ def upgrade() -> None:
     )
     _ensure_column(
         bind,
+        sa.Column("mfa_last_totp_step", sa.Integer(), nullable=True),
+    )
+    _ensure_column(
+        bind,
         sa.Column(
             "session_version",
             sa.Integer(),
