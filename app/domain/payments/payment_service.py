@@ -203,9 +203,20 @@ class PaymentService:
                 "payment_code": payment.payment_code,
             },
         )
-        payment.provider = result.provider
-        payment.provider_payment_id = result.provider_payment_id
-        payment.payment_url = result.payment_url
+        provider_name = str(getattr(result, "provider", "") or "").strip()
+        provider_payment_id = str(
+            getattr(result, "provider_payment_id", "") or ""
+        ).strip()
+        payment_url = str(getattr(result, "payment_url", "") or "").strip()
+        if not provider_name or not provider_payment_id or not payment_url:
+            raise PaymentIntegrityError(
+                "Платёжный провайдер вернул неполный ответ. "
+                "Платёжная ссылка не сохранена."
+            )
+
+        payment.provider = provider_name
+        payment.provider_payment_id = provider_payment_id
+        payment.payment_url = payment_url
         payment.status = PaymentStatus.WAITING_CONFIRMATION.value
         await self.db.flush()
         return payment
