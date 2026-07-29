@@ -124,7 +124,6 @@ async def test_paid_consultation_reschedules_without_new_payment(tmp_path):
         tmp_path,
         "reschedule-success.db",
     )
-
     async with session_factory() as session:
         context = await create_reschedule_context(session, suffix=1)
         await session.commit()
@@ -182,7 +181,6 @@ async def test_paid_consultation_reschedules_without_new_payment(tmp_path):
         ).scalar_one()
         assert audit_count == 1
         assert notification_count == 3
-
     await engine.dispose()
 
 
@@ -192,7 +190,6 @@ async def test_failed_reschedule_rolls_back_and_keeps_old_slot(tmp_path):
         tmp_path,
         "reschedule-rollback.db",
     )
-
     async with session_factory() as session:
         context = await create_reschedule_context(session, suffix=2)
         context["new_slot"].status = "booked"
@@ -218,7 +215,6 @@ async def test_failed_reschedule_rolls_back_and_keeps_old_slot(tmp_path):
         assert new_slot.status == "booked"
         assert consultation.slot_id == old_slot.id
         assert consultation.status == ConsultationStatus.BOOKED
-
     await engine.dispose()
 
 
@@ -228,7 +224,6 @@ async def test_started_consultation_cannot_be_rescheduled(tmp_path):
         tmp_path,
         "reschedule-started.db",
     )
-
     async with session_factory() as session:
         context = await create_reschedule_context(session, suffix=3)
         context["old_slot"].starts_at = datetime.now(timezone.utc) - timedelta(
@@ -239,27 +234,24 @@ async def test_started_consultation_cannot_be_rescheduled(tmp_path):
         )
         context["consultation"].scheduled_at = context["old_slot"].starts_at
         await session.commit()
+        old_slot_id = context["old_slot"].id
+        consultation_id = context["consultation"].id
+        new_slot_id = context["new_slot"].id
+        client_id = context["user"].id
 
         with pytest.raises(ValueError, match="уже началась"):
             await ConsultationService(session).reschedule_booked(
                 consultation=context["consultation"],
                 case=context["case"],
-                client_id=context["user"].id,
-                new_slot_id=context["new_slot"].id,
+                client_id=client_id,
+                new_slot_id=new_slot_id,
             )
         await session.rollback()
 
-        old_slot = await session.get(
-            ConsultationSlot,
-            context["old_slot"].id,
-        )
-        consultation = await session.get(
-            Consultation,
-            context["consultation"].id,
-        )
+        old_slot = await session.get(ConsultationSlot, old_slot_id)
+        consultation = await session.get(Consultation, consultation_id)
         assert old_slot.status == "booked"
         assert consultation.slot_id == old_slot.id
-
     await engine.dispose()
 
 
@@ -269,7 +261,6 @@ async def test_duplicate_paid_webhook_after_reschedule_stays_paid(tmp_path):
         tmp_path,
         "reschedule-webhook.db",
     )
-
     async with session_factory() as session:
         context = await create_reschedule_context(session, suffix=4)
         await session.commit()
@@ -307,5 +298,4 @@ async def test_duplicate_paid_webhook_after_reschedule_stays_paid(tmp_path):
         assert consultation.status == ConsultationStatus.BOOKED
         assert consultation.slot_id == context["new_slot"].id
         assert review_count == 0
-
     await engine.dispose()
