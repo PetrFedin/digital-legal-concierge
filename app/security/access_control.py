@@ -10,6 +10,7 @@ from typing import Any, Iterable
 from uuid import uuid4
 
 from app.config import settings
+from app.security.keyring import KeyEntry, session_signing_ring
 
 ROLE_ADMIN = "admin"
 ROLE_SUPERADMIN = "superadmin"
@@ -92,16 +93,37 @@ def _b64decode(data: str) -> bytes:
     return base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
 
 
-def _sign(prefix: str, payload: dict[str, Any]) -> str:
-    body = _b64encode(
-        json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    )
-    signature = hmac.new(
-        settings.admin_api_token.encode("utf-8"),
+def _signature(entry: KeyEntry, prefix: str, body: str) -> str:
+    return hmac.new(
+        entry.secret.encode("utf-8"),
         f"{prefix}.{body}".encode("ascii"),
         hashlib.sha256,
     ).hexdigest()
-    return f"{prefix}.{body}.{signature}"
+
+
+def _sign(prefix: str, payload: dict[str, Any]) -> str:
+    entry = session_signing_ring().require_active()
+    signed_payload = dict(payload)
+    signed_payload["kid"] = entry.key_id
+    body = _b64encode(
+        json.dumps(
+            signed_payload,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    )
+    return f"{prefix}.{body}.{_signature(entry, prefix, body)}"
+
+
+def _verification_entries(payload: dict[str, Any]) -> tuple[KeyEntry, ...]:
+    ring = session_signing_ring()
+    key_id = str(payload.get("kid") or "").strip()
+    if key_id:
+        entry = ring.by_id(key_id)
+        return (entry,) if entry else ()
+    # Tokens issued before key separation had no key id. During the transition
+    # they are verified against the configured grace keyring.
+    return ring.verification
 
 
 def _decode_signed(token: str | None, prefix: str) -> dict[str, Any] | None:
@@ -111,18 +133,19 @@ def _decode_signed(token: str | None, prefix: str) -> dict[str, Any] | None:
         actual_prefix, body, signature = token.split(".", 2)
         if actual_prefix != prefix:
             return None
-        expected = hmac.new(
-            settings.admin_api_token.encode("utf-8"),
-            f"{prefix}.{body}".encode("ascii"),
-            hashlib.sha256,
-        ).hexdigest()
-        if not hmac.compare_digest(signature, expected):
-            return None
         payload = json.loads(_b64decode(body).decode("utf-8"))
+        if not isinstance(payload, dict):
+            return None
+        verified = any(
+            hmac.compare_digest(signature, _signature(entry, prefix, body))
+            for entry in _verification_entries(payload)
+        )
+        if not verified:
+            return None
         if int(payload.get("exp", 0)) < int(time.time()):
             return None
         return payload
-    except (ValueError, TypeError, json.JSONDecodeError):
+    except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
         return None
 
 
@@ -149,7 +172,7 @@ def create_access_token(
         "jti": uuid4().hex,
         "sv": int(session_version or 1),
         "mfa": bool(mfa_verified),
-        "v": 3,
+        "v": 4,
     }
     return _sign("dlc1", payload)
 
@@ -171,6 +194,7 @@ def create_mfa_challenge_token(
             "iat": now,
             "exp": now + ttl_seconds,
             "jti": uuid4().hex,
+            "v": 2,
         },
     )
 

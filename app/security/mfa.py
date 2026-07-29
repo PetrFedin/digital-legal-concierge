@@ -11,29 +11,76 @@ from datetime import datetime, timezone
 import pyotp
 from cryptography.fernet import Fernet, InvalidToken
 
-from app.config import settings
 from app.models.admin_user import AdminUser
+from app.security.keyring import (
+    KeyEntry,
+    active_hmac_digest,
+    hmac_candidates,
+    hmac_digest,
+    mfa_encryption_ring,
+    security_hmac_ring,
+)
 
 RECOVERY_CODE_COUNT = 10
 RECOVERY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+MFA_CIPHERTEXT_VERSION = "v2"
 
 
-def _fernet() -> Fernet:
-    digest = hashlib.sha256(settings.admin_api_token.encode("utf-8")).digest()
+def _fernet(entry: KeyEntry) -> Fernet:
+    digest = hashlib.sha256(entry.secret.encode("utf-8")).digest()
     return Fernet(base64.urlsafe_b64encode(digest))
 
 
 def encrypt_secret(secret: str) -> str:
-    return _fernet().encrypt(secret.encode("utf-8")).decode("ascii")
+    entry = mfa_encryption_ring().require_active()
+    encrypted = _fernet(entry).encrypt(secret.encode("utf-8")).decode("ascii")
+    return f"{MFA_CIPHERTEXT_VERSION}:{entry.key_id}:{encrypted}"
+
+
+def _decrypt_with(entry: KeyEntry, encrypted: str) -> str | None:
+    try:
+        return _fernet(entry).decrypt(encrypted.encode("ascii")).decode("utf-8")
+    except (InvalidToken, ValueError, TypeError, UnicodeDecodeError):
+        return None
 
 
 def decrypt_secret(value: str | None) -> str | None:
     if not value:
         return None
-    try:
-        return _fernet().decrypt(value.encode("ascii")).decode("utf-8")
-    except (InvalidToken, ValueError, TypeError):
+    ring = mfa_encryption_ring()
+    raw = str(value)
+    if raw.startswith(f"{MFA_CIPHERTEXT_VERSION}:"):
+        try:
+            _, key_id, encrypted = raw.split(":", 2)
+        except ValueError:
+            return None
+        entry = ring.by_id(key_id)
+        return _decrypt_with(entry, encrypted) if entry else None
+
+    # Pre-keyring ciphertext had no envelope. It is accepted only by keys kept
+    # in the configured decryption grace ring.
+    for entry in ring.verification:
+        decrypted = _decrypt_with(entry, raw)
+        if decrypted is not None:
+            return decrypted
+    return None
+
+
+def secret_needs_reencryption(value: str | None) -> bool:
+    if not value:
+        return False
+    active = mfa_encryption_ring().require_active()
+    prefix = f"{MFA_CIPHERTEXT_VERSION}:{active.key_id}:"
+    return not str(value).startswith(prefix)
+
+
+def reencrypt_secret(value: str | None) -> str | None:
+    secret = decrypt_secret(value)
+    if secret is None:
         return None
+    if secret_needs_reencryption(value):
+        return encrypt_secret(secret)
+    return str(value)
 
 
 def generate_totp_secret() -> str:
@@ -75,14 +122,32 @@ def consume_totp(user: AdminUser, secret: str | None, code: str | None) -> bool:
     return True
 
 
-def _recovery_digest(user_id: int, code: str) -> str:
+def _recovery_message(user_id: int, code: str) -> bytes:
     normalized = str(code or "").replace("-", "").replace(" ", "").upper()
-    message = f"mfa-recovery:{int(user_id)}:{normalized}".encode("utf-8")
-    return hmac.new(
-        settings.admin_api_token.encode("utf-8"),
-        message,
-        hashlib.sha256,
-    ).hexdigest()
+    return f"mfa-recovery:{int(user_id)}:{normalized}".encode("utf-8")
+
+
+def _new_recovery_digest(user_id: int, code: str) -> str:
+    key_id, digest = active_hmac_digest(_recovery_message(user_id, code))
+    return f"{key_id}${digest}"
+
+
+def _matches_recovery_digest(user_id: int, code: str, stored: str) -> bool:
+    value = str(stored or "")
+    message = _recovery_message(user_id, code)
+    if "$" in value:
+        key_id, expected = value.split("$", 1)
+        entry = security_hmac_ring().by_id(key_id)
+        return bool(
+            entry
+            and hmac.compare_digest(hmac_digest(entry, message), expected)
+        )
+    # Existing installations stored only the digest. Compare against the
+    # verification keyring while the old HMAC key remains in the grace set.
+    return any(
+        hmac.compare_digest(candidate, value)
+        for _, candidate in hmac_candidates(message)
+    )
 
 
 def generate_recovery_codes(user_id: int) -> tuple[list[str], str]:
@@ -92,7 +157,7 @@ def generate_recovery_codes(user_id: int) -> tuple[list[str], str]:
         raw = "".join(secrets.choice(RECOVERY_ALPHABET) for _ in range(12))
         code = f"{raw[:4]}-{raw[4:8]}-{raw[8:]}"
         codes.append(code)
-        hashes.append(_recovery_digest(user_id, code))
+        hashes.append(_new_recovery_digest(user_id, code))
     return codes, json.dumps(hashes, separators=(",", ":"))
 
 
@@ -111,9 +176,8 @@ def consume_recovery_code(user: AdminUser, code: str | None) -> bool:
         hashes = []
     if not isinstance(hashes, list):
         return False
-    candidate = _recovery_digest(user.id, str(code or ""))
     for index, value in enumerate(hashes):
-        if hmac.compare_digest(str(value), candidate):
+        if _matches_recovery_digest(user.id, str(code or ""), str(value)):
             hashes.pop(index)
             user.mfa_recovery_codes = json.dumps(hashes, separators=(",", ":"))
             return True

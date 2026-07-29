@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.models.login_security_state import LoginSecurityState
+from app.security.keyring import active_hmac_digest, hmac_candidates
 
 
 @dataclass(frozen=True)
@@ -42,14 +40,18 @@ class LoginThrottleService:
         return value.astimezone(timezone.utc)
 
     @staticmethod
-    def _key_hash(scope: str, value: str) -> str:
+    def _message(scope: str, value: str) -> bytes:
         normalized = str(value or "unknown").strip().lower()
-        message = f"login-throttle:{scope}:{normalized}".encode("utf-8")
-        return hmac.new(
-            settings.admin_api_token.encode("utf-8"),
-            message,
-            hashlib.sha256,
-        ).hexdigest()
+        return f"login-throttle:{scope}:{normalized}".encode("utf-8")
+
+    @classmethod
+    def _active_key_hash(cls, scope: str, value: str) -> str:
+        _, digest = active_hmac_digest(cls._message(scope, value))
+        return digest
+
+    @classmethod
+    def _key_hashes(cls, scope: str, value: str) -> list[str]:
+        return [digest for _, digest in hmac_candidates(cls._message(scope, value))]
 
     @classmethod
     def policies(cls, principal: str, client_address: str) -> list[ThrottlePolicy]:
@@ -69,7 +71,11 @@ class LoginThrottleService:
         self,
         policies: list[ThrottlePolicy],
     ) -> dict[str, LoginSecurityState]:
-        hashes = [self._key_hash(policy.scope, policy.value) for policy in policies]
+        hashes = {
+            digest
+            for policy in policies
+            for digest in self._key_hashes(policy.scope, policy.value)
+        }
         rows = (
             await self.db.execute(
                 select(LoginSecurityState)
@@ -79,21 +85,80 @@ class LoginThrottleService:
         ).scalars().all()
         return {row.key_hash: row for row in rows}
 
+    @classmethod
+    def _policy_states(
+        cls,
+        states: dict[str, LoginSecurityState],
+        policy: ThrottlePolicy,
+    ) -> list[LoginSecurityState]:
+        return [
+            states[digest]
+            for digest in cls._key_hashes(policy.scope, policy.value)
+            if digest in states
+        ]
+
     async def check(self, *, principal: str, client_address: str) -> None:
         now = datetime.now(timezone.utc)
         policies = self.policies(principal, client_address)
         states = await self._locked_states(policies)
         retry_after = 0
         for policy in policies:
-            state = states.get(self._key_hash(policy.scope, policy.value))
-            locked_until = self._utc(state.locked_until) if state else None
-            if locked_until and locked_until > now:
-                retry_after = max(
-                    retry_after,
-                    int((locked_until - now).total_seconds()),
-                )
+            for state in self._policy_states(states, policy):
+                locked_until = self._utc(state.locked_until)
+                if locked_until and locked_until > now:
+                    retry_after = max(
+                        retry_after,
+                        int((locked_until - now).total_seconds()),
+                    )
         if retry_after:
             raise LoginRateLimitError(retry_after)
+
+    def _seed_active_state(
+        self,
+        policy: ThrottlePolicy,
+        states: dict[str, LoginSecurityState],
+        now: datetime,
+    ) -> LoginSecurityState:
+        active_hash = self._active_key_hash(policy.scope, policy.value)
+        state = states.get(active_hash)
+        candidates = self._policy_states(states, policy)
+        if state is None:
+            state = LoginSecurityState(key_hash=active_hash)
+            self.db.add(state)
+            states[active_hash] = state
+
+        recent = [
+            candidate
+            for candidate in candidates
+            if self._utc(candidate.window_started_at)
+            and now - self._utc(candidate.window_started_at) <= self.WINDOW
+        ]
+        if recent:
+            state.failed_attempts = max(
+                int(state.failed_attempts or 0),
+                max(int(candidate.failed_attempts or 0) for candidate in recent),
+            )
+            newest = max(
+                recent,
+                key=lambda candidate: self._utc(candidate.last_attempt_at)
+                or datetime.min.replace(tzinfo=timezone.utc),
+            )
+            if not state.window_started_at:
+                state.window_started_at = newest.window_started_at
+            latest_lock = max(
+                (
+                    self._utc(candidate.locked_until)
+                    for candidate in recent
+                    if candidate.locked_until
+                ),
+                default=None,
+            )
+            if latest_lock and (
+                not state.locked_until
+                or latest_lock > self._utc(state.locked_until)
+            ):
+                state.locked_until = latest_lock
+        return state
 
     async def register_failure(
         self,
@@ -106,12 +171,7 @@ class LoginThrottleService:
         states = await self._locked_states(policies)
         longest_lock = 0
         for policy in policies:
-            key_hash = self._key_hash(policy.scope, policy.value)
-            state = states.get(key_hash)
-            if not state:
-                state = LoginSecurityState(key_hash=key_hash)
-                self.db.add(state)
-                states[key_hash] = state
+            state = self._seed_active_state(policy, states, now)
             window_started = self._utc(state.window_started_at)
             if not window_started or now - window_started > self.WINDOW:
                 state.failed_attempts = 0
@@ -135,11 +195,13 @@ class LoginThrottleService:
         client_address: str,
     ) -> None:
         policies = self.policies(principal, client_address)[:2]
-        hashes = [self._key_hash(policy.scope, policy.value) for policy in policies]
+        hashes = {
+            digest
+            for policy in policies
+            for digest in self._key_hashes(policy.scope, policy.value)
+        }
         await self.db.execute(
-            delete(LoginSecurityState).where(
-                LoginSecurityState.key_hash.in_(hashes)
-            )
+            delete(LoginSecurityState).where(LoginSecurityState.key_hash.in_(hashes))
         )
         await self.db.flush()
 
