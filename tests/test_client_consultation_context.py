@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.domain.consultations.client_context_service import (
@@ -100,6 +101,8 @@ async def test_multiple_active_m2_cases_require_manual_resolution(context_db):
         user = User(telegram_id=1_008_004, full_name="Клиент конфликта M2")
         session.add(user)
         await session.flush()
+        # Simulate a legacy database created before uq_cases_active_m2_client.
+        await session.execute(text("DROP INDEX uq_cases_active_m2_client"))
         session.add_all(
             [
                 Case(
