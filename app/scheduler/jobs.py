@@ -1,8 +1,10 @@
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.domain.cases.sla_service import CaseSLAService
 from app.domain.consultations.slot_service import SlotService
 from app.domain.notifications.notification_engine import NotificationEngine
@@ -12,6 +14,8 @@ from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
 from app.models.payment import Payment
+from app.security.document_scanning import rescan_legacy_documents
+from app.security.file_uploads import cleanup_quarantine
 from app.security.key_rotation import reencrypt_mfa_secrets
 from app.security.login_throttle import LoginThrottleService
 from app.security.token_revocation import cleanup_revoked_tokens
@@ -156,11 +160,16 @@ class SchedulerJobs:
     async def check_case_sla(self) -> dict:
         return await CaseSLAService(self.db).escalate_overdue_cases()
 
-    async def cleanup_security_state(self) -> dict[str, int]:
+    async def cleanup_security_state(self) -> dict[str, object]:
         return {
             "login_states": await LoginThrottleService(self.db).cleanup(),
             "revoked_tokens": await cleanup_revoked_tokens(self.db),
             "mfa_secrets_reencrypted": await reencrypt_mfa_secrets(self.db),
+            "document_rescan": await rescan_legacy_documents(self.db),
+            "quarantine_files_removed": cleanup_quarantine(
+                Path(settings.storage_dir),
+                retention_days=settings.upload_quarantine_retention_days,
+            ),
         }
 
     async def check_claim_waiting_30_days(self) -> int:

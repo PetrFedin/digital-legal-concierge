@@ -58,7 +58,7 @@ from app.security.http_security import (
 from app.security.keyring import security_key_status
 from app.security.session_guard import AdminSessionGuardMiddleware
 
-VERSION = "1.0.0-v34"
+VERSION = "1.0.0-v35"
 
 
 def create_app():
@@ -139,6 +139,12 @@ def create_app():
                 and settings.admin_api_token != "dev-admin-token"
             ),
             "storage_dir_exists": Path(settings.storage_dir).exists(),
+            "document_upload_limit_valid": 1
+            <= int(settings.max_document_upload_mb)
+            <= 100,
+            "quarantine_retention_valid": 1
+            <= int(settings.upload_quarantine_retention_days)
+            <= 90,
             "database_url_configured": bool(settings.database_url),
             "scheduler_enabled": settings.run_scheduler,
             "bot_enabled": settings.run_bot,
@@ -154,6 +160,12 @@ def create_app():
             "ok": all(checks.values()),
             "checks": checks,
             "security_keys": key_status,
+            "document_upload_security": {
+                "max_upload_mb": settings.max_document_upload_mb,
+                "quarantine_enabled": settings.quarantine_rejected_uploads,
+                "quarantine_retention_days": settings.upload_quarantine_retention_days,
+                "allowed_formats": ["pdf", "docx", "jpeg", "png"],
+            },
             "version": VERSION,
         }
 
@@ -189,6 +201,9 @@ def create_app():
             "security_headers": True,
             "security_keyring": True,
             "mfa_key_rotation_job": True,
+            "document_content_inspection": True,
+            "document_quarantine": settings.quarantine_rejected_uploads,
+            "legacy_document_rescan_job": True,
         }
 
     return app

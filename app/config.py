@@ -29,6 +29,9 @@ class Settings(BaseSettings):
 
     legal_key_rate: float = 0.16
     storage_dir: str = "./storage"
+    max_document_upload_mb: int = 20
+    quarantine_rejected_uploads: bool = True
+    upload_quarantine_retention_days: int = 7
     payment_webhook_secret: str = "dev-payment-secret"
     public_base_url: str = "http://localhost:8000"
     payment_provider: str = "fake"
