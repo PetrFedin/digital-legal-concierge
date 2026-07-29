@@ -5,6 +5,7 @@ from app.domain.consultations.payment_lifecycle_service import (
     ConsultationPaymentLifecycleError,
     ConsultationPaymentLifecycleService,
 )
+from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.payments.m1_payment_lifecycle_service import (
     M1PaymentLifecycleError,
     M1PaymentLifecycleService,
@@ -221,27 +222,39 @@ class PaymentWebhookService:
         # A delayed failure/cancellation callback must never overwrite success.
         if payment.status == PaymentStatus.PAID:
             return payment
-        if payment.status == PaymentStatus.FAILED:
-            return payment
 
-        old = payment.status
-        payment.status = PaymentStatus.FAILED
+        already_failed = payment.status == PaymentStatus.FAILED
+        old_status = payment.status
+        payment.status = PaymentStatus.FAILED.value
+        payment.payment_url = None
         payment.processing_outcome = None
         payment.processed_at = None
         payment.manual_review_required = False
         payment.processing_error = None
-        await add_case_history_event(
-            self.db,
-            actor_type="payment_provider",
-            actor_id=None,
+
+        if payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT:
+            case.next_action = "Повторите оплату консультации или выберите другое время"
+
+        if not already_failed:
+            await add_case_history_event(
+                self.db,
+                actor_type="payment_provider",
+                actor_id=None,
+                case_id=case.id,
+                action="PAYMENT_FAILED",
+                old_value={"status": old_status},
+                new_value={
+                    "payment_id": payment.id,
+                    "payment_code": payment.payment_code,
+                    "payload": provider_payload or {},
+                },
+            )
+
+        await NotificationEngine(self.db).emit(
+            event_code="PAYMENT_FAILED",
             case_id=case.id,
-            action="PAYMENT_FAILED",
-            old_value={"status": old},
-            new_value={
-                "payment_id": payment.id,
-                "payment_code": payment.payment_code,
-                "payload": provider_payload or {},
-            },
+            user_id=case.client_id,
+            payload={"case_number": case.case_number},
         )
         await self.db.flush()
         return payment
