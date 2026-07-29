@@ -4,7 +4,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.domain.payments import payment_service as payment_service_module
@@ -103,6 +103,9 @@ async def test_open_payment_is_reused_and_created_once(payment_integrity_db):
 async def test_multiple_open_payments_stop_automatic_payment(payment_integrity_db):
     async with payment_integrity_db() as session:
         _, case = await seed_case(session, suffix=2)
+        # Simulate a legacy database created before the partial unique index.
+        # Production schemas keep the index and reject this corruption earlier.
+        await session.execute(text("DROP INDEX uq_payments_open_case_code"))
         session.add_all(
             [
                 Payment(
