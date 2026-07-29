@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_history import add_case_history_event
@@ -77,7 +77,10 @@ class PaymentService:
                         PaymentStatus.WAITING_CONFIRMATION,
                     ]
                 ),
-                Payment.reservation_key != reservation_key,
+                or_(
+                    Payment.reservation_key.is_(None),
+                    Payment.reservation_key != reservation_key,
+                ),
             )
         )
         for payment in result.scalars().all():
