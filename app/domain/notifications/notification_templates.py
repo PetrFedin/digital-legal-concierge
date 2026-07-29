@@ -11,6 +11,18 @@ TEMPLATES = {
         "🔄 Консультация по делу {case_number} перенесена: "
         "{old_date} → {new_date}."
     ),
+    "consultation_reminder_24h": (
+        "⏰ Напоминание: консультация по делу {case_number} состоится "
+        "{date}. До встречи осталось менее 24 часов."
+    ),
+    "consultation_reminder_2h": (
+        "⏳ Консультация по делу {case_number} начнётся {date}. "
+        "До встречи осталось менее 2 часов."
+    ),
+    "consultation_completion_overdue": (
+        "⚠️ Консультация по делу {case_number}, назначенная на {date}, "
+        "не закрыта результатом. Укажите итог встречи или зафиксируйте неявку."
+    ),
     "consultation_cancellation_requested": (
         "🧾 Консультация по делу {case_number} отменена. "
         "Заявка на возврат платежа #{payment_id} на сумму {amount} ₽ "
@@ -28,6 +40,9 @@ TEMPLATES = {
         "⚠️ По делу {case_number} получен платеж #{payment_id}, "
         "но слот не подтвержден автоматически. Причина: {reason}."
     ),
-    "claim_30_days_expired": "📨 По делу {case_number} истекли 30 дней после претензии. Проверьте следующий шаг.",
+    "claim_30_days_expired": (
+        "📨 По делу {case_number} истекли 30 дней после претензии. "
+        "Проверьте следующий шаг."
+    ),
     "court_stage_started": "🏛 Дело {case_number} перешло в судебный этап.",
 }

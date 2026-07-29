@@ -1,7 +1,9 @@
 import asyncio
+
 from app.db.session import AsyncSessionLocal
-from app.scheduler.jobs import SchedulerJobs
 from app.domain.notifications.notification_sender import NotificationSender
+from app.scheduler.jobs import SchedulerJobs
+
 
 class AppScheduler:
     def __init__(self, interval_seconds: int = 3600):
@@ -12,10 +14,22 @@ class AppScheduler:
             jobs = SchedulerJobs(db)
             result = {
                 "payment_reminders": await jobs.check_unpaid_payments(),
-                "released_slots": await jobs.release_unpaid_consultation_slots(),
-                "claim_deadlines": await jobs.check_claim_waiting_30_days(),
-                "sent_notifications": await NotificationSender(db).send_pending(),
+                "released_slots": (
+                    await jobs.release_unpaid_consultation_slots()
+                ),
+                "consultation_reminders": (
+                    await jobs.check_consultation_reminders()
+                ),
+                "consultation_completion_overdue": (
+                    await jobs.check_consultation_completion_overdue()
+                ),
+                "claim_deadlines": (
+                    await jobs.check_claim_waiting_30_days()
+                ),
             }
+            result["sent_notifications"] = await NotificationSender(
+                db
+            ).send_pending()
             await db.commit()
             return result
 
