@@ -8,6 +8,7 @@ from app.db.session import get_db
 from app.domain.cases.assignment_service import CaseAssignmentService
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
+from app.domain.cases.case_transition_policy import CaseTransitionError
 from app.domain.payments.payment_webhook_service import PaymentWebhookService
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
@@ -369,18 +370,22 @@ async def manual_status(
     case = await db.get(Case, case_id)
     if not case:
         raise HTTPException(status_code=404, detail="case not found")
-    await CaseService(db).change_status(
-        case=case,
-        next_status=next_status,
-        actor_type="admin",
-        actor_id=actor_id_from_token(actor),
-        force=True,
-        comment=(
-            payload.get("comment")
-            or "Ручное изменение статуса администратором"
-        ),
-    )
-    await db.commit()
+    try:
+        await CaseService(db).change_status(
+            case=case,
+            next_status=next_status,
+            actor_type="admin",
+            actor_id=actor_id_from_token(actor),
+            force=True,
+            comment=(
+                payload.get("comment")
+                or "Ручное изменение статуса администратором"
+            ),
+        )
+        await db.commit()
+    except CaseTransitionError as error:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(error)) from error
     return {
         "ok": True,
         "case_id": case.id,

@@ -156,8 +156,7 @@ class ConsultationOutcomeService:
                 next_status=CaseStatus.M2_CLOSED,
                 actor_type="lawyer",
                 actor_id=lawyer_id,
-                force=True,
-                comment="Консультация завершена, обращение закрыто",
+                    comment="Консультация завершена, обращение закрыто",
             )
         else:
             await self.cases.change_status(
@@ -165,8 +164,7 @@ class ConsultationOutcomeService:
                 next_status=CaseStatus.M2_CONSULTATION_DONE,
                 actor_type="lawyer",
                 actor_id=lawyer_id,
-                force=True,
-                comment="Результат консультации зафиксирован",
+                    comment="Результат консультации зафиксирован",
             )
             case.next_action = (
                 "Назначить следующую консультацию"
@@ -244,7 +242,6 @@ class ConsultationOutcomeService:
             next_status=CaseStatus.M2_CONSULTATION_DONE,
             actor_type="lawyer",
             actor_id=lawyer_id,
-            force=True,
             comment="Юрист зафиксировал неявку клиента",
         )
         case.next_action = (
@@ -398,7 +395,6 @@ class ConsultationOutcomeService:
             next_status=CaseStatus.M2_CONSULTATION_BOOKED,
             actor_type="admin",
             actor_id=admin_id,
-            force=True,
             comment="Бесплатный перенос после неявки юриста",
         )
 

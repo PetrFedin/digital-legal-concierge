@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -36,7 +38,7 @@ class Settings(BaseSettings):
     backup_encryption_previous_keys: str = ""
     allow_legacy_security_key_fallback: bool = False
 
-    legal_key_rate: float = 0.16
+    legal_key_rate: Decimal = Decimal("0.16")
     storage_dir: str = "./storage"
     max_document_upload_mb: int = 20
     quarantine_rejected_uploads: bool = True

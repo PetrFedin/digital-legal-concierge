@@ -107,6 +107,7 @@ async def calc_result(state, db, case):
         case=case,
         contract_price=Decimal(data["contract_price"]),
         planned_transfer_date=date.fromisoformat(data["planned_transfer_date"]),
+        calculation_date=date.today(),
         object_transferred=bool(data["object_transferred"]),
         actual_transfer_date=(
             date.fromisoformat(data["actual_transfer_date"])
@@ -171,7 +172,6 @@ async def to_m1(callback: CallbackQuery, db):
         next_status=CaseStatus.CLIENT_DECISION,
         actor_type="client",
         actor_id=user.id,
-        force=True,
         comment="Клиент выбрал продолжение работы по М1",
     )
     await db.commit()

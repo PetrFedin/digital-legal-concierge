@@ -33,7 +33,7 @@ async def consent_accept(callback: CallbackQuery, db):
     case = await ctx.case_service.get_active_case_for_user(user.id)
     if not case:
         case = await ctx.get_or_create_active_case_for_user(user)
-    await ctx.case_service.change_status(case=case, next_status=CaseStatus.M1_DOCUMENTS_PENDING, actor_type="client", actor_id=user.id, force=True, comment="Клиент подтвердил согласие на обработку ПД")
+    await ctx.case_service.change_status(case=case, next_status=CaseStatus.M1_DOCUMENTS_PENDING, actor_type="client", actor_id=user.id, comment="Клиент подтвердил согласие на обработку ПД")
     await db.commit()
     await callback.message.edit_text(
         "✅ Согласие сохранено.\n\nСледующий шаг — загрузить документы по делу.",
@@ -47,7 +47,7 @@ async def consent_decline(callback: CallbackQuery, db):
     user = await ctx.get_user_from_callback(callback)
     case = await ctx.case_service.get_active_case_for_user(user.id)
     if case:
-        await ctx.case_service.change_status(case=case, next_status=CaseStatus.CALCULATED, actor_type="client", actor_id=user.id, force=True, comment="Клиент не подтвердил согласие на обработку ПД")
+        await ctx.case_service.change_status(case=case, next_status=CaseStatus.CALCULATED, actor_type="client", actor_id=user.id, comment="Клиент не подтвердил согласие на обработку ПД")
         await db.commit()
     await callback.message.edit_text(
         "Без согласия мы не можем принять документы на проверку.\n\nРасчет сохранен, к нему можно вернуться позже.",
@@ -73,7 +73,7 @@ async def contract_sign(callback: CallbackQuery, db):
     if not case:
         await callback.message.edit_text("Нет активного дела.", reply_markup=one(("🏠 Главная", "nav_home")))
         return
-    await ctx.case_service.change_status(case=case, next_status=CaseStatus.M1_WAITING_PAYMENT_30000, actor_type="client", actor_id=user.id, force=True, comment="Клиент подписал договор")
+    await ctx.case_service.change_status(case=case, next_status=CaseStatus.M1_WAITING_PAYMENT_30000, actor_type="client", actor_id=user.id, comment="Клиент подписал договор")
     payment = await PaymentService(db).get_or_create_payment(case=case, payment_code=PaymentCode.M1_INITIAL_PAYMENT)
     await db.commit()
     await callback.message.edit_text(
@@ -100,9 +100,9 @@ async def poa_done(callback: CallbackQuery, db):
     if not case:
         await callback.message.edit_text("Нет активного дела.")
         return
-    await ctx.case_service.change_status(case=case, next_status=CaseStatus.M1_POA_RECEIVED, actor_type="client", actor_id=user.id, force=True, comment="Клиент отметил оформление доверенности")
-    await ctx.case_service.change_status(case=case, next_status=CaseStatus.M1_CLAIM_SENT, actor_type="system", actor_id=None, force=True, comment="Запущен этап претензии")
-    await ctx.case_service.change_status(case=case, next_status=CaseStatus.M1_WAITING_30_DAYS, actor_type="system", actor_id=None, force=True, comment="Запущено ожидание 30 дней после претензии")
+    await ctx.case_service.change_status(case=case, next_status=CaseStatus.M1_POA_RECEIVED, actor_type="client", actor_id=user.id, comment="Клиент отметил оформление доверенности")
+    await ctx.case_service.change_status(case=case, next_status=CaseStatus.M1_CLAIM_SENT, actor_type="system", actor_id=None, comment="Запущен этап претензии")
+    await ctx.case_service.change_status(case=case, next_status=CaseStatus.M1_WAITING_30_DAYS, actor_type="system", actor_id=None, comment="Запущено ожидание 30 дней после претензии")
     await db.commit()
     await callback.message.edit_text(
         "📨 Претензия\n\nСтатус обновлен: претензия направлена, начался срок ожидания 30 календарных дней.",
@@ -119,7 +119,7 @@ async def court_status(callback: CallbackQuery, db):
         await callback.message.edit_text("Нет активного дела.")
         return
     if case.status == CaseStatus.M1_WAITING_30_DAYS:
-        await ctx.case_service.change_status(case=case, next_status=CaseStatus.M1_COURT_STAGE, actor_type="system", actor_id=None, force=True, comment="Открыт судебный этап")
+        await ctx.case_service.change_status(case=case, next_status=CaseStatus.M1_COURT_STAGE, actor_type="system", actor_id=None, comment="Открыт судебный этап")
     await db.commit()
     await callback.message.edit_text(
         "🏛 Судебный этап\n\nЮрист сопровождает процесс. Все значимые события будут отображаться в истории дела.",
@@ -146,12 +146,15 @@ async def pay_success_fee(callback: CallbackQuery, db):
     if existing:
         payment = existing
     else:
-        # MVP: если сумма взыскания еще не внесена юристом, выставляем 10% от предварительного расчета или 1 руб. как технический платеж.
+        # Сумма рассчитывается из сохранённого расчёта и настройки процента.
         amount = await service.estimate_success_fee_for_case(case.id)
         payment = await service.get_or_create_payment(case=case, payment_code=PaymentCode.M1_SUCCESS_FEE, amount=amount)
     payment = await service.create_payment_link(payment)
     await db.commit()
+    from app.bot.screens.payments import payment_keyboard
+
     await callback.message.edit_text(
-        f"💳 Финальный платеж\n\nСумма: {_money(payment.amount)}\n\nПосле оплаты дело будет закрыто.",
-        reply_markup=one(("Перейти к оплате", "noop"), ("✅ DEV подтвердить оплату", f"pay_fake_success:{payment.id}"), ("📁 Мое дело", "my_case_open")),
+        f"💳 Финальный платеж\n\nСумма: {_money(payment.amount)}\n\n"
+        "После подтверждения оплаты система завершит финансовый этап дела.",
+        reply_markup=payment_keyboard(payment),
     )
