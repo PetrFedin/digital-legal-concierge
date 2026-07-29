@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -21,6 +22,7 @@ class WebhookClaim:
     event: PaymentWebhookEvent
     should_process: bool
     duplicate: bool
+    payload_conflict: bool = False
 
 
 def canonical_payload_sha256(payload: dict) -> str:
@@ -53,8 +55,8 @@ async def read_limited_body(request: Request) -> bytes:
         try:
             if int(content_length) > max_bytes:
                 raise HTTPException(413, "payment webhook payload too large")
-        except ValueError:
-            raise HTTPException(400, "invalid content-length")
+        except ValueError as error:
+            raise HTTPException(400, "invalid content-length") from error
     chunks: list[bytes] = []
     total = 0
     async for chunk in request.stream():
@@ -112,6 +114,19 @@ async def claim_webhook_event(
 
     event.attempt_count = int(event.attempt_count or 0) + 1
     event.last_seen_at = now
+    if not hmac.compare_digest(event.payload_sha256, payload_sha256):
+        event.status = "DEAD_LETTER"
+        event.processed_at = now
+        event.response_code = 409
+        event.error_code = "event_payload_mismatch"
+        await db.flush()
+        return WebhookClaim(
+            event=event,
+            should_process=False,
+            duplicate=True,
+            payload_conflict=True,
+        )
+
     if event.status in FINAL_STATUSES:
         await db.flush()
         return WebhookClaim(event=event, should_process=False, duplicate=True)
@@ -138,7 +153,6 @@ async def claim_webhook_event(
     event.processed_at = None
     event.response_code = None
     event.error_code = None
-    event.payload_sha256 = payload_sha256
     event.payload_summary = payload_summary
     await db.flush()
     return WebhookClaim(event=event, should_process=True, duplicate=True)
