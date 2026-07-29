@@ -6,6 +6,7 @@ from aiogram.types import CallbackQuery
 
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
+from app.bot.screens.consultation_hold import router as hold_router
 from app.bot.screens.consultation_reservation import router as reservation_router
 from app.bot.screens.consultation_selection import router as selection_router
 from app.bot.states import ConsultationDescriptionStates
@@ -18,6 +19,7 @@ from app.domain.statuses.consultation_statuses import ConsultationStatus
 
 
 router = Router()
+router.include_router(hold_router)
 router.include_router(reservation_router)
 router.include_router(selection_router)
 logger = logging.getLogger(__name__)
