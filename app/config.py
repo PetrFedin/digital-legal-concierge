@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     document_access_grant_ttl_seconds: int = 180
     document_access_max_active_grants: int = 5
     payment_webhook_secret: str = "dev-payment-secret"
+    max_payment_webhook_kb: int = 256
+    payment_webhook_processing_timeout_seconds: int = 300
+    payment_webhook_max_attempts: int = 8
     public_base_url: str = "http://localhost:8000"
     payment_provider: str = "fake"
     yookassa_shop_id: str = ""

@@ -61,7 +61,7 @@ from app.security.http_security import (
 from app.security.keyring import security_key_status
 from app.security.session_guard import AdminSessionGuardMiddleware
 
-VERSION = "1.0.0-v40"
+VERSION = "1.0.0-v41"
 
 
 def create_app():
@@ -135,6 +135,11 @@ def create_app():
         from pathlib import Path
 
         key_status = security_key_status()
+        payment_webhook_secret_ready = settings.app_env != "production" or (
+            len(str(settings.payment_webhook_secret or "")) >= 32
+            and settings.payment_webhook_secret
+            not in {"dev-payment-secret", "change-this-payment-secret"}
+        )
         checks = {
             "bot_token_configured": bool(
                 settings.bot_token and settings.bot_token != "CHANGE_ME"
@@ -159,6 +164,16 @@ def create_app():
             <= 20,
             "backup_size_limit_valid": 1 <= int(settings.max_backup_mb) <= 10240,
             "backup_retention_valid": 1 <= int(settings.backup_retention_days) <= 3650,
+            "payment_webhook_body_limit_valid": 1
+            <= int(settings.max_payment_webhook_kb)
+            <= 1024,
+            "payment_webhook_timeout_valid": 30
+            <= int(settings.payment_webhook_processing_timeout_seconds)
+            <= 3600,
+            "payment_webhook_attempt_limit_valid": 1
+            <= int(settings.payment_webhook_max_attempts)
+            <= 50,
+            "payment_webhook_secret_ready": payment_webhook_secret_ready,
             "database_url_configured": bool(settings.database_url),
             "scheduler_enabled": settings.run_scheduler,
             "bot_enabled": settings.run_bot,
@@ -202,6 +217,19 @@ def create_app():
                 "restore_mode": "verified_staging_only",
                 "max_backup_mb": settings.max_backup_mb,
                 "retention_days": settings.backup_retention_days,
+            },
+            "payment_webhook_security": {
+                "enabled": True,
+                "max_body_kb": settings.max_payment_webhook_kb,
+                "idempotent_ledger": True,
+                "replay_payload_conflict_detection": True,
+                "processing_timeout_seconds": (
+                    settings.payment_webhook_processing_timeout_seconds
+                ),
+                "max_attempts": settings.payment_webhook_max_attempts,
+                "authoritative_provider_recheck": settings.payment_provider
+                == "yookassa",
+                "raw_provider_payload_persisted": False,
             },
             "security_event_monitoring": {
                 "enabled": True,
@@ -265,6 +293,11 @@ def create_app():
             "backup_secrets_excluded": True,
             "verified_staging_restore": True,
             "encrypted_backup_retention_job": True,
+            "bounded_payment_webhook_body": True,
+            "idempotent_payment_webhook_ledger": True,
+            "payment_webhook_replay_protection": True,
+            "payment_webhook_dead_letter_state": True,
+            "sanitized_payment_provider_payloads": True,
             "tamper_evident_audit_chain": True,
             "immutable_audit_events": True,
             "tamper_evident_security_events": True,

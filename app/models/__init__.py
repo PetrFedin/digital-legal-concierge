@@ -6,6 +6,7 @@ from app.models.calculation import Calculation
 from app.models.document import Document
 from app.models.document_access_grant import DocumentAccessGrant
 from app.models.payment import Payment
+from app.models.payment_webhook_event import PaymentWebhookEvent
 from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
 from app.models.message import Message
