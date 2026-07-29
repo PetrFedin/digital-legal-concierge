@@ -6,7 +6,14 @@ NOTIFICATION_RULES = {
     "PAYMENT_CREATED": {"recipients": ["client"], "template": "payment_created"},
     "PAYMENT_PAID": {"recipients": ["client", "admin"], "template": "payment_paid"},
     "PAYMENT_REMINDER": {"recipients": ["client"], "template": "payment_reminder"},
-    "M2_CONSULTATION_BOOKED": {"recipients": ["client", "lawyer", "admin"], "template": "consultation_booked"},
+    "M2_CONSULTATION_BOOKED": {
+        "recipients": ["client", "lawyer", "admin"],
+        "template": "consultation_booked",
+    },
+    "CONSULTATION_PAYMENT_REVIEW": {
+        "recipients": ["admin"],
+        "template": "consultation_payment_review",
+    },
     "CLAIM_30_DAYS_EXPIRED": {"recipients": ["lawyer", "admin"], "template": "claim_30_days_expired"},
     "COURT_STAGE_STARTED": {"recipients": ["client", "lawyer"], "template": "court_stage_started"},
 }
