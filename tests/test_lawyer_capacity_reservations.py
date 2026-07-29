@@ -106,6 +106,17 @@ async def test_hold_consumes_capacity_until_reservation_is_released(
 
         first_user, first_case, first_consultation, first_slot = first
         second_user, second_case, second_consultation, second_slot = second
+        ids = {
+            "lawyer": lawyer.id,
+            "first_user": first_user.id,
+            "first_case": first_case.id,
+            "first_consultation": first_consultation.id,
+            "first_slot": first_slot.id,
+            "second_user": second_user.id,
+            "second_case": second_case.id,
+            "second_consultation": second_consultation.id,
+            "second_slot": second_slot.id,
+        }
         await ConsultationService(session).reserve_pre_payment_slot(
             consultation=first_consultation,
             case=first_case,
@@ -135,6 +146,38 @@ async def test_hold_consumes_capacity_until_reservation_is_released(
             )
         await session.rollback()
 
+        # AsyncSession rollback expires ORM state. Reload by stable identifiers
+        # before any assertion or subsequent mutation to avoid implicit async IO.
+        lawyer = await session.get(Lawyer, ids["lawyer"])
+        first_user = await session.get(User, ids["first_user"])
+        first_case = await session.get(Case, ids["first_case"])
+        first_consultation = await session.get(
+            Consultation,
+            ids["first_consultation"],
+        )
+        first_slot = await session.get(ConsultationSlot, ids["first_slot"])
+        second_user = await session.get(User, ids["second_user"])
+        second_case = await session.get(Case, ids["second_case"])
+        second_consultation = await session.get(
+            Consultation,
+            ids["second_consultation"],
+        )
+        second_slot = await session.get(ConsultationSlot, ids["second_slot"])
+        assert all(
+            item is not None
+            for item in (
+                lawyer,
+                first_user,
+                first_case,
+                first_consultation,
+                first_slot,
+                second_user,
+                second_case,
+                second_consultation,
+                second_slot,
+            )
+        )
+
         assert second_consultation.status == ConsultationStatus.SLOT_PENDING.value
         assert second_consultation.slot_id is None
         assert second_slot.status == "available"
@@ -160,6 +203,8 @@ async def test_hold_consumes_capacity_until_reservation_is_released(
             actor_id=first_user.id,
             source="test",
         )
+        # The production service intentionally has no general unassign action.
+        # Clear the fixture-only assignment to isolate capacity returned by hold release.
         first_case.assigned_lawyer_id = None
         await session.commit()
 
