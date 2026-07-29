@@ -16,6 +16,7 @@ from app.api.case_assignment import router as case_assignment_router
 from app.api.consultation_outcomes import router as consultation_outcomes_router
 from app.api.consultation_slots import router as consultation_slots_router
 from app.api.diagnostic_center import router as diagnostic_center_router
+from app.api.document_access import router as document_access_router
 from app.api.exports import router as exports_router
 from app.api.final_handover_center import router as final_handover_center_router
 from app.api.final_qa_center import router as final_qa_center_router
@@ -59,7 +60,7 @@ from app.security.http_security import (
 from app.security.keyring import security_key_status
 from app.security.session_guard import AdminSessionGuardMiddleware
 
-VERSION = "1.0.0-v38"
+VERSION = "1.0.0-v39"
 
 
 def create_app():
@@ -108,6 +109,7 @@ def create_app():
         admin_router,
         payment_router,
         lawyer_router,
+        document_access_router,
         runtime_router,
         web_admin_router,
         operator_router,
@@ -147,6 +149,12 @@ def create_app():
             "quarantine_retention_valid": 1
             <= int(settings.upload_quarantine_retention_days)
             <= 90,
+            "document_access_ttl_valid": 30
+            <= int(settings.document_access_grant_ttl_seconds)
+            <= 300,
+            "document_access_limit_valid": 1
+            <= int(settings.document_access_max_active_grants)
+            <= 20,
             "database_url_configured": bool(settings.database_url),
             "scheduler_enabled": settings.run_scheduler,
             "bot_enabled": settings.run_bot,
@@ -171,6 +179,15 @@ def create_app():
                 "encryption_key_id": key_status["active_key_ids"].get(
                     "document_encryption"
                 ),
+            },
+            "document_delivery_security": {
+                "enabled": True,
+                "personal_sessions_only": True,
+                "one_time_grants": True,
+                "grant_ttl_seconds": settings.document_access_grant_ttl_seconds,
+                "max_active_grants": settings.document_access_max_active_grants,
+                "session_bound": True,
+                "direct_storage_paths_exposed": False,
             },
             "security_event_monitoring": {
                 "enabled": True,
@@ -206,6 +223,7 @@ def create_app():
             "audit_center_ui": "/audit-center/ui",
             "security_event_center_api": "/security-events/status",
             "security_event_center_ui": "/security-events/ui",
+            "document_access_api": "/document-access",
             "health": "/health",
             "ready": "/ready",
             "bot_enabled": settings.run_bot,
@@ -221,6 +239,10 @@ def create_app():
             "legacy_document_rescan_job": True,
             "document_encryption_at_rest": True,
             "document_encryption_rotation_job": True,
+            "secure_document_delivery": True,
+            "one_time_document_grants": True,
+            "session_bound_document_grants": True,
+            "document_grant_cleanup_job": True,
             "tamper_evident_audit_chain": True,
             "immutable_audit_events": True,
             "tamper_evident_security_events": True,
