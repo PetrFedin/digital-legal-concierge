@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_history import add_case_history_event
@@ -74,18 +75,36 @@ class CaseService:
         return cases[0] if cases else None
 
     async def get_or_create_m2_case_for_user(self, client: User) -> Case:
-        """Return an active M2 case without mutating an existing M1 case.
+        """Return exactly one active M2 case for a client.
 
-        An unrouted intake/calculation may safely become M2. A live M1 case is
-        preserved and a dedicated consultation case is created instead.
+        The locked User row serializes repeated entry callbacks on PostgreSQL.
+        The partial unique index is the final cross-process guard and the
+        savepoint recovery returns the winning row when concurrent creation is
+        attempted. An active M1 case is never mutated into M2.
         """
 
-        existing_m2 = await self.get_active_case_for_user(
+        if client is None or client.id is None:
+            raise ValueError("Клиент для консультации не найден.")
+
+        locked_client_id = (
+            await self.db.execute(
+                select(User.id).where(User.id == client.id).with_for_update()
+            )
+        ).scalar_one_or_none()
+        if locked_client_id is None:
+            raise ValueError("Клиент для консультации не найден.")
+
+        active_m2 = await self.list_active_cases_for_user(
             client.id,
             route=RouteCode.M2,
         )
-        if existing_m2 is not None:
-            return existing_m2
+        if len(active_m2) > 1:
+            raise RuntimeError(
+                "Найдено несколько активных консультационных дел. "
+                "Требуется проверка сотрудника."
+            )
+        if active_m2:
+            return active_m2[0]
 
         active_cases = await self.list_active_cases_for_user(client.id)
         reusable = next(
@@ -97,20 +116,40 @@ class CaseService:
             ),
             None,
         )
-        if reusable is not None:
-            return await self.transfer_to_m2(
-                case=reusable,
-                actor_type="client",
-                actor_id=client.id,
-                reason="Клиент начал оформление юридической консультации",
-            )
 
-        return await self.create_case(
-            client=client,
-            route=RouteCode.M2.value,
-            status=CaseStatus.M2_DESCRIPTION_PENDING.value,
-            title="Юридическая консультация",
-        )
+        try:
+            async with self.db.begin_nested():
+                if reusable is not None:
+                    result = await self.transfer_to_m2(
+                        case=reusable,
+                        actor_type="client",
+                        actor_id=client.id,
+                        reason="Клиент начал оформление юридической консультации",
+                    )
+                else:
+                    result = await self.create_case(
+                        client=client,
+                        route=RouteCode.M2.value,
+                        status=CaseStatus.M2_DESCRIPTION_PENDING.value,
+                        title="Юридическая консультация",
+                    )
+                await self.db.flush()
+            return result
+        except IntegrityError:
+            # Another process may have won the unique-index race. The nested
+            # transaction rollback keeps the outer request usable for reload.
+            active_m2 = await self.list_active_cases_for_user(
+                client.id,
+                route=RouteCode.M2,
+            )
+            if len(active_m2) == 1:
+                return active_m2[0]
+            if len(active_m2) > 1:
+                raise RuntimeError(
+                    "Найдено несколько активных консультационных дел. "
+                    "Требуется проверка сотрудника."
+                )
+            raise
 
     async def create_case(
         self,
