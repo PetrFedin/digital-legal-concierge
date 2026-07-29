@@ -422,20 +422,87 @@ async def consult_cancel(callback: CallbackQuery, db):
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     case = await ctx.case_service.get_active_case_for_user(user.id)
-    if case:
-        consultation = await ConsultationService(db).get_current_for_case(
-            case.id
+    if not case:
+        await callback.message.edit_text(
+            "Нет активной консультации для отмены.",
+            reply_markup=one(("🏠 Главная", "nav_home")),
         )
-        if consultation:
-            await ConsultationService(db).cancel(
-                consultation=consultation,
-                case=case,
-                actor_type="client",
-                actor_id=user.id,
-                comment="Клиент отменил консультацию",
-            )
-            await db.commit()
+        return
+    consultation = await ConsultationService(db).get_current_for_case(case.id)
+    if not consultation:
+        await callback.message.edit_text(
+            "Нет активной консультации для отмены.",
+            reply_markup=one(("🏠 Главная", "nav_home")),
+        )
+        return
+
+    if consultation.status == ConsultationStatus.BOOKED:
+        text = (
+            "⚠️ Подтвердите отмену оплаченной консультации.\n\n"
+            "После подтверждения слот будет освобождён, а платёж перейдёт "
+            "в статус ожидания возврата. Администратор выполнит возврат "
+            "через платёжного провайдера и зафиксирует результат в системе."
+        )
+    else:
+        text = (
+            "⚠️ Подтвердите отмену консультации.\n\n"
+            "Текущий резерв времени будет освобождён."
+        )
     await callback.message.edit_text(
-        "Консультация отменена. Слот снова доступен для записи.",
-        reply_markup=one(("🏠 Главная", "nav_home")),
+        text,
+        reply_markup=one(
+            ("Да, отменить", "consult_cancel_confirm"),
+            ("Нет, сохранить запись", "consultation_booked_open"),
+        ),
+    )
+
+
+@router.callback_query(lambda c: c.data == "consult_cancel_confirm")
+async def consult_cancel_confirm(callback: CallbackQuery, db):
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    case = await ctx.case_service.get_active_case_for_user(user.id)
+    if not case:
+        await callback.message.edit_text(
+            "Активная консультация уже отсутствует.",
+            reply_markup=one(("🏠 Главная", "nav_home")),
+        )
+        return
+    service = ConsultationService(db)
+    consultation = await service.get_current_for_case(case.id)
+    if not consultation:
+        await callback.message.edit_text(
+            "Активная консультация уже отсутствует.",
+            reply_markup=one(("🏠 Главная", "nav_home")),
+        )
+        return
+    was_booked = consultation.status == ConsultationStatus.BOOKED
+    try:
+        await service.cancel(
+            consultation=consultation,
+            case=case,
+            actor_type="client",
+            actor_id=user.id,
+            comment="Клиент подтвердил отмену консультации в Telegram",
+        )
+        await db.commit()
+    except (LookupError, ValueError) as error:
+        await db.rollback()
+        await callback.answer(str(error), show_alert=True)
+        return
+
+    if was_booked:
+        text = (
+            "🧾 Консультация отменена, слот освобождён.\n\n"
+            "Заявка на возврат оплаты передана администратору. "
+            "После фактического возврата вы получите отдельное уведомление."
+        )
+    else:
+        text = "Консультация отменена. Слот снова доступен для записи."
+    await callback.message.edit_text(
+        text,
+        reply_markup=one(
+            ("💳 Мои оплаты", "payments_open"),
+            ("🏠 Главная", "nav_home"),
+        ),
     )
