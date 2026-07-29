@@ -54,6 +54,10 @@ from app.api.task_center import router as task_center_router
 from app.api.template_builder import router as template_builder_router
 from app.api.web_admin import router as web_admin_router
 from app.config import settings
+from app.security.client_address import (
+    TrustedProxyClientAddressMiddleware,
+    trusted_proxy_networks,
+)
 from app.security.http_security import (
     RequestOriginGuardMiddleware,
     SecurityHeadersMiddleware,
@@ -61,7 +65,7 @@ from app.security.http_security import (
 from app.security.keyring import security_key_status
 from app.security.session_guard import AdminSessionGuardMiddleware
 
-VERSION = "1.0.0-v41"
+VERSION = "1.0.0-v42"
 
 
 def create_app():
@@ -69,6 +73,9 @@ def create_app():
     app.add_middleware(AdminSessionGuardMiddleware)
     app.add_middleware(RequestOriginGuardMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
+    # Added last so forwarded headers are resolved before every downstream
+    # authentication, throttling, webhook and audit component sees client.host.
+    app.add_middleware(TrustedProxyClientAddressMiddleware)
     for router in [
         maintenance_center_router,
         final_handover_center_router,
@@ -140,6 +147,12 @@ def create_app():
             and settings.payment_webhook_secret
             not in {"dev-payment-secret", "change-this-payment-secret"}
         )
+        try:
+            proxy_networks = trusted_proxy_networks()
+            trusted_proxy_config_valid = True
+        except RuntimeError:
+            proxy_networks = ()
+            trusted_proxy_config_valid = False
         checks = {
             "bot_token_configured": bool(
                 settings.bot_token and settings.bot_token != "CHANGE_ME"
@@ -174,6 +187,10 @@ def create_app():
             <= int(settings.payment_webhook_max_attempts)
             <= 50,
             "payment_webhook_secret_ready": payment_webhook_secret_ready,
+            "trusted_proxy_config_valid": trusted_proxy_config_valid,
+            "trusted_proxy_hop_limit_valid": 1
+            <= int(settings.trusted_proxy_max_hops)
+            <= 20,
             "database_url_configured": bool(settings.database_url),
             "scheduler_enabled": settings.run_scheduler,
             "bot_enabled": settings.run_bot,
@@ -189,6 +206,14 @@ def create_app():
             "ok": all(checks.values()),
             "checks": checks,
             "security_keys": key_status,
+            "trusted_proxy_security": {
+                "enabled": bool(proxy_networks),
+                "trusted_cidrs_count": len(proxy_networks),
+                "max_hops": settings.trusted_proxy_max_hops,
+                "trust_forwarded_proto": settings.trust_forwarded_proto,
+                "untrusted_forwarded_headers": "ignored",
+                "malformed_trusted_chain": "rejected_and_audited",
+            },
             "document_upload_security": {
                 "max_upload_mb": settings.max_document_upload_mb,
                 "quarantine_enabled": settings.quarantine_rejected_uploads,
@@ -275,6 +300,10 @@ def create_app():
             "scheduler_enabled": settings.run_scheduler,
             "payment_provider": settings.payment_provider,
             "storage_dir": settings.storage_dir,
+            "trusted_proxy_client_resolution": True,
+            "trusted_proxy_allowlist_required": True,
+            "untrusted_forwarded_headers_ignored": True,
+            "forwarded_proto_trusted_only": True,
             "http_origin_guard": True,
             "security_headers": True,
             "security_keyring": True,
