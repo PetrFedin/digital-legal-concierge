@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.consultations.slot_service import SlotService, SlotUnavailableError
+from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.models.consultation import Consultation
 
@@ -19,6 +20,7 @@ class ConsultationService:
     def __init__(self, db: AsyncSession):
         self.db = db
         self.slots = SlotService(db)
+        self.notifications = NotificationEngine(db)
 
     async def get_current_for_case(self, case_id: int) -> Consultation | None:
         result = await self.db.execute(
@@ -179,6 +181,86 @@ class ConsultationService:
         )
         await self.db.flush()
         return consultation
+
+    async def reschedule_booked(
+        self,
+        *,
+        consultation: Consultation,
+        case,
+        client_id: int,
+        new_slot_id: int,
+    ):
+        if consultation.status != ConsultationStatus.BOOKED:
+            raise ValueError(
+                "Перенос без повторной оплаты доступен только для подтверждённой консультации"
+            )
+        if not consultation.slot_id:
+            raise ValueError("У консультации отсутствует текущий слот")
+        if consultation.slot_id == new_slot_id:
+            slot = await self.slots.get_slot(new_slot_id)
+            if slot:
+                return consultation, slot
+            raise SlotUnavailableError("Текущий слот не найден")
+
+        old_slot = await self.slots.get_slot(consultation.slot_id)
+        if (
+            not old_slot
+            or old_slot.status != "booked"
+            or old_slot.consultation_id != consultation.id
+        ):
+            raise ValueError(
+                "Текущая подтверждённая бронь повреждена. Обратитесь к администратору."
+            )
+        if as_utc(old_slot.starts_at) <= datetime.now(timezone.utc):
+            raise ValueError(
+                "Нельзя перенести консультацию, которая уже началась или завершилась"
+            )
+
+        new_slot = await self.slots.book_available_slot(
+            slot_id=new_slot_id,
+            user_id=client_id,
+            consultation_id=consultation.id,
+        )
+        old_snapshot = {
+            "slot_id": old_slot.id,
+            "lawyer_id": old_slot.lawyer_id,
+            "starts_at": old_slot.starts_at.isoformat(),
+            "ends_at": old_slot.ends_at.isoformat(),
+        }
+        await self.slots.release_slot(old_slot.id, consultation.id)
+
+        consultation.slot_id = new_slot.id
+        consultation.lawyer_id = new_slot.lawyer_id
+        consultation.scheduled_at = new_slot.starts_at
+        consultation.status = ConsultationStatus.BOOKED
+        new_snapshot = {
+            "slot_id": new_slot.id,
+            "lawyer_id": new_slot.lawyer_id,
+            "starts_at": new_slot.starts_at.isoformat(),
+            "ends_at": new_slot.ends_at.isoformat(),
+        }
+        await add_case_history_event(
+            self.db,
+            actor_type="client",
+            actor_id=client_id,
+            case_id=case.id,
+            action="CONSULTATION_RESCHEDULED",
+            old_value=old_snapshot,
+            new_value=new_snapshot,
+            comment="Клиент перенёс оплаченную консультацию без повторной оплаты",
+        )
+        await self.notifications.emit(
+            event_code="CONSULTATION_RESCHEDULED",
+            case_id=case.id,
+            user_id=client_id,
+            payload={
+                "case_number": case.case_number,
+                "old_date": old_slot.starts_at.strftime("%d.%m.%Y %H:%M"),
+                "new_date": new_slot.starts_at.strftime("%d.%m.%Y %H:%M"),
+            },
+        )
+        await self.db.flush()
+        return consultation, new_slot
 
     async def cancel(
         self,
