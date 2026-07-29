@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
-if [ $# -ne 1 ]; then
-  echo "Использование: ./restore.sh backups/legal_bot_backup_YYYYMMDD_HHMMSS.tar.gz"
+
+if [ "$#" -ne 2 ]; then
+  echo "Использование: ./restore.sh backups/legal_concierge_YYYYMMDD_HHMMSS.dlcbak /пустой/staging-каталог"
+  echo "Команда никогда не распаковывает архив поверх работающего приложения."
   exit 1
 fi
-tar -xzf "$1"
-echo "Восстановлено из $1"
+
+exec python -m app.security.backup_cli extract "$1" "$2"
