@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     audit_integrity_key_id: str = "audit-v1"
     audit_integrity_key: str = ""
     audit_integrity_previous_keys: str = ""
+    document_encryption_key_id: str = "documents-v1"
+    document_encryption_key: str = ""
+    document_encryption_previous_keys: str = ""
     allow_legacy_security_key_fallback: bool = False
 
     legal_key_rate: float = 0.16
