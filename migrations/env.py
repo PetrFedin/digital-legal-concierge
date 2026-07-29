@@ -25,13 +25,27 @@ config.set_main_option("sqlalchemy.url", str(runtime_url).replace("%", "%%"))
 target_metadata = Base.metadata
 
 
+def compare_column_type(
+    migration_context,
+    inspected_column,
+    metadata_column,
+    inspected_type,
+    metadata_type,
+):
+    """Keep PostgreSQL type checks strict, ignore SQLite affinity noise."""
+    if migration_context.dialect.name == "sqlite":
+        return False
+    return None
+
+
 def run_migrations_offline() -> None:
+    is_sqlite = str(runtime_url).startswith("sqlite")
     context.configure(
         url=runtime_url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        compare_type=True,
+        compare_type=False if is_sqlite else True,
         compare_server_default=False,
     )
     with context.begin_transaction():
@@ -42,7 +56,7 @@ def do_run_migrations(connection) -> None:
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
-        compare_type=True,
+        compare_type=compare_column_type,
         compare_server_default=False,
         render_as_batch=connection.dialect.name == "sqlite",
     )
