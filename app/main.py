@@ -45,6 +45,7 @@ from app.api.runtime import router as runtime_router
 from app.api.scenario_map import router as scenario_map_router
 from app.api.search_center import router as search_center_router
 from app.api.security import router as security_router
+from app.api.security_event_center import router as security_event_center_router
 from app.api.settings_ui import router as settings_ui_router
 from app.api.sla_center import router as sla_center_router
 from app.api.task_center import router as task_center_router
@@ -58,7 +59,7 @@ from app.security.http_security import (
 from app.security.keyring import security_key_status
 from app.security.session_guard import AdminSessionGuardMiddleware
 
-VERSION = "1.0.0-v36"
+VERSION = "1.0.0-v37"
 
 
 def create_app():
@@ -84,6 +85,7 @@ def create_app():
         search_center_router,
         message_center_router,
         audit_center_router,
+        security_event_center_router,
         notification_center_router,
         backup_center_router,
         auth_router,
@@ -166,6 +168,11 @@ def create_app():
                 "quarantine_retention_days": settings.upload_quarantine_retention_days,
                 "allowed_formats": ["pdf", "docx", "jpeg", "png"],
             },
+            "security_event_monitoring": {
+                "enabled": True,
+                "privacy_preserving_identifiers": True,
+                "tamper_evident_storage": True,
+            },
             "version": VERSION,
         }
 
@@ -193,6 +200,8 @@ def create_app():
             "payment_review_center_ui": "/admin/payment-reviews/ui",
             "audit_integrity_api": "/audit-center/integrity",
             "audit_center_ui": "/audit-center/ui",
+            "security_event_center_api": "/security-events/status",
+            "security_event_center_ui": "/security-events/ui",
             "health": "/health",
             "ready": "/ready",
             "bot_enabled": settings.run_bot,
@@ -208,6 +217,9 @@ def create_app():
             "legacy_document_rescan_job": True,
             "tamper_evident_audit_chain": True,
             "immutable_audit_events": True,
+            "tamper_evident_security_events": True,
+            "cross_site_security_event_logging": True,
+            "privacy_preserving_security_identifiers": True,
         }
 
     return app
