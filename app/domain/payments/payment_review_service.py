@@ -162,8 +162,7 @@ class PaymentReviewService:
                 next_status=CaseStatus.M2_CONSULTATION_BOOKED,
                 actor_type="admin",
                 actor_id=actor_id,
-                force=True,
-                comment="Подтверждение существующей брони после проверки платежа",
+                    comment="Подтверждение существующей брони после проверки платежа",
             )
 
         await self._record_resolution(
@@ -280,8 +279,7 @@ class PaymentReviewService:
                 next_status=CaseStatus.M2_CONSULTATION_BOOKED,
                 actor_type="admin",
                 actor_id=actor_id,
-                force=True,
-                comment="Назначен новый слот после ручной проверки платежа",
+                    comment="Назначен новый слот после ручной проверки платежа",
             )
 
         await self._record_resolution(

@@ -65,7 +65,7 @@ from app.security.http_security import (
 from app.security.keyring import security_key_status
 from app.security.session_guard import AdminSessionGuardMiddleware
 
-VERSION = "1.0.0-v42"
+VERSION = "1.0.0-v43"
 
 
 def create_app():

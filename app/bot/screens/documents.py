@@ -269,7 +269,6 @@ async def finish(callback: CallbackQuery, db):
             next_status=CaseStatus.M1_LAWYER_REVIEW,
             actor_type="client",
             actor_id=user.id,
-            force=True,
             comment="Проверенные и зашифрованные документы переданы юристу",
         )
         response_text = "✅ Защищённые документы переданы на проверку юристу."
@@ -279,7 +278,6 @@ async def finish(callback: CallbackQuery, db):
             next_status=CaseStatus.M2_SLOT_PENDING,
             actor_type="client",
             actor_id=user.id,
-            force=True,
             comment="Проверенные и зашифрованные документы М2 сохранены",
         )
         response_text = "✅ Документы защищённо сохранены. Теперь выберите время консультации."
@@ -303,7 +301,6 @@ async def skip(callback: CallbackQuery, db):
         next_status=CaseStatus.M2_SLOT_PENDING,
         actor_type="client",
         actor_id=user.id,
-        force=True,
         comment="Документы пропущены",
     )
     await db.commit()

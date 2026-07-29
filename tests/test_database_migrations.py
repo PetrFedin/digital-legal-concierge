@@ -6,7 +6,7 @@ from pathlib import Path
 from app.db.migrations import run_database_migrations
 
 
-HEAD_REVISION = "20260729_0008"
+HEAD_REVISION = "20260730_0009"
 
 
 def sqlite_url(path: Path) -> str:
@@ -128,6 +128,12 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "revoked_at",
         "client_ref",
     }.issubset(column_names(database_path, "document_access_grants"))
+    assert {
+        "calculation_date",
+        "key_rate",
+        "consumer_multiplier",
+        "formula_version",
+    }.issubset(column_names(database_path, "calculations"))
     assert {
         "provider",
         "event_key",
