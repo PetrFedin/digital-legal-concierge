@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import secrets
+import time
 from datetime import datetime, timezone
 
 import pyotp
@@ -47,11 +48,31 @@ def provisioning_uri(user: AdminUser, secret: str) -> str:
     )
 
 
-def verify_totp(secret: str | None, code: str | None) -> bool:
+def verify_totp_counter(secret: str | None, code: str | None) -> int | None:
     normalized = str(code or "").replace(" ", "").strip()
     if not secret or not normalized.isdigit() or len(normalized) != 6:
+        return None
+    totp = pyotp.TOTP(secret)
+    current_counter = int(time.time()) // int(totp.interval)
+    for counter in (current_counter - 1, current_counter, current_counter + 1):
+        if hmac.compare_digest(totp.generate_otp(counter), normalized):
+            return counter
+    return None
+
+
+def verify_totp(secret: str | None, code: str | None) -> bool:
+    return verify_totp_counter(secret, code) is not None
+
+
+def consume_totp(user: AdminUser, secret: str | None, code: str | None) -> bool:
+    counter = verify_totp_counter(secret, code)
+    if counter is None:
         return False
-    return bool(pyotp.TOTP(secret).verify(normalized, valid_window=1))
+    last_counter = user.mfa_last_totp_step
+    if last_counter is not None and counter <= int(last_counter):
+        return False
+    user.mfa_last_totp_step = counter
+    return True
 
 
 def _recovery_digest(user_id: int, code: str) -> str:
