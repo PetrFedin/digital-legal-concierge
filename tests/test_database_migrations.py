@@ -6,7 +6,7 @@ from pathlib import Path
 from app.db.migrations import run_database_migrations
 
 
-HEAD_REVISION = "20260729_0007"
+HEAD_REVISION = "20260729_0008"
 
 
 def sqlite_url(path: Path) -> str:
@@ -23,9 +23,7 @@ def table_names(path: Path) -> set[str]:
 
 def column_names(path: Path, table_name: str) -> set[str]:
     with sqlite3.connect(path) as connection:
-        rows = connection.execute(
-            f"PRAGMA table_info({table_name})"
-        ).fetchall()
+        rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
     return {row[1] for row in rows}
 
 
@@ -49,6 +47,7 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "lawyers",
         "cases",
         "payments",
+        "payment_webhook_events",
         "consultations",
         "consultation_slots",
         "notifications",
@@ -129,6 +128,23 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "revoked_at",
         "client_ref",
     }.issubset(column_names(database_path, "document_access_grants"))
+    assert {
+        "provider",
+        "event_key",
+        "event_type",
+        "provider_payment_id",
+        "payment_id",
+        "payload_sha256",
+        "payload_summary",
+        "status",
+        "attempt_count",
+        "first_seen_at",
+        "last_seen_at",
+        "processing_started_at",
+        "processed_at",
+        "response_code",
+        "error_code",
+    }.issubset(column_names(database_path, "payment_webhook_events"))
     assert {
         "chain_version",
         "chain_sequence",
@@ -273,6 +289,7 @@ def test_legacy_database_is_adopted_without_data_loss(tmp_path):
         "revoked_access_tokens",
         "audit_chain_heads",
         "document_access_grants",
+        "payment_webhook_events",
     }.issubset(table_names(database_path))
     with sqlite3.connect(database_path) as connection:
         row = connection.execute(
