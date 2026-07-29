@@ -12,6 +12,7 @@ from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
 from app.models.payment import Payment
+from app.security.key_rotation import reencrypt_mfa_secrets
 from app.security.login_throttle import LoginThrottleService
 from app.security.token_revocation import cleanup_revoked_tokens
 
@@ -159,6 +160,7 @@ class SchedulerJobs:
         return {
             "login_states": await LoginThrottleService(self.db).cleanup(),
             "revoked_tokens": await cleanup_revoked_tokens(self.db),
+            "mfa_secrets_reencrypted": await reencrypt_mfa_secrets(self.db),
         }
 
     async def check_claim_waiting_30_days(self) -> int:
