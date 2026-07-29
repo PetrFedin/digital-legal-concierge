@@ -19,6 +19,7 @@ from app.api.consultation_slots import router as consultation_slots_router
 from app.api.case_assignment import router as case_assignment_router
 from app.api.refund_center import router as refund_center_router
 from app.api.payment_review_center import router as payment_review_center_router
+from app.api.consultation_outcomes import router as consultation_outcomes_router
 from app.api.security import router as security_router
 from app.api.launch_assistant import router as launch_assistant_router
 from app.api.health_center import router as health_center_router
@@ -59,12 +60,12 @@ def create_app():
         message_center_router, audit_center_router, notification_center_router,
         backup_center_router, auth_router, access_management_router,
         consultation_slots_router, case_assignment_router, refund_center_router,
-        payment_review_center_router, security_router, launch_assistant_router,
-        health_center_router, diagnostic_center_router, recovery_center_router,
-        install_wizard_router, task_center_router, settings_ui_router, admin_router,
-        payment_router, lawyer_router, runtime_router, web_admin_router,
-        operator_router, exports_router, scenario_map_router, ops_guide_router,
-        handover_router,
+        payment_review_center_router, consultation_outcomes_router, security_router,
+        launch_assistant_router, health_center_router, diagnostic_center_router,
+        recovery_center_router, install_wizard_router, task_center_router,
+        settings_ui_router, admin_router, payment_router, lawyer_router,
+        runtime_router, web_admin_router, operator_router, exports_router,
+        scenario_map_router, ops_guide_router, handover_router,
     ]:
         app.include_router(router)
 
@@ -98,9 +99,12 @@ def create_app():
             'security_check': '/security-check',
             'launch_assistant': '/launch-assistant',
             'admin_ui': '/admin-ui',
+            'lawyer_ui': '/lawyer/ui',
             'access_management': '/access/ui',
             'consultation_slots_api': '/consultation-slots',
             'consultation_slots_ui': '/consultation-slots/ui',
+            'consultation_outcomes_api': '/admin/consultation-outcomes',
+            'consultation_outcomes_ui': '/admin/consultation-outcomes/ui',
             'case_assignment_api': '/admin/case-assignment',
             'refund_center_api': '/admin/refunds',
             'refund_center_ui': '/admin/refunds/ui',

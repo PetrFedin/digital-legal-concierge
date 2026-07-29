@@ -44,6 +44,22 @@ NOTIFICATION_RULES = {
         "recipients": ["lawyer", "admin"],
         "template": "consultation_completion_overdue",
     },
+    "CONSULTATION_COMPLETED": {
+        "recipients": ["client", "admin"],
+        "template": "consultation_completed",
+    },
+    "CONSULTATION_CLIENT_NO_SHOW": {
+        "recipients": ["client", "lawyer", "admin"],
+        "template": "consultation_client_no_show",
+    },
+    "CONSULTATION_LAWYER_NO_SHOW": {
+        "recipients": ["client", "lawyer", "admin"],
+        "template": "consultation_lawyer_no_show",
+    },
+    "CONSULTATION_LAWYER_NO_SHOW_REBOOKED": {
+        "recipients": ["client", "lawyer", "admin"],
+        "template": "consultation_lawyer_no_show_rebooked",
+    },
     "CONSULTATION_CANCELLATION_REQUESTED": {
         "recipients": ["client", "lawyer", "admin"],
         "template": "consultation_cancellation_requested",
