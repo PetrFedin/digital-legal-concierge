@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import os
 import tempfile
 from dataclasses import dataclass
@@ -97,35 +98,16 @@ def _parse_payload(payload: bytes) -> tuple[str, str, bytes, bytes, bytes]:
     return key_id, digest.hex(), nonce, header, ciphertext
 
 
-def encrypted_file_metadata(path: str | Path) -> EncryptionMetadata:
-    candidate = Path(path)
-    if candidate.is_symlink() or not candidate.is_file():
-        raise DocumentEncryptionError("Зашифрованный документ не найден")
-    payload = candidate.read_bytes()
-    key_id, sha256_hex, _, _, ciphertext = _parse_payload(payload)
-    return EncryptionMetadata(
-        key_id=key_id,
-        sha256=sha256_hex,
-        plaintext_size=max(0, len(ciphertext) - TAG_SIZE),
-        encrypted_at=datetime.fromtimestamp(candidate.stat().st_mtime, timezone.utc),
-    )
-
-
-def encrypt_file(
-    source: str | Path,
-    target: str | Path,
+def _write_encrypted_bytes(
+    plaintext: bytes,
+    target_path: Path,
     *,
     expected_sha256: str | None = None,
 ) -> EncryptionMetadata:
-    source_path = Path(source)
-    target_path = Path(target)
-    if source_path.is_symlink() or not source_path.is_file():
-        raise DocumentEncryptionError("Исходный документ не найден")
-    plaintext = source_path.read_bytes()
     if len(plaintext) > _maximum_plaintext_bytes():
         raise DocumentEncryptionError("Документ превышает допустимый размер")
     sha256_hex = hashlib.sha256(plaintext).hexdigest()
-    if expected_sha256 and not hashlib.compare_digest(
+    if expected_sha256 and not hmac.compare_digest(
         sha256_hex,
         str(expected_sha256).lower(),
     ):
@@ -171,6 +153,36 @@ def encrypt_file(
     )
 
 
+def encrypted_file_metadata(path: str | Path) -> EncryptionMetadata:
+    candidate = Path(path)
+    if candidate.is_symlink() or not candidate.is_file():
+        raise DocumentEncryptionError("Зашифрованный документ не найден")
+    payload = candidate.read_bytes()
+    key_id, sha256_hex, _, _, ciphertext = _parse_payload(payload)
+    return EncryptionMetadata(
+        key_id=key_id,
+        sha256=sha256_hex,
+        plaintext_size=max(0, len(ciphertext) - TAG_SIZE),
+        encrypted_at=datetime.fromtimestamp(candidate.stat().st_mtime, timezone.utc),
+    )
+
+
+def encrypt_file(
+    source: str | Path,
+    target: str | Path,
+    *,
+    expected_sha256: str | None = None,
+) -> EncryptionMetadata:
+    source_path = Path(source)
+    if source_path.is_symlink() or not source_path.is_file():
+        raise DocumentEncryptionError("Исходный документ не найден")
+    return _write_encrypted_bytes(
+        source_path.read_bytes(),
+        Path(target),
+        expected_sha256=expected_sha256,
+    )
+
+
 def decrypt_file_bytes(
     path: str | Path,
     *,
@@ -196,9 +208,9 @@ def decrypt_file_bytes(
             "Целостность зашифрованного документа нарушена"
         ) from error
     actual_sha256 = hashlib.sha256(plaintext).hexdigest()
-    if not hashlib.compare_digest(actual_sha256, sha256_hex):
+    if not hmac.compare_digest(actual_sha256, sha256_hex):
         raise DocumentEncryptionError("Контрольная сумма документа не совпадает")
-    if expected_sha256 and not hashlib.compare_digest(
+    if expected_sha256 and not hmac.compare_digest(
         actual_sha256,
         str(expected_sha256).lower(),
     ):
@@ -224,15 +236,8 @@ def rotate_encrypted_file(
     active = document_encryption_ring().require_active()
     if current.key_id == active.key_id:
         return current
-
-    temporary_plain = candidate.with_name(f".{candidate.name}.rotation-plaintext")
-    try:
-        temporary_plain.write_bytes(plaintext)
-        temporary_plain.chmod(0o600)
-        return encrypt_file(
-            temporary_plain,
-            candidate,
-            expected_sha256=current.sha256,
-        )
-    finally:
-        temporary_plain.unlink(missing_ok=True)
+    return _write_encrypted_bytes(
+        plaintext,
+        candidate,
+        expected_sha256=current.sha256,
+    )
