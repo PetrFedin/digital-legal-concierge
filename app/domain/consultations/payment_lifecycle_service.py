@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_history import add_case_history_event
+from app.domain.cases.case_service import CaseAssignmentError, CaseService
 from app.domain.consultations.consultation_service import (
     ActiveConsultationConflictError,
     ConsultationNotFoundError,
@@ -237,6 +238,29 @@ class ConsultationPaymentLifecycleService:
             raise ConsultationPaymentLifecycleError(
                 "Неизвестный статус консультации."
             ) from exc
+        if current not in {
+            ConsultationStatus.PAID_PENDING_CONFIRMATION,
+            ConsultationStatus.CONFIRMED,
+            ConsultationStatus.BOOKED,
+        }:
+            raise ConsultationPaymentLifecycleError(
+                "Консультация ещё не оплачена или уже завершена."
+            )
+
+        # Assignment is a case-domain invariant. Calling the canonical service
+        # here prevents lawyer confirmation from bypassing workload capacity,
+        # active-lawyer validation, consultation/slot consistency and audit.
+        try:
+            await CaseService(self.db).assign_lawyer(
+                case=case,
+                lawyer_id=lawyer_id,
+                actor_id=lawyer_id,
+            )
+        except CaseAssignmentError as exc:
+            raise ConsultationPaymentLifecycleError(
+                "Юрист не может подтвердить консультацию: " + str(exc)
+            ) from exc
+
         if current == ConsultationStatus.BOOKED:
             await self._ensure_client_booking_notification(
                 case=case,
@@ -245,13 +269,6 @@ class ConsultationPaymentLifecycleService:
             )
             await self.db.flush()
             return consultation
-        if current not in {
-            ConsultationStatus.PAID_PENDING_CONFIRMATION,
-            ConsultationStatus.CONFIRMED,
-        }:
-            raise ConsultationPaymentLifecycleError(
-                "Консультация ещё не оплачена или уже завершена."
-            )
 
         if current == ConsultationStatus.PAID_PENDING_CONFIRMATION:
             confirmed_status = ConsultationStateMachine.transition(
@@ -282,7 +299,6 @@ class ConsultationPaymentLifecycleService:
         consultation.status = booked_status.value
         consultation.lawyer_id = lawyer_id
         consultation.scheduled_at = slot.starts_at
-        case.assigned_lawyer_id = lawyer_id
         case.route = RouteCode.M2.value
         case.status = CaseStatus.M2_CONSULTATION_BOOKED.value
         case.next_action = "Ожидайте консультации в выбранное время"
