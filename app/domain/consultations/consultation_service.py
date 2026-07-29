@@ -9,6 +9,12 @@ from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.models.consultation import Consultation
 
 
+def as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 class ConsultationService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -126,7 +132,7 @@ class ConsultationService:
             or slot.status != "held"
             or slot.consultation_id != consultation.id
             or slot.hold_expires_at is None
-            or slot.hold_expires_at < now
+            or as_utc(slot.hold_expires_at) < now
         ):
             raise SlotUnavailableError(
                 "Резерв времени истёк. Выберите новый слот."
