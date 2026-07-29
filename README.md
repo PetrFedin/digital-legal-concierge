@@ -1,4 +1,4 @@
-# Digital Legal Concierge Telegram Bot v41
+# Digital Legal Concierge Telegram Bot v42
 
 Telegram-бот и административный контур для сопровождения клиентов по взысканию неустойки по ДДУ 214-ФЗ.
 
@@ -91,6 +91,22 @@ MAX_PAYMENT_WEBHOOK_KB=256
 PAYMENT_WEBHOOK_PROCESSING_TIMEOUT_SECONDS=300
 PAYMENT_WEBHOOK_MAX_ATTEMPTS=8
 ```
+
+## Reverse proxy и реальный IP клиента
+
+По умолчанию приложение не доверяет `X-Forwarded-For`, `X-Real-IP` и `X-Forwarded-Proto`. Это защищает login throttling, Security Center и webhook-аудит от подмены IP внешним клиентом.
+
+В production укажите только фактические внутренние адреса ingress, nginx или load balancer:
+
+```text
+TRUSTED_PROXY_CIDRS=10.10.0.0/16,172.20.0.10/32
+TRUSTED_PROXY_MAX_HOPS=5
+TRUST_FORWARDED_PROTO=true
+```
+
+Не указывайте `0.0.0.0/0` или `::/0`. Цепочка разбирается справа налево до ближайшего недоверенного адреса. Если CIDR, IP, длина цепочки или forwarded proto некорректны, приложение использует прямой peer IP, отклоняет заголовок и отражает проблему в `/ready` или Security Center.
+
+При прямом подключении приложения к интернету без reverse proxy оставьте `TRUSTED_PROXY_CIDRS` пустым.
 
 ## Перед реальным запуском
 
