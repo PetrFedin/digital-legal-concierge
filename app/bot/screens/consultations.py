@@ -25,6 +25,10 @@ def format_time(value):
     return value.strftime("%H:%M")
 
 
+def format_datetime(value):
+    return value.strftime("%d.%m.%Y %H:%M")
+
+
 async def ensure_booking_case(ctx, user):
     case = await ctx.case_service.get_active_case_for_user(user.id)
     if case:
@@ -100,12 +104,18 @@ async def choose_slot(callback: CallbackQuery, db):
         await booking_start(callback, db)
         return
     await db.commit()
+    hold_until = (
+        format_datetime(slot.hold_expires_at)
+        if slot.hold_expires_at
+        else "в течение 10 минут"
+    )
     await callback.message.edit_text(
         "✅ Время временно удерживается за вами.\n\n"
         f"Дата: {format_date(slot.starts_at)}\n"
-        f"Время: {format_time(slot.starts_at)}–{format_time(slot.ends_at)}\n\n"
-        "Чтобы слот не занимали без намерения прийти, запись подтверждается оплатой. "
-        "Резерв действует 20 минут.",
+        f"Время: {format_time(slot.starts_at)}–{format_time(slot.ends_at)}\n"
+        f"Резерв до: {hold_until}\n\n"
+        "Подтвердите запись оплатой в течение 10 минут. "
+        "После истечения таймера слот автоматически снова станет доступен.",
         reply_markup=one(
             ("💳 Оплатить и подтвердить", "consult_pay"),
             ("Выбрать другое время", "consult_booking_start"),
@@ -215,10 +225,17 @@ async def consultation_booked_open(callback: CallbackQuery, db):
     user = await ctx.get_user_from_callback(callback)
     case = await ctx.case_service.get_active_case_for_user(user.id)
     if not case:
-        await callback.message.edit_text("Нет активной записи.", reply_markup=one(("🏠 Главная", "nav_home")))
+        await callback.message.edit_text(
+            "Нет активной записи.",
+            reply_markup=one(("🏠 Главная", "nav_home")),
+        )
         return
     consultation = await ConsultationService(db).get_or_create_for_case(case)
-    date_text = consultation.scheduled_at.strftime("%d.%m.%Y %H:%M") if consultation.scheduled_at else "уточняется"
+    date_text = (
+        consultation.scheduled_at.strftime("%d.%m.%Y %H:%M")
+        if consultation.scheduled_at
+        else "уточняется"
+    )
     subject_text = consultation.client_description or "вопрос ещё не указан"
     await callback.message.edit_text(
         "👨‍⚖ Консультация\n\n"
@@ -239,7 +256,10 @@ async def consultation_booked_open(callback: CallbackQuery, db):
 async def consult_reschedule(callback: CallbackQuery):
     await callback.message.edit_text(
         "Выберите новую дату и время. Текущий слот будет освобождён после выбора нового.",
-        reply_markup=one(("📅 Выбрать дату", "consult_booking_start"), ("Назад", "consultation_booked_open")),
+        reply_markup=one(
+            ("📅 Выбрать дату", "consult_booking_start"),
+            ("Назад", "consultation_booked_open"),
+        ),
     )
 
 
