@@ -41,6 +41,12 @@ DEFAULT_SETTINGS = {
         "type": "integer",
         "editable": True,
     },
+    "sla.escalation_repeat_hours": {
+        "title": "Повторная эскалация просрочки, часов",
+        "value": 4,
+        "type": "integer",
+        "editable": True,
+    },
     "consultations.slot_hold_minutes": {
         "title": "Удержание слота консультации",
         "value": 30,
