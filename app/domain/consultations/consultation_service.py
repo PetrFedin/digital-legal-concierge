@@ -294,6 +294,21 @@ class ConsultationService:
         actor_id: int | None,
         comment: str,
     ):
+        if consultation.status == ConsultationStatus.BOOKED:
+            from app.domain.payments.refund_service import (
+                ConsultationRefundService,
+            )
+
+            cancelled, _payment = await ConsultationRefundService(
+                self.db
+            ).request_cancellation(
+                consultation=consultation,
+                case=case,
+                client_id=actor_id or 0,
+                reason=comment,
+            )
+            return cancelled
+
         if consultation.slot_id:
             await self.slots.release_slot(
                 consultation.slot_id,
