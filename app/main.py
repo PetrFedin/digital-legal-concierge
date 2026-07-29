@@ -58,7 +58,7 @@ from app.security.http_security import (
 from app.security.keyring import security_key_status
 from app.security.session_guard import AdminSessionGuardMiddleware
 
-VERSION = "1.0.0-v35"
+VERSION = "1.0.0-v36"
 
 
 def create_app():
@@ -191,6 +191,8 @@ def create_app():
             "refund_center_ui": "/admin/refunds/ui",
             "payment_review_center_api": "/admin/payment-reviews",
             "payment_review_center_ui": "/admin/payment-reviews/ui",
+            "audit_integrity_api": "/audit-center/integrity",
+            "audit_center_ui": "/audit-center/ui",
             "health": "/health",
             "ready": "/ready",
             "bot_enabled": settings.run_bot,
@@ -204,6 +206,8 @@ def create_app():
             "document_content_inspection": True,
             "document_quarantine": settings.quarantine_rejected_uploads,
             "legacy_document_rescan_job": True,
+            "tamper_evident_audit_chain": True,
+            "immutable_audit_events": True,
         }
 
     return app
