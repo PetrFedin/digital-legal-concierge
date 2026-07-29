@@ -11,10 +11,13 @@ from app.bot.screens.consultation_reservation import (
     _load_context,
     open_reserved_slot,
 )
+from app.domain.consultations.booking_service import ConsultationBookingService
+from app.domain.consultations.client_schedule_service import (
+    ClientConsultationConflictError,
+)
 from app.domain.consultations.consultation_service import (
     ActiveConsultationConflictError,
     ConsultationNotFoundError,
-    ConsultationService,
     ConsultationSlotError,
 )
 from app.domain.consultations.slot_service import SlotService
@@ -43,7 +46,7 @@ async def reserve_selected_slot(callback: CallbackQuery, db):
                 "Текущий этап консультации не допускает выбор времени."
             )
 
-        await ConsultationService(db).reserve_pre_payment_slot(
+        await ConsultationBookingService(db).reserve_slot(
             consultation=consultation,
             case=case,
             client_id=user.id,
@@ -64,6 +67,7 @@ async def reserve_selected_slot(callback: CallbackQuery, db):
         ConsultationNotFoundError,
         ConsultationSlotError,
         ActiveConsultationConflictError,
+        ClientConsultationConflictError,
     ) as exc:
         await db.rollback()
         await callback.message.edit_text(
