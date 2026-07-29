@@ -16,8 +16,9 @@ MIGRATIONS_PATH = PROJECT_ROOT / "migrations"
 def build_alembic_config(database_url: str | None = None) -> Config:
     config = Config(str(ALEMBIC_CONFIG_PATH))
     config.set_main_option("script_location", str(MIGRATIONS_PATH))
-    url = database_url or settings.database_url
-    config.set_main_option("sqlalchemy.url", str(url).replace("%", "%%"))
+    url = str(database_url or settings.database_url)
+    config.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
+    config.attributes["database_url_override"] = url
     return config
 
 
