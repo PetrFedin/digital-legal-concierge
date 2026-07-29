@@ -33,10 +33,26 @@ jobs:
         run: pip install -e ".[test]"
 
       - name: Compile source
-        run: python -m compileall -q app scripts tests
+        run: python -m compileall -q app scripts migrations tests
 
-      - name: Initialize database
-        run: python scripts/init_db.py
+      - name: Initialize database through Alembic
+        run: |
+          rm -f ci_test.db migration_smoke.db
+          python scripts/init_db.py
+          python scripts/migrate_db.py
+
+      - name: Verify current revision and idempotency
+        run: |
+          alembic current
+          alembic upgrade head
+
+      - name: Verify ORM schema matches migrations
+        run: alembic check
+
+      - name: Verify clean database migration smoke test
+        run: |
+          DATABASE_URL=sqlite+aiosqlite:///./migration_smoke.db alembic upgrade head
+          DATABASE_URL=sqlite+aiosqlite:///./migration_smoke.db alembic upgrade head
 
       - name: Run tests
         run: pytest -q
