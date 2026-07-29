@@ -18,6 +18,7 @@ from app.domain.documents.document_service import (
     DuplicateDocumentError,
 )
 from app.models import Base
+from app.security.document_encryption import ENCRYPTION_STATUS, is_encrypted_file
 from app.security.file_uploads import (
     UploadSecurityError,
     cleanup_quarantine,
@@ -198,7 +199,7 @@ def test_active_or_unsafe_content_is_rejected(tmp_path, payload, name, mime, cod
 
 
 @pytest.mark.asyncio
-async def test_storage_uses_digest_key_and_never_user_path(tmp_path, monkeypatch):
+async def test_storage_uses_digest_key_and_encrypts_at_rest(tmp_path, monkeypatch):
     payload = valid_pdf()
     bot = FakeBot(payload)
     monkeypatch.setattr(settings, "max_document_upload_mb", 20)
@@ -215,11 +216,16 @@ async def test_storage_uses_digest_key_and_never_user_path(tmp_path, monkeypatch
     )
 
     expected_hash = hashlib.sha256(payload).hexdigest()
+    target = Path(stored.storage_path)
     assert stored.sha256 == expected_hash
     assert stored.security_status == "VERIFIED"
-    assert Path(stored.storage_path).name == f"{expected_hash}.pdf"
-    assert Path(stored.storage_path).read_bytes() == payload
-    assert "ДДУ" not in Path(stored.storage_path).name
+    assert stored.encryption_status == ENCRYPTION_STATUS
+    assert stored.encryption_key_id
+    assert target.name == f"{expected_hash}.dlcenc"
+    assert target.read_bytes() != payload
+    assert is_encrypted_file(target)
+    assert storage.read_document_bytes(target, expected_sha256=expected_hash) == payload
+    assert "ДДУ" not in target.name
     assert not any((tmp_path / "storage" / ".incoming").iterdir())
 
 
@@ -274,6 +280,7 @@ async def test_duplicate_sha_is_rejected_in_same_case(tmp_path):
         await connection.run_sync(Base.metadata.create_all)
 
     scanned_at = datetime.now(timezone.utc)
+    encrypted_at = datetime.now(timezone.utc)
     case = SimpleNamespace(id=1)
     async with factory() as db:
         service = DocumentService(db)
@@ -282,13 +289,16 @@ async def test_duplicate_sha_is_rejected_in_same_case(tmp_path):
             uploaded_by_user_id=None,
             document_type="DDU",
             file_name="contract.pdf",
-            file_path="/safe/hash.pdf",
+            file_path="/safe/hash.dlcenc",
             mime_type="application/pdf",
             file_size=100,
             sha256="a" * 64,
             detected_type="pdf",
             security_status="VERIFIED",
             scanned_at=scanned_at,
+            encryption_status=ENCRYPTION_STATUS,
+            encryption_key_id="documents-test",
+            encrypted_at=encrypted_at,
         )
         assert document.id
         with pytest.raises(DuplicateDocumentError):
@@ -297,13 +307,16 @@ async def test_duplicate_sha_is_rejected_in_same_case(tmp_path):
                 uploaded_by_user_id=None,
                 document_type="OTHER",
                 file_name="copy.pdf",
-                file_path="/safe/hash.pdf",
+                file_path="/safe/hash.dlcenc",
                 mime_type="application/pdf",
                 file_size=100,
                 sha256="a" * 64,
                 detected_type="pdf",
                 security_status="VERIFIED",
                 scanned_at=scanned_at,
+                encryption_status=ENCRYPTION_STATUS,
+                encryption_key_id="documents-test",
+                encrypted_at=encrypted_at,
             )
     await engine.dispose()
 
