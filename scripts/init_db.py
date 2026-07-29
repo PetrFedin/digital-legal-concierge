@@ -69,6 +69,25 @@ async def migrate_consultations(db):
     await db.commit()
 
 
+async def migrate_payments(db):
+    if not settings.database_url.startswith("sqlite"):
+        return
+    columns = await table_columns(db, "payments")
+    if not columns:
+        return
+    if "reservation_key" not in columns:
+        await db.execute(
+            text("ALTER TABLE payments ADD COLUMN reservation_key VARCHAR(255)")
+        )
+    await db.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_payments_reservation_key "
+            "ON payments (reservation_key)"
+        )
+    )
+    await db.commit()
+
+
 async def get_or_create_admin(db):
     result = await db.execute(select(AdminUser).where(AdminUser.email == "admin@example.com"))
     admin = result.scalars().first()
@@ -98,6 +117,7 @@ async def main():
     async with AsyncSessionLocal() as db:
         await migrate_admin_users(db)
         await migrate_consultations(db)
+        await migrate_payments(db)
         await get_or_create_lawyer(db)
         await get_or_create_admin(db)
         await SettingsService(db).bootstrap_defaults()
