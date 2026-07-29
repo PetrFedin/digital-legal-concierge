@@ -21,14 +21,21 @@ from app.models.payment import Payment
 
 
 class ConsultationReservationService:
-    """Release a temporary consultation hold before payment safely.
+    """Release a temporary consultation hold while no payable payment exists.
 
-    A provider payment link can remain payable outside the application. For
-    that reason the client may release a reservation only while the
-    consultation is still in ``SLOT_RESERVED`` and no open or paid M2 payment
-    exists. Once payment preparation starts, a manager or the payment
-    lifecycle must resolve the reservation instead of silently detaching it.
+    A provider payment link can remain payable outside the application. The
+    client may therefore release a reservation only when no open or paid M2
+    payment exists. ``PAYMENT_PENDING`` is recoverable after a terminal failed,
+    cancelled, expired or refunded payment; an active or paid payment requires
+    manager-controlled resolution.
     """
+
+    RELEASABLE_STATUSES = frozenset(
+        {
+            ConsultationStatus.SLOT_RESERVED,
+            ConsultationStatus.PAYMENT_PENDING,
+        }
+    )
 
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -91,9 +98,9 @@ class ConsultationReservationService:
         # Repeating the action after a successful release is idempotent.
         if current == ConsultationStatus.SLOT_PENDING and locked.slot_id is None:
             return locked
-        if current != ConsultationStatus.SLOT_RESERVED:
+        if current not in self.RELEASABLE_STATUSES:
             raise ActiveConsultationConflictError(
-                "Резерв нельзя освободить после перехода к оплате."
+                "Резерв нельзя освободить на текущем этапе консультации."
             )
         if locked.slot_id is None:
             raise ConsultationSlotError("У консультации отсутствует удерживаемый слот.")
