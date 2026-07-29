@@ -7,6 +7,11 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
+from app.security.access_control import decode_access_token
+from app.security.security_events import (
+    pseudonymize_security_value,
+    record_security_event_best_effort,
+)
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}
 WEBHOOK_PREFIXES = ("/webhooks/",)
@@ -62,7 +67,49 @@ class RequestOriginGuardMiddleware(BaseHTTPMiddleware):
     """Protect ambient cookie sessions from cross-site state-changing requests."""
 
     @staticmethod
-    def _forbidden(detail: str) -> JSONResponse:
+    def _actor_id(session_cookie: str | None) -> int | None:
+        payload = decode_access_token(session_cookie)
+        if not payload:
+            return None
+        try:
+            return int(payload.get("uid") or 0) or None
+        except (TypeError, ValueError):
+            return None
+
+    async def _forbidden(
+        self,
+        request: Request,
+        *,
+        detail: str,
+        reason: str,
+        supplied_origin: str | None,
+        fetch_site: str,
+        session_cookie: str | None,
+        challenge_cookie: str | None,
+    ) -> JSONResponse:
+        await record_security_event_best_effort(
+            action="security.origin_blocked",
+            severity="warning",
+            source="http_origin_guard",
+            actor_id=self._actor_id(session_cookie),
+            client_address=(
+                request.client.host
+                if request.client and request.client.host
+                else "unknown"
+            ),
+            resource_type="http_request",
+            details={
+                "reason": reason,
+                "method": request.method.upper(),
+                "path": request.url.path[:300],
+                "fetch_site": fetch_site or None,
+                "origin_ref": pseudonymize_security_value("origin", supplied_origin),
+                "has_session_cookie": bool(session_cookie),
+                "has_challenge_cookie": bool(challenge_cookie),
+            },
+            comment="Origin guard отклонил потенциально небезопасный запрос",
+            sample_seconds=60,
+        )
         return JSONResponse(status_code=403, content={"detail": detail})
 
     async def dispatch(self, request: Request, call_next):
@@ -77,21 +124,43 @@ class RequestOriginGuardMiddleware(BaseHTTPMiddleware):
         challenge_cookie = request.cookies.get("dlc_mfa_challenge")
         has_ambient_credentials = bool(session_cookie or challenge_cookie)
         fetch_site = str(request.headers.get("sec-fetch-site") or "").lower()
-        if fetch_site == "cross-site" and has_ambient_credentials:
-            return self._forbidden("Cross-site запрос отклонён")
-
         supplied_origin = normalize_origin(request.headers.get("origin"))
         if not supplied_origin:
             supplied_origin = normalize_origin(request.headers.get("referer"))
+
+        if fetch_site == "cross-site" and has_ambient_credentials:
+            return await self._forbidden(
+                request,
+                detail="Cross-site запрос отклонён",
+                reason="cross_site_fetch",
+                supplied_origin=supplied_origin,
+                fetch_site=fetch_site,
+                session_cookie=session_cookie,
+                challenge_cookie=challenge_cookie,
+            )
         if supplied_origin and supplied_origin not in allowed_origins(request):
-            return self._forbidden("Источник запроса не разрешён")
+            return await self._forbidden(
+                request,
+                detail="Источник запроса не разрешён",
+                reason="origin_not_allowed",
+                supplied_origin=supplied_origin,
+                fetch_site=fetch_site,
+                session_cookie=session_cookie,
+                challenge_cookie=challenge_cookie,
+            )
         if (
             has_ambient_credentials
             and settings.app_env == "production"
             and not supplied_origin
         ):
-            return self._forbidden(
-                "Для изменения данных требуется подтверждённый Origin"
+            return await self._forbidden(
+                request,
+                detail="Для изменения данных требуется подтверждённый Origin",
+                reason="missing_origin",
+                supplied_origin=None,
+                fetch_site=fetch_site,
+                session_cookie=session_cookie,
+                challenge_cookie=challenge_cookie,
             )
         return await call_next(request)
 

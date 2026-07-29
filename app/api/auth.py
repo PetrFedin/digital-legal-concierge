@@ -19,6 +19,7 @@ from app.security.access_control import (
     verify_password,
 )
 from app.security.login_throttle import LoginRateLimitError, LoginThrottleService
+from app.security.security_events import record_security_event
 from app.security.token_revocation import is_token_revoked, revoke_token
 
 router = APIRouter(tags=["auth"])
@@ -120,6 +121,23 @@ async def login(
             principal=normalized_username,
             client_address=client_address,
         )
+        if retry_after:
+            await record_security_event(
+                db,
+                action="security.admin_login_locked",
+                severity="critical",
+                source="admin_auth",
+                actor_id=user.id if user else None,
+                principal=normalized_username,
+                client_address=client_address,
+                resource_type="admin_user" if user else "admin_login",
+                resource_id=user.id if user else None,
+                details={
+                    "retry_after_seconds": retry_after,
+                    "known_principal": bool(user),
+                },
+                comment="Превышен лимит неверных попыток административного входа",
+            )
         await db.commit()
         if retry_after:
             raise _rate_limit_error(retry_after)
@@ -129,9 +147,25 @@ async def login(
         principal=normalized_username,
         client_address=client_address,
     )
+    roles = normalize_roles(user.role)
+    await record_security_event(
+        db,
+        action="security.admin_password_authenticated",
+        severity="info",
+        source="admin_auth",
+        actor_id=user.id,
+        principal=normalized_username,
+        client_address=client_address,
+        resource_type="admin_user",
+        resource_id=user.id,
+        details={
+            "roles": roles,
+            "mfa_required": ROLE_SUPERADMIN in roles,
+        },
+        comment="Пароль административного пользователя подтверждён",
+    )
     await db.commit()
 
-    roles = normalize_roles(user.role)
     if ROLE_SUPERADMIN in roles:
         purpose = "verify" if user.mfa_enabled else "setup"
         response = RedirectResponse(url=f"/mfa/{purpose}", status_code=303)
