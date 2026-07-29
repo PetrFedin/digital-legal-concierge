@@ -5,6 +5,10 @@ TEMPLATES = {
     "document_status_changed": "📄 Статус документа изменен: {status}.",
     "payment_created": "💳 Выставлен платеж по делу {case_number}: {amount} ₽.",
     "payment_paid": "✅ Оплата подтверждена по делу {case_number}.",
+    "payment_failed": (
+        "⚠️ Оплата по делу {case_number} не завершена. "
+        "Откройте «Моё дело», чтобы повторить оплату или выбрать другое время."
+    ),
     "payment_reminder": (
         "⏰ Напоминание: по делу {case_number} ожидается оплата."
     ),
