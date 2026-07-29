@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     max_document_upload_mb: int = 20
     quarantine_rejected_uploads: bool = True
     upload_quarantine_retention_days: int = 7
+    document_access_grant_ttl_seconds: int = 180
+    document_access_max_active_grants: int = 5
     payment_webhook_secret: str = "dev-payment-secret"
     public_base_url: str = "http://localhost:8000"
     payment_provider: str = "fake"
