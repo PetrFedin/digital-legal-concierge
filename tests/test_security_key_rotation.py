@@ -5,7 +5,6 @@ import json
 import time
 
 import pytest
-from cryptography.fernet import Fernet
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import settings
@@ -167,7 +166,9 @@ async def test_scheduler_reencrypts_existing_mfa_secrets(tmp_path, monkeypatch):
     async with factory() as db:
         db.add(
             AdminUser(
+                full_name="Root Administrator",
                 username="root",
+                email="root@example.com",
                 password_hash="test",
                 role="superadmin,admin",
                 is_active=True,
