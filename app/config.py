@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     document_encryption_key_id: str = "documents-v1"
     document_encryption_key: str = ""
     document_encryption_previous_keys: str = ""
+    backup_encryption_key_id: str = "backups-v1"
+    backup_encryption_key: str = ""
+    backup_encryption_previous_keys: str = ""
     allow_legacy_security_key_fallback: bool = False
 
     legal_key_rate: float = 0.16
@@ -53,6 +56,8 @@ class Settings(BaseSettings):
     enable_recovery_actions: bool = True
     min_free_disk_mb: int = 500
     backup_dir: str = "./backups"
+    max_backup_mb: int = 2048
+    backup_retention_days: int = 30
 
 
 settings = Settings()
