@@ -23,6 +23,7 @@ from app.security.access_control import (
 )
 from app.security.mfa import (
     consume_recovery_code,
+    consume_totp,
     decrypt_secret,
     encrypt_secret,
     generate_recovery_codes,
@@ -30,13 +31,13 @@ from app.security.mfa import (
     provisioning_uri,
     recovery_code_count,
     utcnow,
-    verify_totp,
 )
 
 router = APIRouter(prefix="/mfa", tags=["mfa"])
 CHALLENGE_COOKIE = "dlc_mfa_challenge"
 MAX_MFA_ATTEMPTS = 5
 MFA_LOCK_MINUTES = 15
+NO_STORE_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 
 
 def _set_session_cookie(response, token: str) -> None:
@@ -58,7 +59,11 @@ def _clear_challenge(response) -> None:
 def _as_utc(value: datetime | None) -> datetime | None:
     if value is None:
         return None
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+    return (
+        value.replace(tzinfo=timezone.utc)
+        if value.tzinfo is None
+        else value.astimezone(timezone.utc)
+    )
 
 
 async def _challenge_user(
@@ -71,12 +76,21 @@ async def _challenge_user(
     payload = decode_mfa_challenge_token(request.cookies.get(CHALLENGE_COOKIE))
     if not payload or payload.get("purpose") != purpose:
         raise HTTPException(401, "MFA challenge истёк. Выполните вход повторно")
-    statement = select(AdminUser).where(AdminUser.id == int(payload.get("uid") or 0))
+    statement = select(AdminUser).where(
+        AdminUser.id == int(payload.get("uid") or 0)
+    )
     if for_update:
         statement = statement.with_for_update()
     user = (await db.execute(statement)).scalar_one_or_none()
-    if not user or not user.is_active or ROLE_SUPERADMIN not in normalize_roles(user.role):
-        raise HTTPException(403, "MFA доступна только активному суперадминистратору")
+    if (
+        not user
+        or not user.is_active
+        or ROLE_SUPERADMIN not in normalize_roles(user.role)
+    ):
+        raise HTTPException(
+            403,
+            "MFA доступна только активному суперадминистратору",
+        )
     return user
 
 
@@ -91,12 +105,22 @@ async def _authenticated_user(
     payload = decode_access_token(token)
     if not payload or payload.get("legacy") or not payload.get("mfa"):
         raise HTTPException(401, "Требуется подтверждённая MFA-сессия")
-    statement = select(AdminUser).where(AdminUser.id == int(payload.get("uid") or 0))
+    statement = select(AdminUser).where(
+        AdminUser.id == int(payload.get("uid") or 0)
+    )
     if for_update:
         statement = statement.with_for_update()
     user = (await db.execute(statement)).scalar_one_or_none()
-    if not user or not user.is_active or not user.mfa_enabled:
+    current_roles = normalize_roles(user.role) if user else []
+    if (
+        not user
+        or not user.is_active
+        or not user.mfa_enabled
+        or ROLE_SUPERADMIN not in current_roles
+    ):
         raise HTTPException(401, "MFA-сессия недействительна")
+    if set(current_roles) != set(normalize_roles(payload.get("roles"))):
+        raise HTTPException(401, "Права изменены. Выполните вход повторно")
     if int(payload.get("sv") or 0) != int(user.session_version or 1):
         raise HTTPException(401, "Сессия отозвана")
     return user, payload
@@ -169,9 +193,10 @@ async def setup_page(request: Request, db: AsyncSession = Depends(get_db)):
     if not secret:
         secret = generate_totp_secret()
         user.mfa_secret_encrypted = encrypt_secret(secret)
+        user.mfa_last_totp_step = None
         await _audit(db, user, "security.mfa_setup_started")
         await db.commit()
-    return HTMLResponse(_setup_html(secret))
+    return HTMLResponse(_setup_html(secret), headers=NO_STORE_HEADERS)
 
 
 @router.get("/qr")
@@ -187,7 +212,7 @@ async def setup_qr(request: Request, db: AsyncSession = Depends(get_db)):
     return StreamingResponse(
         buffer,
         media_type="image/png",
-        headers={"Cache-Control": "no-store"},
+        headers=NO_STORE_HEADERS,
     )
 
 
@@ -200,9 +225,9 @@ async def confirm_setup(
     user = await _challenge_user(request, db, "setup", for_update=True)
     _check_lock(user)
     secret = decrypt_secret(user.mfa_secret_encrypted)
-    if not verify_totp(secret, code):
+    if not consume_totp(user, secret, code):
         await _register_failure(db, user)
-        raise HTTPException(401, "Неверный код приложения-аутентификатора")
+        raise HTTPException(401, "Неверный или уже использованный код")
 
     codes, encoded_codes = generate_recovery_codes(user.id)
     old_version = int(user.session_version or 1)
@@ -225,7 +250,10 @@ async def confirm_setup(
     )
     await db.commit()
 
-    response = HTMLResponse(_recovery_codes_html(codes, "MFA включена"))
+    response = HTMLResponse(
+        _recovery_codes_html(codes, "MFA включена"),
+        headers=NO_STORE_HEADERS,
+    )
     _set_session_cookie(response, _issue_session(user))
     _clear_challenge(response)
     return response
@@ -236,7 +264,7 @@ async def verify_page(request: Request, db: AsyncSession = Depends(get_db)):
     user = await _challenge_user(request, db, "verify")
     if not user.mfa_enabled:
         return RedirectResponse("/mfa/setup", status_code=303)
-    return HTMLResponse(VERIFY_HTML)
+    return HTMLResponse(VERIFY_HTML, headers=NO_STORE_HEADERS)
 
 
 @router.post("/verify")
@@ -248,13 +276,13 @@ async def verify_login(
     user = await _challenge_user(request, db, "verify", for_update=True)
     _check_lock(user)
     secret = decrypt_secret(user.mfa_secret_encrypted)
-    is_totp = verify_totp(secret, code)
+    is_totp = consume_totp(user, secret, code)
     used_recovery = False
     if not is_totp:
         used_recovery = consume_recovery_code(user, code)
     if not is_totp and not used_recovery:
         await _register_failure(db, user)
-        raise HTTPException(401, "Неверный одноразовый или резервный код")
+        raise HTTPException(401, "Неверный, использованный или просроченный код")
 
     user.mfa_failed_attempts = 0
     user.mfa_locked_until = None
@@ -264,7 +292,9 @@ async def verify_login(
         "security.mfa_login",
         new_value={
             "method": "recovery_code" if used_recovery else "totp",
-            "recovery_codes_remaining": recovery_code_count(user.mfa_recovery_codes),
+            "recovery_codes_remaining": recovery_code_count(
+                user.mfa_recovery_codes
+            ),
         },
     )
     await db.commit()
@@ -282,10 +312,8 @@ async def manage_page(
 ):
     user, _ = await _authenticated_user(request, db, x_admin_token)
     return HTMLResponse(
-        _manage_html(
-            user,
-            recovery_code_count(user.mfa_recovery_codes),
-        )
+        _manage_html(user, recovery_code_count(user.mfa_recovery_codes)),
+        headers=NO_STORE_HEADERS,
     )
 
 
@@ -297,13 +325,20 @@ async def regenerate_recovery_codes(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    user, _ = await _authenticated_user(request, db, x_admin_token, for_update=True)
+    user, _ = await _authenticated_user(
+        request,
+        db,
+        x_admin_token,
+        for_update=True,
+    )
     _check_lock(user)
-    if not verify_password(password, user.password_hash) or not verify_totp(
-        decrypt_secret(user.mfa_secret_encrypted), code
+    if not verify_password(password, user.password_hash) or not consume_totp(
+        user,
+        decrypt_secret(user.mfa_secret_encrypted),
+        code,
     ):
         await _register_failure(db, user)
-        raise HTTPException(401, "Пароль или MFA-код неверен")
+        raise HTTPException(401, "Пароль или MFA-код неверен либо уже использован")
     codes, encoded_codes = generate_recovery_codes(user.id)
     user.mfa_recovery_codes = encoded_codes
     user.mfa_recovery_codes_generated_at = utcnow()
@@ -320,7 +355,10 @@ async def regenerate_recovery_codes(
         },
     )
     await db.commit()
-    response = HTMLResponse(_recovery_codes_html(codes, "Резервные коды обновлены"))
+    response = HTMLResponse(
+        _recovery_codes_html(codes, "Резервные коды обновлены"),
+        headers=NO_STORE_HEADERS,
+    )
     _set_session_cookie(response, _issue_session(user))
     return response
 
@@ -333,13 +371,20 @@ async def rotate_sessions(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    user, _ = await _authenticated_user(request, db, x_admin_token, for_update=True)
+    user, _ = await _authenticated_user(
+        request,
+        db,
+        x_admin_token,
+        for_update=True,
+    )
     _check_lock(user)
-    if not verify_password(password, user.password_hash) or not verify_totp(
-        decrypt_secret(user.mfa_secret_encrypted), code
+    if not verify_password(password, user.password_hash) or not consume_totp(
+        user,
+        decrypt_secret(user.mfa_secret_encrypted),
+        code,
     ):
         await _register_failure(db, user)
-        raise HTTPException(401, "Пароль или MFA-код неверен")
+        raise HTTPException(401, "Пароль или MFA-код неверен либо уже использован")
     old_version = int(user.session_version or 1)
     user.session_version = old_version + 1
     user.mfa_failed_attempts = 0
@@ -379,7 +424,7 @@ def _recovery_codes_html(codes: list[str], title: str) -> str:
 
 def _manage_html(user: AdminUser, codes_left: int) -> str:
     confirmed = user.mfa_confirmed_at.isoformat() if user.mfa_confirmed_at else "—"
-    return f"""<!doctype html><html lang='ru'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Безопасность аккаунта</title><style>{_base_style()}</style></head><body><main class='card'><h1>Безопасность аккаунта</h1><p><b>MFA:</b> включена</p><p><b>Подтверждена:</b> {confirmed}</p><p><b>Резервных кодов:</b> {codes_left}</p><h2>Обновить резервные коды</h2><form method='post' action='/mfa/recovery/regenerate'><input name='password' type='password' autocomplete='current-password' placeholder='Текущий пароль' required><input name='code' inputmode='numeric' autocomplete='one-time-code' placeholder='Код TOTP' required><button>Создать новые коды</button></form><h2>Завершить остальные сессии</h2><p class='muted'>Текущая вкладка останется авторизованной, все другие токены пользователя станут недействительными.</p><form method='post' action='/mfa/sessions/rotate'><input name='password' type='password' autocomplete='current-password' placeholder='Текущий пароль' required><input name='code' inputmode='numeric' autocomplete='one-time-code' placeholder='Код TOTP' required><button>Отозвать остальные сессии</button></form><p><a href='/admin-ui'>Вернуться в админку</a></p></main></body></html>"""
+    return f"""<!doctype html><html lang='ru'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Безопасность аккаунта</title><style>{_base_style()}</style></head><body><main class='card'><h1>Безопасность аккаунта</h1><p><b>MFA:</b> включена</p><p><b>Подтверждена:</b> {confirmed}</p><p><b>Резервных кодов:</b> {codes_left}</p><h2>Обновить резервные коды</h2><form method='post' action='/mfa/recovery/regenerate'><input name='password' type='password' autocomplete='current-password' placeholder='Текущий пароль' required><input name='code' inputmode='numeric' autocomplete='one-time-code' placeholder='Новый код TOTP' required><button>Создать новые коды</button></form><h2>Завершить остальные сессии</h2><p class='muted'>Текущая вкладка останется авторизованной, все другие токены пользователя станут недействительными.</p><form method='post' action='/mfa/sessions/rotate'><input name='password' type='password' autocomplete='current-password' placeholder='Текущий пароль' required><input name='code' inputmode='numeric' autocomplete='one-time-code' placeholder='Новый код TOTP' required><button>Отозвать остальные сессии</button></form><p><a href='/admin-ui'>Вернуться в админку</a></p></main></body></html>"""
 
 
 VERIFY_HTML = f"""<!doctype html><html lang='ru'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Подтверждение MFA</title><style>{_base_style()}</style></head><body><form class='card' method='post' action='/mfa/verify'><h1>Подтверждение входа</h1><p>Введите шестизначный код приложения-аутентификатора или одноразовый резервный код.</p><input name='code' autocomplete='one-time-code' required autofocus><button>Подтвердить</button></form></body></html>"""
