@@ -6,6 +6,7 @@ from aiogram.types import CallbackQuery
 
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
+from app.bot.screens.consultation_cancellation import router as cancellation_router
 from app.bot.screens.consultation_hold import router as hold_router
 from app.bot.screens.consultation_payment import router as payment_router
 from app.bot.screens.consultation_reservation import router as reservation_router
@@ -20,6 +21,7 @@ from app.domain.statuses.consultation_statuses import ConsultationStatus
 
 
 router = Router()
+router.include_router(cancellation_router)
 router.include_router(hold_router)
 router.include_router(payment_router)
 router.include_router(reservation_router)
@@ -88,6 +90,7 @@ def _resume_screen(status: ConsultationStatus):
             "✅ Оплата получена. Юрист подтверждает консультацию. "
             "Новых действий от вас сейчас не требуется.",
             one(
+                ("❌ Запросить отмену", "consult_cancel"),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
@@ -98,6 +101,7 @@ def _resume_screen(status: ConsultationStatus):
             "дату, время и формат.",
             one(
                 ("📅 Открыть консультацию", "consultation_booked_open"),
+                ("❌ Запросить отмену", "consult_cancel"),
                 ("📁 Моё дело", "my_case_open"),
             ),
         )
