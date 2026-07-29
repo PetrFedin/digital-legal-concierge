@@ -58,6 +58,48 @@ async def test_cross_site_cookie_request_is_rejected(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cross_site_rejection_emits_privacy_preserving_security_event(
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "app_env", "production")
+    monkeypatch.setattr(settings, "public_base_url", "https://legal.example")
+    captured = []
+
+    async def capture_event(**kwargs):
+        captured.append(kwargs)
+        return True
+
+    monkeypatch.setattr(
+        "app.security.http_security.record_security_event_best_effort",
+        capture_event,
+    )
+    app = build_app()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="https://legal.example",
+        cookies={settings.admin_session_cookie: "ambient-session"},
+    ) as client:
+        response = await client.post(
+            "/admin/change",
+            headers={
+                "Origin": "https://evil.example",
+                "Sec-Fetch-Site": "cross-site",
+            },
+        )
+
+    assert response.status_code == 403
+    assert len(captured) == 1
+    event = captured[0]
+    assert event["action"] == "security.origin_blocked"
+    assert event["severity"] == "warning"
+    assert event["details"]["reason"] == "cross_site_fetch"
+    assert event["details"]["path"] == "/admin/change"
+    assert event["details"]["origin_ref"]
+    assert "evil.example" not in event["details"]["origin_ref"]
+    assert "ambient-session" not in str(event)
+
+
+@pytest.mark.asyncio
 async def test_same_origin_cookie_request_is_allowed(monkeypatch):
     monkeypatch.setattr(settings, "app_env", "production")
     monkeypatch.setattr(settings, "public_base_url", "https://legal.example")
