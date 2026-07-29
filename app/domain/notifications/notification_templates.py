@@ -11,6 +11,19 @@ TEMPLATES = {
         "🔄 Консультация по делу {case_number} перенесена: "
         "{old_date} → {new_date}."
     ),
+    "consultation_cancellation_requested": (
+        "🧾 Консультация по делу {case_number} отменена. "
+        "Заявка на возврат платежа #{payment_id} на сумму {amount} ₽ "
+        "передана администратору."
+    ),
+    "consultation_refunded": (
+        "✅ Возврат по платежу #{payment_id} на сумму {amount} ₽ "
+        "по делу {case_number} отмечен выполненным. {comment}"
+    ),
+    "consultation_refund_declined": (
+        "⚠️ По заявке на возврат платежа #{payment_id} по делу "
+        "{case_number} принято решение об отказе. {comment}"
+    ),
     "consultation_payment_review": (
         "⚠️ По делу {case_number} получен платеж #{payment_id}, "
         "но слот не подтвержден автоматически. Причина: {reason}."

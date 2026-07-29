@@ -15,7 +15,7 @@ ADMIN_HTML = r"""
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Digital Legal Concierge — Admin v20</title>
+  <title>Digital Legal Concierge — Admin v21</title>
   <style>
     :root { --bg:#f5f6fa; --card:#fff; --text:#111827; --muted:#6b7280; --line:#e5e7eb; --blue:#2563eb; --green:#16a34a; --red:#dc2626; --yellow:#ca8a04; }
     * { box-sizing:border-box; }
@@ -51,7 +51,7 @@ ADMIN_HTML = r"""
 </head>
 <body>
   <header>
-    <h1>⚖ Digital Legal Concierge — Admin v20</h1><div><a style="color:white;margin-right:12px" href="/login">Вход</a><form style="display:inline" method="post" action="/logout"><button style="background:#374151">Выход</button></form></div>
+    <h1>⚖ Digital Legal Concierge — Admin v21</h1><div><a style="color:white;margin-right:12px" href="/login">Вход</a><form style="display:inline" method="post" action="/logout"><button style="background:#374151">Выход</button></form></div>
     <input id="token" type="hidden" />
   </header>
   <main>
@@ -60,6 +60,7 @@ ADMIN_HTML = r"""
       <button onclick="loadCases()" class="secondary">Дела</button>
       <button onclick="loadQueue()" class="secondary">Очередь</button>
       <button onclick="loadPayments()" class="secondary">Оплаты</button>
+      <button onclick="window.location.href='/admin/refunds/ui'" class="yellow">Возвраты</button>
       <button onclick="loadDocuments()" class="secondary">Документы</button>
       <button onclick="loadLawyers()" class="secondary">Юристы</button>
       <button onclick="window.location.href='/consultation-slots/ui'" class="secondary">Слоты консультаций</button>
