@@ -15,7 +15,7 @@ ADMIN_HTML = r"""
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Digital Legal Concierge — Admin v21</title>
+  <title>Digital Legal Concierge — Admin v22</title>
   <style>
     :root { --bg:#f5f6fa; --card:#fff; --text:#111827; --muted:#6b7280; --line:#e5e7eb; --blue:#2563eb; --green:#16a34a; --red:#dc2626; --yellow:#ca8a04; }
     * { box-sizing:border-box; }
@@ -51,7 +51,7 @@ ADMIN_HTML = r"""
 </head>
 <body>
   <header>
-    <h1>⚖ Digital Legal Concierge — Admin v21</h1><div><a style="color:white;margin-right:12px" href="/login">Вход</a><form style="display:inline" method="post" action="/logout"><button style="background:#374151">Выход</button></form></div>
+    <h1>⚖ Digital Legal Concierge — Admin v22</h1><div><a style="color:white;margin-right:12px" href="/login">Вход</a><form style="display:inline" method="post" action="/logout"><button style="background:#374151">Выход</button></form></div>
     <input id="token" type="hidden" />
   </header>
   <main>
@@ -113,9 +113,9 @@ async function openCase(id){
   const d = await api('/admin/cases/'+id);
   const c = d.case, cl = d.client || {};
   document.getElementById('side').innerHTML = `<h3>Дело ${esc(c.number)}</h3><p><span class="pill">${esc(c.route||'—')}</span> <span class="pill">${esc(c.status)}</span></p><p><b>Клиент:</b><br>${esc(cl.name)}<br>@${esc(cl.username)}<br>TG: ${esc(cl.telegram_id)}</p><p><b>Следующий шаг:</b><br>${esc(c.next_action)}</p><h4>Быстрые действия</h4><div class="actions"><button class="green" onclick="autoAssign(${id})">Автоназначить</button><button onclick="setStatus(${id})">Сменить статус</button><button class="yellow" onclick="openPaymentsForCase(${id})">Оплаты</button></div>`;
-  const pay = d.payments.map(p=>`<tr><td>${p.id}</td><td>${esc(p.title)}</td><td>${p.amount}</td><td>${esc(p.status)}</td><td><button onclick="confirmPayment(${p.id}, ${id})" class="green">Подтвердить</button></td></tr>`).join('') || '<tr><td colspan="5">Нет платежей</td></tr>';
+  const pay = d.payments.map(p=>`<tr><td>${p.id}</td><td>${esc(p.title)}</td><td>${p.amount}</td><td>${esc(p.status)}</td><td>${p.manual_confirm_allowed?`<button onclick="confirmPayment(${p.id}, ${id})" class="green">DEV подтвердить</button>`:'—'}</td></tr>`).join('') || '<tr><td colspan="5">Нет платежей</td></tr>';
   const docs = d.documents.map(x=>`<tr><td>${x.id}</td><td>${esc(x.title)}</td><td>${esc(x.file_name)}</td><td>${esc(x.status)}</td><td>v${x.version}</td></tr>`).join('') || '<tr><td colspan="5">Нет документов</td></tr>';
-  document.getElementById('content').innerHTML = `<h3>Карточка дела</h3><p><b>${esc(c.number)}</b></p><h4>Платежи</h4><table><tr><th>ID</th><th>Название</th><th>Сумма</th><th>Статус</th><th></th></tr>${pay}</table><h4>Документы</h4><table><tr><th>ID</th><th>Тип</th><th>Файл</th><th>Статус</th><th>Версия</th></tr>${docs}</table>`;
+  document.getElementById('content').innerHTML = `<h3>Карточка дела</h3><p><b>${esc(c.number)}</b></p><h4>Платежи</h4><table><tr><th>ID</th><th>Название</th><th>Сумма</th><th>Статус</th><th>Тестовое действие</th></tr>${pay}</table><h4>Документы</h4><table><tr><th>ID</th><th>Тип</th><th>Файл</th><th>Статус</th><th>Версия</th></tr>${docs}</table>`;
 }
 async function setStatus(id){
   const statuses = await api('/admin/statuses');
@@ -123,9 +123,13 @@ async function setStatus(id){
 }
 async function saveStatus(id){ await api('/admin/cases/'+id+'/status',{method:'POST', body:JSON.stringify({status:document.getElementById('status_'+id).value, comment:document.getElementById('comment_'+id).value})}); await openCase(id); }
 async function autoAssign(id){ await api('/admin/cases/'+id+'/auto-assign',{method:'POST'}); await openCase(id); }
-async function confirmPayment(pid, cid){ await api('/admin/payments/'+pid+'/confirm',{method:'POST'}); if (cid && cid > 0) { await openCase(cid); } else { await loadPayments(); } }
+async function confirmPayment(pid, cid){ if(!confirm('Подтвердить fake-платёж в тестовой среде?'))return; await api('/admin/payments/'+pid+'/confirm',{method:'POST'}); if (cid && cid > 0) { await openCase(cid); } else { await loadPayments(); } }
 async function openPaymentsForCase(id){ await openCase(id); }
-async function loadPayments(){ const rows = await api('/admin/payments'); document.getElementById('content').innerHTML = '<h3>Оплаты</h3>'+table(rows, ['id','case_id','code','title','amount','status','provider'], '<button onclick="confirmPayment(__ID__, 0)" class="green">Подтвердить</button>'); }
+async function loadPayments(){
+  const rows = await api('/admin/payments');
+  const body = rows.map(p=>`<tr><td>${p.id}</td><td>${p.case_id}</td><td>${esc(p.code)}</td><td>${esc(p.title)}</td><td>${p.amount}</td><td>${esc(p.status)}</td><td>${esc(p.provider||'—')}</td><td>${p.manual_confirm_allowed?`<button onclick="confirmPayment(${p.id},0)" class="green">DEV подтвердить</button>`:'—'}</td></tr>`).join('') || '<tr><td colspan="8">Нет платежей</td></tr>';
+  document.getElementById('content').innerHTML = `<h3>Оплаты</h3><p class="muted">Ручное подтверждение показывается только для fake-платежей в local/test/demo. Production-платежи подтверждаются исключительно провайдером.</p><table><tr><th>ID</th><th>Дело</th><th>Код</th><th>Название</th><th>Сумма</th><th>Статус</th><th>Провайдер</th><th>Тестовое действие</th></tr>${body}</table>`;
+}
 async function loadDocuments(){ const rows = await api('/admin/documents'); document.getElementById('content').innerHTML = '<h3>Документы</h3>'+table(rows, ['id','case_id','type','title','file_name','status','version']); }
 async function loadLawyers(){ const rows = await api('/admin/lawyers'); document.getElementById('content').innerHTML = '<h3>Юристы</h3>'+table(rows, ['id','full_name','email','is_active','workload_limit'])+`<h4>Добавить юриста</h4><div class="row"><input id="lw_name" placeholder="ФИО"><input id="lw_email" placeholder="email"><button onclick="createLawyer()">Создать</button></div>`; }
 async function createLawyer(){ await api('/admin/lawyers',{method:'POST', body:JSON.stringify({full_name:document.getElementById('lw_name').value,email:document.getElementById('lw_email').value})}); await loadLawyers(); }
