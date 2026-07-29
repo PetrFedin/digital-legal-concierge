@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.statuses.document_statuses import DocumentStatus
 from app.models.document import Document
+from app.security.document_encryption import ENCRYPTION_STATUS
 
 DOC_TITLES = {
     "DDU": "ДДУ",
@@ -64,9 +65,18 @@ class DocumentService:
         detected_type: str | None = None,
         security_status: str = "VERIFIED",
         scanned_at: datetime | None = None,
+        encryption_status: str = ENCRYPTION_STATUS,
+        encryption_key_id: str | None = None,
+        encrypted_at: datetime | None = None,
     ):
         if security_status != "VERIFIED" or not sha256 or not scanned_at:
             raise ValueError("Документ не прошёл обязательную проверку безопасности")
+        if (
+            encryption_status != ENCRYPTION_STATUS
+            or not encryption_key_id
+            or not encrypted_at
+        ):
+            raise ValueError("Документ не прошёл обязательное шифрование хранилища")
 
         duplicate = (
             await self.db.execute(
@@ -106,6 +116,9 @@ class DocumentService:
             detected_type=detected_type,
             security_status=security_status,
             scanned_at=scanned_at,
+            encryption_status=encryption_status,
+            encryption_key_id=encryption_key_id,
+            encrypted_at=encrypted_at,
             version=version,
             status=DocumentStatus.UPLOADED,
         )
@@ -125,6 +138,8 @@ class DocumentService:
                 "detected_type": detected_type,
                 "size_bytes": file_size,
                 "security_status": security_status,
+                "encryption_status": encryption_status,
+                "encryption_key_id": encryption_key_id,
             },
         )
         return document
@@ -159,18 +174,22 @@ class DocumentService:
             document
             for document in documents
             if document.status == DocumentStatus.UPLOADED
-            and document.security_status != "VERIFIED"
+            and (
+                document.security_status != "VERIFIED"
+                or document.encryption_status != ENCRYPTION_STATUS
+            )
         ]
         if pending:
             raise DocumentSecurityPendingError(
-                "Часть документов ещё не прошла проверку безопасности. "
-                "Удалите их и загрузите заново либо дождитесь повторной проверки."
+                "Часть документов ещё не прошла проверку или шифрование. "
+                "Удалите их и загрузите заново либо дождитесь фоновой миграции."
             )
         verified = [
             document
             for document in documents
             if document.status == DocumentStatus.UPLOADED
             and document.security_status == "VERIFIED"
+            and document.encryption_status == ENCRYPTION_STATUS
         ]
         for document in verified:
             document.status = DocumentStatus.ON_REVIEW

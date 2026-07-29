@@ -6,7 +6,7 @@ from pathlib import Path
 from app.db.migrations import run_database_migrations
 
 
-HEAD_REVISION = "20260729_0005"
+HEAD_REVISION = "20260729_0006"
 
 
 def sqlite_url(path: Path) -> str:
@@ -108,6 +108,10 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "security_status",
         "security_reason",
         "scanned_at",
+        "encryption_status",
+        "encryption_key_id",
+        "encryption_error",
+        "encrypted_at",
     }.issubset(column_names(database_path, "documents"))
     assert {
         "chain_version",
@@ -307,6 +311,10 @@ def test_legacy_database_is_adopted_without_data_loss(tmp_path):
         "security_status",
         "security_reason",
         "scanned_at",
+        "encryption_status",
+        "encryption_key_id",
+        "encryption_error",
+        "encrypted_at",
     }.issubset(column_names(database_path, "documents"))
     assert {
         "chain_version",

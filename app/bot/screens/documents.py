@@ -83,7 +83,7 @@ async def choose(callback: CallbackQuery, state: FSMContext):
     await state.set_state(DocumentUploadStates.waiting_file)
     await callback.message.edit_text(
         "Прикрепите PDF, DOCX, JPG или PNG. "
-        "Файл будет проверен перед сохранением."
+        "Файл будет проверен и зашифрован перед сохранением."
     )
 
 
@@ -150,12 +150,12 @@ async def upload(message: Message, state: FSMContext, db):
     except Exception:
         await db.rollback()
         logger.exception(
-            "Document download failed before verification: case=%s file_id=%s",
+            "Document download or encryption failed: case=%s file_id=%s",
             case.id,
             file_id,
         )
         await message.answer(
-            "⚠️ Не удалось безопасно скачать и проверить файл. "
+            "⚠️ Не удалось безопасно скачать, проверить и зашифровать файл. "
             "Документ не сохранён. Повторите загрузку."
         )
         return
@@ -173,6 +173,9 @@ async def upload(message: Message, state: FSMContext, db):
             detected_type=stored.detected_type,
             security_status=stored.security_status,
             scanned_at=stored.scanned_at,
+            encryption_status=stored.encryption_status,
+            encryption_key_id=stored.encryption_key_id,
+            encrypted_at=stored.encrypted_at,
         )
         await db.commit()
     except DuplicateDocumentError as error:
@@ -189,19 +192,20 @@ async def upload(message: Message, state: FSMContext, db):
     except Exception:
         await db.rollback()
         logger.exception(
-            "Verified document could not be registered: case=%s sha256=%s",
+            "Verified and encrypted document could not be registered: case=%s sha256=%s",
             case.id,
             stored.sha256,
         )
         await message.answer(
-            "⚠️ Файл прошёл проверку, но его не удалось зарегистрировать. "
+            "⚠️ Файл прошёл проверку и шифрование, но его не удалось зарегистрировать. "
             "Повторите загрузку."
         )
         return
 
     await state.clear()
     await message.answer(
-        f"✅ Документ проверен и загружен: {document.title}, версия {document.version}",
+        f"✅ Документ проверен, зашифрован и загружен: "
+        f"{document.title}, версия {document.version}",
         reply_markup=one(
             ("Загрузить еще", "documents_open"),
             ("📋 Список", "documents_list_open"),
@@ -223,7 +227,8 @@ async def list_docs(callback: CallbackQuery, db):
         else "\n".join(
             [
                 f"#{document.id} {document.title} — {document.status}, "
-                f"v{document.version}, проверка: {document.security_status}"
+                f"v{document.version}, проверка: {document.security_status}, "
+                f"хранение: {document.encryption_status}"
                 for document in documents
             ]
         )
@@ -265,9 +270,9 @@ async def finish(callback: CallbackQuery, db):
             actor_type="client",
             actor_id=user.id,
             force=True,
-            comment="Проверенные документы переданы юристу",
+            comment="Проверенные и зашифрованные документы переданы юристу",
         )
-        response_text = "✅ Проверенные документы переданы на проверку юристу."
+        response_text = "✅ Защищённые документы переданы на проверку юристу."
     else:
         await ctx.case_service.change_status(
             case=case,
@@ -275,9 +280,9 @@ async def finish(callback: CallbackQuery, db):
             actor_type="client",
             actor_id=user.id,
             force=True,
-            comment="Проверенные документы М2 сохранены",
+            comment="Проверенные и зашифрованные документы М2 сохранены",
         )
-        response_text = "✅ Документы сохранены. Теперь выберите время консультации."
+        response_text = "✅ Документы защищённо сохранены. Теперь выберите время консультации."
     await db.commit()
     await callback.message.edit_text(
         response_text,

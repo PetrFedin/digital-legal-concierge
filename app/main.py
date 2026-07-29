@@ -59,7 +59,7 @@ from app.security.http_security import (
 from app.security.keyring import security_key_status
 from app.security.session_guard import AdminSessionGuardMiddleware
 
-VERSION = "1.0.0-v37"
+VERSION = "1.0.0-v38"
 
 
 def create_app():
@@ -167,6 +167,10 @@ def create_app():
                 "quarantine_enabled": settings.quarantine_rejected_uploads,
                 "quarantine_retention_days": settings.upload_quarantine_retention_days,
                 "allowed_formats": ["pdf", "docx", "jpeg", "png"],
+                "encryption_at_rest": True,
+                "encryption_key_id": key_status["active_key_ids"].get(
+                    "document_encryption"
+                ),
             },
             "security_event_monitoring": {
                 "enabled": True,
@@ -215,6 +219,8 @@ def create_app():
             "document_content_inspection": True,
             "document_quarantine": settings.quarantine_rejected_uploads,
             "legacy_document_rescan_job": True,
+            "document_encryption_at_rest": True,
+            "document_encryption_rotation_job": True,
             "tamper_evident_audit_chain": True,
             "immutable_audit_events": True,
             "tamper_evident_security_events": True,

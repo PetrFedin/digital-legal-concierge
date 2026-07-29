@@ -36,6 +36,21 @@ class Document(Base, TimestampMixin):
         DateTime(timezone=True),
         nullable=True,
     )
+    encryption_status: Mapped[str] = mapped_column(
+        String(32),
+        default="LEGACY_PLAINTEXT",
+        index=True,
+    )
+    encryption_key_id: Mapped[str | None] = mapped_column(
+        String(32),
+        nullable=True,
+        index=True,
+    )
+    encryption_error: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    encrypted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     version: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[str] = mapped_column(String(100), default="UPLOADED")
     is_required: Mapped[bool] = mapped_column(Boolean, default=False)
