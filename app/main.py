@@ -55,11 +55,14 @@ from app.security.http_security import (
     RequestOriginGuardMiddleware,
     SecurityHeadersMiddleware,
 )
+from app.security.keyring import security_key_status
 from app.security.session_guard import AdminSessionGuardMiddleware
+
+VERSION = "1.0.0-v34"
 
 
 def create_app():
-    app = FastAPI(title="Digital Legal Concierge Bot", version="1.0.0-v33")
+    app = FastAPI(title="Digital Legal Concierge Bot", version=VERSION)
     app.add_middleware(AdminSessionGuardMiddleware)
     app.add_middleware(RequestOriginGuardMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
@@ -119,12 +122,13 @@ def create_app():
 
     @app.get("/health")
     async def health():
-        return {"ok": True, "env": settings.app_env, "version": "1.0.0-v33"}
+        return {"ok": True, "env": settings.app_env, "version": VERSION}
 
     @app.get("/ready")
     async def ready():
         from pathlib import Path
 
+        key_status = security_key_status()
         checks = {
             "bot_token_configured": bool(
                 settings.bot_token and settings.bot_token != "CHANGE_ME"
@@ -144,13 +148,19 @@ def create_app():
             or settings.admin_api_token != "dev-admin-token",
             "public_base_url_is_https": settings.app_env != "production"
             or settings.public_base_url.lower().startswith("https://"),
+            "security_keys_ready": bool(key_status["ok"]),
         }
-        return {"ok": all(checks.values()), "checks": checks, "version": "1.0.0-v33"}
+        return {
+            "ok": all(checks.values()),
+            "checks": checks,
+            "security_keys": key_status,
+            "version": VERSION,
+        }
 
     @app.get("/launch-check")
     async def launch_check():
         return {
-            "version": "1.0.0-v33",
+            "version": VERSION,
             "handover": "/handover",
             "security_check": "/security-check",
             "launch_assistant": "/launch-assistant",
@@ -177,6 +187,8 @@ def create_app():
             "storage_dir": settings.storage_dir,
             "http_origin_guard": True,
             "security_headers": True,
+            "security_keyring": True,
+            "mfa_key_rotation_job": True,
         }
 
     return app
