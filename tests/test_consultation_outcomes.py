@@ -159,20 +159,19 @@ async def test_only_assigned_lawyer_can_complete_consultation(tmp_path):
     async with factory() as session:
         context = await create_context(session, suffix=2)
         await session.commit()
+        consultation_id = context["consultation"].id
+        other_lawyer_id = context["other_lawyer"].id
 
         with pytest.raises(ConsultationOutcomeError, match="назначенному юристу"):
             await ConsultationOutcomeService(session).complete(
-                consultation_id=context["consultation"].id,
-                lawyer_id=context["other_lawyer"].id,
+                consultation_id=consultation_id,
+                lawyer_id=other_lawyer_id,
                 result="Подробный результат консультации с дальнейшими шагами.",
                 decision="other",
             )
         await session.rollback()
 
-        consultation = await session.get(
-            Consultation,
-            context["consultation"].id,
-        )
+        consultation = await session.get(Consultation, consultation_id)
         assert consultation.status == ConsultationStatus.BOOKED
 
     await engine.dispose()
@@ -227,18 +226,17 @@ async def test_client_no_show_requires_fifteen_minutes(tmp_path):
             starts_delta=timedelta(minutes=-5),
         )
         await session.commit()
+        consultation_id = context["consultation"].id
+        lawyer_id = context["lawyer"].id
 
         with pytest.raises(ConsultationOutcomeError, match="через 15 минут"):
             await ConsultationOutcomeService(session).mark_client_no_show(
-                consultation_id=context["consultation"].id,
-                lawyer_id=context["lawyer"].id,
+                consultation_id=consultation_id,
+                lawyer_id=lawyer_id,
                 comment="Клиент не подключился к назначенному времени",
             )
         await session.rollback()
-        consultation = await session.get(
-            Consultation,
-            context["consultation"].id,
-        )
+        consultation = await session.get(Consultation, consultation_id)
         assert consultation.status == ConsultationStatus.BOOKED
 
     await engine.dispose()
