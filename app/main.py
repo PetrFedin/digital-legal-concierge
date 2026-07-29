@@ -61,7 +61,7 @@ from app.security.http_security import (
 from app.security.keyring import security_key_status
 from app.security.session_guard import AdminSessionGuardMiddleware
 
-VERSION = "1.0.0-v39"
+VERSION = "1.0.0-v40"
 
 
 def create_app():
@@ -157,6 +157,8 @@ def create_app():
             "document_access_limit_valid": 1
             <= int(settings.document_access_max_active_grants)
             <= 20,
+            "backup_size_limit_valid": 1 <= int(settings.max_backup_mb) <= 10240,
+            "backup_retention_valid": 1 <= int(settings.backup_retention_days) <= 3650,
             "database_url_configured": bool(settings.database_url),
             "scheduler_enabled": settings.run_scheduler,
             "bot_enabled": settings.run_bot,
@@ -190,6 +192,16 @@ def create_app():
                 "max_active_grants": settings.document_access_max_active_grants,
                 "session_bound": True,
                 "direct_storage_paths_exposed": False,
+            },
+            "backup_security": {
+                "enabled": True,
+                "encryption": "AES-256-GCM",
+                "key_id": key_status["active_key_ids"].get("backup_encryption"),
+                "manifest_sha256": True,
+                "secrets_included": False,
+                "restore_mode": "verified_staging_only",
+                "max_backup_mb": settings.max_backup_mb,
+                "retention_days": settings.backup_retention_days,
             },
             "security_event_monitoring": {
                 "enabled": True,
@@ -227,6 +239,8 @@ def create_app():
             "security_event_center_ui": "/security-events/ui",
             "document_access_api": "/document-access",
             "document_access_ui": "/document-access/ui",
+            "backup_center_ui": "/backup-center/ui",
+            "backup_center_status": "/backup-center/status",
             "health": "/health",
             "ready": "/ready",
             "bot_enabled": settings.run_bot,
@@ -246,6 +260,11 @@ def create_app():
             "one_time_document_grants": True,
             "session_bound_document_grants": True,
             "document_grant_cleanup_job": True,
+            "encrypted_backup_format": True,
+            "backup_manifest_integrity": True,
+            "backup_secrets_excluded": True,
+            "verified_staging_restore": True,
+            "encrypted_backup_retention_job": True,
             "tamper_evident_audit_chain": True,
             "immutable_audit_events": True,
             "tamper_evident_security_events": True,

@@ -179,6 +179,15 @@ def document_encryption_ring() -> KeyRing:
     )
 
 
+def backup_encryption_ring() -> KeyRing:
+    return _build_ring(
+        purpose="backup-encryption",
+        active_id=settings.backup_encryption_key_id,
+        active_secret=settings.backup_encryption_key,
+        previous=settings.backup_encryption_previous_keys,
+    )
+
+
 def hmac_digest(entry: KeyEntry, message: bytes) -> str:
     return hmac.new(entry.secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
 
@@ -202,6 +211,7 @@ def security_key_status() -> dict[str, object]:
         "mfa_encryption": mfa_encryption_ring(),
         "audit_integrity": audit_integrity_ring(),
         "document_encryption": document_encryption_ring(),
+        "backup_encryption": backup_encryption_ring(),
     }
     configured = {
         "session_signing": bool(str(settings.session_signing_key or "").strip()),
@@ -211,6 +221,7 @@ def security_key_status() -> dict[str, object]:
         "document_encryption": bool(
             str(settings.document_encryption_key or "").strip()
         ),
+        "backup_encryption": bool(str(settings.backup_encryption_key or "").strip()),
     }
     active_entries = [ring.active for ring in rings.values() if ring.active]
     strong = {
