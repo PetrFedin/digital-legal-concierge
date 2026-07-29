@@ -142,8 +142,8 @@ class SlotService:
         now = datetime.now(timezone.utc)
 
         # Read identifiers first, then lock in the global order
-        # Lawyer -> Consultation -> Slot. This matches case assignment and
-        # prevents hold/confirmation deadlocks under PostgreSQL.
+        # Case -> Lawyer -> Consultation -> Slot. This matches case assignment
+        # and prevents cross-flow deadlocks under PostgreSQL.
         candidate = (
             await self.db.execute(
                 select(ConsultationSlot).where(ConsultationSlot.id == slot_id)
@@ -156,6 +156,16 @@ class SlotService:
                 select(Consultation).where(Consultation.id == consultation_id)
             )
         ).scalar_one_or_none()
+        if consultation is not None:
+            locked_case_id = (
+                await self.db.execute(
+                    select(Case.id)
+                    .where(Case.id == consultation.case_id)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if locked_case_id is None:
+                raise SlotUnavailableError("Дело консультации не найдено.")
 
         try:
             await LawyerCapacityService(self.db).ensure_available(
