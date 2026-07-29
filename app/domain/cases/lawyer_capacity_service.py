@@ -134,7 +134,7 @@ class LawyerCapacityService:
         )
         if not snapshot.is_available:
             raise LawyerCapacityError(
-                "Достигнут лимит активных дел юриста "
+                "Нельзя назначить юриста: достигнут лимит активных дел "
                 f"({current_workload}/{workload_limit})."
             )
         return snapshot
