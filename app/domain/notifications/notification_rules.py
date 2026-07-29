@@ -10,6 +10,10 @@ NOTIFICATION_RULES = {
         "recipients": ["client", "lawyer", "admin"],
         "template": "consultation_booked",
     },
+    "CONSULTATION_RESCHEDULED": {
+        "recipients": ["client", "lawyer", "admin"],
+        "template": "consultation_rescheduled",
+    },
     "CONSULTATION_PAYMENT_REVIEW": {
         "recipients": ["admin"],
         "template": "consultation_payment_review",

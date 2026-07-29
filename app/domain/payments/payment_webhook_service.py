@@ -95,6 +95,27 @@ class PaymentWebhookService:
                     provider_payload=provider_payload,
                 )
 
+            if payment.status == PaymentStatus.PAID:
+                slot = await consultation_service.slots.get_slot(
+                    consultation.slot_id
+                )
+                if (
+                    consultation.status == ConsultationStatus.BOOKED
+                    and slot
+                    and slot.status == "booked"
+                    and slot.consultation_id == consultation.id
+                ):
+                    return payment
+                return await self._mark_consultation_payment_review(
+                    payment=payment,
+                    case=case,
+                    reason=(
+                        "Платёж уже отмечен оплаченным, но действующая "
+                        "подтверждённая консультация не найдена"
+                    ),
+                    provider_payload=provider_payload,
+                )
+
             expected_reservation_key = PaymentService.consultation_reservation_key(
                 consultation.id,
                 consultation.slot_id,
@@ -107,16 +128,6 @@ class PaymentWebhookService:
                         "Оплачена устаревшая ссылка, относящаяся к другому резерву "
                         "или ранее выбранному времени"
                     ),
-                    provider_payload=provider_payload,
-                )
-
-            if payment.status == PaymentStatus.PAID:
-                if consultation.status == ConsultationStatus.BOOKED:
-                    return payment
-                return await self._mark_consultation_payment_review(
-                    payment=payment,
-                    case=case,
-                    reason="Платёж уже отмечен оплаченным, но подтверждённая консультация не найдена",
                     provider_payload=provider_payload,
                 )
 

@@ -1,6 +1,3 @@
-from collections import defaultdict
-from datetime import timezone
-
 from aiogram import Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -40,7 +37,22 @@ async def ensure_booking_case(ctx, user):
     )
 
 
-@router.callback_query(lambda c: c.data in {"consult_booking_start", "consult_slot_open"})
+def date_buttons(slots, callback_prefix: str):
+    buttons = []
+    seen = set()
+    for slot in slots:
+        key = slot.starts_at.date().isoformat()
+        if key not in seen:
+            seen.add(key)
+            buttons.append(
+                (f"📅 {format_date(slot.starts_at)}", f"{callback_prefix}:{key}")
+            )
+    return buttons
+
+
+@router.callback_query(
+    lambda c: c.data in {"consult_booking_start", "consult_slot_open"}
+)
 async def booking_start(callback: CallbackQuery, db):
     slots = await SlotService(db).get_available_slots(limit=60)
     if not slots:
@@ -49,16 +61,12 @@ async def booking_start(callback: CallbackQuery, db):
             reply_markup=one(("🏠 Главная", "nav_home")),
         )
         return
-    dates = []
-    seen = set()
-    for slot in slots:
-        key = slot.starts_at.date().isoformat()
-        if key not in seen:
-            seen.add(key)
-            dates.append((f"📅 {format_date(slot.starts_at)}", f"consult_date:{key}"))
     await callback.message.edit_text(
         "📅 Выберите доступную дату консультации.",
-        reply_markup=one(*dates, ("🏠 Главная", "nav_home")),
+        reply_markup=one(
+            *date_buttons(slots, "consult_date"),
+            ("🏠 Главная", "nav_home"),
+        ),
     )
 
 
@@ -66,9 +74,16 @@ async def booking_start(callback: CallbackQuery, db):
 async def choose_date(callback: CallbackQuery, db):
     date_key = callback.data.split(":", 1)[1]
     slots = await SlotService(db).get_available_slots(limit=100)
-    selected = [slot for slot in slots if slot.starts_at.date().isoformat() == date_key]
+    selected = [
+        slot
+        for slot in slots
+        if slot.starts_at.date().isoformat() == date_key
+    ]
     if not selected:
-        await callback.answer("На эту дату свободное время уже закончилось.", show_alert=True)
+        await callback.answer(
+            "На эту дату свободное время уже закончилось.",
+            show_alert=True,
+        )
         await booking_start(callback, db)
         return
     buttons = [
@@ -80,7 +95,10 @@ async def choose_date(callback: CallbackQuery, db):
     ]
     await callback.message.edit_text(
         f"🕐 Выберите свободное время на {format_date(selected[0].starts_at)}.",
-        reply_markup=one(*buttons, ("← Другие даты", "consult_booking_start")),
+        reply_markup=one(
+            *buttons,
+            ("← Другие даты", "consult_booking_start"),
+        ),
     )
 
 
@@ -98,9 +116,9 @@ async def choose_slot(callback: CallbackQuery, db):
             client_id=user.id,
             slot_id=slot_id,
         )
-    except SlotUnavailableError as exc:
+    except SlotUnavailableError as error:
         await db.rollback()
-        await callback.answer(str(exc), show_alert=True)
+        await callback.answer(str(error), show_alert=True)
         await booking_start(callback, db)
         return
     await db.commit()
@@ -138,12 +156,18 @@ async def subject_start(callback: CallbackQuery, db, state: FSMContext):
     buttons = []
     for case in cases[:10]:
         label = case.title or case.case_number
-        buttons.append((f"📁 {case.case_number}: {label[:35]}", f"consult_subject_case:{case.id}"))
+        buttons.append(
+            (
+                f"📁 {case.case_number}: {label[:35]}",
+                f"consult_subject_case:{case.id}",
+            )
+        )
     buttons.append(("➕ Другое или новое дело", "consult_subject_new"))
     await state.set_state(ConsultationDescriptionStates.waiting_subject_choice)
     await callback.message.edit_text(
         "К какому вопросу относится консультация?\n\n"
-        "Можно выбрать любое существующее дело — независимо от маршрута — либо описать новое/другое дело.",
+        "Можно выбрать любое существующее дело — независимо от маршрута — "
+        "либо описать новое/другое дело.",
         reply_markup=one(*buttons, ("🏠 Главная", "nav_home")),
     )
 
@@ -151,18 +175,25 @@ async def subject_start(callback: CallbackQuery, db, state: FSMContext):
 @router.callback_query(lambda c: c.data.startswith("consult_subject_case:"))
 async def subject_existing_case(callback: CallbackQuery, state: FSMContext):
     case_id = int(callback.data.split(":", 1)[1])
-    await state.update_data(subject_type="existing_case", related_case_id=case_id)
+    await state.update_data(
+        subject_type="existing_case",
+        related_case_id=case_id,
+    )
     await state.set_state(ConsultationDescriptionStates.waiting_description)
     await callback.message.edit_text(
         "📝 Напишите, что именно вы хотите обсудить с юристом по выбранному делу.\n\n"
-        "Не пересказывайте всё дело — сформулируйте конкретные вопросы, сомнения или новые обстоятельства.",
+        "Не пересказывайте всё дело — сформулируйте конкретные вопросы, "
+        "сомнения или новые обстоятельства.",
         reply_markup=one(("Отмена", "nav_home")),
     )
 
 
 @router.callback_query(lambda c: c.data == "consult_subject_new")
 async def subject_new_case(callback: CallbackQuery, state: FSMContext):
-    await state.update_data(subject_type="new_or_other", related_case_id=None)
+    await state.update_data(
+        subject_type="new_or_other",
+        related_case_id=None,
+    )
     await state.set_state(ConsultationDescriptionStates.waiting_description)
     await callback.message.edit_text(
         "📝 Опишите новое или другое дело и укажите, что именно хотите обсудить с юристом.\n\n"
@@ -172,8 +203,14 @@ async def subject_new_case(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(lambda c: c.data == "consult_description_start")
-async def legacy_description_start(callback: CallbackQuery, state: FSMContext):
-    await state.update_data(subject_type="new_or_other", related_case_id=None)
+async def legacy_description_start(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+    await state.update_data(
+        subject_type="new_or_other",
+        related_case_id=None,
+    )
     await state.set_state(ConsultationDescriptionStates.waiting_description)
     await callback.message.edit_text(
         "📝 Опишите ситуацию и конкретный вопрос для юриста.",
@@ -185,7 +222,9 @@ async def legacy_description_start(callback: CallbackQuery, state: FSMContext):
 async def save_description(message: Message, state: FSMContext, db):
     text = (message.text or "").strip()
     if len(text) < 20:
-        await message.answer("Опишите вопрос чуть подробнее — минимум 20 символов.")
+        await message.answer(
+            "Опишите вопрос чуть подробнее — минимум 20 символов."
+        )
         return
     data = await state.get_data()
     ctx = BotContextService(db)
@@ -195,7 +234,9 @@ async def save_description(message: Message, state: FSMContext, db):
     if consultation.status != ConsultationStatus.BOOKED:
         await message.answer(
             "Сначала выберите и оплатите время консультации.",
-            reply_markup=one(("📅 Выбрать дату и время", "consult_booking_start")),
+            reply_markup=one(
+                ("📅 Выбрать дату и время", "consult_booking_start")
+            ),
         )
         return
     await ConsultationService(db).save_description(
@@ -230,7 +271,13 @@ async def consultation_booked_open(callback: CallbackQuery, db):
             reply_markup=one(("🏠 Главная", "nav_home")),
         )
         return
-    consultation = await ConsultationService(db).get_or_create_for_case(case)
+    consultation = await ConsultationService(db).get_current_for_case(case.id)
+    if not consultation:
+        await callback.message.edit_text(
+            "Нет активной записи.",
+            reply_markup=one(("🏠 Главная", "nav_home")),
+        )
+        return
     date_text = (
         consultation.scheduled_at.strftime("%d.%m.%Y %H:%M")
         if consultation.scheduled_at
@@ -253,12 +300,119 @@ async def consultation_booked_open(callback: CallbackQuery, db):
 
 
 @router.callback_query(lambda c: c.data == "consult_reschedule")
-async def consult_reschedule(callback: CallbackQuery):
+async def consult_reschedule(callback: CallbackQuery, db):
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    case = await ctx.case_service.get_active_case_for_user(user.id)
+    if not case:
+        await callback.message.edit_text(
+            "Нет активной консультации для переноса.",
+            reply_markup=one(("🏠 Главная", "nav_home")),
+        )
+        return
+    consultation = await ConsultationService(db).get_current_for_case(case.id)
+    if not consultation or consultation.status != ConsultationStatus.BOOKED:
+        await callback.message.edit_text(
+            "Перенести можно только оплаченную и подтверждённую консультацию.",
+            reply_markup=one(("Назад", "consultation_booked_open")),
+        )
+        return
+    slots = await SlotService(db).get_available_slots(limit=100)
+    if not slots:
+        await callback.message.edit_text(
+            "Сейчас нет свободного времени для переноса. Текущая запись сохранена.",
+            reply_markup=one(("Назад", "consultation_booked_open")),
+        )
+        return
     await callback.message.edit_text(
-        "Выберите новую дату и время. Текущий слот будет освобождён после выбора нового.",
+        "🔄 Выберите новую дату. Повторная оплата не потребуется.\n\n"
+        "Текущий слот останется за вами до успешного выбора нового времени.",
         reply_markup=one(
-            ("📅 Выбрать дату", "consult_booking_start"),
+            *date_buttons(slots, "consult_reschedule_date"),
             ("Назад", "consultation_booked_open"),
+        ),
+    )
+
+
+@router.callback_query(
+    lambda c: c.data.startswith("consult_reschedule_date:")
+)
+async def choose_reschedule_date(callback: CallbackQuery, db):
+    date_key = callback.data.split(":", 1)[1]
+    slots = await SlotService(db).get_available_slots(limit=100)
+    selected = [
+        slot
+        for slot in slots
+        if slot.starts_at.date().isoformat() == date_key
+    ]
+    if not selected:
+        await callback.answer(
+            "На эту дату свободное время уже закончилось.",
+            show_alert=True,
+        )
+        await consult_reschedule(callback, db)
+        return
+    buttons = [
+        (
+            f"{format_time(slot.starts_at)}–{format_time(slot.ends_at)}",
+            f"consult_reschedule_slot:{slot.id}",
+        )
+        for slot in selected
+    ]
+    await callback.message.edit_text(
+        f"🕐 Выберите новое время на {format_date(selected[0].starts_at)}.",
+        reply_markup=one(
+            *buttons,
+            ("← Другие даты", "consult_reschedule"),
+            ("Отмена", "consultation_booked_open"),
+        ),
+    )
+
+
+@router.callback_query(
+    lambda c: c.data.startswith("consult_reschedule_slot:")
+)
+async def choose_reschedule_slot(callback: CallbackQuery, db):
+    new_slot_id = int(callback.data.split(":", 1)[1])
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    case = await ctx.case_service.get_active_case_for_user(user.id)
+    if not case:
+        await callback.answer(
+            "Активная консультация не найдена.",
+            show_alert=True,
+        )
+        return
+    service = ConsultationService(db)
+    consultation = await service.get_current_for_case(case.id)
+    if not consultation:
+        await callback.answer(
+            "Активная консультация не найдена.",
+            show_alert=True,
+        )
+        return
+    try:
+        consultation, new_slot = await service.reschedule_booked(
+            consultation=consultation,
+            case=case,
+            client_id=user.id,
+            new_slot_id=new_slot_id,
+        )
+        await db.commit()
+    except (SlotUnavailableError, ValueError) as error:
+        await db.rollback()
+        await callback.answer(str(error), show_alert=True)
+        await consult_reschedule(callback, db)
+        return
+    await callback.message.edit_text(
+        "✅ Консультация перенесена без повторной оплаты.\n\n"
+        f"Новая дата: {format_date(new_slot.starts_at)}\n"
+        f"Новое время: {format_time(new_slot.starts_at)}–"
+        f"{format_time(new_slot.ends_at)}\n\n"
+        "Предыдущий слот освобождён.",
+        reply_markup=one(
+            ("👨‍⚖ Открыть запись", "consultation_booked_open"),
+            ("🏠 Главная", "nav_home"),
         ),
     )
 
@@ -269,15 +423,18 @@ async def consult_cancel(callback: CallbackQuery, db):
     user = await ctx.get_user_from_callback(callback)
     case = await ctx.case_service.get_active_case_for_user(user.id)
     if case:
-        consultation = await ConsultationService(db).get_or_create_for_case(case)
-        await ConsultationService(db).cancel(
-            consultation=consultation,
-            case=case,
-            actor_type="client",
-            actor_id=user.id,
-            comment="Клиент отменил консультацию",
+        consultation = await ConsultationService(db).get_current_for_case(
+            case.id
         )
-        await db.commit()
+        if consultation:
+            await ConsultationService(db).cancel(
+                consultation=consultation,
+                case=case,
+                actor_type="client",
+                actor_id=user.id,
+                comment="Клиент отменил консультацию",
+            )
+            await db.commit()
     await callback.message.edit_text(
         "Консультация отменена. Слот снова доступен для записи.",
         reply_markup=one(("🏠 Главная", "nav_home")),

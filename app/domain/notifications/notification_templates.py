@@ -7,6 +7,10 @@ TEMPLATES = {
     "payment_paid": "✅ Оплата подтверждена по делу {case_number}.",
     "payment_reminder": "⏰ Напоминание: по делу {case_number} ожидается оплата.",
     "consultation_booked": "👨‍⚖ Консультация подтверждена: {date}.",
+    "consultation_rescheduled": (
+        "🔄 Консультация по делу {case_number} перенесена: "
+        "{old_date} → {new_date}."
+    ),
     "consultation_payment_review": (
         "⚠️ По делу {case_number} получен платеж #{payment_id}, "
         "но слот не подтвержден автоматически. Причина: {reason}."
