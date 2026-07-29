@@ -48,7 +48,10 @@ async def _load_selection(
         raise ConsultationSlotSelectionError(
             "Выбор времени для клиента недоступен."
         )
-    case = await ctx.case_service.get_active_case_for_user(user.id)
+    case = await ctx.case_service.get_active_case_for_user(
+        user.id,
+        route=RouteCode.M2,
+    )
     if (
         case is None
         or case.client_id != user.id
