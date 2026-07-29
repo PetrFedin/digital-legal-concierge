@@ -4,6 +4,7 @@ from app.models.lawyer import Lawyer
 from app.models.case import Case
 from app.models.calculation import Calculation
 from app.models.document import Document
+from app.models.document_access_grant import DocumentAccessGrant
 from app.models.payment import Payment
 from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
