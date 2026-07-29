@@ -89,6 +89,16 @@ async def require_lawyer_actor(
             detail="Карточка юриста отключена",
         )
 
+    changed = False
+    if account.telegram_id is not None and lawyer.telegram_id != account.telegram_id:
+        lawyer.telegram_id = account.telegram_id
+        changed = True
+    if account.full_name and lawyer.full_name != account.full_name:
+        lawyer.full_name = account.full_name
+        changed = True
+    if changed:
+        await db.flush()
+
     return LawyerActor(
         account=account,
         lawyer=lawyer,
