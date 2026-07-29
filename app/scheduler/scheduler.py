@@ -24,6 +24,7 @@ class AppScheduler:
                     await jobs.check_consultation_completion_overdue()
                 ),
                 "case_sla": await jobs.check_case_sla(),
+                "security_cleanup": await jobs.cleanup_security_state(),
                 "claim_deadlines": (
                     await jobs.check_claim_waiting_30_days()
                 ),

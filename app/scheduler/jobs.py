@@ -12,6 +12,8 @@ from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
 from app.models.payment import Payment
+from app.security.login_throttle import LoginThrottleService
+from app.security.token_revocation import cleanup_revoked_tokens
 
 
 def as_utc(value: datetime) -> datetime:
@@ -50,9 +52,7 @@ class SchedulerJobs:
                 event_code="PAYMENT_REMINDER",
                 case_id=payment.case_id,
                 payload={
-                    "case_number": (
-                        case.case_number if case else payment.case_id
-                    )
+                    "case_number": case.case_number if case else payment.case_id
                 },
                 dedupe_key=f"payment:{payment.id}:reminder:{day_key}",
             )
@@ -154,6 +154,12 @@ class SchedulerJobs:
 
     async def check_case_sla(self) -> dict:
         return await CaseSLAService(self.db).escalate_overdue_cases()
+
+    async def cleanup_security_state(self) -> dict[str, int]:
+        return {
+            "login_states": await LoginThrottleService(self.db).cleanup(),
+            "revoked_tokens": await cleanup_revoked_tokens(self.db),
+        }
 
     async def check_claim_waiting_30_days(self) -> int:
         deadline = datetime.now(timezone.utc) - timedelta(days=30)

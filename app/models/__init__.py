@@ -13,3 +13,5 @@ from app.models.admin_user import AdminUser
 from app.models.audit_log import AuditLog
 from app.models.analytics_event import AnalyticsEvent
 from app.models.system_setting import SystemSetting
+from app.models.login_security_state import LoginSecurityState
+from app.models.revoked_access_token import RevokedAccessToken

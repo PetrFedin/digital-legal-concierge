@@ -6,7 +6,7 @@ from pathlib import Path
 from app.db.migrations import run_database_migrations
 
 
-HEAD_REVISION = "20260729_0002"
+HEAD_REVISION = "20260729_0003"
 
 
 def sqlite_url(path: Path) -> str:
@@ -54,6 +54,8 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "notifications",
         "audit_logs",
         "system_settings",
+        "login_security_states",
+        "revoked_access_tokens",
         "alembic_version",
     }.issubset(tables)
     assert current_revision(database_path) == HEAD_REVISION
@@ -85,6 +87,20 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "mfa_last_totp_step",
         "session_version",
     }.issubset(column_names(database_path, "admin_users"))
+    assert {
+        "key_hash",
+        "failed_attempts",
+        "window_started_at",
+        "last_attempt_at",
+        "locked_until",
+    }.issubset(column_names(database_path, "login_security_states"))
+    assert {
+        "token_hash",
+        "user_id",
+        "expires_at",
+        "reason",
+        "comment",
+    }.issubset(column_names(database_path, "revoked_access_tokens"))
 
 
 def create_legacy_database(path: Path) -> None:
@@ -190,6 +206,9 @@ def test_legacy_database_is_adopted_without_data_loss(tmp_path):
     run_database_migrations(database_url=sqlite_url(database_path))
 
     assert current_revision(database_path) == HEAD_REVISION
+    assert {"login_security_states", "revoked_access_tokens"}.issubset(
+        table_names(database_path)
+    )
     with sqlite3.connect(database_path) as connection:
         row = connection.execute(
             "SELECT case_number, title, internal_comment, sla_status, "

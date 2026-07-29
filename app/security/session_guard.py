@@ -13,13 +13,24 @@ from app.security.access_control import (
     decode_access_token,
     normalize_roles,
 )
+from app.security.token_revocation import is_token_revoked
 
 
 class AdminSessionGuardMiddleware(BaseHTTPMiddleware):
-    """Reject stale, deactivated or non-MFA administrative sessions globally."""
+    """Reject stale, revoked, deactivated or non-MFA admin sessions globally."""
+
+    @staticmethod
+    def _rejected(status_code: int, detail: str) -> JSONResponse:
+        response = JSONResponse(status_code=status_code, content={"detail": detail})
+        response.delete_cookie(settings.admin_session_cookie, path="/")
+        return response
 
     async def dispatch(self, request: Request, call_next):
-        if request.url.path.startswith(("/login", "/mfa")):
+        path = request.url.path
+        challenge_route = path.startswith(
+            ("/mfa/setup", "/mfa/verify", "/mfa/qr")
+        )
+        if path.startswith("/login") or path.startswith("/logout") or challenge_route:
             return await call_next(request)
 
         token = request.headers.get("x-admin-token") or request.cookies.get(
@@ -30,10 +41,7 @@ class AdminSessionGuardMiddleware(BaseHTTPMiddleware):
 
         payload = decode_access_token(token)
         if not payload:
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "Сессия недействительна или истекла"},
-            )
+            return self._rejected(401, "Сессия недействительна или истекла")
         if payload.get("legacy"):
             return await call_next(request)
 
@@ -42,35 +50,31 @@ class AdminSessionGuardMiddleware(BaseHTTPMiddleware):
         except (TypeError, ValueError):
             user_id = 0
         if not user_id:
-            return JSONResponse(status_code=401, content={"detail": "Некорректная сессия"})
+            return self._rejected(401, "Некорректная сессия")
 
         async with AsyncSessionLocal() as db:
+            if await is_token_revoked(db, token):
+                return self._rejected(401, "Сессия завершена")
             user = (
                 await db.execute(select(AdminUser).where(AdminUser.id == user_id))
             ).scalar_one_or_none()
             if not user or not user.is_active:
-                return JSONResponse(
-                    status_code=401,
-                    content={"detail": "Учётная запись отключена"},
-                )
+                return self._rejected(401, "Учётная запись отключена")
             current_roles = normalize_roles(user.role)
             token_roles = normalize_roles(payload.get("roles"))
             if set(current_roles) != set(token_roles):
-                return JSONResponse(
-                    status_code=401,
-                    content={"detail": "Права изменены. Выполните вход повторно"},
+                return self._rejected(
+                    401,
+                    "Права изменены. Выполните вход повторно",
                 )
             if int(payload.get("sv") or 0) != int(user.session_version or 1):
-                return JSONResponse(
-                    status_code=401,
-                    content={"detail": "Сессия отозвана"},
-                )
+                return self._rejected(401, "Сессия отозвана")
             if ROLE_SUPERADMIN in current_roles and (
                 not user.mfa_enabled or not bool(payload.get("mfa"))
             ):
-                return JSONResponse(
-                    status_code=403,
-                    content={"detail": "Для суперадминистратора обязательна MFA"},
+                return self._rejected(
+                    403,
+                    "Для суперадминистратора обязательна MFA",
                 )
 
         return await call_next(request)
