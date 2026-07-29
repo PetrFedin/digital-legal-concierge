@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Form, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -105,8 +105,8 @@ async def login(
         await db.execute(
             select(AdminUser).where(
                 or_(
-                    AdminUser.username == normalized_username,
-                    AdminUser.email == normalized_username,
+                    func.lower(AdminUser.username) == normalized_username,
+                    func.lower(AdminUser.email) == normalized_username,
                 )
             )
         )
