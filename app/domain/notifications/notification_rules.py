@@ -23,6 +23,10 @@ NOTIFICATION_RULES = {
         "recipients": ["client", "admin"],
         "template": "payment_paid",
     },
+    "PAYMENT_FAILED": {
+        "recipients": ["client"],
+        "template": "payment_failed",
+    },
     "PAYMENT_REMINDER": {
         "recipients": ["client"],
         "template": "payment_reminder",
