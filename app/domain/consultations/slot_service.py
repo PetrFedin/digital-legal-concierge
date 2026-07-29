@@ -37,7 +37,11 @@ class SlotService:
             return 0
 
         slot_ids = [row.id for row in expired]
-        consultation_ids = [row.consultation_id for row in expired if row.consultation_id is not None]
+        consultation_ids = [
+            row.consultation_id
+            for row in expired
+            if row.consultation_id is not None
+        ]
 
         if consultation_ids:
             await self.db.execute(
@@ -125,7 +129,9 @@ class SlotService:
             )
         )
         if result.rowcount != 1:
-            raise SlotUnavailableError("Это время уже занято или уже началось. Выберите другой слот.")
+            raise SlotUnavailableError(
+                "Это время уже занято или уже началось. Выберите другой слот."
+            )
         await self.db.flush()
         slot = await self.get_slot(slot_id)
         if not slot:
@@ -192,7 +198,9 @@ class SlotService:
             raise ValueError("Для теста можно создать один или два слота")
         duration = duration_minutes or self.TEST_SLOT_DURATION_MINUTES
         if duration < 15 or duration > 180:
-            raise ValueError("Продолжительность слота должна быть от 15 до 180 минут")
+            raise ValueError(
+                "Продолжительность слота должна быть от 15 до 180 минут"
+            )
 
         now = datetime.now(timezone.utc)
         cursor = now + timedelta(minutes=30)
@@ -210,12 +218,14 @@ class SlotService:
                 await self.db.execute(
                     select(ConsultationSlot.id).where(
                         ConsultationSlot.lawyer_id == lawyer_id,
-                        ConsultationSlot.status.in_(["available", "held", "booked"]),
+                        ConsultationSlot.status.in_(
+                            ["available", "held", "booked"]
+                        ),
                         ConsultationSlot.starts_at < ends_at,
                         ConsultationSlot.ends_at > starts_at,
                     )
                 )
-            ).scalar_one_or_none()
+            ).scalars().first()
             if overlap is None:
                 slot = ConsultationSlot(
                     lawyer_id=lawyer_id,
@@ -231,5 +241,7 @@ class SlotService:
             attempts += 1
 
         if len(created) != count:
-            raise ValueError("Не удалось подобрать свободное время без пересечений")
+            raise ValueError(
+                "Не удалось подобрать свободное время без пересечений"
+            )
         return created
