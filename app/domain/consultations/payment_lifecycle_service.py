@@ -255,6 +255,7 @@ class ConsultationPaymentLifecycleService:
                 case=case,
                 lawyer_id=lawyer_id,
                 actor_id=lawyer_id,
+                actor_type="lawyer",
             )
         except CaseAssignmentError as exc:
             raise ConsultationPaymentLifecycleError(
