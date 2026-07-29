@@ -1,4 +1,5 @@
 import re
+import time
 
 import httpx
 import pyotp
@@ -87,9 +88,10 @@ async def test_superadmin_must_setup_mfa_before_session(tmp_path):
         setup = await client.get("/mfa/setup")
         assert setup.status_code == 200
         secret = await current_secret(factory, user_id)
+        setup_code = pyotp.TOTP(secret).now()
         confirmation = await client.post(
             "/mfa/setup",
-            data={"code": pyotp.TOTP(secret).now()},
+            data={"code": setup_code},
         )
         assert confirmation.status_code == 200
         assert "MFA включена" in confirmation.text
@@ -99,8 +101,19 @@ async def test_superadmin_must_setup_mfa_before_session(tmp_path):
         assert payload["mfa"] is True
         assert payload["sv"] == 2
 
-        recovery_codes = re.findall(r"[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}", confirmation.text)
+        recovery_codes = re.findall(
+            r"[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}",
+            confirmation.text,
+        )
         assert len(recovery_codes) == 10
+
+        await client.post("/logout")
+        await client.post(
+            "/login",
+            data={"username": username, "password": "StrongPassword2026!"},
+        )
+        replay = await client.post("/mfa/verify", data={"code": setup_code})
+        assert replay.status_code == 401
 
     async with factory() as session:
         user = await session.get(AdminUser, user_id)
@@ -185,11 +198,12 @@ async def test_session_rotation_invalidates_old_token(tmp_path):
         await client.post("/mfa/setup", data={"code": pyotp.TOTP(secret).now()})
         old_token = client.cookies["dlc_admin_session"]
 
+        next_code = pyotp.TOTP(secret).at(int(time.time()) + 30)
         rotated = await client.post(
             "/mfa/sessions/rotate",
             data={
                 "password": "StrongPassword2026!",
-                "code": pyotp.TOTP(secret).now(),
+                "code": next_code,
             },
         )
         assert rotated.status_code == 303
