@@ -14,6 +14,18 @@ NOTIFICATION_RULES = {
         "recipients": ["client", "lawyer", "admin"],
         "template": "consultation_rescheduled",
     },
+    "CONSULTATION_CANCELLATION_REQUESTED": {
+        "recipients": ["client", "lawyer", "admin"],
+        "template": "consultation_cancellation_requested",
+    },
+    "CONSULTATION_REFUNDED": {
+        "recipients": ["client", "admin"],
+        "template": "consultation_refunded",
+    },
+    "CONSULTATION_REFUND_DECLINED": {
+        "recipients": ["client", "admin"],
+        "template": "consultation_refund_declined",
+    },
     "CONSULTATION_PAYMENT_REVIEW": {
         "recipients": ["admin"],
         "template": "consultation_payment_review",
