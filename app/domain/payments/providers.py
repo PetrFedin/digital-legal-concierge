@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 from decimal import Decimal
-from uuid import uuid4
 
 import httpx
 
@@ -19,53 +18,87 @@ class PaymentProviderResult:
 
 
 class BasePaymentProvider:
-    async def create_payment(self, *, payment_id: int, amount: Decimal, currency: str, title: str, metadata: dict) -> PaymentProviderResult:
+    async def create_payment(
+        self,
+        *,
+        payment_id: int,
+        amount: Decimal,
+        currency: str,
+        title: str,
+        metadata: dict,
+    ) -> PaymentProviderResult:
         raise NotImplementedError
 
 
 class FakePaymentProvider(BasePaymentProvider):
-    async def create_payment(self, *, payment_id: int, amount: Decimal, currency: str, title: str, metadata: dict) -> PaymentProviderResult:
-        provider_payment_id = str(uuid4())
+    async def create_payment(
+        self,
+        *,
+        payment_id: int,
+        amount: Decimal,
+        currency: str,
+        title: str,
+        metadata: dict,
+    ) -> PaymentProviderResult:
+        # Stable for the same internal Payment, matching the production
+        # idempotency contract instead of generating a new external operation
+        # on every retry.
+        provider_payment_id = f"fake-payment-{payment_id}"
         return PaymentProviderResult(
             provider="fake",
             provider_payment_id=provider_payment_id,
-            payment_url=f"{settings.public_base_url.rstrip('/')}/webhooks/payments/fake-pay/{payment_id}",
-            raw={"mode": "fake", "metadata": metadata},
+            payment_url=(
+                f"{settings.public_base_url.rstrip('/')}"
+                f"/webhooks/payments/fake-pay/{payment_id}"
+            ),
+            raw={
+                "mode": "fake",
+                "metadata": metadata,
+                "idempotency_key": _idempotency_key(payment_id),
+            },
         )
 
 
 class YooKassaPaymentProvider(BasePaymentProvider):
-    """Минимальная интеграция YooKassa для production-режима.
-
-    Нужны переменные окружения:
-    - PAYMENT_PROVIDER=yookassa
-    - YOOKASSA_SHOP_ID
-    - YOOKASSA_SECRET_KEY
-    - PUBLIC_BASE_URL
-    """
+    """Minimal YooKassa integration with stable request idempotency."""
 
     api_url = "https://api.yookassa.ru/v3/payments"
 
-    async def create_payment(self, *, payment_id: int, amount: Decimal, currency: str, title: str, metadata: dict) -> PaymentProviderResult:
+    async def create_payment(
+        self,
+        *,
+        payment_id: int,
+        amount: Decimal,
+        currency: str,
+        title: str,
+        metadata: dict,
+    ) -> PaymentProviderResult:
         if not settings.yookassa_shop_id or not settings.yookassa_secret_key:
-            raise RuntimeError("YooKassa не настроена: заполните YOOKASSA_SHOP_ID и YOOKASSA_SECRET_KEY")
+            raise RuntimeError(
+                "YooKassa не настроена: заполните YOOKASSA_SHOP_ID "
+                "и YOOKASSA_SECRET_KEY"
+            )
 
-        auth_raw = f"{settings.yookassa_shop_id}:{settings.yookassa_secret_key}".encode("utf-8")
+        auth_raw = (
+            f"{settings.yookassa_shop_id}:{settings.yookassa_secret_key}"
+        ).encode("utf-8")
         auth_header = base64.b64encode(auth_raw).decode("ascii")
-        idempotence_key = str(uuid4())
         payload = {
             "amount": {"value": f"{amount:.2f}", "currency": currency},
             "capture": True,
             "confirmation": {
                 "type": "redirect",
-                "return_url": f"{settings.public_base_url.rstrip('/')}/payment-result?payment_id={payment_id}",
+                "return_url": (
+                    f"{settings.public_base_url.rstrip('/')}"
+                    f"/payment-result?payment_id={payment_id}"
+                ),
             },
             "description": title[:128],
             "metadata": {**metadata, "internal_payment_id": str(payment_id)},
         }
         headers = {
             "Authorization": f"Basic {auth_header}",
-            "Idempotence-Key": idempotence_key,
+            "Idempotence-Key": _idempotency_key(payment_id),
             "Content-Type": "application/json",
         }
         async with httpx.AsyncClient(timeout=20) as client:
@@ -73,12 +106,24 @@ class YooKassaPaymentProvider(BasePaymentProvider):
             response.raise_for_status()
             data = response.json()
         confirmation = data.get("confirmation") or {}
+        provider_payment_id = str(data.get("id") or "").strip()
+        payment_url = str(confirmation.get("confirmation_url") or "").strip()
+        if not provider_payment_id or not payment_url:
+            raise RuntimeError(
+                "YooKassa вернула неполный ответ без идентификатора или ссылки."
+            )
         return PaymentProviderResult(
             provider="yookassa",
-            provider_payment_id=data.get("id", ""),
-            payment_url=confirmation.get("confirmation_url", ""),
+            provider_payment_id=provider_payment_id,
+            payment_url=payment_url,
             raw=data,
         )
+
+
+def _idempotency_key(payment_id: int) -> str:
+    if payment_id <= 0:
+        raise ValueError("Для платёжного запроса требуется сохранённый Payment ID.")
+    return f"digital-legal-concierge-payment-{payment_id}"
 
 
 def get_payment_provider() -> BasePaymentProvider:
