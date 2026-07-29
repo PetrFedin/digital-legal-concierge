@@ -87,21 +87,36 @@ class PaymentWebhookService:
             consultation_service = ConsultationService(self.db)
             consultation = await consultation_service.get_current_for_case(case.id)
 
+            if not consultation or not consultation.slot_id:
+                return await self._mark_consultation_payment_review(
+                    payment=payment,
+                    case=case,
+                    reason="Активная консультация или связанный слот не найдены",
+                    provider_payload=provider_payload,
+                )
+
+            expected_reservation_key = PaymentService.consultation_reservation_key(
+                consultation.id,
+                consultation.slot_id,
+            )
+            if payment.reservation_key != expected_reservation_key:
+                return await self._mark_consultation_payment_review(
+                    payment=payment,
+                    case=case,
+                    reason=(
+                        "Оплачена устаревшая ссылка, относящаяся к другому резерву "
+                        "или ранее выбранному времени"
+                    ),
+                    provider_payload=provider_payload,
+                )
+
             if payment.status == PaymentStatus.PAID:
-                if consultation and consultation.status == ConsultationStatus.BOOKED:
+                if consultation.status == ConsultationStatus.BOOKED:
                     return payment
                 return await self._mark_consultation_payment_review(
                     payment=payment,
                     case=case,
                     reason="Платёж уже отмечен оплаченным, но подтверждённая консультация не найдена",
-                    provider_payload=provider_payload,
-                )
-
-            if not consultation:
-                return await self._mark_consultation_payment_review(
-                    payment=payment,
-                    case=case,
-                    reason="Активная консультация не найдена",
                     provider_payload=provider_payload,
                 )
 
