@@ -46,26 +46,57 @@ async def migrate_admin_users(db):
     await db.commit()
 
 
+CONSULTATION_ACTIVE_UNIQUE_INDEX_DDL = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_consultations_active_case "
+    "ON consultations(case_id) "
+    "WHERE status NOT IN ('DECLINED', 'DONE', 'CANCELLED', 'CLOSED')"
+)
+
+
+class DuplicateActiveConsultationError(RuntimeError):
+    """Raised when legacy active Consultation duplicates block the index."""
+
+
 async def migrate_consultations(db):
-    if not settings.database_url.startswith("sqlite"):
-        return
-    columns = await table_columns(db, "consultations")
+    dialect_name = db.bind.dialect.name
+    columns = await portable_table_columns(db, "consultations")
     if not columns:
         return
-    additions = {
-        "related_case_id": "INTEGER",
-        "slot_id": "INTEGER",
-        "subject_type": "VARCHAR(50) DEFAULT 'new_or_other'",
-    }
-    for name, ddl in additions.items():
-        if name not in columns:
-            await db.execute(text(f"ALTER TABLE consultations ADD COLUMN {name} {ddl}"))
-    await db.execute(
-        text(
-            "UPDATE consultations SET subject_type='new_or_other' "
-            "WHERE subject_type IS NULL OR subject_type=''"
+
+    if dialect_name == "sqlite":
+        additions = {
+            "related_case_id": "INTEGER",
+            "slot_id": "INTEGER",
+            "subject_type": "VARCHAR(50) DEFAULT 'new_or_other'",
+        }
+        for name, ddl in additions.items():
+            if name not in columns:
+                await db.execute(
+                    text(f"ALTER TABLE consultations ADD COLUMN {name} {ddl}")
+                )
+        await db.execute(
+            text(
+                "UPDATE consultations SET subject_type='new_or_other' "
+                "WHERE subject_type IS NULL OR subject_type=''"
+            )
         )
-    )
+
+    duplicate = (
+        await db.execute(
+            text(
+                "SELECT case_id, COUNT(*) AS duplicate_count "
+                "FROM consultations "
+                "WHERE status NOT IN ('DECLINED', 'DONE', 'CANCELLED', 'CLOSED') "
+                "GROUP BY case_id HAVING COUNT(*) > 1 LIMIT 1"
+            )
+        )
+    ).first()
+    if duplicate:
+        raise DuplicateActiveConsultationError(
+            "Cannot create active consultation uniqueness index: "
+            f"case_id={duplicate.case_id!r} has {duplicate.duplicate_count} active rows"
+        )
+    await db.execute(text(CONSULTATION_ACTIVE_UNIQUE_INDEX_DDL))
     await db.commit()
 
 
@@ -99,10 +130,19 @@ PAYMENT_PROVIDER_UNIQUE_INDEX_DDL = (
     "ON payments(provider, provider_payment_id) "
     "WHERE provider IS NOT NULL AND provider_payment_id IS NOT NULL"
 )
+PAYMENT_OPEN_UNIQUE_INDEX_DDL = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_payments_open_case_code "
+    "ON payments(case_id, payment_code) "
+    "WHERE status IN ('PENDING', 'WAITING_CONFIRMATION')"
+)
 
 
 class DuplicateProviderPaymentError(RuntimeError):
     """Raised when legacy provider payment duplicates block the unique index."""
+
+
+class DuplicateOpenPaymentError(RuntimeError):
+    """Raised when legacy open stage payments block the unique index."""
 
 
 async def portable_table_columns(db, table_name: str) -> set[str]:
@@ -128,7 +168,8 @@ async def migrate_payments(db):
     for name, statement in additions.items():
         if name not in columns:
             await db.execute(text(statement))
-    duplicate = (
+
+    duplicate_provider = (
         await db.execute(
             text(
                 "SELECT provider, provider_payment_id, COUNT(*) AS duplicate_count "
@@ -139,14 +180,35 @@ async def migrate_payments(db):
             )
         )
     ).first()
-    if duplicate:
+    if duplicate_provider:
         raise DuplicateProviderPaymentError(
             "Cannot create payment provider uniqueness index: "
-            f"duplicate ({duplicate.provider!r}, {duplicate.provider_payment_id!r})"
+            "duplicate "
+            f"({duplicate_provider.provider!r}, "
+            f"{duplicate_provider.provider_payment_id!r})"
         )
-    await db.execute(
-        text(PAYMENT_PROVIDER_UNIQUE_INDEX_DDL)
-    )
+
+    duplicate_open = (
+        await db.execute(
+            text(
+                "SELECT case_id, payment_code, COUNT(*) AS duplicate_count "
+                "FROM payments "
+                "WHERE status IN ('PENDING', 'WAITING_CONFIRMATION') "
+                "GROUP BY case_id, payment_code "
+                "HAVING COUNT(*) > 1 LIMIT 1"
+            )
+        )
+    ).first()
+    if duplicate_open:
+        raise DuplicateOpenPaymentError(
+            "Cannot create open payment uniqueness index: "
+            f"case_id={duplicate_open.case_id!r}, "
+            f"payment_code={duplicate_open.payment_code!r} has "
+            f"{duplicate_open.duplicate_count} open rows"
+        )
+
+    await db.execute(text(PAYMENT_PROVIDER_UNIQUE_INDEX_DDL))
+    await db.execute(text(PAYMENT_OPEN_UNIQUE_INDEX_DDL))
     await db.commit()
 
 
