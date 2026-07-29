@@ -40,6 +40,15 @@ TEMPLATES = {
         "⚠️ По делу {case_number} получен платеж #{payment_id}, "
         "но слот не подтвержден автоматически. Причина: {reason}."
     ),
+    "consultation_payment_review_resolved": (
+        "✅ Платёж #{payment_id} по делу {case_number} проверен. "
+        "Консультация подтверждена на {date}; повторная оплата не требуется."
+    ),
+    "consultation_payment_review_refund_pending": (
+        "🧾 По платежу #{payment_id} на сумму {amount} ₽ по делу "
+        "{case_number} создана заявка на возврат. Администратор обработает её "
+        "в центре возвратов."
+    ),
     "claim_30_days_expired": (
         "📨 По делу {case_number} истекли 30 дней после претензии. "
         "Проверьте следующий шаг."

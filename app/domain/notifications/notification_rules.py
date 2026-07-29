@@ -60,6 +60,14 @@ NOTIFICATION_RULES = {
         "recipients": ["admin"],
         "template": "consultation_payment_review",
     },
+    "CONSULTATION_PAYMENT_REVIEW_RESOLVED": {
+        "recipients": ["client", "lawyer", "admin"],
+        "template": "consultation_payment_review_resolved",
+    },
+    "CONSULTATION_PAYMENT_REVIEW_REFUND_PENDING": {
+        "recipients": ["client", "admin"],
+        "template": "consultation_payment_review_refund_pending",
+    },
     "CLAIM_30_DAYS_EXPIRED": {
         "recipients": ["lawyer", "admin"],
         "template": "claim_30_days_expired",
