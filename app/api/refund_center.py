@@ -9,14 +9,27 @@ from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models.case import Case
 from app.models.payment import Payment
 from app.models.user import User
-from app.security.access_control import verify_access_token
+from app.security.access_control import ROLE_ADMIN, decode_access_token, has_role
 
 router = APIRouter(prefix="/admin/refunds", tags=["admin", "refunds"])
 
 
-def check_admin(token: str | None) -> None:
-    if not verify_access_token(token):
-        raise HTTPException(status_code=401, detail="bad token")
+def require_admin(token: str | None) -> dict:
+    payload = decode_access_token(token)
+    if not payload or not has_role(payload.get("roles"), ROLE_ADMIN):
+        raise HTTPException(
+            status_code=403,
+            detail="Доступ только для администратора",
+        )
+    return payload
+
+
+def actor_id_from_token(payload: dict) -> int | None:
+    try:
+        actor_id = int(payload.get("uid") or 0)
+    except (TypeError, ValueError):
+        actor_id = 0
+    return actor_id or None
 
 
 @router.get("")
@@ -24,7 +37,7 @@ async def list_refund_requests(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    check_admin(x_admin_token)
+    require_admin(x_admin_token)
     rows = (
         await db.execute(
             select(Payment, Case, User)
@@ -62,12 +75,12 @@ async def resolve_refund(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    check_admin(x_admin_token)
+    actor = require_admin(x_admin_token)
     try:
         payment = await ConsultationRefundService(db).resolve_refund(
             payment_id=payment_id,
             decision=payload.get("decision"),
-            actor_id=payload.get("actor_id"),
+            actor_id=actor_id_from_token(actor),
             comment=payload.get("comment") or "",
         )
         await db.commit()
