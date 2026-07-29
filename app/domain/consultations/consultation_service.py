@@ -190,6 +190,17 @@ class ConsultationService:
         client_id: int,
         new_slot_id: int,
     ):
+        locked_consultation = (
+            await self.db.execute(
+                select(Consultation)
+                .where(Consultation.id == consultation.id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if not locked_consultation:
+            raise ValueError("Консультация не найдена")
+        consultation = locked_consultation
+
         if consultation.status != ConsultationStatus.BOOKED:
             raise ValueError(
                 "Перенос без повторной оплаты доступен только для подтверждённой консультации"
@@ -198,11 +209,15 @@ class ConsultationService:
             raise ValueError("У консультации отсутствует текущий слот")
         if consultation.slot_id == new_slot_id:
             slot = await self.slots.get_slot(new_slot_id)
-            if slot:
+            if (
+                slot
+                and slot.status == "booked"
+                and slot.consultation_id == consultation.id
+            ):
                 return consultation, slot
             raise SlotUnavailableError("Текущий слот не найден")
 
-        old_slot = await self.slots.get_slot(consultation.slot_id)
+        old_slot = await self.slots.get_slot_for_update(consultation.slot_id)
         if (
             not old_slot
             or old_slot.status != "booked"
@@ -216,19 +231,27 @@ class ConsultationService:
                 "Нельзя перенести консультацию, которая уже началась или завершилась"
             )
 
-        new_slot = await self.slots.book_available_slot(
-            slot_id=new_slot_id,
-            user_id=client_id,
-            consultation_id=consultation.id,
-        )
         old_snapshot = {
             "slot_id": old_slot.id,
             "lawyer_id": old_slot.lawyer_id,
             "starts_at": old_slot.starts_at.isoformat(),
             "ends_at": old_slot.ends_at.isoformat(),
         }
-        await self.slots.release_slot(old_slot.id, consultation.id)
+        old_date_text = old_slot.starts_at.strftime("%d.%m.%Y %H:%M")
 
+        old_slot.status = "rescheduling"
+        old_slot.consultation_id = None
+        old_slot.held_by_user_id = None
+        old_slot.hold_expires_at = None
+        await self.db.flush()
+
+        new_slot = await self.slots.book_available_slot(
+            slot_id=new_slot_id,
+            user_id=client_id,
+            consultation_id=consultation.id,
+        )
+
+        old_slot.status = "available"
         consultation.slot_id = new_slot.id
         consultation.lawyer_id = new_slot.lawyer_id
         consultation.scheduled_at = new_slot.starts_at
@@ -255,7 +278,7 @@ class ConsultationService:
             user_id=client_id,
             payload={
                 "case_number": case.case_number,
-                "old_date": old_slot.starts_at.strftime("%d.%m.%Y %H:%M"),
+                "old_date": old_date_text,
                 "new_date": new_slot.starts_at.strftime("%d.%m.%Y %H:%M"),
             },
         )
