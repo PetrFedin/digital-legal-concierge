@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,17 +8,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db.session import get_db
 from app.models.admin_user import AdminUser
+from app.models.audit_log import AuditLog
 from app.security.access_control import (
     ROLE_SUPERADMIN,
     create_access_token,
     create_mfa_challenge_token,
     decode_access_token,
+    hash_password,
     normalize_roles,
     verify_password,
 )
+from app.security.login_throttle import LoginRateLimitError, LoginThrottleService
+from app.security.token_revocation import is_token_revoked, revoke_token
 
 router = APIRouter(tags=["auth"])
 MFA_CHALLENGE_COOKIE = "dlc_mfa_challenge"
+DUMMY_PASSWORD_HASH = hash_password("DLC-Dummy-Password-Not-For-Login-2026!")
+NO_STORE_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 
 
 def extract_admin_token(
@@ -34,6 +40,10 @@ def extract_admin_token(
     if settings.allow_token_query and settings.app_env != "production" and query_token:
         return query_token
     return None
+
+
+def _client_address(request: Request) -> str:
+    return request.client.host if request.client and request.client.host else "unknown"
 
 
 def _set_session_cookie(response, token: str) -> None:
@@ -60,32 +70,66 @@ def _set_challenge_cookie(response, token: str) -> None:
     )
 
 
+def _rate_limit_error(retry_after: int) -> HTTPException:
+    return HTTPException(
+        status_code=429,
+        detail="Слишком много попыток входа. Повторите позже",
+        headers={"Retry-After": str(max(1, int(retry_after)))},
+    )
+
+
 @router.get("/login", response_class=HTMLResponse)
 async def login_page():
-    return HTMLResponse(
-        LOGIN_HTML,
-        headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
-    )
+    return HTMLResponse(LOGIN_HTML, headers=NO_STORE_HEADERS)
 
 
 @router.post("/login")
 async def login(
+    request: Request,
     username: str = Form(...),
     password: str = Form(...),
     db: AsyncSession = Depends(get_db),
 ):
-    normalized_username = username.strip()
-    result = await db.execute(
-        select(AdminUser).where(
-            or_(
-                AdminUser.username == normalized_username,
-                AdminUser.email == normalized_username,
+    normalized_username = username.strip().lower()
+    client_address = _client_address(request)
+    throttle = LoginThrottleService(db)
+    try:
+        await throttle.check(
+            principal=normalized_username,
+            client_address=client_address,
+        )
+    except LoginRateLimitError as error:
+        raise _rate_limit_error(error.retry_after) from error
+
+    user = (
+        await db.execute(
+            select(AdminUser).where(
+                or_(
+                    AdminUser.username == normalized_username,
+                    AdminUser.email == normalized_username,
+                )
             )
         )
+    ).scalars().first()
+    encoded_password = (
+        user.password_hash if user and user.is_active else DUMMY_PASSWORD_HASH
     )
-    user = result.scalars().first()
-    if not user or not user.is_active or not verify_password(password, user.password_hash):
+    credentials_valid = verify_password(password, encoded_password)
+    if not user or not user.is_active or not credentials_valid:
+        retry_after = await throttle.register_failure(
+            principal=normalized_username,
+            client_address=client_address,
+        )
+        await db.commit()
+        if retry_after:
+            raise _rate_limit_error(retry_after)
         raise HTTPException(status_code=401, detail="Неверный логин или пароль")
+
+    await throttle.register_success(
+        principal=normalized_username,
+        client_address=client_address,
+    )
+    await db.commit()
 
     roles = normalize_roles(user.role)
     if ROLE_SUPERADMIN in roles:
@@ -111,10 +155,10 @@ async def login(
 
 
 @router.get("/auth/session")
-async def auth_session(request: Request):
+async def auth_session(request: Request, db: AsyncSession = Depends(get_db)):
     token = request.cookies.get(settings.admin_session_cookie)
     payload = decode_access_token(token)
-    if not payload:
+    if not payload or await is_token_revoked(db, token):
         raise HTTPException(status_code=401, detail="Требуется вход")
     return {
         "authenticated": True,
@@ -127,7 +171,37 @@ async def auth_session(request: Request):
 
 
 @router.post("/logout")
-async def logout():
+async def logout(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    token = x_admin_token or request.cookies.get(settings.admin_session_cookie)
+    payload = decode_access_token(token)
+    revoked = await revoke_token(
+        db,
+        token,
+        reason="logout",
+        comment="Пользователь завершил административную сессию",
+    )
+    if revoked and payload:
+        try:
+            actor_id = int(payload.get("uid") or 0) or None
+        except (TypeError, ValueError):
+            actor_id = None
+        db.add(
+            AuditLog(
+                actor_type="admin_user",
+                actor_id=actor_id,
+                action="security.session_logged_out",
+                entity_type="admin_session",
+                entity_id=None,
+                old_value=None,
+                new_value={"token_revoked": True},
+                comment="Токен отозван до окончания срока действия",
+            )
+        )
+    await db.commit()
     response = RedirectResponse(url="/login", status_code=303)
     response.delete_cookie(settings.admin_session_cookie, path="/")
     response.delete_cookie(MFA_CHALLENGE_COOKIE, path="/")
