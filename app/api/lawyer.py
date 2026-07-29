@@ -1,16 +1,227 @@
+from __future__ import annotations
+
 from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.config import settings
+
 from app.db.session import get_db
-from app.models.case import Case
+from app.domain.consultations.outcome_service import (
+    ConsultationOutcomeError,
+    ConsultationOutcomeService,
+)
 from app.lawyer.lawyer_decisions import LawyerDecisionService
-router=APIRouter(prefix='/lawyer',tags=['lawyer'])
-def check(token):
-    if token != settings.admin_api_token: raise HTTPException(401,'bad token')
-@router.post('/cases/{case_id}/accept')
-async def accept(case_id:int, lawyer_id:int=1, db:AsyncSession=Depends(get_db), x_admin_token:str|None=Header(default=None)):
-    check(x_admin_token); case=(await db.execute(select(Case).where(Case.id==case_id))).scalars().first(); await LawyerDecisionService(db).accept_m1_case(case=case,lawyer_id=lawyer_id); await db.commit(); return {'ok':True}
-@router.post('/cases/{case_id}/request-documents')
-async def request_docs(case_id:int,payload:dict, lawyer_id:int=1, db:AsyncSession=Depends(get_db), x_admin_token:str|None=Header(default=None)):
-    check(x_admin_token); case=(await db.execute(select(Case).where(Case.id==case_id))).scalars().first(); await LawyerDecisionService(db).request_more_documents(case=case,lawyer_id=lawyer_id,comment=payload.get('comment','Нужны дополнительные документы')); await db.commit(); return {'ok':True}
+from app.models.case import Case
+from app.models.consultation import Consultation
+from app.models.consultation_slot import ConsultationSlot
+from app.models.user import User
+from app.security.lawyer_access import require_lawyer_actor
+
+router = APIRouter(prefix="/lawyer", tags=["lawyer"])
+
+
+async def assigned_case(
+    db: AsyncSession,
+    case_id: int,
+    lawyer_id: int,
+) -> Case:
+    case = await db.get(Case, case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Дело не найдено")
+    if case.assigned_lawyer_id != lawyer_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Дело не назначено текущему юристу",
+        )
+    return case
+
+
+@router.get("/consultations")
+async def lawyer_consultations(
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    actor = await require_lawyer_actor(db, x_admin_token)
+    rows = (
+        await db.execute(
+            select(Consultation, Case, User, ConsultationSlot)
+            .join(Case, Case.id == Consultation.case_id)
+            .join(User, User.id == Case.client_id)
+            .outerjoin(
+                ConsultationSlot,
+                ConsultationSlot.id == Consultation.slot_id,
+            )
+            .where(Consultation.lawyer_id == actor.lawyer.id)
+            .order_by(
+                Consultation.scheduled_at.asc(),
+                Consultation.created_at.desc(),
+            )
+            .limit(200)
+        )
+    ).all()
+    await db.commit()
+    return [
+        {
+            "consultation_id": consultation.id,
+            "case_id": case.id,
+            "case_number": case.case_number,
+            "client_id": user.id,
+            "client_name": user.full_name,
+            "telegram_id": user.telegram_id,
+            "status": consultation.status,
+            "scheduled_at": (
+                consultation.scheduled_at.isoformat()
+                if consultation.scheduled_at
+                else None
+            ),
+            "slot_starts_at": (
+                slot.starts_at.isoformat() if slot else None
+            ),
+            "slot_ends_at": slot.ends_at.isoformat() if slot else None,
+            "slot_status": slot.status if slot else None,
+            "subject": consultation.client_description,
+            "result": consultation.lawyer_result,
+            "decision": consultation.decision,
+        }
+        for consultation, case, user, slot in rows
+    ]
+
+
+@router.post("/cases/{case_id}/accept")
+async def accept(
+    case_id: int,
+    payload: dict | None = None,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    actor = await require_lawyer_actor(db, x_admin_token)
+    case = await assigned_case(db, case_id, actor.lawyer.id)
+    await LawyerDecisionService(db).accept_m1_case(
+        case=case,
+        lawyer_id=actor.lawyer.id,
+        comment=(payload or {}).get("comment"),
+    )
+    await db.commit()
+    return {"ok": True, "case_id": case.id, "status": case.status}
+
+
+@router.post("/cases/{case_id}/request-documents")
+async def request_docs(
+    case_id: int,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    actor = await require_lawyer_actor(db, x_admin_token)
+    case = await assigned_case(db, case_id, actor.lawyer.id)
+    comment = str(payload.get("comment") or "").strip()
+    if len(comment) < 5:
+        raise HTTPException(
+            status_code=400,
+            detail="Укажите, какие документы необходимо предоставить",
+        )
+    await LawyerDecisionService(db).request_more_documents(
+        case=case,
+        lawyer_id=actor.lawyer.id,
+        comment=comment,
+    )
+    await db.commit()
+    return {"ok": True, "case_id": case.id, "status": case.status}
+
+
+@router.post("/consultations/{consultation_id}/complete")
+async def complete_consultation(
+    consultation_id: int,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    actor = await require_lawyer_actor(db, x_admin_token)
+    try:
+        consultation = await ConsultationOutcomeService(db).complete(
+            consultation_id=consultation_id,
+            lawyer_id=actor.lawyer.id,
+            result=payload.get("result") or "",
+            decision=payload.get("decision") or "",
+        )
+        await db.commit()
+    except LookupError as error:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ConsultationOutcomeError as error:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except Exception:
+        await db.rollback()
+        raise
+    return {
+        "ok": True,
+        "consultation_id": consultation.id,
+        "status": consultation.status,
+        "decision": consultation.decision,
+    }
+
+
+@router.post("/consultations/{consultation_id}/client-no-show")
+async def client_no_show(
+    consultation_id: int,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    actor = await require_lawyer_actor(db, x_admin_token)
+    try:
+        consultation = await ConsultationOutcomeService(db).mark_client_no_show(
+            consultation_id=consultation_id,
+            lawyer_id=actor.lawyer.id,
+            comment=payload.get("comment") or "",
+        )
+        await db.commit()
+    except LookupError as error:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ConsultationOutcomeError as error:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except Exception:
+        await db.rollback()
+        raise
+    return {
+        "ok": True,
+        "consultation_id": consultation.id,
+        "status": consultation.status,
+    }
+
+
+@router.get("/ui", response_class=HTMLResponse)
+async def lawyer_ui():
+    return HTMLResponse(LAWYER_HTML)
+
+
+LAWYER_HTML = r"""
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Кабинет юриста</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;background:#f4f5f7;margin:0;color:#111827}header{background:#111827;color:#fff;padding:18px 24px;display:flex;justify-content:space-between}main{max-width:1300px;margin:auto;padding:24px}.card{background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:18px;margin-bottom:16px}table{width:100%;border-collapse:collapse}th,td{padding:10px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top}button{border:0;border-radius:9px;padding:8px 11px;color:#fff;background:#2563eb;font-weight:700;cursor:pointer}.red{background:#b91c1c}.muted{font-size:13px;color:#6b7280}.actions{display:grid;gap:6px}.badge{display:inline-block;border-radius:999px;padding:4px 8px;background:#e5e7eb;font-size:12px}@media(max-width:900px){table{display:block;overflow-x:auto;font-size:12px}}
+</style>
+</head>
+<body>
+<header><b>⚖ Кабинет юриста</b><a href="/admin-ui" style="color:white">Админка</a></header>
+<main><div class="card"><h2>Мои консультации</h2><div id="content">Загрузка…</div></div><div id="message" class="muted"></div></main>
+<script>
+let token='';
+async function api(path,opts={}){const r=await fetch(path,{...opts,headers:{'x-admin-token':token,'Content-Type':'application/json',...(opts.headers||{})}});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||'Ошибка');return d}
+function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function dt(v){return v?new Date(v).toLocaleString('ru-RU'):'—'}
+async function boot(){const r=await fetch('/auth/session');if(!r.ok){location.href='/login';return}const s=await r.json();if(!(s.roles||[s.role]).includes('lawyer')){content.innerHTML='Недостаточно прав: требуется роль юриста.';return}token=s.api_token;await load()}
+async function load(){const rows=await api('/lawyer/consultations');content.innerHTML=rows.length?`<table><tr><th>Встреча</th><th>Дело / клиент</th><th>Вопрос</th><th>Статус</th><th>Действия</th></tr>${rows.map(x=>`<tr><td>${esc(dt(x.scheduled_at))}<br><span class="muted">${esc(x.slot_status||'')}</span></td><td><b>${esc(x.case_number)}</b><br>${esc(x.client_name)}<br><span class="muted">TG ${esc(x.telegram_id)}</span></td><td>${esc(x.subject||'не указан')}</td><td><span class="badge">${esc(x.status)}</span></td><td><div class="actions">${x.status==='BOOKED'?`<button onclick="completeConsultation(${x.consultation_id})">Зафиксировать результат</button><button class="red" onclick="noShow(${x.consultation_id})">Клиент не явился</button>`:'—'}</div></td></tr>`).join('')}</table>`:'Консультаций нет.'}
+async function completeConsultation(id){const result=prompt('Опишите результат консультации (минимум 20 символов):');if(!result)return;const decision=prompt('Решение: close, to_m1, follow_up или other');if(!decision)return;try{await api('/lawyer/consultations/'+id+'/complete',{method:'POST',body:JSON.stringify({result,decision})});message.textContent='Результат сохранён';await load()}catch(e){message.textContent=e.message}}
+async function noShow(id){const comment=prompt('Укажите обстоятельства неявки клиента:');if(!comment)return;try{await api('/lawyer/consultations/'+id+'/client-no-show',{method:'POST',body:JSON.stringify({comment})});message.textContent='Неявка зафиксирована';await load()}catch(e){message.textContent=e.message}}
+boot();
+</script>
+</body>
+</html>
+"""
