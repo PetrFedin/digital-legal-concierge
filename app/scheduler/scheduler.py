@@ -23,6 +23,7 @@ class AppScheduler:
                 "consultation_completion_overdue": (
                     await jobs.check_consultation_completion_overdue()
                 ),
+                "case_sla": await jobs.check_case_sla(),
                 "claim_deadlines": (
                     await jobs.check_claim_waiting_30_days()
                 ),

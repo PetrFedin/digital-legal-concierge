@@ -52,6 +52,50 @@ async def migrate_admin_users(db):
     await db.commit()
 
 
+async def migrate_cases(db):
+    if not settings.database_url.startswith("sqlite"):
+        return
+    columns = await table_columns(db, "cases")
+    if not columns:
+        return
+    additions = {
+        "assigned_at": "DATETIME",
+        "first_lawyer_response_at": "DATETIME",
+        "last_lawyer_activity_at": "DATETIME",
+        "sla_due_at": "DATETIME",
+        "sla_status": "VARCHAR(50) DEFAULT 'NOT_STARTED'",
+        "escalation_level": "INTEGER DEFAULT 0",
+    }
+    for name, ddl in additions.items():
+        if name not in columns:
+            await db.execute(text(f"ALTER TABLE cases ADD COLUMN {name} {ddl}"))
+    await db.execute(
+        text(
+            "UPDATE cases SET sla_status='NOT_STARTED' "
+            "WHERE sla_status IS NULL OR sla_status=''"
+        )
+    )
+    await db.execute(
+        text(
+            "UPDATE cases SET escalation_level=0 "
+            "WHERE escalation_level IS NULL"
+        )
+    )
+    for index_name, column_name in {
+        "ix_cases_assigned_at": "assigned_at",
+        "ix_cases_last_lawyer_activity_at": "last_lawyer_activity_at",
+        "ix_cases_sla_due_at": "sla_due_at",
+        "ix_cases_sla_status": "sla_status",
+    }.items():
+        await db.execute(
+            text(
+                f"CREATE INDEX IF NOT EXISTS {index_name} "
+                f"ON cases ({column_name})"
+            )
+        )
+    await db.commit()
+
+
 async def migrate_lawyers(db):
     if not settings.database_url.startswith("sqlite"):
         return
@@ -196,6 +240,7 @@ async def main():
         await connection.run_sync(Base.metadata.create_all)
     async with AsyncSessionLocal() as db:
         await migrate_admin_users(db)
+        await migrate_cases(db)
         await migrate_lawyers(db)
         await migrate_consultations(db)
         await migrate_payments(db)

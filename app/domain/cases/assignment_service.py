@@ -2,6 +2,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_history import add_case_history_event
+from app.domain.cases.sla_service import CaseSLAService
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.models.case import Case
 from app.models.lawyer import Lawyer
@@ -21,6 +22,7 @@ class CaseAssignmentService:
     def __init__(self, db: AsyncSession):
         self.db = db
         self.notifications = NotificationEngine(db)
+        self.sla = CaseSLAService(db)
 
     async def list_active_lawyers(self) -> list[dict]:
         workload = (
@@ -55,8 +57,12 @@ class CaseAssignmentService:
                     "workload_limit": workload_limit,
                     "active_cases": active_cases,
                     "available_slots": max(workload_limit - active_cases, 0),
-                    "load_ratio": active_cases / workload_limit if workload_limit else 1.0,
-                    "is_available": workload_limit > 0 and active_cases < workload_limit,
+                    "load_ratio": (
+                        active_cases / workload_limit if workload_limit else 1.0
+                    ),
+                    "is_available": (
+                        workload_limit > 0 and active_cases < workload_limit
+                    ),
                 }
             )
         return lawyers
@@ -150,13 +156,18 @@ class CaseAssignmentService:
                 allow_overload=False,
             )
             best["active_cases"] += 1
-            best["available_slots"] = max(best["workload_limit"] - best["active_cases"], 0)
+            best["available_slots"] = max(
+                best["workload_limit"] - best["active_cases"],
+                0,
+            )
             best["load_ratio"] = (
                 best["active_cases"] / best["workload_limit"]
                 if best["workload_limit"]
                 else 1.0
             )
-            best["is_available"] = best["active_cases"] < best["workload_limit"]
+            best["is_available"] = (
+                best["active_cases"] < best["workload_limit"]
+            )
             assigned.append(
                 {
                     "case_id": case.id,
@@ -171,7 +182,9 @@ class CaseAssignmentService:
             "assigned_count": len(assigned),
             "unassigned_count": len(cases) - len(assigned),
             "assigned": assigned,
-            "capacity_exhausted": bool(cases) and len(assigned) < len(cases),
+            "capacity_exhausted": (
+                bool(cases) and len(assigned) < len(cases)
+            ),
         }
 
     async def unassign_case(
@@ -187,8 +200,12 @@ class CaseAssignmentService:
         if previous_lawyer_id is None:
             return case
 
-        case.assigned_lawyer_id = None
-        await self.db.flush()
+        await self.sla.clear_assignment_sla(
+            case=case,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            comment=comment,
+        )
         await add_case_history_event(
             self.db,
             actor_type=actor_type,
@@ -199,6 +216,7 @@ class CaseAssignmentService:
             new_value={"assigned_lawyer_id": None},
             comment=comment,
         )
+        await self.db.flush()
         return case
 
     async def _assign_case_model(
@@ -222,18 +240,35 @@ class CaseAssignmentService:
         if active_cases >= workload_limit and not allow_overload:
             raise ValueError("У юриста достигнут лимит активных дел")
         if case.assigned_lawyer_id == lawyer.id:
+            if case.sla_status in {None, "", "NOT_STARTED"}:
+                await self.sla.start_assignment_sla(
+                    case=case,
+                    lawyer_id=lawyer.id,
+                    actor_type=actor_type,
+                    actor_id=actor_id,
+                    comment=comment,
+                )
             return case
 
         previous_lawyer_id = case.assigned_lawyer_id
-        case.assigned_lawyer_id = lawyer.id
-        await self.db.flush()
+        await self.sla.start_assignment_sla(
+            case=case,
+            lawyer_id=lawyer.id,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            comment=comment,
+        )
 
         await add_case_history_event(
             self.db,
             actor_type=actor_type,
             actor_id=actor_id,
             case_id=case.id,
-            action="case_lawyer_assigned" if previous_lawyer_id is None else "case_lawyer_reassigned",
+            action=(
+                "case_lawyer_assigned"
+                if previous_lawyer_id is None
+                else "case_lawyer_reassigned"
+            ),
             old_value={"assigned_lawyer_id": previous_lawyer_id},
             new_value={"assigned_lawyer_id": lawyer.id},
             comment=comment,
@@ -242,7 +277,12 @@ class CaseAssignmentService:
             event_code="LAWYER_ASSIGNED",
             case_id=case.id,
             payload={"case_number": case.case_number},
+            dedupe_key=(
+                f"case:{case.id}:lawyer-assigned:{lawyer.id}:"
+                f"{int(case.assigned_at.timestamp()) if case.assigned_at else 0}"
+            ),
         )
+        await self.db.flush()
         return case
 
     @staticmethod
@@ -264,7 +304,12 @@ class CaseAssignmentService:
         if str(case.status).upper() in CLOSED_CASE_STATUSES:
             raise ValueError("Нельзя назначить юриста на закрытое дело")
 
-    async def _get_case(self, case_id: int, *, for_update: bool = False) -> Case:
+    async def _get_case(
+        self,
+        case_id: int,
+        *,
+        for_update: bool = False,
+    ) -> Case:
         query = select(Case).where(Case.id == case_id)
         if for_update:
             query = query.with_for_update()
@@ -275,7 +320,9 @@ class CaseAssignmentService:
 
     async def _get_lawyer(self, lawyer_id: int) -> Lawyer:
         lawyer = (
-            await self.db.execute(select(Lawyer).where(Lawyer.id == lawyer_id))
+            await self.db.execute(
+                select(Lawyer).where(Lawyer.id == lawyer_id)
+            )
         ).scalar_one_or_none()
         if lawyer is None:
             raise LookupError("Юрист не найден")
