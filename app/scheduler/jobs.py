@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.cases.sla_service import CaseSLAService
 from app.domain.consultations.slot_service import SlotService
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.statuses.consultation_statuses import ConsultationStatus
@@ -150,6 +151,9 @@ class SchedulerJobs:
             if created:
                 count += 1
         return count
+
+    async def check_case_sla(self) -> dict:
+        return await CaseSLAService(self.db).escalate_overdue_cases()
 
     async def check_claim_waiting_30_days(self) -> int:
         deadline = datetime.now(timezone.utc) - timedelta(days=30)
