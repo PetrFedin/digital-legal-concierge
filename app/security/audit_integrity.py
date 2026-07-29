@@ -264,9 +264,10 @@ async def verify_audit_chain(db: AsyncSession) -> dict[str, Any]:
 
     head_count = int(head.event_count or 0) if head else 0
     head_hash = str(head.last_hash or GENESIS_HASH) if head else GENESIS_HASH
-    head_matches = head_count == len(rows) and hmac.compare_digest(
-        head_hash,
-        previous_hash if rows and first_invalid is None else (GENESIS_HASH if not rows else head_hash),
+    head_matches = (
+        first_invalid is None
+        and head_count == len(rows)
+        and hmac.compare_digest(head_hash, previous_hash)
     )
     if first_invalid is None and not head_matches:
         first_invalid = {
