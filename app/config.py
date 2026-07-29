@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     payment_webhook_processing_timeout_seconds: int = 300
     payment_webhook_max_attempts: int = 8
     public_base_url: str = "http://localhost:8000"
+    # Comma-separated CIDRs of reverse proxies that are allowed to supply
+    # X-Forwarded-For / X-Real-IP / X-Forwarded-Proto. Empty means trust none.
+    trusted_proxy_cidrs: str = ""
+    trusted_proxy_max_hops: int = 5
+    trust_forwarded_proto: bool = True
     payment_provider: str = "fake"
     yookassa_shop_id: str = ""
     yookassa_secret_key: str = ""
