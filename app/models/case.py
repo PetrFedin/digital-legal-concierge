@@ -1,4 +1,4 @@
-from sqlalchemy import ForeignKey, String, Text
+from sqlalchemy import ForeignKey, Index, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -6,6 +6,21 @@ from app.models.base import Base, TimestampMixin
 
 class Case(Base, TimestampMixin):
     __tablename__ = "cases"
+    __table_args__ = (
+        Index(
+            "uq_cases_active_m2_client",
+            "client_id",
+            unique=True,
+            sqlite_where=text(
+                "route = 'M2' AND status NOT IN "
+                "('M1_REJECTED', 'M1_CLOSED', 'M2_CLOSED', 'ARCHIVED')"
+            ),
+            postgresql_where=text(
+                "route = 'M2' AND status NOT IN "
+                "('M1_REJECTED', 'M1_CLOSED', 'M2_CLOSED', 'ARCHIVED')"
+            ),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     case_number: Mapped[str] = mapped_column(String(50), unique=True, index=True)
