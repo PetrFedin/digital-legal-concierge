@@ -15,7 +15,7 @@ ADMIN_HTML = r"""
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Digital Legal Concierge — Admin v22</title>
+  <title>Digital Legal Concierge — Admin v23</title>
   <style>
     :root { --bg:#f5f6fa; --card:#fff; --text:#111827; --muted:#6b7280; --line:#e5e7eb; --blue:#2563eb; --green:#16a34a; --red:#dc2626; --yellow:#ca8a04; }
     * { box-sizing:border-box; }
@@ -24,7 +24,7 @@ ADMIN_HTML = r"""
     header h1 { margin:0; font-size:18px; }
     header input { width:340px; max-width:55vw; padding:10px 12px; border-radius:10px; border:1px solid #374151; background:#030712; color:white; }
     main { padding:22px; display:grid; gap:16px; }
-    .grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; }
+    .grid { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:12px; }
     .layout { display:grid; grid-template-columns:1.3fr .9fr; gap:16px; align-items:start; }
     .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; box-shadow:0 1px 2px rgba(0,0,0,.04); }
     .metric { font-size:28px; font-weight:800; margin-top:6px; }
@@ -45,13 +45,14 @@ ADMIN_HTML = r"""
     .pill { display:inline-block; padding:4px 8px; border-radius:999px; background:#eef2ff; color:#3730a3; font-size:12px; font-weight:700; }
     .actions { display:flex; flex-wrap:wrap; gap:6px; }
     pre { white-space:pre-wrap; background:#0b1020; color:#d1e7ff; border-radius:12px; padding:12px; max-height:260px; overflow:auto; }
-    @media (max-width: 1000px) { .grid { grid-template-columns:1fr 1fr; } .layout { grid-template-columns:1fr; } }
+    @media (max-width: 1200px) { .grid { grid-template-columns:repeat(3,1fr); } }
+    @media (max-width: 1000px) { .layout { grid-template-columns:1fr; } }
     @media (max-width: 560px) { .grid { grid-template-columns:1fr; } header { flex-direction:column; align-items:flex-start; } header input { max-width:100%; width:100%; } }
   </style>
 </head>
 <body>
   <header>
-    <h1>⚖ Digital Legal Concierge — Admin v22</h1><div><a style="color:white;margin-right:12px" href="/login">Вход</a><form style="display:inline" method="post" action="/logout"><button style="background:#374151">Выход</button></form></div>
+    <h1>⚖ Digital Legal Concierge — Admin v23</h1><div><a style="color:white;margin-right:12px" href="/login">Вход</a><form style="display:inline" method="post" action="/logout"><button style="background:#374151">Выход</button></form></div>
     <input id="token" type="hidden" />
   </header>
   <main>
@@ -60,6 +61,7 @@ ADMIN_HTML = r"""
       <button onclick="loadCases()" class="secondary">Дела</button>
       <button onclick="loadQueue()" class="secondary">Очередь</button>
       <button onclick="loadPayments()" class="secondary">Оплаты</button>
+      <button onclick="window.location.href='/admin/payment-reviews/ui'" class="yellow">Проверка оплат</button>
       <button onclick="window.location.href='/admin/refunds/ui'" class="yellow">Возвраты</button>
       <button onclick="loadDocuments()" class="secondary">Документы</button>
       <button onclick="loadLawyers()" class="secondary">Юристы</button>
@@ -98,8 +100,8 @@ function table(rows, cols, extra=''){
 }
 async function loadDashboard(){
   const d = await api('/admin/dashboard');
-  document.getElementById('dashboard').innerHTML = metric('Новые дела', d.new_cases) + metric('Активные дела', d.active_cases) + metric('Ожидают оплату', d.waiting_payment) + metric('Консультации', d.consultations_booked) + metric('Закрытые', d.closed_cases);
-  document.getElementById('content').innerHTML = '<h3>Дашборд</h3><p>Панель контроля Telegram-бота. Начните с очереди или списка дел.</p>';
+  document.getElementById('dashboard').innerHTML = metric('Новые дела', d.new_cases) + metric('Активные дела', d.active_cases) + metric('Ожидают оплату', d.waiting_payment) + metric('Проверка оплат', d.payment_reviews, 'PAID_REVIEW') + metric('Консультации', d.consultations_booked) + metric('Закрытые', d.closed_cases);
+  document.getElementById('content').innerHTML = '<h3>Дашборд</h3><p>Панель контроля Telegram-бота. Финансовые исключения обрабатывайте через «Проверка оплат» и «Возвраты».</p>';
 }
 async function loadCases(){
   const rows = await api('/admin/cases');
@@ -113,9 +115,9 @@ async function openCase(id){
   const d = await api('/admin/cases/'+id);
   const c = d.case, cl = d.client || {};
   document.getElementById('side').innerHTML = `<h3>Дело ${esc(c.number)}</h3><p><span class="pill">${esc(c.route||'—')}</span> <span class="pill">${esc(c.status)}</span></p><p><b>Клиент:</b><br>${esc(cl.name)}<br>@${esc(cl.username)}<br>TG: ${esc(cl.telegram_id)}</p><p><b>Следующий шаг:</b><br>${esc(c.next_action)}</p><h4>Быстрые действия</h4><div class="actions"><button class="green" onclick="autoAssign(${id})">Автоназначить</button><button onclick="setStatus(${id})">Сменить статус</button><button class="yellow" onclick="openPaymentsForCase(${id})">Оплаты</button></div>`;
-  const pay = d.payments.map(p=>`<tr><td>${p.id}</td><td>${esc(p.title)}</td><td>${p.amount}</td><td>${esc(p.status)}</td><td>${p.manual_confirm_allowed?`<button onclick="confirmPayment(${p.id}, ${id})" class="green">DEV подтвердить</button>`:'—'}</td></tr>`).join('') || '<tr><td colspan="5">Нет платежей</td></tr>';
+  const pay = d.payments.map(p=>`<tr><td>${p.id}</td><td>${esc(p.title)}</td><td>${p.amount}</td><td>${esc(p.status)}</td><td>${p.status==='PAID_REVIEW'?`<button onclick="window.location.href='/admin/payment-reviews/ui'" class="yellow">Проверить</button>`:p.manual_confirm_allowed?`<button onclick="confirmPayment(${p.id}, ${id})" class="green">DEV подтвердить</button>`:'—'}</td></tr>`).join('') || '<tr><td colspan="5">Нет платежей</td></tr>';
   const docs = d.documents.map(x=>`<tr><td>${x.id}</td><td>${esc(x.title)}</td><td>${esc(x.file_name)}</td><td>${esc(x.status)}</td><td>v${x.version}</td></tr>`).join('') || '<tr><td colspan="5">Нет документов</td></tr>';
-  document.getElementById('content').innerHTML = `<h3>Карточка дела</h3><p><b>${esc(c.number)}</b></p><h4>Платежи</h4><table><tr><th>ID</th><th>Название</th><th>Сумма</th><th>Статус</th><th>Тестовое действие</th></tr>${pay}</table><h4>Документы</h4><table><tr><th>ID</th><th>Тип</th><th>Файл</th><th>Статус</th><th>Версия</th></tr>${docs}</table>`;
+  document.getElementById('content').innerHTML = `<h3>Карточка дела</h3><p><b>${esc(c.number)}</b></p><h4>Платежи</h4><table><tr><th>ID</th><th>Название</th><th>Сумма</th><th>Статус</th><th>Действие</th></tr>${pay}</table><h4>Документы</h4><table><tr><th>ID</th><th>Тип</th><th>Файл</th><th>Статус</th><th>Версия</th></tr>${docs}</table>`;
 }
 async function setStatus(id){
   const statuses = await api('/admin/statuses');
@@ -127,8 +129,8 @@ async function confirmPayment(pid, cid){ if(!confirm('Подтвердить fak
 async function openPaymentsForCase(id){ await openCase(id); }
 async function loadPayments(){
   const rows = await api('/admin/payments');
-  const body = rows.map(p=>`<tr><td>${p.id}</td><td>${p.case_id}</td><td>${esc(p.code)}</td><td>${esc(p.title)}</td><td>${p.amount}</td><td>${esc(p.status)}</td><td>${esc(p.provider||'—')}</td><td>${p.manual_confirm_allowed?`<button onclick="confirmPayment(${p.id},0)" class="green">DEV подтвердить</button>`:'—'}</td></tr>`).join('') || '<tr><td colspan="8">Нет платежей</td></tr>';
-  document.getElementById('content').innerHTML = `<h3>Оплаты</h3><p class="muted">Ручное подтверждение показывается только для fake-платежей в local/test/demo. Production-платежи подтверждаются исключительно провайдером.</p><table><tr><th>ID</th><th>Дело</th><th>Код</th><th>Название</th><th>Сумма</th><th>Статус</th><th>Провайдер</th><th>Тестовое действие</th></tr>${body}</table>`;
+  const body = rows.map(p=>`<tr><td>${p.id}</td><td>${p.case_id}</td><td>${esc(p.code)}</td><td>${esc(p.title)}</td><td>${p.amount}</td><td>${esc(p.status)}</td><td>${esc(p.provider||'—')}</td><td>${p.status==='PAID_REVIEW'?`<button onclick="window.location.href='/admin/payment-reviews/ui'" class="yellow">Проверить</button>`:p.manual_confirm_allowed?`<button onclick="confirmPayment(${p.id},0)" class="green">DEV подтвердить</button>`:'—'}</td></tr>`).join('') || '<tr><td colspan="8">Нет платежей</td></tr>';
+  document.getElementById('content').innerHTML = `<h3>Оплаты</h3><p class="muted">Production-платежи подтверждаются провайдером. Полученные деньги без подтверждённого слота обрабатываются только через центр «Проверка оплат».</p><table><tr><th>ID</th><th>Дело</th><th>Код</th><th>Название</th><th>Сумма</th><th>Статус</th><th>Провайдер</th><th>Действие</th></tr>${body}</table>`;
 }
 async function loadDocuments(){ const rows = await api('/admin/documents'); document.getElementById('content').innerHTML = '<h3>Документы</h3>'+table(rows, ['id','case_id','type','title','file_name','status','version']); }
 async function loadLawyers(){ const rows = await api('/admin/lawyers'); document.getElementById('content').innerHTML = '<h3>Юристы</h3>'+table(rows, ['id','full_name','email','is_active','workload_limit'])+`<h4>Добавить юриста</h4><div class="row"><input id="lw_name" placeholder="ФИО"><input id="lw_email" placeholder="email"><button onclick="createLawyer()">Создать</button></div>`; }
