@@ -15,8 +15,12 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-runtime_url = os.getenv("DATABASE_URL") or config.get_main_option("sqlalchemy.url")
-config.set_main_option("sqlalchemy.url", runtime_url)
+runtime_url = (
+    config.attributes.get("database_url_override")
+    or os.getenv("DATABASE_URL")
+    or config.get_main_option("sqlalchemy.url")
+)
+config.set_main_option("sqlalchemy.url", str(runtime_url).replace("%", "%%"))
 
 target_metadata = Base.metadata
 
