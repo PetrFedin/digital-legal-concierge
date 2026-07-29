@@ -141,7 +141,9 @@ async def test_assign_new_slot_resolves_review_without_second_payment(tmp_path):
         )
         assert consultation.status == ConsultationStatus.BOOKED
         assert consultation.slot_id == slot.id
-        assert consultation.scheduled_at == slot.starts_at
+        assert consultation.scheduled_at.replace(
+            tzinfo=timezone.utc
+        ) == slot.starts_at.replace(tzinfo=timezone.utc)
         assert slot.status == "booked"
         assert slot.consultation_id == consultation.id
         assert case.status == CaseStatus.M2_CONSULTATION_BOOKED
