@@ -29,6 +29,7 @@ HMAC_NEW = "hmac-new-" + "d" * 40
 MFA_OLD = "mfa-old-" + "e" * 40
 MFA_NEW = "mfa-new-" + "f" * 40
 AUDIT_KEY = "audit-key-" + "g" * 40
+DOCUMENT_KEY = "document-key-" + "h" * 40
 ADMIN_TOKEN = "admin-api-" + "z" * 40
 
 
@@ -48,6 +49,9 @@ def configure_production(monkeypatch):
     monkeypatch.setattr(settings, "audit_integrity_key_id", "audit-v1")
     monkeypatch.setattr(settings, "audit_integrity_key", AUDIT_KEY)
     monkeypatch.setattr(settings, "audit_integrity_previous_keys", "")
+    monkeypatch.setattr(settings, "document_encryption_key_id", "documents-v1")
+    monkeypatch.setattr(settings, "document_encryption_key", DOCUMENT_KEY)
+    monkeypatch.setattr(settings, "document_encryption_previous_keys", "")
 
 
 def legacy_signed_token(payload: dict, secret: str) -> str:
@@ -144,9 +148,17 @@ def test_recovery_codes_survive_hmac_rotation_during_grace(monkeypatch):
     assert consume_recovery_code(user, codes[0]) is False
 
 
-def test_security_readiness_requires_four_distinct_keys(monkeypatch):
+def test_security_readiness_requires_five_distinct_keys(monkeypatch):
     configure_production(monkeypatch)
-    assert security_key_status()["ok"] is True
+    status = security_key_status()
+    assert status["ok"] is True
+    assert set(status["configured"]) == {
+        "session_signing",
+        "security_hmac",
+        "mfa_encryption",
+        "audit_integrity",
+        "document_encryption",
+    }
 
     monkeypatch.setattr(settings, "security_hmac_key", SESSION_OLD)
     status = security_key_status()
