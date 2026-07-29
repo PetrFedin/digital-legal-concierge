@@ -44,7 +44,12 @@ async def reservation_db(tmp_path):
         await engine.dispose()
 
 
-async def seed_reservation(session, *, suffix: int = 1):
+async def seed_reservation(
+    session,
+    *,
+    suffix: int = 1,
+    consultation_status: str = ConsultationStatus.SLOT_RESERVED.value,
+):
     starts_at = datetime.now(timezone.utc) + timedelta(days=2)
     user = User(
         telegram_id=980_000 + suffix,
@@ -74,7 +79,7 @@ async def seed_reservation(session, *, suffix: int = 1):
     consultation = Consultation(
         case_id=case.id,
         lawyer_id=lawyer.id,
-        status=ConsultationStatus.SLOT_RESERVED.value,
+        status=consultation_status,
         scheduled_at=starts_at,
         consultation_type="online",
     )
@@ -193,6 +198,7 @@ async def test_open_or_paid_payment_blocks_release(reservation_db, payment_statu
         user, case, consultation, slot = await seed_reservation(
             session,
             suffix=10 + len(payment_status),
+            consultation_status=ConsultationStatus.PAYMENT_PENDING.value,
         )
         await add_payment(session, case=case, status=payment_status)
 
@@ -209,17 +215,34 @@ async def test_open_or_paid_payment_blocks_release(reservation_db, payment_statu
 
         await session.refresh(consultation)
         await session.refresh(slot)
-        assert consultation.status == ConsultationStatus.SLOT_RESERVED.value
+        assert consultation.status == ConsultationStatus.PAYMENT_PENDING.value
         assert consultation.slot_id == slot.id
         assert slot.status == "held"
         assert await audit_count(session, case_id=case.id) == 0
 
 
 @pytest.mark.asyncio
-async def test_failed_payment_does_not_block_release(reservation_db):
+@pytest.mark.parametrize(
+    "terminal_status",
+    [
+        PaymentStatus.FAILED.value,
+        PaymentStatus.CANCELLED.value,
+        PaymentStatus.EXPIRED.value,
+        PaymentStatus.REFUNDED.value,
+    ],
+)
+async def test_terminal_payment_allows_payment_pending_reservation_release(
+    reservation_db,
+    terminal_status,
+):
     async with reservation_db() as session:
-        user, case, consultation, slot = await seed_reservation(session, suffix=4)
-        await add_payment(session, case=case, status=PaymentStatus.FAILED.value)
+        user, case, consultation, slot = await seed_reservation(
+            session,
+            suffix=40 + len(terminal_status),
+            consultation_status=ConsultationStatus.PAYMENT_PENDING.value,
+        )
+        payment = await add_payment(session, case=case, status=terminal_status)
+        payment_id = payment.id
 
         await ConsultationReservationService(session).release_before_payment(
             consultation=consultation,
@@ -227,10 +250,18 @@ async def test_failed_payment_does_not_block_release(reservation_db):
             client_id=user.id,
             actor_id=user.id,
         )
+        await session.commit()
 
+        await session.refresh(case)
+        await session.refresh(consultation)
         await session.refresh(slot)
+        preserved_payment = await session.get(Payment, payment_id)
         assert consultation.status == ConsultationStatus.SLOT_PENDING.value
+        assert consultation.slot_id is None
+        assert case.status == CaseStatus.M2_SLOT_PENDING.value
         assert slot.status == "available"
+        assert preserved_payment is not None
+        assert preserved_payment.status == terminal_status
         assert await audit_count(session, case_id=case.id) == 1
 
 
