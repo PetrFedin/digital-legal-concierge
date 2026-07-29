@@ -14,6 +14,7 @@ from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
 from app.models.payment import Payment
+from app.security.document_access import cleanup_document_access_grants
 from app.security.document_key_rotation import migrate_document_encryption
 from app.security.document_scanning import rescan_legacy_documents
 from app.security.file_uploads import cleanup_quarantine
@@ -165,6 +166,7 @@ class SchedulerJobs:
         return {
             "login_states": await LoginThrottleService(self.db).cleanup(),
             "revoked_tokens": await cleanup_revoked_tokens(self.db),
+            "document_access_grants": await cleanup_document_access_grants(self.db),
             "mfa_secrets_reencrypted": await reencrypt_mfa_secrets(self.db),
             "document_rescan": await rescan_legacy_documents(self.db),
             "document_encryption": await migrate_document_encryption(self.db),

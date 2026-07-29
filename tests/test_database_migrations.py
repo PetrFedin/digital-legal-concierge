@@ -6,7 +6,7 @@ from pathlib import Path
 from app.db.migrations import run_database_migrations
 
 
-HEAD_REVISION = "20260729_0006"
+HEAD_REVISION = "20260729_0007"
 
 
 def sqlite_url(path: Path) -> str:
@@ -57,6 +57,7 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "system_settings",
         "login_security_states",
         "revoked_access_tokens",
+        "document_access_grants",
         "alembic_version",
     }.issubset(tables)
     assert current_revision(database_path) == HEAD_REVISION
@@ -113,6 +114,21 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "encryption_error",
         "encrypted_at",
     }.issubset(column_names(database_path, "documents"))
+    assert {
+        "public_id",
+        "document_id",
+        "case_id",
+        "actor_account_id",
+        "actor_role",
+        "session_jti_ref",
+        "session_version",
+        "token_key_id",
+        "token_digest",
+        "expires_at",
+        "used_at",
+        "revoked_at",
+        "client_ref",
+    }.issubset(column_names(database_path, "document_access_grants"))
     assert {
         "chain_version",
         "chain_sequence",
@@ -256,6 +272,7 @@ def test_legacy_database_is_adopted_without_data_loss(tmp_path):
         "login_security_states",
         "revoked_access_tokens",
         "audit_chain_heads",
+        "document_access_grants",
     }.issubset(table_names(database_path))
     with sqlite3.connect(database_path) as connection:
         row = connection.execute(
