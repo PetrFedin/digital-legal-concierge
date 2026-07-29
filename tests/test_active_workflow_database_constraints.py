@@ -30,7 +30,7 @@ async def constraints_db(tmp_path):
         await engine.dispose()
 
 
-async def seed_case(session, *, suffix: int):
+async def seed_user(session, *, suffix: int) -> User:
     user = User(
         telegram_id=1_030_000 + suffix,
         telegram_username=f"constraint_{suffix}",
@@ -38,6 +38,11 @@ async def seed_case(session, *, suffix: int):
     )
     session.add(user)
     await session.flush()
+    return user
+
+
+async def seed_case(session, *, suffix: int):
+    user = await seed_user(session, suffix=suffix)
     case = Case(
         case_number=f"CONSTRAINT-{suffix}",
         client_id=user.id,
@@ -59,6 +64,59 @@ def payment(case_id: int, *, status: str):
         currency="RUB",
         status=status,
     )
+
+
+@pytest.mark.asyncio
+async def test_database_rejects_two_active_m2_cases_for_one_client(constraints_db):
+    async with constraints_db() as session:
+        user = await seed_user(session, suffix=100)
+        session.add_all(
+            [
+                Case(
+                    case_number="ACTIVE-M2-ONE",
+                    client_id=user.id,
+                    route=RouteCode.M2.value,
+                    status=CaseStatus.M2_DESCRIPTION_PENDING.value,
+                    title="Первая консультация",
+                ),
+                Case(
+                    case_number="ACTIVE-M2-TWO",
+                    client_id=user.id,
+                    route=RouteCode.M2.value,
+                    status=CaseStatus.M2_SLOT_PENDING.value,
+                    title="Вторая консультация",
+                ),
+            ]
+        )
+
+        with pytest.raises(IntegrityError):
+            await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_database_allows_closed_m2_history_with_new_active_m2(constraints_db):
+    async with constraints_db() as session:
+        user = await seed_user(session, suffix=101)
+        session.add_all(
+            [
+                Case(
+                    case_number="CLOSED-M2-HISTORY",
+                    client_id=user.id,
+                    route=RouteCode.M2.value,
+                    status=CaseStatus.M2_CLOSED.value,
+                    title="Завершённая консультация",
+                ),
+                Case(
+                    case_number="NEW-ACTIVE-M2",
+                    client_id=user.id,
+                    route=RouteCode.M2.value,
+                    status=CaseStatus.M2_DESCRIPTION_PENDING.value,
+                    title="Новая консультация",
+                ),
+            ]
+        )
+
+        await session.flush()
 
 
 @pytest.mark.asyncio
