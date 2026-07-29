@@ -13,6 +13,12 @@ from app.models.lawyer import Lawyer
 from app.models.user import User
 
 
+def as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 async def create_database(tmp_path, name: str):
     database_path = tmp_path / name
     engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
@@ -109,7 +115,9 @@ async def test_only_one_client_can_hold_the_same_slot_for_ten_minutes(tmp_path):
         await first.commit()
         assert first_slot.status == "held"
         assert first_slot.hold_expires_at is not None
-        hold_seconds = (first_slot.hold_expires_at - before_hold).total_seconds()
+        hold_seconds = (
+            as_utc(first_slot.hold_expires_at) - before_hold
+        ).total_seconds()
         assert 9 * 60 <= hold_seconds <= 10 * 60 + 5
 
         with pytest.raises(SlotUnavailableError):
@@ -202,7 +210,7 @@ async def test_admin_can_create_two_non_overlapping_test_slots(tmp_path):
         assert len(slots) == 2
         assert all(slot.status == "available" for slot in slots)
         assert all(slot.note == "Тестовый слот из админки" for slot in slots)
-        assert slots[0].ends_at <= slots[1].starts_at
-        assert slots[0].starts_at > datetime.now(timezone.utc)
+        assert as_utc(slots[0].ends_at) <= as_utc(slots[1].starts_at)
+        assert as_utc(slots[0].starts_at) > datetime.now(timezone.utc)
 
     await engine.dispose()
