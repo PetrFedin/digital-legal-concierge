@@ -245,7 +245,7 @@ class SlotService:
         return list(result.scalars().all())
 
     async def get_slot(self, slot_id: int) -> ConsultationSlot | None:
-        await self.release_expired_holds()
+        """Read one slot without running unrelated global cleanup."""
         return (
             await self.db.execute(
                 select(ConsultationSlot).where(ConsultationSlot.id == slot_id)
@@ -396,7 +396,13 @@ class SlotService:
             .values(status="booked", hold_expires_at=None)
         )
         if result.rowcount != 1:
-            existing = await self.get_slot(slot_id)
+            existing = (
+                await self.db.execute(
+                    select(ConsultationSlot).where(
+                        ConsultationSlot.id == slot_id
+                    )
+                )
+            ).scalar_one_or_none()
             if (
                 not existing
                 or existing.consultation_id != consultation_id
@@ -404,7 +410,11 @@ class SlotService:
             ):
                 raise SlotUnavailableError("Резерв слота не найден или истёк.")
         await self.db.flush()
-        slot = await self.get_slot(slot_id)
+        slot = (
+            await self.db.execute(
+                select(ConsultationSlot).where(ConsultationSlot.id == slot_id)
+            )
+        ).scalar_one_or_none()
         if not slot:
             raise SlotUnavailableError("Слот не найден.")
         return slot
