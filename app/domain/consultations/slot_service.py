@@ -7,6 +7,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_history import add_case_history_event
+from app.domain.cases.lawyer_capacity_service import (
+    LawyerCapacityError,
+    LawyerCapacityService,
+)
 from app.domain.statuses.case_statuses import CaseStatus, RouteCode
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.models.case import Case
@@ -26,13 +30,7 @@ class SlotService:
         self.db = db
 
     async def release_expired_holds(self) -> None:
-        """Release expired holds and restore linked M2 entities coherently.
-
-        A slot hold, its consultation and its case form one logical reservation.
-        Releasing only the slot leaves ``Consultation.slot_id`` behind and can
-        prevent the slot from being assigned again. Keep all three records in
-        the same transaction; the caller remains responsible for committing.
-        """
+        """Release expired holds and restore linked M2 entities coherently."""
         now = datetime.now(timezone.utc)
         result = await self.db.execute(
             select(ConsultationSlot)
@@ -143,10 +141,33 @@ class SlotService:
         await self.release_expired_holds()
         now = datetime.now(timezone.utc)
 
-        # All production callers pass a real Consultation. Locking that row
-        # serializes attempts to reserve two different slots for the same
-        # consultation. The optional fallback preserves old isolated tests that
-        # used synthetic consultation ids without creating parent records.
+        # Read identifiers first, then lock in the global order
+        # Lawyer -> Consultation -> Slot. This matches case assignment and
+        # prevents hold/confirmation deadlocks under PostgreSQL.
+        candidate = (
+            await self.db.execute(
+                select(ConsultationSlot).where(ConsultationSlot.id == slot_id)
+            )
+        ).scalar_one_or_none()
+        if candidate is None:
+            raise SlotUnavailableError("Слот не найден.")
+        consultation = (
+            await self.db.execute(
+                select(Consultation).where(Consultation.id == consultation_id)
+            )
+        ).scalar_one_or_none()
+
+        try:
+            await LawyerCapacityService(self.db).ensure_available(
+                lawyer_id=candidate.lawyer_id,
+                exclude_case_id=(consultation.case_id if consultation is not None else None),
+            )
+        except LawyerCapacityError as exc:
+            raise SlotUnavailableError(
+                "У выбранного юриста больше нет свободной capacity. "
+                "Выберите другое время или другого юриста."
+            ) from exc
+
         locked_consultation = (
             await self.db.execute(
                 select(Consultation)
