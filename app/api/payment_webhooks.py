@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import html
 import json
 from decimal import Decimal, InvalidOperation
 
@@ -17,6 +18,7 @@ from app.models.case import Case
 from app.models.payment import Payment
 from app.models.payment_webhook_event import PaymentWebhookEvent
 from app.security.payment_webhook_ledger import (
+    WebhookClaim,
     canonical_payload_sha256,
     claim_webhook_event,
     derive_event_key,
@@ -103,8 +105,14 @@ def fake_payload_summary(payload: dict) -> dict:
 
 
 def yookassa_payload_summary(payload: dict, verified: dict | None = None) -> dict:
-    webhook_object = payload.get("object") if isinstance(payload.get("object"), dict) else {}
-    amount = webhook_object.get("amount") if isinstance(webhook_object.get("amount"), dict) else {}
+    webhook_object = (
+        payload.get("object") if isinstance(payload.get("object"), dict) else {}
+    )
+    amount = (
+        webhook_object.get("amount")
+        if isinstance(webhook_object.get("amount"), dict)
+        else {}
+    )
     result = {
         "event": str(payload.get("event") or "")[:100],
         "provider_payment_id": str(webhook_object.get("id") or "")[:255],
@@ -113,7 +121,11 @@ def yookassa_payload_summary(payload: dict, verified: dict | None = None) -> dic
         "currency": str(amount.get("currency") or "")[:10],
     }
     if verified:
-        verified_amount = verified.get("amount") if isinstance(verified.get("amount"), dict) else {}
+        verified_amount = (
+            verified.get("amount")
+            if isinstance(verified.get("amount"), dict)
+            else {}
+        )
         result["verified"] = {
             "status": str(verified.get("status") or "")[:32],
             "paid": bool(verified.get("paid")),
@@ -133,7 +145,38 @@ async def load_payment_and_case(db: AsyncSession, payment_id: int):
     return payment, case
 
 
-async def duplicate_response(event: PaymentWebhookEvent):
+async def duplicate_response(
+    request: Request,
+    claim: WebhookClaim,
+    *,
+    provider: str,
+):
+    event = claim.event
+    if claim.payload_conflict:
+        await record_security_event_best_effort(
+            action="security.payment_webhook_replay_mismatch",
+            severity="critical",
+            source=f"{provider}_payment_webhook",
+            client_address=request.client.host if request.client else None,
+            resource_type="payment_webhook_event",
+            resource_id=event.id,
+            details={
+                "provider": provider,
+                "event_type": event.event_type,
+                "attempt_count": event.attempt_count,
+            },
+            comment="Повторный идентификатор webhook получен с изменённым телом",
+            sample_seconds=1,
+        )
+        return JSONResponse(
+            {
+                "ok": False,
+                "duplicate": True,
+                "payload_conflict": True,
+                "ledger_status": event.status,
+            },
+            status_code=409,
+        )
     return JSONResponse(
         {
             "ok": True,
@@ -214,7 +257,7 @@ async def fake_payment_webhook(
     event_id = claim.event.id
     if not claim.should_process:
         await db.commit()
-        return await duplicate_response(claim.event)
+        return await duplicate_response(request, claim, provider="fake")
     await record_security_event(
         db,
         action="security.payment_webhook_received",
@@ -247,7 +290,12 @@ async def fake_payment_webhook(
                 case=case,
                 provider_payload=summary,
             )
-        await finish_webhook_event(db, event_id, status="PROCESSED", response_code=200)
+        await finish_webhook_event(
+            db,
+            event_id,
+            status="PROCESSED",
+            response_code=200,
+        )
         await db.commit()
         return {
             "ok": True,
@@ -284,12 +332,15 @@ async def fake_payment_page(payment_id: int, db: AsyncSession = Depends(get_db))
         raise HTTPException(404, "payment not found")
     if payment.provider not in {None, "fake"}:
         raise HTTPException(409, "Платеж создан другим провайдером")
+    title = html.escape(str(payment.title))
+    amount = html.escape(str(payment.amount))
+    currency = html.escape(str(payment.currency))
     return HTMLResponse(
         f"""
         <!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Оплата</title>
         <style>body{{font-family:Arial,sans-serif;max-width:640px;margin:40px auto;padding:0 20px}}.card{{border:1px solid #ddd;border-radius:16px;padding:24px}}button{{font-size:18px;padding:14px 20px;border:0;border-radius:12px;background:#111;color:white;cursor:pointer}}.muted{{color:#666}}</style></head>
         <body><div class="card"><h1>Тестовая оплата</h1>
-        <p><b>{payment.title}</b></p><p>Сумма: {payment.amount} {payment.currency}</p>
+        <p><b>{title}</b></p><p>Сумма: {amount} {currency}</p>
         <p class="muted">Локальная страница для проверки сценария.</p>
         <form method="post" action="/webhooks/payments/fake-pay/{payment.id}/success"><button type="submit">Подтвердить оплату</button></form>
         </div></body></html>
@@ -373,7 +424,7 @@ async def yookassa_payment_webhook(
     event_id = claim.event.id
     if not claim.should_process:
         await db.commit()
-        return await duplicate_response(claim.event)
+        return await duplicate_response(request, claim, provider="yookassa")
     await record_security_event(
         db,
         action="security.payment_webhook_received",
@@ -390,7 +441,9 @@ async def yookassa_payment_webhook(
     try:
         payment = (
             await db.execute(
-                select(Payment).where(Payment.provider_payment_id == provider_payment_id)
+                select(Payment).where(
+                    Payment.provider_payment_id == provider_payment_id
+                )
             )
         ).scalars().first()
         if not payment:
@@ -401,7 +454,9 @@ async def yookassa_payment_webhook(
         await link_event_to_payment(db, event_id, payment.id)
 
         try:
-            verified = await YooKassaPaymentProvider().retrieve_payment(provider_payment_id)
+            verified = await YooKassaPaymentProvider().retrieve_payment(
+                provider_payment_id
+            )
         except httpx.HTTPError as error:
             raise HTTPException(
                 502,
@@ -410,6 +465,8 @@ async def yookassa_payment_webhook(
 
         validate_verified_yookassa_payment(payment, verified)
         ledger_event = await db.get(PaymentWebhookEvent, event_id)
+        if not ledger_event:
+            raise RuntimeError("payment webhook ledger event not found")
         ledger_event.payload_summary = yookassa_payload_summary(payload, verified)
         verified_status = verified.get("status")
         service = PaymentWebhookService(db)
@@ -431,7 +488,12 @@ async def yookassa_payment_webhook(
         else:
             ledger_status = "IGNORED"
 
-        await finish_webhook_event(db, event_id, status=ledger_status, response_code=200)
+        await finish_webhook_event(
+            db,
+            event_id,
+            status=ledger_status,
+            response_code=200,
+        )
         await db.commit()
         if ledger_status == "IGNORED":
             return {
@@ -453,7 +515,11 @@ async def yookassa_payment_webhook(
             db,
             event_id,
             status_code=error.status_code,
-            error_code="yookassa_validation_failed" if terminal else "yookassa_retryable_error",
+            error_code=(
+                "yookassa_validation_failed"
+                if terminal
+                else "yookassa_retryable_error"
+            ),
             terminal=terminal,
         )
         if terminal:
