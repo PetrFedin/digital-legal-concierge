@@ -105,6 +105,18 @@ class SlotService:
             )
         ).scalars().first()
 
+    async def get_slot_for_update(
+        self,
+        slot_id: int,
+    ) -> ConsultationSlot | None:
+        return (
+            await self.db.execute(
+                select(ConsultationSlot)
+                .where(ConsultationSlot.id == slot_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+
     async def hold_slot(
         self,
         slot_id: int,
