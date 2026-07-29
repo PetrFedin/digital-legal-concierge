@@ -20,6 +20,7 @@ from app.domain.consultations.reservation_service import (
     ConsultationReservationService,
 )
 from app.domain.consultations.slot_service import SlotService
+from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.domain.statuses.payment_statuses import OPEN_PAYMENT_STATUSES, PaymentStatus
@@ -48,6 +49,10 @@ def _format_date(value: datetime) -> str:
 
 def _format_time(value: datetime) -> str:
     return value.strftime("%H:%M")
+
+
+def _money(value) -> str:
+    return f"{value:,.2f}".replace(",", " ") + " ₽"
 
 
 async def _load_context(callback: CallbackQuery, db):
@@ -110,6 +115,16 @@ async def _protected_payment(db, *, case_id: int) -> Payment | None:
     ).scalar_one_or_none()
 
 
+async def _consultation_quote(db):
+    try:
+        return await PaymentService(db).amount_for_code(
+            PaymentCode.M2_CONSULTATION_PAYMENT
+        )
+    except Exception:
+        logger.exception("Unable to read M2 consultation quote")
+        return None
+
+
 async def _show_unavailable(callback: CallbackQuery, text: str) -> None:
     await callback.message.edit_text(
         f"⚠️ {text}",
@@ -128,6 +143,7 @@ async def open_reserved_slot(callback: CallbackQuery, db):
         user, case, consultation = await _load_context(callback, db)
         status = ConsultationStatus(consultation.status)
         protected_payment = await _protected_payment(db, case_id=case.id)
+        quote = await _consultation_quote(db)
         await db.commit()
     except (ReservationScreenError, ValueError):
         await db.rollback()
@@ -154,7 +170,7 @@ async def open_reserved_slot(callback: CallbackQuery, db):
         )
         return
 
-    if status == ConsultationStatus.PAYMENT_PENDING or protected_payment is not None:
+    if protected_payment is not None:
         await callback.message.edit_text(
             "💳 Оплата уже подготовлена или получена.\n\n"
             "Автоматическое освобождение времени отключено, чтобы платёжная "
@@ -170,7 +186,7 @@ async def open_reserved_slot(callback: CallbackQuery, db):
 
     slot = consultation.slot
     if (
-        status != ConsultationStatus.SLOT_RESERVED
+        status not in ConsultationReservationService.RELEASABLE_STATUSES
         or slot is None
         or slot.status != "held"
         or slot.held_by_user_id != user.id
@@ -187,15 +203,28 @@ async def open_reserved_slot(callback: CallbackQuery, db):
         return
 
     lawyer_name = slot.lawyer.full_name if slot.lawyer is not None else "уточняется"
+    price_line = f"Стоимость: {_money(quote)}\n" if quote is not None else ""
+    payment_note = (
+        "Предыдущая попытка оплаты не завершена. Активной платёжной ссылки нет; "
+        "можно повторить оплату, изменить время или освободить резерв."
+        if status == ConsultationStatus.PAYMENT_PENDING
+        else "До создания платёжной ссылки время можно освободить или заменить."
+    )
+    payment_button = (
+        "💳 Повторить оплату"
+        if status == ConsultationStatus.PAYMENT_PENDING
+        else "💳 Перейти к оплате"
+    )
     await callback.message.edit_text(
         "🕐 Выбранное время консультации\n\n"
         f"Дата: {_format_date(slot.starts_at)}\n"
         f"Время: {_format_time(slot.starts_at)}–{_format_time(slot.ends_at)}\n"
         f"Юрист: {lawyer_name}\n"
+        f"{price_line}"
         f"Резерв действует до: {_format_time(slot.hold_expires_at)}.\n\n"
-        "До создания платёжной ссылки время можно освободить или заменить.",
+        f"{payment_note}",
         reply_markup=one(
-            ("💳 Перейти к оплате", "consult_pay"),
+            (payment_button, "consult_pay"),
             ("🔄 Выбрать другое время", "consult_reservation_change"),
             ("✖️ Освободить резерв", "consult_reservation_release"),
             ("📁 Моё дело", "my_case_open"),
@@ -211,7 +240,7 @@ async def _show_release_confirmation(
     change_time: bool,
 ) -> None:
     try:
-        user, case, consultation = await _load_context(callback, db)
+        _, case, consultation = await _load_context(callback, db)
         protected_payment = await _protected_payment(db, case_id=case.id)
         status = ConsultationStatus(consultation.status)
     except (ReservationScreenError, ValueError):
@@ -228,11 +257,15 @@ async def _show_release_confirmation(
             ),
         )
         return
-    if status != ConsultationStatus.SLOT_RESERVED or protected_payment is not None:
+    if (
+        status not in ConsultationReservationService.RELEASABLE_STATUSES
+        or protected_payment is not None
+    ):
         await db.rollback()
         await _show_unavailable(
             callback,
-            "После начала оплаты время нельзя освободить автоматически.",
+            "При активной или подтверждённой оплате время нельзя освободить "
+            "автоматически.",
         )
         return
 
@@ -249,7 +282,7 @@ async def _show_release_confirmation(
     )
     await callback.message.edit_text(
         f"{title}?\n\n{consequence}\n\n"
-        "Платёж не будет создан этой операцией.",
+        "Новая платёжная ссылка этой операцией не создаётся.",
         reply_markup=one(
             ("✅ Подтвердить", confirm_callback),
             ("⬅ Оставить текущее время", "consult_slot_reserved_open"),
@@ -312,7 +345,7 @@ async def _release_reservation(
     text = (
         "✅ Текущее время освобождено. Выберите новый свободный вариант."
         if change_time
-        else "✅ Временный резерв освобождён. Платёж не создавался."
+        else "✅ Временный резерв освобождён. Активная оплата отсутствует."
     )
     await callback.message.edit_text(
         text,
