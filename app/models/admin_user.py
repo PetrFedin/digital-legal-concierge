@@ -35,4 +35,5 @@ class AdminUser(Base, TimestampMixin):
     mfa_locked_until: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    mfa_last_totp_step: Mapped[int | None] = mapped_column(Integer, nullable=True)
     session_version: Mapped[int] = mapped_column(Integer, default=1, index=True)
