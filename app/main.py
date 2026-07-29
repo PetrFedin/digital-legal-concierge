@@ -17,6 +17,7 @@ from app.api.consultation_outcomes import router as consultation_outcomes_router
 from app.api.consultation_slots import router as consultation_slots_router
 from app.api.diagnostic_center import router as diagnostic_center_router
 from app.api.document_access import router as document_access_router
+from app.api.document_access_portal import router as document_access_portal_router
 from app.api.exports import router as exports_router
 from app.api.final_handover_center import router as final_handover_center_router
 from app.api.final_qa_center import router as final_qa_center_router
@@ -110,6 +111,7 @@ def create_app():
         payment_router,
         lawyer_router,
         document_access_router,
+        document_access_portal_router,
         runtime_router,
         web_admin_router,
         operator_router,
@@ -224,6 +226,7 @@ def create_app():
             "security_event_center_api": "/security-events/status",
             "security_event_center_ui": "/security-events/ui",
             "document_access_api": "/document-access",
+            "document_access_ui": "/document-access/ui",
             "health": "/health",
             "ready": "/ready",
             "bot_enabled": settings.run_bot,
