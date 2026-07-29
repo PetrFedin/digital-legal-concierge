@@ -51,12 +51,18 @@ from app.api.task_center import router as task_center_router
 from app.api.template_builder import router as template_builder_router
 from app.api.web_admin import router as web_admin_router
 from app.config import settings
+from app.security.http_security import (
+    RequestOriginGuardMiddleware,
+    SecurityHeadersMiddleware,
+)
 from app.security.session_guard import AdminSessionGuardMiddleware
 
 
 def create_app():
-    app = FastAPI(title="Digital Legal Concierge Bot", version="1.0.0-v32")
+    app = FastAPI(title="Digital Legal Concierge Bot", version="1.0.0-v33")
     app.add_middleware(AdminSessionGuardMiddleware)
+    app.add_middleware(RequestOriginGuardMiddleware)
+    app.add_middleware(SecurityHeadersMiddleware)
     for router in [
         maintenance_center_router,
         final_handover_center_router,
@@ -113,7 +119,7 @@ def create_app():
 
     @app.get("/health")
     async def health():
-        return {"ok": True, "env": settings.app_env, "version": "1.0.0-v32"}
+        return {"ok": True, "env": settings.app_env, "version": "1.0.0-v33"}
 
     @app.get("/ready")
     async def ready():
@@ -136,13 +142,15 @@ def create_app():
             or bool(settings.yookassa_shop_id and settings.yookassa_secret_key),
             "legacy_admin_token_disabled_in_production": settings.app_env != "production"
             or settings.admin_api_token != "dev-admin-token",
+            "public_base_url_is_https": settings.app_env != "production"
+            or settings.public_base_url.lower().startswith("https://"),
         }
-        return {"ok": all(checks.values()), "checks": checks, "version": "1.0.0-v32"}
+        return {"ok": all(checks.values()), "checks": checks, "version": "1.0.0-v33"}
 
     @app.get("/launch-check")
     async def launch_check():
         return {
-            "version": "1.0.0-v32",
+            "version": "1.0.0-v33",
             "handover": "/handover",
             "security_check": "/security-check",
             "launch_assistant": "/launch-assistant",
@@ -167,6 +175,8 @@ def create_app():
             "scheduler_enabled": settings.run_scheduler,
             "payment_provider": settings.payment_provider,
             "storage_dir": settings.storage_dir,
+            "http_origin_guard": True,
+            "security_headers": True,
         }
 
     return app
