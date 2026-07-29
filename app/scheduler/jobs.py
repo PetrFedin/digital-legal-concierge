@@ -14,6 +14,7 @@ from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
 from app.models.payment import Payment
+from app.security.document_key_rotation import migrate_document_encryption
 from app.security.document_scanning import rescan_legacy_documents
 from app.security.file_uploads import cleanup_quarantine
 from app.security.key_rotation import reencrypt_mfa_secrets
@@ -166,6 +167,7 @@ class SchedulerJobs:
             "revoked_tokens": await cleanup_revoked_tokens(self.db),
             "mfa_secrets_reencrypted": await reencrypt_mfa_secrets(self.db),
             "document_rescan": await rescan_legacy_documents(self.db),
+            "document_encryption": await migrate_document_encryption(self.db),
             "quarantine_files_removed": cleanup_quarantine(
                 Path(settings.storage_dir),
                 retention_days=settings.upload_quarantine_retention_days,
