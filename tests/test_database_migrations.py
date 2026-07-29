@@ -6,7 +6,7 @@ from pathlib import Path
 from app.db.migrations import run_database_migrations
 
 
-HEAD_REVISION = "20260729_0001"
+HEAD_REVISION = "20260729_0002"
 
 
 def sqlite_url(path: Path) -> str:
@@ -74,6 +74,17 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "next_attempt_at",
         "sent_at",
     }.issubset(column_names(database_path, "notifications"))
+    assert {
+        "mfa_enabled",
+        "mfa_secret_encrypted",
+        "mfa_confirmed_at",
+        "mfa_recovery_codes",
+        "mfa_recovery_codes_generated_at",
+        "mfa_failed_attempts",
+        "mfa_locked_until",
+        "mfa_last_totp_step",
+        "session_version",
+    }.issubset(column_names(database_path, "admin_users"))
 
 
 def create_legacy_database(path: Path) -> None:
@@ -192,9 +203,19 @@ def test_legacy_database_is_adopted_without_data_loss(tmp_path):
         0,
     )
 
-    assert {"username", "telegram_id"}.issubset(
-        column_names(database_path, "admin_users")
-    )
+    assert {
+        "username",
+        "telegram_id",
+        "mfa_enabled",
+        "mfa_secret_encrypted",
+        "mfa_confirmed_at",
+        "mfa_recovery_codes",
+        "mfa_recovery_codes_generated_at",
+        "mfa_failed_attempts",
+        "mfa_locked_until",
+        "mfa_last_totp_step",
+        "session_version",
+    }.issubset(column_names(database_path, "admin_users"))
     assert "telegram_id" in column_names(database_path, "lawyers")
     assert {"related_case_id", "slot_id", "subject_type"}.issubset(
         column_names(database_path, "consultations")
