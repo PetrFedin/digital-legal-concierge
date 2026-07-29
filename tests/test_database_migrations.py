@@ -6,7 +6,7 @@ from pathlib import Path
 from app.db.migrations import run_database_migrations
 
 
-HEAD_REVISION = "20260729_0004"
+HEAD_REVISION = "20260729_0005"
 
 
 def sqlite_url(path: Path) -> str:
@@ -53,6 +53,7 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "consultation_slots",
         "notifications",
         "audit_logs",
+        "audit_chain_heads",
         "system_settings",
         "login_security_states",
         "revoked_access_tokens",
@@ -108,6 +109,19 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "security_reason",
         "scanned_at",
     }.issubset(column_names(database_path, "documents"))
+    assert {
+        "chain_version",
+        "chain_sequence",
+        "previous_hash",
+        "event_hash",
+        "integrity_key_id",
+        "sealed_at",
+    }.issubset(column_names(database_path, "audit_logs"))
+    with sqlite3.connect(database_path) as connection:
+        head = connection.execute(
+            "SELECT event_count, last_hash FROM audit_chain_heads WHERE id=1"
+        ).fetchone()
+    assert head == (0, "0" * 64)
 
 
 def create_legacy_database(path: Path) -> None:
@@ -190,6 +204,19 @@ def create_legacy_database(path: Path) -> None:
                 created_at DATETIME NOT NULL,
                 updated_at DATETIME NOT NULL
             );
+            CREATE TABLE audit_logs (
+                id INTEGER PRIMARY KEY,
+                actor_type VARCHAR(50) NOT NULL,
+                actor_id INTEGER,
+                action VARCHAR(100) NOT NULL,
+                entity_type VARCHAR(100) NOT NULL,
+                entity_id INTEGER,
+                old_value JSON,
+                new_value JSON,
+                comment TEXT,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            );
             INSERT INTO cases (
                 id, case_number, client_id, route, status, title, source,
                 assigned_lawyer_id, next_action, internal_comment,
@@ -199,6 +226,14 @@ def create_legacy_database(path: Path) -> None:
                 'Существующее дело', 'telegram_bot', NULL,
                 'Ожидать проверки', 'Не удалять',
                 '2026-07-01 10:00:00', '2026-07-01 10:00:00'
+            );
+            INSERT INTO audit_logs (
+                id, actor_type, actor_id, action, entity_type, entity_id,
+                old_value, new_value, comment, created_at, updated_at
+            ) VALUES (
+                3, 'admin', 1, 'LEGACY_EVENT', 'case', 7,
+                '{"status":"old"}', '{"status":"new"}', 'Историческая запись',
+                '2026-07-01 10:01:00', '2026-07-01 10:01:00'
             );
             """
         )
@@ -213,13 +248,22 @@ def test_legacy_database_is_adopted_without_data_loss(tmp_path):
     run_database_migrations(database_url=sqlite_url(database_path))
 
     assert current_revision(database_path) == HEAD_REVISION
-    assert {"login_security_states", "revoked_access_tokens"}.issubset(
-        table_names(database_path)
-    )
+    assert {
+        "login_security_states",
+        "revoked_access_tokens",
+        "audit_chain_heads",
+    }.issubset(table_names(database_path))
     with sqlite3.connect(database_path) as connection:
         row = connection.execute(
             "SELECT case_number, title, internal_comment, sla_status, "
             "escalation_level FROM cases WHERE id=7"
+        ).fetchone()
+        audit = connection.execute(
+            "SELECT action, chain_version, chain_sequence, previous_hash, "
+            "event_hash, integrity_key_id FROM audit_logs WHERE id=3"
+        ).fetchone()
+        head = connection.execute(
+            "SELECT event_count, last_hash FROM audit_chain_heads WHERE id=1"
         ).fetchone()
     assert row == (
         "LEGACY-0007",
@@ -228,6 +272,10 @@ def test_legacy_database_is_adopted_without_data_loss(tmp_path):
         "NOT_STARTED",
         0,
     )
+    assert audit[0:4] == ("LEGACY_EVENT", 1, 1, "0" * 64)
+    assert len(audit[4]) == 64
+    assert audit[5] == "legacy-admin"
+    assert head == (1, audit[4])
 
     assert {
         "username",
@@ -260,3 +308,11 @@ def test_legacy_database_is_adopted_without_data_loss(tmp_path):
         "security_reason",
         "scanned_at",
     }.issubset(column_names(database_path, "documents"))
+    assert {
+        "chain_version",
+        "chain_sequence",
+        "previous_hash",
+        "event_hash",
+        "integrity_key_id",
+        "sealed_at",
+    }.issubset(column_names(database_path, "audit_logs"))
