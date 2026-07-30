@@ -69,5 +69,12 @@ class Settings(BaseSettings):
     max_backup_mb: int = 2048
     backup_retention_days: int = 30
 
+    # Closed-case content retention. Discovery is non-destructive; deletion
+    # always requires two different personal MFA-superadmin accounts.
+    closed_case_retention_days: int = 1825
+    case_retention_scan_batch_size: int = 100
+    case_retention_execution_timeout_seconds: int = 900
+    case_retention_dry_run: bool = True
+
 
 settings = Settings()

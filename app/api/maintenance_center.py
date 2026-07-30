@@ -24,6 +24,7 @@ CRITICAL_LINKS = [
     ('Notification Center', '/notification-center/ui', 'Уведомления'),
     ('Audit Center', '/audit-center/ui', 'Журнал действий'),
     ('Backup Manager', '/backup-manager/ui', 'Резервные копии'),
+    ('Retention Center', '/retention/ui', 'Legal hold и хранение закрытых дел'),
     ('Search Center', '/search-center/ui', 'Поиск'),
     ('Admin UI', '/admin-ui', 'Админка'),
     ('Scenario Map', '/scenario-map-ui', 'Карта экранов B-001—B-028'),
@@ -53,7 +54,7 @@ async def maintenance_status():
     }
     return {
         'ok': all(checks.values()),
-        'version': '1.0.0-v30',
+        'version': '1.0.0-v44',
         'checks': checks,
         'links': [{'title': t, 'url': u, 'description': d} for t, u, d in CRITICAL_LINKS],
         'operator_commands': ['./run.sh', './bot-control.sh', './acceptance.sh', './backup.sh', './status.sh', './logs.sh'],
@@ -73,7 +74,7 @@ async def maintenance_ui():
     )
     commands = ''.join(f"<code>{cmd}</code>" for cmd in status['operator_commands'])
     return f"""
-    <html><head><meta charset='utf-8'><title>Maintenance Center v30</title>
+    <html><head><meta charset='utf-8'><title>Maintenance Center v44</title>
     <style>
     body{{font-family:Arial,sans-serif;background:#f6f6f6;margin:32px;color:#111}}
     h1{{margin-bottom:6px}} .ok{{font-size:20px;margin:14px 0 24px}}
@@ -85,7 +86,7 @@ async def maintenance_ui():
     code{{display:inline-block;background:#111;color:white;padding:8px 10px;border-radius:8px;margin:4px}}
     .note{{background:#fff8d8;border:1px solid #e7d27a;padding:14px;border-radius:12px;max-width:900px}}
     </style></head><body>
-    <h1>🛠 Maintenance Center v30</h1>
+    <h1>🛠 Maintenance Center v44</h1>
     <div class='ok'>Общий статус: {'✅ готов к операторской проверке' if status['ok'] else '⚠️ требуется настройка'}</div>
     <div class='note'>Это единая страница обслуживания: запуск, диагностика, настройки, операции, backup, поиск, аудит и финальная приемка. Если оператор потерялся — открывать сюда. Бот не должен превращаться в квест с факелом.</div>
     <h2>Быстрые команды</h2><div>{commands}</div>

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_transition_policy import (
     CaseTransitionError,
+    TERMINAL_STATUSES,
     normalize_status,
     validate_transition,
 )
@@ -97,13 +98,24 @@ class CaseService:
         )
         if source == destination:
             return case, False
+        if case.content_deleted_at is not None and destination not in TERMINAL_STATUSES:
+            raise CaseTransitionError(
+                "Нельзя повторно открыть дело после удаления его содержимого"
+            )
 
         old = {
             "status": source.value,
             "route": case.route,
             "next_action": case.next_action,
+            "closed_at": case.closed_at.isoformat() if case.closed_at else None,
         }
         case.status = destination
+        now = datetime.now(timezone.utc)
+        if destination in TERMINAL_STATUSES:
+            if case.closed_at is None:
+                case.closed_at = now
+        elif source in TERMINAL_STATUSES and force:
+            case.closed_at = None
         if destination.value.startswith("M1_"):
             case.route = RouteCode.M1
         elif destination.value.startswith("M2_"):
@@ -121,6 +133,7 @@ class CaseService:
                 "status": destination.value,
                 "route": case.route,
                 "next_action": case.next_action,
+                "closed_at": case.closed_at.isoformat() if case.closed_at else None,
                 "forced": force,
             },
             comment=comment,

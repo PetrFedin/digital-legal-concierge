@@ -58,6 +58,12 @@ class Case(Base, TimestampMixin):
     escalation_level: Mapped[int] = mapped_column(Integer, default=0)
     next_action: Mapped[str | None] = mapped_column(String(255), nullable=True)
     internal_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    content_deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
 
     client = relationship("User", back_populates="cases")
     lawyer = relationship("Lawyer", back_populates="cases")
@@ -75,3 +81,6 @@ class Case(Base, TimestampMixin):
     )
     messages = relationship("Message", back_populates="case")
     notifications = relationship("Notification", back_populates="case")
+    retention_record = relationship(
+        "CaseRetentionRecord", back_populates="case", uselist=False
+    )

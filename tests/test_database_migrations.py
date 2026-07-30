@@ -6,7 +6,7 @@ from pathlib import Path
 from app.db.migrations import run_database_migrations
 
 
-HEAD_REVISION = "20260730_0009"
+HEAD_REVISION = "20260730_0010"
 
 
 def sqlite_url(path: Path) -> str:
@@ -57,6 +57,7 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "login_security_states",
         "revoked_access_tokens",
         "document_access_grants",
+        "case_retention_records",
         "alembic_version",
     }.issubset(tables)
     assert current_revision(database_path) == HEAD_REVISION
@@ -68,6 +69,37 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "sla_status",
         "escalation_level",
     }.issubset(column_names(database_path, "cases"))
+    assert {"closed_at", "content_deleted_at"}.issubset(
+        column_names(database_path, "cases")
+    )
+    assert {
+        "case_id",
+        "policy_version",
+        "status",
+        "retention_due_at",
+        "legal_hold",
+        "legal_hold_reason",
+        "legal_hold_set_at",
+        "legal_hold_set_by",
+        "legal_hold_released_at",
+        "legal_hold_released_by",
+        "requested_at",
+        "requested_by",
+        "request_reason",
+        "approved_at",
+        "approved_by",
+        "approval_comment",
+        "execution_started_at",
+        "executed_at",
+        "failed_at",
+        "last_error",
+        "attempt_count",
+        "documents_deleted",
+        "messages_deleted",
+        "notifications_deleted",
+        "consultations_anonymized",
+        "content_digest",
+    }.issubset(column_names(database_path, "case_retention_records"))
     assert {
         "recipient_type",
         "target_chat_id",
@@ -296,6 +328,7 @@ def test_legacy_database_is_adopted_without_data_loss(tmp_path):
         "audit_chain_heads",
         "document_access_grants",
         "payment_webhook_events",
+        "case_retention_records",
     }.issubset(table_names(database_path))
     with sqlite3.connect(database_path) as connection:
         row = connection.execute(
