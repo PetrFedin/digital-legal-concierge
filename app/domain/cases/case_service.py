@@ -98,7 +98,10 @@ class CaseService:
         )
         if source == destination:
             return case, False
-        if case.content_deleted_at is not None and destination not in TERMINAL_STATUSES:
+        if (
+            getattr(case, "content_deleted_at", None) is not None
+            and destination not in TERMINAL_STATUSES
+        ):
             raise CaseTransitionError(
                 "Нельзя повторно открыть дело после удаления его содержимого"
             )

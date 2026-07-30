@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -52,6 +53,7 @@ def make_case(status=CaseStatus.NEW):
         route=None,
         next_action="old",
         closed_at=None,
+        content_deleted_at=None,
     )
 
 
