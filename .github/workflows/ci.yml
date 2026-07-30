@@ -1,35 +1,61 @@
-name: Apply final v44 test fix
+name: CI
 
 on:
+  push:
+    branches: [main, feature/multi-role-access]
   pull_request:
     branches: [main]
 
-permissions:
-  contents: write
-
 jobs:
-  apply-fix:
+  test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      APP_ENV: test
+      DATABASE_URL: sqlite+aiosqlite:///./ci_test.db
+      BOT_TOKEN: CHANGE_ME
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: admin-change-me
+      ADMIN_API_TOKEN: ci-admin-token-change-me
     steps:
-      - name: Checkout working branch
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: agent/retention-legal-hold-secure-deletion
-          fetch-depth: 0
 
-      - name: Apply verified test fix
-        shell: bash
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[test]"
+
+      - name: Compile source
+        run: python -m compileall -q app scripts migrations tests
+
+      - name: Run architecture quality gate
+        run: python scripts/architecture_check.py
+
+      - name: Initialize database through Alembic
         run: |
-          set -euo pipefail
-          echo "c02043ebb8626bc3e414bac1b888d0f170e2dcb008fba0ecfd8edca4eefdab98  .agent-fix-v44-2.patch" | sha256sum --check --strict
-          git apply --check .agent-fix-v44-2.patch
-          git apply .agent-fix-v44-2.patch
-          rm .agent-fix-v44-2.patch
-          python -m compileall -q tests/test_case_transitions.py
-          git add -A
-          git diff --cached --check
-          git config user.name "OpenAI Agent"
-          git config user.email "agent@openai.invalid"
-          git commit -m "test: fix tombstone transition fixture"
-          git push origin HEAD:agent/retention-legal-hold-secure-deletion
+          rm -f ci_test.db migration_smoke.db
+          python scripts/init_db.py
+          python scripts/migrate_db.py
+
+      - name: Verify current revision and idempotency
+        run: |
+          alembic current
+          alembic upgrade head
+
+      - name: Verify ORM schema matches migrations
+        run: alembic check
+
+      - name: Verify clean database migration smoke test
+        run: |
+          DATABASE_URL=sqlite+aiosqlite:///./migration_smoke.db alembic upgrade head
+          DATABASE_URL=sqlite+aiosqlite:///./migration_smoke.db alembic upgrade head
+
+      - name: Run tests
+        run: pytest -q
