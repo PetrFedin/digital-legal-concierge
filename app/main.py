@@ -42,6 +42,7 @@ from app.api.payment_webhooks import router as payment_router
 from app.api.production_center import router as production_center_router
 from app.api.recovery_center import router as recovery_center_router
 from app.api.refund_center import router as refund_center_router
+from app.api.retention_center import router as retention_center_router
 from app.api.release_manager import router as release_manager_router
 from app.api.runtime import router as runtime_router
 from app.api.scenario_map import router as scenario_map_router
@@ -65,7 +66,7 @@ from app.security.http_security import (
 from app.security.keyring import security_key_status
 from app.security.session_guard import AdminSessionGuardMiddleware
 
-VERSION = "1.0.0-v43"
+VERSION = "1.0.0-v44"
 
 
 def create_app():
@@ -103,6 +104,7 @@ def create_app():
         consultation_slots_router,
         case_assignment_router,
         refund_center_router,
+        retention_center_router,
         payment_review_center_router,
         consultation_outcomes_router,
         sla_center_router,
@@ -177,6 +179,15 @@ def create_app():
             <= 20,
             "backup_size_limit_valid": 1 <= int(settings.max_backup_mb) <= 10240,
             "backup_retention_valid": 1 <= int(settings.backup_retention_days) <= 3650,
+            "closed_case_retention_valid": 30
+            <= int(settings.closed_case_retention_days)
+            <= 36500,
+            "case_retention_scan_batch_valid": 1
+            <= int(settings.case_retention_scan_batch_size)
+            <= 1000,
+            "case_retention_execution_timeout_valid": 60
+            <= int(settings.case_retention_execution_timeout_seconds)
+            <= 86400,
             "payment_webhook_body_limit_valid": 1
             <= int(settings.max_payment_webhook_kb)
             <= 1024,
@@ -232,6 +243,20 @@ def create_app():
                 "max_active_grants": settings.document_access_max_active_grants,
                 "session_bound": True,
                 "direct_storage_paths_exposed": False,
+            },
+            "case_retention": {
+                "enabled": True,
+                "retention_days": settings.closed_case_retention_days,
+                "scheduler_dry_run": settings.case_retention_dry_run,
+                "execution_timeout_seconds": (
+                    settings.case_retention_execution_timeout_seconds
+                ),
+                "two_person_approval": True,
+                "personal_mfa_superadmin_required": True,
+                "legal_hold": True,
+                "payment_ledger_preserved": True,
+                "audit_chain_preserved": True,
+                "physical_block_overwrite_claimed": False,
             },
             "backup_security": {
                 "enabled": True,
@@ -294,6 +319,8 @@ def create_app():
             "document_access_ui": "/document-access/ui",
             "backup_center_ui": "/backup-center/ui",
             "backup_center_status": "/backup-center/status",
+            "retention_center_ui": "/retention/ui",
+            "retention_center_status": "/retention/status",
             "health": "/health",
             "ready": "/ready",
             "bot_enabled": settings.run_bot,
@@ -322,6 +349,10 @@ def create_app():
             "backup_secrets_excluded": True,
             "verified_staging_restore": True,
             "encrypted_backup_retention_job": True,
+            "closed_case_retention_discovery": True,
+            "case_legal_hold": True,
+            "case_retention_two_person_approval": True,
+            "case_content_deletion_resumable": True,
             "bounded_payment_webhook_body": True,
             "idempotent_payment_webhook_ledger": True,
             "payment_webhook_replay_protection": True,

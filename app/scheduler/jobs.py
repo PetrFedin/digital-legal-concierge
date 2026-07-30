@@ -8,6 +8,7 @@ from app.config import settings
 from app.domain.cases.sla_service import CaseSLAService
 from app.domain.consultations.slot_service import SlotService
 from app.domain.notifications.notification_engine import NotificationEngine
+from app.domain.retention.case_retention_service import CaseRetentionService
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models.case import Case
@@ -162,6 +163,9 @@ class SchedulerJobs:
 
     async def check_case_sla(self) -> dict:
         return await CaseSLAService(self.db).escalate_overdue_cases()
+
+    async def discover_due_case_retention(self) -> dict[str, int | bool]:
+        return await CaseRetentionService(self.db).discover_due_cases()
 
     async def cleanup_security_state(self) -> dict[str, object]:
         return {

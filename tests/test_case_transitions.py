@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -51,6 +52,8 @@ def make_case(status=CaseStatus.NEW):
         status=status,
         route=None,
         next_action="old",
+        closed_at=None,
+        content_deleted_at=None,
     )
 
 
@@ -171,3 +174,61 @@ async def test_forced_transition_requires_privileged_actor_and_comment(
 
     assert case.status == CaseStatus.M1_DOCUMENTS_PENDING
     assert patch_transition_side_effects[-1]["new_value"]["forced"] is True
+
+
+async def test_terminal_transition_sets_closed_at_and_forced_reopen_clears_it(
+    patch_transition_side_effects,
+):
+    db = FakeDB()
+    case = make_case(CaseStatus.M1_SUCCESS_FEE_RECEIVED)
+
+    await CaseService(db).change_status(
+        case=case,
+        next_status=CaseStatus.M1_CLOSED,
+        actor_type="system",
+        comment="Финансовый этап завершён",
+    )
+    assert case.closed_at is not None
+    first_closed_at = case.closed_at
+
+    await CaseService(db).change_status(
+        case=case,
+        next_status=CaseStatus.M1_DOCUMENTS_PENDING,
+        actor_type="admin",
+        actor_id=1,
+        force=True,
+        comment="Подтверждённое исправление ошибочного закрытия дела",
+    )
+    assert first_closed_at is not None
+    assert case.closed_at is None
+
+
+@pytest.mark.asyncio
+async def test_deleted_case_content_cannot_be_reopened(monkeypatch):
+    history = []
+
+    async def fake_history(_db, **kwargs):
+        history.append(kwargs)
+
+    async def fake_sla(self, **kwargs):
+        return kwargs["case"]
+
+    monkeypatch.setattr(case_service_module, "add_case_history_event", fake_history)
+    monkeypatch.setattr(
+        case_service_module.CaseSLAService,
+        "synchronize_case_status",
+        fake_sla,
+    )
+    case = make_case(CaseStatus.M1_CLOSED)
+    case.content_deleted_at = datetime.now(timezone.utc)
+    with pytest.raises(CaseTransitionError, match="после удаления"):
+        await CaseService(FakeDB()).change_status(
+            case=case,
+            next_status=CaseStatus.M1_DOCUMENTS_PENDING,
+            actor_type="admin",
+            actor_id=7,
+            force=True,
+            comment="Ошибочная попытка повторно открыть tombstone",
+        )
+    assert case.status == CaseStatus.M1_CLOSED
+    assert history == []
