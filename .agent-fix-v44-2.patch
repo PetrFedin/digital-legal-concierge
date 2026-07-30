@@ -1,0 +1,11 @@
+--- a/tests/test_case_transitions.py
++++ b/tests/test_case_transitions.py
+@@ -222,7 +222,7 @@
+     case = make_case(CaseStatus.M1_CLOSED)
+     case.content_deleted_at = datetime.now(timezone.utc)
+     with pytest.raises(CaseTransitionError, match="после удаления"):
+-        await CaseService(DummyDB()).change_status(
++        await CaseService(FakeDB()).change_status(
+             case=case,
+             next_status=CaseStatus.M1_DOCUMENTS_PENDING,
+             actor_type="admin",
