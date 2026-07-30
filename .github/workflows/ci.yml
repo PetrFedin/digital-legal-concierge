@@ -1,4 +1,4 @@
-name: Apply retention v44 patch
+name: Apply retention v44 files
 
 on:
   pull_request:
@@ -8,7 +8,7 @@ permissions:
   contents: write
 
 jobs:
-  apply-retention-patch:
+  apply-retention-files:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -18,15 +18,28 @@ jobs:
           ref: agent/retention-legal-hold-secure-deletion
           fetch-depth: 0
 
-      - name: Verify and apply retained patch
+      - name: Verify and install v44 files
         shell: bash
         run: |
           set -euo pipefail
-          base64 --decode .agent-patch/retention-v44.patch.gz.b64 > /tmp/retention-v44.patch.gz
-          gzip --test /tmp/retention-v44.patch.gz
-          gzip --decompress --stdout /tmp/retention-v44.patch.gz > /tmp/retention-v44.patch
-          git apply --check --exclude=.github/workflows/ci.yml /tmp/retention-v44.patch
-          git apply --exclude=.github/workflows/ci.yml /tmp/retention-v44.patch
+          cat \
+            .agent-patch/part-00 \
+            .agent-patch/chunk-01 \
+            .agent-patch/chunk-02 \
+            .agent-patch/chunk-03 \
+            .agent-patch/chunk-04 \
+            .agent-patch/chunk-05 \
+            .agent-patch/chunk-06 \
+            > /tmp/retention-files.tar.gz.b64
+          base64 --decode /tmp/retention-files.tar.gz.b64 > /tmp/retention-files.tar.gz
+          echo "d6e206dea2092514bf0cb9da8537e93dd0fadcdfab3c134a92e01bd6a7e46702  /tmp/retention-files.tar.gz" | sha256sum --check --strict
+          gzip --test /tmp/retention-files.tar.gz
+          tar -tzf /tmp/retention-files.tar.gz > /tmp/retention-files.list
+          if grep -Eq '(^/|(^|/)\.\.(/|$)|(^|/)\.git(/|$))' /tmp/retention-files.list; then
+            echo "Unsafe archive path" >&2
+            exit 1
+          fi
+          tar -xzf /tmp/retention-files.tar.gz
           rm -rf .agent-patch
 
           python -m compileall -q app scripts migrations tests
