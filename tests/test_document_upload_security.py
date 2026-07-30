@@ -18,7 +18,7 @@ from app.domain.documents.document_service import (
     DuplicateDocumentError,
 )
 from app.models import Base
-from app.security.document_encryption import ENCRYPTION_STATUS, is_encrypted_file
+from app.security.document_encryption import ENCRYPTION_STATUS, FORMAT_V2, is_encrypted_file
 from app.security.file_uploads import (
     UploadSecurityError,
     cleanup_quarantine,
@@ -27,6 +27,8 @@ from app.security.file_uploads import (
     safe_filename,
 )
 from app.storage import LocalStorageService
+
+DOCUMENT_KEY = "upload-document-key-" + "x" * 40
 
 
 def valid_pdf(*, extra: bytes = b"") -> bytes:
@@ -105,6 +107,23 @@ def inspect_bytes(
         declared_size=len(payload),
         max_bytes=20 * 1024 * 1024,
     )
+
+
+def configure_document_keys(monkeypatch):
+    monkeypatch.setattr(settings, "app_env", "production")
+    monkeypatch.setattr(settings, "document_encryption_key_id", "documents-upload")
+    monkeypatch.setattr(settings, "document_encryption_key", DOCUMENT_KEY)
+    monkeypatch.setattr(settings, "document_encryption_previous_keys", "")
+    monkeypatch.setattr(settings, "allow_legacy_security_key_fallback", False)
+
+
+def envelope_kwargs(stored):
+    return {
+        "encryption_key_id": stored.encryption_key_id,
+        "encryption_envelope_id": stored.encryption_envelope_id,
+        "encrypted_data_key": stored.encrypted_data_key,
+        "encrypted_data_key_nonce": stored.encrypted_data_key_nonce,
+    }
 
 
 def test_safe_filename_removes_paths_controls_and_reserved_names():
@@ -199,9 +218,10 @@ def test_active_or_unsafe_content_is_rejected(tmp_path, payload, name, mime, cod
 
 
 @pytest.mark.asyncio
-async def test_storage_uses_digest_key_and_encrypts_at_rest(tmp_path, monkeypatch):
+async def test_storage_uses_random_container_and_envelope_encryption(tmp_path, monkeypatch):
     payload = valid_pdf()
     bot = FakeBot(payload)
+    configure_document_keys(monkeypatch)
     monkeypatch.setattr(settings, "max_document_upload_mb", 20)
     monkeypatch.setattr(settings, "quarantine_rejected_uploads", True)
     storage = LocalStorageService(str(tmp_path / "storage"))
@@ -220,19 +240,70 @@ async def test_storage_uses_digest_key_and_encrypts_at_rest(tmp_path, monkeypatc
     assert stored.sha256 == expected_hash
     assert stored.security_status == "VERIFIED"
     assert stored.encryption_status == ENCRYPTION_STATUS
-    assert stored.encryption_key_id
-    assert target.name == f"{expected_hash}.dlcenc"
+    assert stored.encryption_format_version == FORMAT_V2
+    assert stored.encryption_key_id == "documents-upload"
+    assert stored.encryption_envelope_id
+    assert stored.encrypted_data_key
+    assert stored.encrypted_data_key_nonce
+    assert target.suffix == ".dlcenc"
+    assert len(target.stem) == 32
+    assert target.stem != expected_hash
     assert target.read_bytes() != payload
+    assert stored.encrypted_data_key.encode() not in target.read_bytes()
     assert is_encrypted_file(target)
-    assert storage.read_document_bytes(target, expected_sha256=expected_hash) == payload
+    assert (
+        storage.read_document_bytes(
+            target,
+            expected_sha256=expected_hash,
+            **envelope_kwargs(stored),
+        )
+        == payload
+    )
     assert "ДДУ" not in target.name
     assert not any((tmp_path / "storage" / ".incoming").iterdir())
+
+
+@pytest.mark.asyncio
+async def test_identical_uploads_never_share_ciphertext_and_can_be_discarded(
+    tmp_path,
+    monkeypatch,
+):
+    payload = valid_pdf()
+    configure_document_keys(monkeypatch)
+    monkeypatch.setattr(settings, "max_document_upload_mb", 20)
+    storage = LocalStorageService(str(tmp_path / "storage"))
+
+    first = await storage.save_telegram_file(
+        bot=FakeBot(payload),
+        telegram_file_id="first",
+        case_id=9,
+        original_name="contract.pdf",
+        mime_type="application/pdf",
+        file_size=len(payload),
+    )
+    second = await storage.save_telegram_file(
+        bot=FakeBot(payload),
+        telegram_file_id="second",
+        case_id=9,
+        original_name="contract.pdf",
+        mime_type="application/pdf",
+        file_size=len(payload),
+    )
+
+    assert first.sha256 == second.sha256
+    assert first.storage_path != second.storage_path
+    assert first.encryption_envelope_id != second.encryption_envelope_id
+    assert Path(first.storage_path).read_bytes() != Path(second.storage_path).read_bytes()
+    assert storage.discard_stored_file(second.storage_path) is True
+    assert not Path(second.storage_path).exists()
+    assert Path(first.storage_path).is_file()
 
 
 @pytest.mark.asyncio
 async def test_rejected_download_is_quarantined_without_case_file(tmp_path, monkeypatch):
     payload = valid_pdf(extra=b"<</Launch<</F(evil.exe)>>>>")
     bot = FakeBot(payload)
+    configure_document_keys(monkeypatch)
     monkeypatch.setattr(settings, "max_document_upload_mb", 20)
     monkeypatch.setattr(settings, "quarantine_rejected_uploads", True)
     storage_root = tmp_path / "storage"
@@ -257,6 +328,7 @@ async def test_rejected_download_is_quarantined_without_case_file(tmp_path, monk
 @pytest.mark.asyncio
 async def test_oversized_declared_file_is_rejected_without_network(tmp_path, monkeypatch):
     bot = FakeBot(valid_pdf())
+    configure_document_keys(monkeypatch)
     monkeypatch.setattr(settings, "max_document_upload_mb", 1)
     with pytest.raises(UploadSecurityError) as error:
         await LocalStorageService(str(tmp_path)).save_telegram_file(
@@ -282,41 +354,39 @@ async def test_duplicate_sha_is_rejected_in_same_case(tmp_path):
     scanned_at = datetime.now(timezone.utc)
     encrypted_at = datetime.now(timezone.utc)
     case = SimpleNamespace(id=1)
+    common = {
+        "case": case,
+        "uploaded_by_user_id": None,
+        "mime_type": "application/pdf",
+        "file_size": 100,
+        "sha256": "a" * 64,
+        "detected_type": "pdf",
+        "security_status": "VERIFIED",
+        "scanned_at": scanned_at,
+        "encryption_status": ENCRYPTION_STATUS,
+        "encryption_key_id": "documents-test",
+        "encryption_format_version": FORMAT_V2,
+        "encrypted_data_key": "wrapped-key",
+        "encrypted_data_key_nonce": "wrapped-nonce",
+        "encrypted_at": encrypted_at,
+    }
     async with factory() as db:
         service = DocumentService(db)
         document = await service.create_document(
-            case=case,
-            uploaded_by_user_id=None,
+            **common,
             document_type="DDU",
             file_name="contract.pdf",
-            file_path="/safe/hash.dlcenc",
-            mime_type="application/pdf",
-            file_size=100,
-            sha256="a" * 64,
-            detected_type="pdf",
-            security_status="VERIFIED",
-            scanned_at=scanned_at,
-            encryption_status=ENCRYPTION_STATUS,
-            encryption_key_id="documents-test",
-            encrypted_at=encrypted_at,
+            file_path="/safe/first.dlcenc",
+            encryption_envelope_id="1" * 32,
         )
         assert document.id
         with pytest.raises(DuplicateDocumentError):
             await service.create_document(
-                case=case,
-                uploaded_by_user_id=None,
+                **common,
                 document_type="OTHER",
                 file_name="copy.pdf",
-                file_path="/safe/hash.dlcenc",
-                mime_type="application/pdf",
-                file_size=100,
-                sha256="a" * 64,
-                detected_type="pdf",
-                security_status="VERIFIED",
-                scanned_at=scanned_at,
-                encryption_status=ENCRYPTION_STATUS,
-                encryption_key_id="documents-test",
-                encrypted_at=encrypted_at,
+                file_path="/safe/second.dlcenc",
+                encryption_envelope_id="2" * 32,
             )
     await engine.dispose()
 
