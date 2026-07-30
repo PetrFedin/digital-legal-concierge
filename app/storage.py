@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,6 +11,7 @@ from aiogram import Bot
 from app.config import settings
 from app.security.document_encryption import (
     ENCRYPTION_STATUS,
+    FORMAT_V2,
     DocumentEncryptionError,
     decrypt_file_bytes,
     encrypt_file,
@@ -35,16 +37,20 @@ class StoredFile:
     scanned_at: datetime | None = None
     encryption_status: str = ENCRYPTION_STATUS
     encryption_key_id: str | None = None
+    encryption_format_version: int = FORMAT_V2
+    encryption_envelope_id: str | None = None
+    encrypted_data_key: str | None = None
+    encrypted_data_key_nonce: str | None = None
     encrypted_at: datetime | None = None
 
 
 class LocalStorageService:
-    """Verified local storage with authenticated encryption at rest.
+    """Verified local storage with authenticated envelope encryption at rest.
 
     Client-controlled names are never used as storage keys. Incoming bytes are
-    isolated, validated, encrypted with AES-GCM and only then moved into a case
-    directory. Stored paths are resolved below the configured base directory to
-    prevent traversal and symlink reads.
+    isolated, validated, encrypted with a unique per-document data key and only
+    then moved into a case directory. The wrapped data key is returned to the
+    database layer and is deliberately not embedded in the encrypted file.
     """
 
     def __init__(self, base_dir: str | None = None):
@@ -77,16 +83,45 @@ class LocalStorageService:
             raise DocumentEncryptionError("Символьные ссылки для документов запрещены")
         return resolved
 
+    @staticmethod
+    def _unlink_and_sync(path: Path) -> bool:
+        if not path.exists():
+            return False
+        if path.is_symlink() or not path.is_file():
+            raise DocumentEncryptionError("Небезопасный тип файла при удалении")
+        parent = path.parent
+        path.unlink()
+        try:
+            descriptor = os.open(parent, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        except OSError:
+            pass
+        return True
+
+    def discard_stored_file(self, storage_path: str | Path) -> bool:
+        return self._unlink_and_sync(self.resolve_storage_path(storage_path))
+
     def read_document_bytes(
         self,
         storage_path: str | Path,
         *,
         expected_sha256: str | None = None,
+        encryption_key_id: str | None = None,
+        encryption_envelope_id: str | None = None,
+        encrypted_data_key: str | None = None,
+        encrypted_data_key_nonce: str | None = None,
     ) -> bytes:
         resolved = self.resolve_storage_path(storage_path)
         plaintext, _ = decrypt_file_bytes(
             resolved,
             expected_sha256=expected_sha256,
+            encryption_key_id=encryption_key_id,
+            encryption_envelope_id=encryption_envelope_id,
+            encrypted_data_key=encrypted_data_key,
+            encrypted_data_key_nonce=encrypted_data_key_nonce,
         )
         return plaintext
 
@@ -107,6 +142,7 @@ class LocalStorageService:
             max_bytes=self.max_upload_bytes,
         )
         temporary = self.incoming_dir / f"{uuid.uuid4().hex}.upload"
+        target: Path | None = None
         try:
             telegram_file = await bot.get_file(telegram_file_id)
             await bot.download_file(telegram_file.file_path, destination=temporary)
@@ -125,21 +161,15 @@ class LocalStorageService:
             except OSError:
                 pass
 
-            # The storage key contains no user-controlled data. The extension is
-            # deliberately detached from the original type so encrypted bytes are
-            # never accidentally opened as a plain PDF, DOCX or image.
-            target = case_dir / f"{inspection.sha256}.dlcenc"
-            if target.exists():
-                _, encryption = decrypt_file_bytes(
-                    target,
-                    expected_sha256=inspection.sha256,
-                )
-            else:
-                encryption = encrypt_file(
-                    temporary,
-                    target,
-                    expected_sha256=inspection.sha256,
-                )
+            # A random storage key prevents two database rows from sharing one
+            # ciphertext container. Duplicate business content is rejected by the
+            # database service and the newly created file is then discarded.
+            target = case_dir / f"{uuid.uuid4().hex}.dlcenc"
+            encryption = encrypt_file(
+                temporary,
+                target,
+                expected_sha256=inspection.sha256,
+            )
             temporary.unlink(missing_ok=True)
             try:
                 target.chmod(0o600)
@@ -157,6 +187,10 @@ class LocalStorageService:
                 scanned_at=inspection.scanned_at,
                 encryption_status=ENCRYPTION_STATUS,
                 encryption_key_id=encryption.key_id,
+                encryption_format_version=encryption.format_version,
+                encryption_envelope_id=encryption.envelope_id,
+                encrypted_data_key=encryption.encrypted_data_key,
+                encrypted_data_key_nonce=encryption.encrypted_data_key_nonce,
                 encrypted_at=encryption.encrypted_at,
             )
         except UploadSecurityError as error:
@@ -177,6 +211,11 @@ class LocalStorageService:
             raise
         except Exception:
             temporary.unlink(missing_ok=True)
+            if target is not None and target.exists():
+                try:
+                    self._unlink_and_sync(target)
+                except OSError:
+                    target.unlink(missing_ok=True)
             raise
 
 
