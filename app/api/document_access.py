@@ -106,6 +106,7 @@ async def list_authorized_case_documents(
                     "version": document.version,
                     "status": document.status,
                     "encrypted": True,
+                    "encryption_format_version": document.encryption_format_version,
                     "created_at": document.created_at,
                 }
             )
@@ -211,6 +212,10 @@ async def download_document_once(
             content = LocalStorageService().read_document_bytes(
                 document.file_path,
                 expected_sha256=document.sha256,
+                encryption_key_id=document.encryption_key_id,
+                encryption_envelope_id=document.encryption_envelope_id,
+                encrypted_data_key=document.encrypted_data_key,
+                encrypted_data_key_nonce=document.encrypted_data_key_nonce,
             )
         except Exception as error:
             await record_security_event(

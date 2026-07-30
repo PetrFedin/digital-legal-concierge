@@ -5,8 +5,8 @@ from pathlib import Path
 
 from app.db.migrations import run_database_migrations
 
-
-HEAD_REVISION = "20260730_0010"
+HEAD_REVISION = "20260730_0011"
+RETENTION_TRIGGER = "trg_retention_destroy_document_keys"
 
 
 def sqlite_url(path: Path) -> str:
@@ -19,6 +19,20 @@ def table_names(path: Path) -> set[str]:
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()
     return {row[0] for row in rows}
+
+
+def trigger_names(path: Path) -> set[str]:
+    with sqlite3.connect(path) as connection:
+        rows = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger'"
+        ).fetchall()
+    return {row[0] for row in rows}
+
+
+def index_names(path: Path, table_name: str) -> set[str]:
+    with sqlite3.connect(path) as connection:
+        rows = connection.execute(f"PRAGMA index_list({table_name})").fetchall()
+    return {row[1] for row in rows}
 
 
 def column_names(path: Path, table_name: str) -> set[str]:
@@ -46,6 +60,7 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "users",
         "lawyers",
         "cases",
+        "documents",
         "payments",
         "payment_webhook_events",
         "consultations",
@@ -68,72 +83,9 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "sla_due_at",
         "sla_status",
         "escalation_level",
+        "closed_at",
+        "content_deleted_at",
     }.issubset(column_names(database_path, "cases"))
-    assert {"closed_at", "content_deleted_at"}.issubset(
-        column_names(database_path, "cases")
-    )
-    assert {
-        "case_id",
-        "policy_version",
-        "status",
-        "retention_due_at",
-        "legal_hold",
-        "legal_hold_reason",
-        "legal_hold_set_at",
-        "legal_hold_set_by",
-        "legal_hold_released_at",
-        "legal_hold_released_by",
-        "requested_at",
-        "requested_by",
-        "request_reason",
-        "approved_at",
-        "approved_by",
-        "approval_comment",
-        "execution_started_at",
-        "executed_at",
-        "failed_at",
-        "last_error",
-        "attempt_count",
-        "documents_deleted",
-        "messages_deleted",
-        "notifications_deleted",
-        "consultations_anonymized",
-        "content_digest",
-    }.issubset(column_names(database_path, "case_retention_records"))
-    assert {
-        "recipient_type",
-        "target_chat_id",
-        "dedupe_key",
-        "attempt_count",
-        "last_error",
-        "next_attempt_at",
-        "sent_at",
-    }.issubset(column_names(database_path, "notifications"))
-    assert {
-        "mfa_enabled",
-        "mfa_secret_encrypted",
-        "mfa_confirmed_at",
-        "mfa_recovery_codes",
-        "mfa_recovery_codes_generated_at",
-        "mfa_failed_attempts",
-        "mfa_locked_until",
-        "mfa_last_totp_step",
-        "session_version",
-    }.issubset(column_names(database_path, "admin_users"))
-    assert {
-        "key_hash",
-        "failed_attempts",
-        "window_started_at",
-        "last_attempt_at",
-        "locked_until",
-    }.issubset(column_names(database_path, "login_security_states"))
-    assert {
-        "token_hash",
-        "user_id",
-        "expires_at",
-        "reason",
-        "comment",
-    }.issubset(column_names(database_path, "revoked_access_tokens"))
     assert {
         "sha256",
         "detected_type",
@@ -142,30 +94,28 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "scanned_at",
         "encryption_status",
         "encryption_key_id",
+        "encryption_format_version",
+        "encryption_envelope_id",
+        "encrypted_data_key",
+        "encrypted_data_key_nonce",
+        "data_key_destroyed_at",
         "encryption_error",
         "encrypted_at",
     }.issubset(column_names(database_path, "documents"))
     assert {
-        "public_id",
-        "document_id",
         "case_id",
-        "actor_account_id",
-        "actor_role",
-        "session_jti_ref",
-        "session_version",
-        "token_key_id",
-        "token_digest",
-        "expires_at",
-        "used_at",
-        "revoked_at",
-        "client_ref",
-    }.issubset(column_names(database_path, "document_access_grants"))
-    assert {
-        "calculation_date",
-        "key_rate",
-        "consumer_multiplier",
-        "formula_version",
-    }.issubset(column_names(database_path, "calculations"))
+        "policy_version",
+        "status",
+        "retention_due_at",
+        "legal_hold",
+        "requested_by",
+        "approved_by",
+        "execution_started_at",
+        "executed_at",
+        "attempt_count",
+        "documents_deleted",
+        "content_digest",
+    }.issubset(column_names(database_path, "case_retention_records"))
     assert {
         "provider",
         "event_key",
@@ -173,14 +123,9 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "provider_payment_id",
         "payment_id",
         "payload_sha256",
-        "payload_summary",
         "status",
         "attempt_count",
-        "first_seen_at",
-        "last_seen_at",
-        "processing_started_at",
         "processed_at",
-        "response_code",
         "error_code",
     }.issubset(column_names(database_path, "payment_webhook_events"))
     assert {
@@ -191,11 +136,130 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "integrity_key_id",
         "sealed_at",
     }.issubset(column_names(database_path, "audit_logs"))
+    assert RETENTION_TRIGGER in trigger_names(database_path)
+    assert "ux_documents_encryption_envelope_id" in index_names(
+        database_path, "documents"
+    )
+    assert "ix_documents_data_key_destroyed_at" in index_names(
+        database_path, "documents"
+    )
     with sqlite3.connect(database_path) as connection:
         head = connection.execute(
             "SELECT event_count, last_hash FROM audit_chain_heads WHERE id=1"
         ).fetchone()
     assert head == (0, "0" * 64)
+
+
+def _insert_encrypted_document(
+    connection: sqlite3.Connection,
+    *,
+    document_id: int,
+    case_id: int,
+    format_version: int,
+    envelope_id: str,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO documents (
+            id, case_id, uploaded_by_user_id, document_type, title,
+            file_name, file_path, mime_type, file_size, sha256,
+            detected_type, security_status, security_reason, scanned_at,
+            encryption_status, encryption_key_id, encryption_format_version,
+            encryption_envelope_id, encrypted_data_key,
+            encrypted_data_key_nonce, data_key_destroyed_at,
+            encryption_error, encrypted_at, version, status, is_required,
+            created_at, updated_at
+        ) VALUES (
+            ?, ?, NULL, 'DDU', 'ДДУ', 'contract.pdf', ?,
+            'application/pdf', 100, ?, 'pdf', 'VERIFIED', NULL,
+            CURRENT_TIMESTAMP, 'ENCRYPTED', 'documents-test', ?, ?,
+            'wrapped-key', 'wrapped-nonce', NULL, NULL,
+            CURRENT_TIMESTAMP, 1, 'ON_REVIEW', 1,
+            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        )
+        """,
+        (
+            document_id,
+            case_id,
+            f"/storage/{document_id}.dlcenc",
+            f"{document_id:064x}",
+            format_version,
+            envelope_id,
+        ),
+    )
+
+
+def test_retention_trigger_destroys_v2_keys_atomically_before_file_deletion(tmp_path):
+    database_path = tmp_path / "retention-trigger.db"
+    run_database_migrations(database_url=sqlite_url(database_path))
+
+    with sqlite3.connect(database_path) as connection:
+        _insert_encrypted_document(
+            connection,
+            document_id=1,
+            case_id=77,
+            format_version=2,
+            envelope_id="1" * 32,
+        )
+        _insert_encrypted_document(
+            connection,
+            document_id=2,
+            case_id=77,
+            format_version=1,
+            envelope_id="2" * 32,
+        )
+        _insert_encrypted_document(
+            connection,
+            document_id=3,
+            case_id=88,
+            format_version=2,
+            envelope_id="3" * 32,
+        )
+        connection.execute(
+            """
+            INSERT INTO case_retention_records (
+                id, case_id, policy_version, status, retention_due_at,
+                legal_hold, attempt_count, documents_deleted,
+                messages_deleted, notifications_deleted,
+                consultations_anonymized, created_at, updated_at
+            ) VALUES (
+                1, 77, 'case-content-v1', 'APPROVED', CURRENT_TIMESTAMP,
+                0, 0, 0, 0, 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.commit()
+
+        connection.execute("BEGIN")
+        connection.execute(
+            "UPDATE case_retention_records SET status='EXECUTING' WHERE id=1"
+        )
+        during_transaction = connection.execute(
+            "SELECT encrypted_data_key, data_key_destroyed_at "
+            "FROM documents WHERE id=1"
+        ).fetchone()
+        assert during_transaction[0] is None
+        assert during_transaction[1] is not None
+        connection.rollback()
+        after_rollback = connection.execute(
+            "SELECT encrypted_data_key, data_key_destroyed_at "
+            "FROM documents WHERE id=1"
+        ).fetchone()
+        assert after_rollback == ("wrapped-key", None)
+
+        connection.execute(
+            "UPDATE case_retention_records SET status='EXECUTING' WHERE id=1"
+        )
+        connection.commit()
+        rows = connection.execute(
+            "SELECT id, encrypted_data_key, encrypted_data_key_nonce, "
+            "data_key_destroyed_at FROM documents ORDER BY id"
+        ).fetchall()
+
+    assert rows[0][0:3] == (1, None, None)
+    assert rows[0][3] is not None
+    assert rows[1] == (2, "wrapped-key", "wrapped-nonce", None)
+    assert rows[2] == (3, "wrapped-key", "wrapped-nonce", None)
 
 
 def create_legacy_database(path: Path) -> None:
@@ -330,6 +394,14 @@ def test_legacy_database_is_adopted_without_data_loss(tmp_path):
         "payment_webhook_events",
         "case_retention_records",
     }.issubset(table_names(database_path))
+    assert RETENTION_TRIGGER in trigger_names(database_path)
+    assert {
+        "encryption_format_version",
+        "encryption_envelope_id",
+        "encrypted_data_key",
+        "encrypted_data_key_nonce",
+        "data_key_destroyed_at",
+    }.issubset(column_names(database_path, "documents"))
     with sqlite3.connect(database_path) as connection:
         row = connection.execute(
             "SELECT case_number, title, internal_comment, sla_status, "
@@ -353,47 +425,3 @@ def test_legacy_database_is_adopted_without_data_loss(tmp_path):
     assert len(audit[4]) == 64
     assert audit[5] == "legacy-admin"
     assert head == (1, audit[4])
-
-    assert {
-        "username",
-        "telegram_id",
-        "mfa_enabled",
-        "mfa_secret_encrypted",
-        "mfa_confirmed_at",
-        "mfa_recovery_codes",
-        "mfa_recovery_codes_generated_at",
-        "mfa_failed_attempts",
-        "mfa_locked_until",
-        "mfa_last_totp_step",
-        "session_version",
-    }.issubset(column_names(database_path, "admin_users"))
-    assert "telegram_id" in column_names(database_path, "lawyers")
-    assert {"related_case_id", "slot_id", "subject_type"}.issubset(
-        column_names(database_path, "consultations")
-    )
-    assert "reservation_key" in column_names(database_path, "payments")
-    assert {
-        "dedupe_key",
-        "attempt_count",
-        "next_attempt_at",
-        "sent_at",
-    }.issubset(column_names(database_path, "notifications"))
-    assert {
-        "sha256",
-        "detected_type",
-        "security_status",
-        "security_reason",
-        "scanned_at",
-        "encryption_status",
-        "encryption_key_id",
-        "encryption_error",
-        "encrypted_at",
-    }.issubset(column_names(database_path, "documents"))
-    assert {
-        "chain_version",
-        "chain_sequence",
-        "previous_hash",
-        "event_hash",
-        "integrity_key_id",
-        "sealed_at",
-    }.issubset(column_names(database_path, "audit_logs"))

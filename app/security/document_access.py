@@ -23,7 +23,7 @@ from app.security.access_control import (
     has_role,
     normalize_roles,
 )
-from app.security.document_encryption import ENCRYPTION_STATUS
+from app.security.document_encryption import ENCRYPTION_STATUS, FORMAT_V2
 from app.security.keyring import active_hmac_digest, hmac_candidates
 from app.security.lawyer_access import require_lawyer_actor
 from app.security.security_events import pseudonymize_security_value
@@ -138,6 +138,20 @@ async def load_authorized_document(
         raise DocumentAccessError(409, "Документ не прошёл проверку безопасности", "not_verified")
     if document.encryption_status != ENCRYPTION_STATUS:
         raise DocumentAccessError(409, "Документ ещё не зашифрован", "not_encrypted")
+    if document.data_key_destroyed_at is not None:
+        raise DocumentAccessError(410, "Ключ документа уничтожен", "document_key_destroyed")
+    if (
+        int(document.encryption_format_version or 0) != FORMAT_V2
+        or not document.encryption_key_id
+        or not document.encryption_envelope_id
+        or not document.encrypted_data_key
+        or not document.encrypted_data_key_nonce
+    ):
+        raise DocumentAccessError(
+            409,
+            "Документ ожидает миграции защищённого хранилища",
+            "envelope_migration_required",
+        )
     return document, case
 
 

@@ -116,8 +116,9 @@ async def upload(message: Message, state: FSMContext, db):
         file_id = photo.file_id
 
     document_service = DocumentService(db)
+    storage = LocalStorageService()
     try:
-        stored = await LocalStorageService().save_telegram_file(
+        stored = await storage.save_telegram_file(
             bot=message.bot,
             telegram_file_id=file_id,
             case_id=case.id,
@@ -175,11 +176,23 @@ async def upload(message: Message, state: FSMContext, db):
             scanned_at=stored.scanned_at,
             encryption_status=stored.encryption_status,
             encryption_key_id=stored.encryption_key_id,
+            encryption_format_version=stored.encryption_format_version,
+            encryption_envelope_id=stored.encryption_envelope_id,
+            encrypted_data_key=stored.encrypted_data_key,
+            encrypted_data_key_nonce=stored.encrypted_data_key_nonce,
             encrypted_at=stored.encrypted_at,
         )
         await db.commit()
     except DuplicateDocumentError as error:
         await db.rollback()
+        try:
+            storage.discard_stored_file(stored.storage_path)
+        except Exception:
+            logger.exception(
+                "Duplicate document ciphertext cleanup failed: case=%s path=%s",
+                case.id,
+                stored.storage_path,
+            )
         await state.clear()
         await message.answer(
             f"ℹ️ {error}",
@@ -191,6 +204,14 @@ async def upload(message: Message, state: FSMContext, db):
         return
     except Exception:
         await db.rollback()
+        try:
+            storage.discard_stored_file(stored.storage_path)
+        except Exception:
+            logger.exception(
+                "Unregistered document ciphertext cleanup failed: case=%s path=%s",
+                case.id,
+                stored.storage_path,
+            )
         logger.exception(
             "Verified and encrypted document could not be registered: case=%s sha256=%s",
             case.id,

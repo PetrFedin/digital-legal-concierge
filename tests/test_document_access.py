@@ -23,7 +23,8 @@ from app.security.document_access import (
     load_authorized_document,
     resolve_document_actor,
 )
-from app.security.document_encryption import ENCRYPTION_STATUS, encrypt_file
+from app.security.document_encryption import ENCRYPTION_STATUS, FORMAT_V2, encrypt_file
+from app.storage import LocalStorageService
 
 SESSION_KEY = "session-document-access-" + "a" * 40
 HMAC_KEY = "hmac-document-access-" + "b" * 40
@@ -64,7 +65,7 @@ async def seed_document(db, tmp_path, *, assigned_lawyer_id=None):
     plaintext = b"%PDF-1.4\nconfidential evidence\n%%EOF\n"
     sha256 = hashlib.sha256(plaintext).hexdigest()
     source = tmp_path / "source.pdf"
-    target = tmp_path / "storage" / "cases" / str(case.id) / f"{sha256}.dlcenc"
+    target = tmp_path / "storage" / "cases" / str(case.id) / "document.dlcenc"
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_bytes(plaintext)
     encryption = encrypt_file(source, target, expected_sha256=sha256)
@@ -83,6 +84,10 @@ async def seed_document(db, tmp_path, *, assigned_lawyer_id=None):
         scanned_at=datetime.now(timezone.utc),
         encryption_status=ENCRYPTION_STATUS,
         encryption_key_id=encryption.key_id,
+        encryption_format_version=encryption.format_version,
+        encryption_envelope_id=encryption.envelope_id,
+        encrypted_data_key=encryption.encrypted_data_key,
+        encrypted_data_key_nonce=encryption.encrypted_data_key_nonce,
         encrypted_at=encryption.encrypted_at,
         version=1,
         status="ON_REVIEW",
@@ -93,8 +98,17 @@ async def seed_document(db, tmp_path, *, assigned_lawyer_id=None):
     return case, document, plaintext
 
 
+def document_envelope(document):
+    return {
+        "encryption_key_id": document.encryption_key_id,
+        "encryption_envelope_id": document.encryption_envelope_id,
+        "encrypted_data_key": document.encrypted_data_key,
+        "encrypted_data_key_nonce": document.encrypted_data_key_nonce,
+    }
+
+
 @pytest.mark.asyncio
-async def test_grant_is_bound_to_session_and_can_be_consumed_only_once(
+async def test_grant_is_bound_to_session_consumed_once_and_decrypts(
     tmp_path,
     monkeypatch,
 ):
@@ -149,6 +163,14 @@ async def test_grant_is_bound_to_session_and_can_be_consumed_only_once(
         assert consumed_document.id == document.id
         assert consumed_case.id == case.id
         assert plaintext not in open(document.file_path, "rb").read()
+        assert (
+            LocalStorageService().read_document_bytes(
+                document.file_path,
+                expected_sha256=document.sha256,
+                **document_envelope(document),
+            )
+            == plaintext
+        )
 
         with pytest.raises(DocumentAccessError) as reused:
             await consume_document_grant(
@@ -182,6 +204,57 @@ async def test_grant_is_bound_to_session_and_can_be_consumed_only_once(
                 secret=second.secret,
             )
         assert wrong_session.value.reason == "session_mismatch"
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_destroyed_or_incomplete_envelope_cannot_receive_access_grant(
+    tmp_path,
+    monkeypatch,
+):
+    configure_security(monkeypatch, tmp_path)
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'destroyed.db'}")
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    async with factory() as db:
+        admin = AdminUser(
+            full_name="Администратор",
+            username="destroyed-admin",
+            email="destroyed@example.test",
+            password_hash="unused",
+            role="admin",
+            is_active=True,
+            session_version=1,
+        )
+        db.add(admin)
+        await db.flush()
+        _, document, _ = await seed_document(db, tmp_path)
+        actor = await resolve_document_actor(
+            db,
+            create_access_token(
+                admin.id,
+                admin.username,
+                admin.role,
+                session_version=1,
+            ),
+        )
+
+        document.data_key_destroyed_at = datetime.now(timezone.utc)
+        document.encrypted_data_key = None
+        document.encrypted_data_key_nonce = None
+        await db.flush()
+        with pytest.raises(DocumentAccessError) as destroyed:
+            await load_authorized_document(db, actor=actor, document_id=document.id)
+        assert destroyed.value.reason == "document_key_destroyed"
+
+        document.data_key_destroyed_at = None
+        await db.flush()
+        with pytest.raises(DocumentAccessError) as incomplete:
+            await load_authorized_document(db, actor=actor, document_id=document.id)
+        assert incomplete.value.reason == "envelope_migration_required"
 
     await engine.dispose()
 
@@ -233,13 +306,15 @@ async def test_assigned_lawyer_access_and_unassigned_lawyer_denial(tmp_path, mon
             assigned_lawyer_id=lawyer.id,
         )
 
-        assigned_token = create_access_token(
-            assigned_account.id,
-            assigned_account.username,
-            assigned_account.role,
-            session_version=1,
+        assigned_actor = await resolve_document_actor(
+            db,
+            create_access_token(
+                assigned_account.id,
+                assigned_account.username,
+                assigned_account.role,
+                session_version=1,
+            ),
         )
-        assigned_actor = await resolve_document_actor(db, assigned_token)
         loaded, loaded_case = await load_authorized_document(
             db,
             actor=assigned_actor,
@@ -248,13 +323,15 @@ async def test_assigned_lawyer_access_and_unassigned_lawyer_denial(tmp_path, mon
         assert loaded.id == document.id
         assert loaded_case.id == case.id
 
-        other_token = create_access_token(
-            other_account.id,
-            other_account.username,
-            other_account.role,
-            session_version=1,
+        other_actor = await resolve_document_actor(
+            db,
+            create_access_token(
+                other_account.id,
+                other_account.username,
+                other_account.role,
+                session_version=1,
+            ),
         )
-        other_actor = await resolve_document_actor(db, other_token)
         with pytest.raises(DocumentAccessError) as denied:
             await load_authorized_document(
                 db,
@@ -287,13 +364,15 @@ async def test_expired_and_used_grants_are_cleaned_up(tmp_path, monkeypatch):
         db.add(admin)
         await db.flush()
         case, document, _ = await seed_document(db, tmp_path)
-        token = create_access_token(
-            admin.id,
-            admin.username,
-            admin.role,
-            session_version=1,
+        actor = await resolve_document_actor(
+            db,
+            create_access_token(
+                admin.id,
+                admin.username,
+                admin.role,
+                session_version=1,
+            ),
         )
-        actor = await resolve_document_actor(db, token)
         issued = await issue_document_grant(
             db,
             actor=actor,
