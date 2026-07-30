@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.statuses.document_statuses import DocumentStatus
 from app.models.document import Document
-from app.security.document_encryption import ENCRYPTION_STATUS
+from app.security.document_encryption import ENCRYPTION_STATUS, FORMAT_V2
 
 DOC_TITLES = {
     "DDU": "ДДУ",
@@ -31,6 +31,19 @@ class DuplicateDocumentError(ValueError):
 
 class DocumentSecurityPendingError(ValueError):
     pass
+
+
+def has_usable_document_envelope(document: Document) -> bool:
+    return bool(
+        document.encryption_status == ENCRYPTION_STATUS
+        and int(document.encryption_format_version or 0) == FORMAT_V2
+        and document.encryption_key_id
+        and document.encryption_envelope_id
+        and document.encrypted_data_key
+        and document.encrypted_data_key_nonce
+        and document.data_key_destroyed_at is None
+        and document.encrypted_at
+    )
 
 
 class DocumentService:
@@ -67,16 +80,24 @@ class DocumentService:
         scanned_at: datetime | None = None,
         encryption_status: str = ENCRYPTION_STATUS,
         encryption_key_id: str | None = None,
+        encryption_format_version: int = FORMAT_V2,
+        encryption_envelope_id: str | None = None,
+        encrypted_data_key: str | None = None,
+        encrypted_data_key_nonce: str | None = None,
         encrypted_at: datetime | None = None,
     ):
         if security_status != "VERIFIED" or not sha256 or not scanned_at:
             raise ValueError("Документ не прошёл обязательную проверку безопасности")
         if (
             encryption_status != ENCRYPTION_STATUS
+            or int(encryption_format_version or 0) != FORMAT_V2
             or not encryption_key_id
+            or not encryption_envelope_id
+            or not encrypted_data_key
+            or not encrypted_data_key_nonce
             or not encrypted_at
         ):
-            raise ValueError("Документ не прошёл обязательное шифрование хранилища")
+            raise ValueError("Документ не прошёл обязательное envelope-шифрование")
 
         duplicate = (
             await self.db.execute(
@@ -118,6 +139,10 @@ class DocumentService:
             scanned_at=scanned_at,
             encryption_status=encryption_status,
             encryption_key_id=encryption_key_id,
+            encryption_format_version=encryption_format_version,
+            encryption_envelope_id=encryption_envelope_id,
+            encrypted_data_key=encrypted_data_key,
+            encrypted_data_key_nonce=encrypted_data_key_nonce,
             encrypted_at=encrypted_at,
             version=version,
             status=DocumentStatus.UPLOADED,
@@ -140,6 +165,8 @@ class DocumentService:
                 "security_status": security_status,
                 "encryption_status": encryption_status,
                 "encryption_key_id": encryption_key_id,
+                "encryption_format_version": encryption_format_version,
+                "envelope_id_prefix": str(encryption_envelope_id)[:12],
             },
         )
         return document
@@ -176,12 +203,12 @@ class DocumentService:
             if document.status == DocumentStatus.UPLOADED
             and (
                 document.security_status != "VERIFIED"
-                or document.encryption_status != ENCRYPTION_STATUS
+                or not has_usable_document_envelope(document)
             )
         ]
         if pending:
             raise DocumentSecurityPendingError(
-                "Часть документов ещё не прошла проверку или шифрование. "
+                "Часть документов ещё не прошла проверку или envelope-шифрование. "
                 "Удалите их и загрузите заново либо дождитесь фоновой миграции."
             )
         verified = [
@@ -189,7 +216,7 @@ class DocumentService:
             for document in documents
             if document.status == DocumentStatus.UPLOADED
             and document.security_status == "VERIFIED"
-            and document.encryption_status == ENCRYPTION_STATUS
+            and has_usable_document_envelope(document)
         ]
         for document in verified:
             document.status = DocumentStatus.ON_REVIEW
