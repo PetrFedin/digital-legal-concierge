@@ -22,6 +22,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cat > /tmp/chunks.sha256 <<'EOF'
+          80f97e9c6311f87603bbb0b483d6a0f4380f83a1490af6ee4553a85319b5d8b6  .agent-patch/part-00
+          87e361cceb82be0a632ba647d7b3a7dcfdc7f827d8e22d3c7361580375ab20c3  .agent-patch/chunk-01
+          20cb636a437e60acb5a0f8aa24642c72a22a4eabccd3ac2c792739a77f0c41a4  .agent-patch/chunk-02
+          63098e67041ec7be09b4218773e7527f5386e3246cd6f98cad9a02b3999038e4  .agent-patch/chunk-03
+          d08b75558450f9e548baad7a3ec21f3f19de0600687a755e9d3650c8ded27f83  .agent-patch/chunk-04
+          6be8c3b9da6af4fce5b63cbbd26b2fd7e1264ddce51ef69ce4c89b6a9bdfdabc  .agent-patch/chunk-05
+          6bfdd66db1fb746a209501ed0140f54266e9424b17f42182a4158946e1a5433a  .agent-patch/chunk-06
+          EOF
+          sha256sum --check --strict /tmp/chunks.sha256
+
           cat \
             .agent-patch/part-00 \
             .agent-patch/chunk-01 \
