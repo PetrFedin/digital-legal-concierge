@@ -16,6 +16,9 @@ down_revision = "20260730_0010"
 branch_labels = None
 depends_on = None
 
+SQLITE_RETENTION_TRIGGER = "trg_retention_destroy_document_keys"
+POSTGRES_RETENTION_FUNCTION = "destroy_document_envelope_keys_on_retention"
+
 
 def _columns() -> dict[str, sa.Column]:
     return {
@@ -46,6 +49,104 @@ def _columns() -> dict[str, sa.Column]:
             nullable=True,
         ),
     }
+
+
+def _install_retention_key_destruction(bind) -> None:
+    tables = set(inspect(bind).get_table_names())
+    if "case_retention_records" not in tables:
+        return
+    dialect = bind.dialect.name
+    if dialect == "sqlite":
+        op.execute(
+            sa.text(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS {SQLITE_RETENTION_TRIGGER}
+                AFTER UPDATE OF status ON case_retention_records
+                WHEN NEW.status = 'EXECUTING' AND OLD.status <> 'EXECUTING'
+                BEGIN
+                    UPDATE documents
+                    SET encrypted_data_key = NULL,
+                        encrypted_data_key_nonce = NULL,
+                        data_key_destroyed_at = COALESCE(
+                            data_key_destroyed_at,
+                            CURRENT_TIMESTAMP
+                        )
+                    WHERE case_id = NEW.case_id
+                      AND encryption_format_version = 2
+                      AND data_key_destroyed_at IS NULL;
+                END
+                """
+            )
+        )
+        return
+    if dialect == "postgresql":
+        op.execute(
+            sa.text(
+                f"""
+                CREATE OR REPLACE FUNCTION {POSTGRES_RETENTION_FUNCTION}()
+                RETURNS trigger AS $$
+                BEGIN
+                    IF NEW.status = 'EXECUTING'
+                       AND OLD.status IS DISTINCT FROM 'EXECUTING' THEN
+                        UPDATE documents
+                        SET encrypted_data_key = NULL,
+                            encrypted_data_key_nonce = NULL,
+                            data_key_destroyed_at = COALESCE(
+                                data_key_destroyed_at,
+                                CURRENT_TIMESTAMP
+                            )
+                        WHERE case_id = NEW.case_id
+                          AND encryption_format_version = 2
+                          AND data_key_destroyed_at IS NULL;
+                    END IF;
+                    RETURN NEW;
+                END;
+                $$ LANGUAGE plpgsql
+                """
+            )
+        )
+        op.execute(
+            sa.text(
+                f"""
+                DROP TRIGGER IF EXISTS {SQLITE_RETENTION_TRIGGER}
+                ON case_retention_records
+                """
+            )
+        )
+        op.execute(
+            sa.text(
+                f"""
+                CREATE TRIGGER {SQLITE_RETENTION_TRIGGER}
+                AFTER UPDATE OF status ON case_retention_records
+                FOR EACH ROW
+                EXECUTE FUNCTION {POSTGRES_RETENTION_FUNCTION}()
+                """
+            )
+        )
+        return
+    raise RuntimeError(
+        "Envelope key destruction requires SQLite or PostgreSQL retention trigger support"
+    )
+
+
+def _drop_retention_key_destruction(bind) -> None:
+    dialect = bind.dialect.name
+    if dialect == "sqlite":
+        op.execute(sa.text(f"DROP TRIGGER IF EXISTS {SQLITE_RETENTION_TRIGGER}"))
+    elif dialect == "postgresql":
+        op.execute(
+            sa.text(
+                f"""
+                DROP TRIGGER IF EXISTS {SQLITE_RETENTION_TRIGGER}
+                ON case_retention_records
+                """
+            )
+        )
+        op.execute(
+            sa.text(
+                f"DROP FUNCTION IF EXISTS {POSTGRES_RETENTION_FUNCTION}()"
+            )
+        )
 
 
 def upgrade() -> None:
@@ -85,6 +186,7 @@ def upgrade() -> None:
             "WHERE encryption_format_version IS NULL"
         )
     )
+    _install_retention_key_destruction(bind)
 
 
 def downgrade() -> None:
@@ -93,6 +195,7 @@ def downgrade() -> None:
     if "documents" not in set(inspector.get_table_names()):
         return
 
+    _drop_retention_key_destruction(bind)
     indexes = {index["name"] for index in inspector.get_indexes("documents")}
     if "ix_documents_data_key_destroyed_at" in indexes:
         op.drop_index("ix_documents_data_key_destroyed_at", table_name="documents")
