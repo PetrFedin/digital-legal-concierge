@@ -26,7 +26,10 @@ jobs:
           80f97e9c6311f87603bbb0b483d6a0f4380f83a1490af6ee4553a85319b5d8b6  .agent-patch/part-00
           87e361cceb82be0a632ba647d7b3a7dcfdc7f827d8e22d3c7361580375ab20c3  .agent-patch/chunk-01
           20cb636a437e60acb5a0f8aa24642c72a22a4eabccd3ac2c792739a77f0c41a4  .agent-patch/chunk-02
-          a33e9b59e779ca2608e21a00f372292dc87523cd33289cc39f3e4a705e87ed05  .agent-patch/chunk-03
+          fcf88a61f7ad1074097dfaaff58ce11c6f740a1d7cd38bac01ba0e9290036e9f  .agent-patch/chunk-03a0
+          35ae4508a03e286c832689ae0a52ddb7e38196f0a25fe5e3165f28949c7c5e32  .agent-patch/chunk-03a1
+          2aa5bfbff5073b6ac26a63b2351ed527dfc1448c212972b9176d86c3858f4fba  .agent-patch/chunk-03a2
+          c1b2ecd5ae369d2ef229e915bef847ac3cacc73d4e6bf03fd06e7a37640765a4  .agent-patch/chunk-03a3
           e338645824a99a899c89416317444db5dfed60709f28a9d1f29c14111d75e86d  .agent-patch/chunk-03b
           d08b75558450f9e548baad7a3ec21f3f19de0600687a755e9d3650c8ded27f83  .agent-patch/chunk-04
           6be8c3b9da6af4fce5b63cbbd26b2fd7e1264ddce51ef69ce4c89b6a9bdfdabc  .agent-patch/chunk-05
@@ -38,7 +41,10 @@ jobs:
             .agent-patch/part-00 \
             .agent-patch/chunk-01 \
             .agent-patch/chunk-02 \
-            .agent-patch/chunk-03 \
+            .agent-patch/chunk-03a0 \
+            .agent-patch/chunk-03a1 \
+            .agent-patch/chunk-03a2 \
+            .agent-patch/chunk-03a3 \
             .agent-patch/chunk-03b \
             .agent-patch/chunk-04 \
             .agent-patch/chunk-05 \
