@@ -10,6 +10,12 @@ class Document(Base, TimestampMixin):
     __tablename__ = "documents"
     __table_args__ = (
         Index("ix_documents_case_sha256", "case_id", "sha256", unique=True),
+        Index(
+            "ux_documents_encryption_envelope_id",
+            "encryption_envelope_id",
+            unique=True,
+        ),
+        Index("ix_documents_data_key_destroyed_at", "data_key_destroyed_at"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -45,6 +51,20 @@ class Document(Base, TimestampMixin):
         String(32),
         nullable=True,
         index=True,
+    )
+    encryption_format_version: Mapped[int] = mapped_column(Integer, default=1)
+    encryption_envelope_id: Mapped[str | None] = mapped_column(
+        String(32),
+        nullable=True,
+    )
+    encrypted_data_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    encrypted_data_key_nonce: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    data_key_destroyed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )
     encryption_error: Mapped[str | None] = mapped_column(String(255), nullable=True)
     encrypted_at: Mapped[datetime | None] = mapped_column(
