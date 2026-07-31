@@ -74,28 +74,15 @@ class BackupAwareCaseRetentionService(BaseCaseRetentionService):
                     "резервные копии, созданные до уничтожения ключей"
                 ) from error
 
-            result = await super().execute_deletion(
+            # The lock remains held through both database commits and file
+            # deletion. Once the base method returns, a new backup can only
+            # snapshot the already-erased state, so no post-commit fence update
+            # is required and the API cannot report a false failure afterward.
+            return await super().execute_deletion(
                 record_id=record_id,
                 actor_id=actor_id,
                 now=operation_now,
             )
-
-            completed_at = result.executed_at or datetime.now(timezone.utc)
-            final_cutoff = max(fence_cutoff, completed_at)
-            try:
-                await asyncio.to_thread(
-                    advance_backup_restore_fence,
-                    final_cutoff,
-                    reason="Case content cryptographic erasure completed",
-                    event_id=f"case:{case.id}:retention:{record.id}:completed",
-                )
-                await asyncio.to_thread(purge_revoked_backups)
-            except BackupRestoreFenceError as error:
-                raise CaseRetentionError(
-                    "Содержимое удалено, но финальная синхронизация backup-fence "
-                    "не завершена; восстановление заблокировано до исправления"
-                ) from error
-            return result
         finally:
             await asyncio.to_thread(lock.release)
 
