@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import RedirectResponse
 
@@ -23,7 +25,7 @@ async def status(
     x_admin_token: str | None = Header(default=None),
 ):
     require_security_superadmin(_token(request, x_admin_token))
-    result = backup_inventory()
+    result = await asyncio.to_thread(backup_inventory)
     result["deprecated_endpoint"] = True
     result["canonical_endpoint"] = "/backup-center/status"
     return result
