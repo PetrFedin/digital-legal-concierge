@@ -29,28 +29,36 @@ def test_ci_has_least_privilege_and_cancels_obsolete_runs():
     assert "branches: [main, feature/multi-role-access]" not in text
 
 
-def test_ci_verifies_both_sqlite_and_postgresql_schemas():
+def test_ci_verifies_source_and_restored_database_schemas():
     text = workflow_text()
 
     assert "sqlite-tests:" in text
     assert "postgres-migrations:" in text
     assert "postgres:16-alpine" in text
     assert "postgresql+asyncpg://" in text
-    assert text.count("alembic check") == 2
+    # SQLite source, PostgreSQL source and restored PostgreSQL staging database.
+    assert text.count("alembic check") == 3
     assert text.count("alembic upgrade head") >= 4
 
 
-def test_ci_creates_and_validates_real_postgresql_encrypted_backup():
+def test_ci_runs_real_postgresql_backup_and_restore_drill():
     text = workflow_text()
 
-    assert "PostgreSQL migration, schema and backup gate" in text
+    assert "PostgreSQL migration, backup and restore drill" in text
     assert "postgresql-client" in text
+    assert "backup_restore_probe" in text
+    assert "verified-data-roundtrip" in text
     assert "app.security.backup_cli create" in text
     assert "app.security.backup_cli verify" in text
-    assert "app.security.backup_cli extract" in text
+    assert "restore-postgresql-staging" in text
+    assert "STAGING_DATABASE_URL" in text
+    assert "createdb" in text
+    assert "--confirm-database concierge_restore" in text
+    assert 'restored["schema_current"] is True' in text
+    assert 'restored["restored_revision"] == restored["expected_revision"]' in text
+    assert "DATABASE_URL=\"$STAGING_DATABASE_URL\" alembic check" in text
     assert '"engine": "postgresql"' in text
     assert '"format": "pg_dump_custom"' in text
-    assert "pg_restore --list /tmp/concierge-restore/database/database.dump" in text
     assert "-name '.pgpass'" in text
 
 
