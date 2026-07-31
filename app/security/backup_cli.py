@@ -8,8 +8,13 @@ from app.security.backup_encryption import (
     BackupSecurityError,
     create_encrypted_backup,
     extract_encrypted_backup,
-    inspect_encrypted_backup,
     verify_encrypted_backup,
+)
+from app.security.backup_restore_fence import (
+    BackupRestoreFenceError,
+    assert_backup_not_revoked,
+    backup_maintenance_lock,
+    purge_revoked_backups,
 )
 
 
@@ -24,7 +29,10 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--storage-dir", default=None)
     create.add_argument("--database-url", default=None)
 
-    inspect = subparsers.add_parser("inspect", help="Read non-secret backup header")
+    inspect = subparsers.add_parser(
+        "inspect",
+        help="Read a non-revoked backup header",
+    )
     inspect.add_argument("archive")
 
     verify = subparsers.add_parser("verify", help="Decrypt and fully verify backup")
@@ -43,20 +51,27 @@ def main() -> int:
     args = build_parser().parse_args()
     try:
         if args.command == "create":
-            result = create_encrypted_backup(
-                database_url=args.database_url,
-                storage_dir=args.storage_dir,
-                backup_dir=args.backup_dir,
-            )
+            with backup_maintenance_lock(args.backup_dir):
+                purge_revoked_backups(args.backup_dir)
+                result = create_encrypted_backup(
+                    database_url=args.database_url,
+                    storage_dir=args.storage_dir,
+                    backup_dir=args.backup_dir,
+                )
             payload = {"ok": True, "operation": "create", **asdict(result)}
         elif args.command == "inspect":
-            metadata = inspect_encrypted_backup(args.archive)
+            with backup_maintenance_lock():
+                metadata = assert_backup_not_revoked(args.archive)
             payload = {"ok": True, "operation": "inspect", **asdict(metadata)}
         elif args.command == "verify":
-            metadata = verify_encrypted_backup(args.archive)
+            with backup_maintenance_lock():
+                assert_backup_not_revoked(args.archive)
+                metadata = verify_encrypted_backup(args.archive)
             payload = {"ok": True, "operation": "verify", **asdict(metadata)}
         else:
-            metadata = extract_encrypted_backup(args.archive, args.destination)
+            with backup_maintenance_lock():
+                assert_backup_not_revoked(args.archive)
+                metadata = extract_encrypted_backup(args.archive, args.destination)
             payload = {
                 "ok": True,
                 "operation": "extract",
@@ -65,7 +80,7 @@ def main() -> int:
             }
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         return 0
-    except BackupSecurityError as error:
+    except (BackupSecurityError, BackupRestoreFenceError) as error:
         print(
             json.dumps(
                 {"ok": False, "error": str(error)},
