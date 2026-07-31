@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
 from app.models.payment import Payment
-from app.security.backup_encryption import cleanup_encrypted_backups
+from app.security.backup_retention import cleanup_authenticated_backups
 from app.security.document_access import cleanup_document_access_grants
 from app.security.document_key_rotation import migrate_document_encryption
 from app.security.document_scanning import rescan_legacy_documents
@@ -175,7 +176,8 @@ class SchedulerJobs:
             "mfa_secrets_reencrypted": await reencrypt_mfa_secrets(self.db),
             "document_rescan": await rescan_legacy_documents(self.db),
             "document_encryption": await migrate_document_encryption(self.db),
-            "encrypted_backups_removed": cleanup_encrypted_backups(
+            "encrypted_backups_removed": await asyncio.to_thread(
+                cleanup_authenticated_backups,
                 retention_days=settings.backup_retention_days,
             ),
             "quarantine_files_removed": cleanup_quarantine(
