@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import ast
+import warnings
 from collections import defaultdict
 from pathlib import Path
+
+from sqlalchemy.exc import SAWarning
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -113,6 +116,23 @@ def check_runtime_routes() -> list[str]:
     ]
 
 
+def check_metadata_dependency_cycles() -> list[str]:
+    """Reject table cycles that make Alembic silently skip FK comparison."""
+
+    from app.models import Base
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", SAWarning)
+        list(Base.metadata.sorted_tables)
+    return [
+        "SQLAlchemy metadata contains an unresolved table dependency cycle: "
+        + str(warning.message)
+        for warning in caught
+        if issubclass(warning.category, SAWarning)
+        and "unresolvable cycles" in str(warning.message).lower()
+    ]
+
+
 def main() -> None:
     from app.domain.cases.case_transition_policy import assert_policy_complete
 
@@ -123,6 +143,7 @@ def main() -> None:
         *check_dead_bot_callbacks(),
         *check_calculator_clock_boundary(),
         *check_runtime_routes(),
+        *check_metadata_dependency_cycles(),
     ]
     if errors:
         raise ArchitectureCheckError("\n".join(errors))

@@ -16,7 +16,15 @@ class ConsultationSlot(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(30), default="available", index=True)
     hold_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     held_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
-    consultation_id: Mapped[int | None] = mapped_column(ForeignKey("consultations.id"), nullable=True, unique=True)
+    # consultations.slot_id and consultation_slots.consultation_id form a
+    # deliberate bidirectional integrity link. Mark this edge as the deferred
+    # side for SQLAlchemy's DDL sorter so metadata and Alembic can order the
+    # tables deterministically instead of silently ignoring both constraints.
+    consultation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("consultations.id", use_alter=True),
+        nullable=True,
+        unique=True,
+    )
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     lawyer = relationship("Lawyer")
