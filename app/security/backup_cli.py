@@ -6,7 +6,6 @@ from dataclasses import asdict
 
 from app.security.backup_encryption import (
     BackupSecurityError,
-    create_encrypted_backup,
     extract_encrypted_backup,
     verify_encrypted_backup,
 )
@@ -16,6 +15,7 @@ from app.security.backup_restore_fence import (
     backup_maintenance_lock,
     purge_revoked_backups,
 )
+from app.security.backup_service import create_provider_encrypted_backup
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -53,7 +53,7 @@ def main() -> int:
         if args.command == "create":
             with backup_maintenance_lock(args.backup_dir):
                 purge_revoked_backups(args.backup_dir)
-                result = create_encrypted_backup(
+                result = create_provider_encrypted_backup(
                     database_url=args.database_url,
                     storage_dir=args.storage_dir,
                     backup_dir=args.backup_dir,
