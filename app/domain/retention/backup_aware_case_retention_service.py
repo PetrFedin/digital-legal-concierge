@@ -36,7 +36,7 @@ class BackupAwareCaseRetentionService(BaseCaseRetentionService):
         actor_id: int,
         now: datetime | None = None,
     ):
-        current = now or datetime.now(timezone.utc)
+        operation_now = now or datetime.now(timezone.utc)
         record = await self._load_record(record_id)
         case = await self._load_case(record.case_id)
 
@@ -44,22 +44,26 @@ class BackupAwareCaseRetentionService(BaseCaseRetentionService):
             return await super().execute_deletion(
                 record_id=record_id,
                 actor_id=actor_id,
-                now=current,
+                now=operation_now,
             )
         if record.status not in {STATUS_APPROVED, STATUS_EXECUTING, STATUS_FAILED}:
             return await super().execute_deletion(
                 record_id=record_id,
                 actor_id=actor_id,
-                now=current,
+                now=operation_now,
             )
 
         lock = BackupMaintenanceLock()
         await asyncio.to_thread(lock.acquire)
         try:
+            # A backup may have completed while this operation was waiting for
+            # the lock. Use the acquisition-time wall clock, not the earlier
+            # request timestamp, so that backup is revoked before key erasure.
+            fence_cutoff = datetime.now(timezone.utc)
             try:
                 await asyncio.to_thread(
                     advance_backup_restore_fence,
-                    current,
+                    fence_cutoff,
                     reason="Case content cryptographic erasure",
                     event_id=f"case:{case.id}:retention:{record.id}",
                 )
@@ -73,14 +77,15 @@ class BackupAwareCaseRetentionService(BaseCaseRetentionService):
             result = await super().execute_deletion(
                 record_id=record_id,
                 actor_id=actor_id,
-                now=current,
+                now=operation_now,
             )
 
             completed_at = result.executed_at or datetime.now(timezone.utc)
+            final_cutoff = max(fence_cutoff, completed_at)
             try:
                 await asyncio.to_thread(
                     advance_backup_restore_fence,
-                    completed_at,
+                    final_cutoff,
                     reason="Case content cryptographic erasure completed",
                     event_id=f"case:{case.id}:retention:{record.id}:completed",
                 )
