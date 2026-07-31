@@ -83,12 +83,15 @@ def test_postgresql_snapshot_keeps_password_out_of_process_arguments_and_env(
 ):
     calls: list[dict] = []
     install_fake_postgres_tools(monkeypatch, calls)
+    monkeypatch.setenv("PGPASSWORD", "inherited-password-must-be-removed")
+    monkeypatch.setenv("PGSERVICE", "inherited-service-must-be-removed")
     target = tmp_path / "database.dump"
 
     _snapshot_postgresql(DATABASE_URL, target, tmp_path)
 
     assert target.read_bytes().startswith(b"PGDMP")
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert not (tmp_path / ".pgpass").exists()
     assert [Path(call["command"][0]).name for call in calls] == [
         "pg_dump",
         "pg_restore",
@@ -98,6 +101,7 @@ def test_postgresql_snapshot_keeps_password_out_of_process_arguments_and_env(
         assert "p:a\\ss" not in rendered
         assert "p:a\\ss" not in json.dumps(call["environment"])
         assert "PGPASSWORD" not in call["environment"]
+        assert "PGSERVICE" not in call["environment"]
         assert call["environment"]["PGHOST"] == "db.example"
         assert call["environment"]["PGPORT"] == "5433"
         assert call["environment"]["PGDATABASE"] == "concierge"
@@ -144,20 +148,27 @@ def test_provider_builds_verified_postgresql_archive_without_pgpass(
         "document"
     )
     assert not list(staging.rglob(".pgpass"))
+    assert not list(backups.rglob("*.dump"))
+    assert not list(backups.rglob("*.tar.gz"))
     restore_text = (staging / "restore" / "README.txt").read_text(
         encoding="utf-8"
     )
     assert "pg_restore --no-owner --no-privileges" in restore_text
 
 
-def test_postgresql_tool_error_redacts_password(tmp_path, monkeypatch):
+def test_postgresql_tool_error_redacts_password_and_removes_partial_files(
+    tmp_path,
+    monkeypatch,
+):
     monkeypatch.setattr(
         backup_service.shutil,
         "which",
         lambda name: f"/usr/bin/{name}",
     )
+    target = tmp_path / "failed.dump"
 
     def failed_run(command, **kwargs):
+        target.write_bytes(b"partial plaintext dump")
         return subprocess.CompletedProcess(
             command,
             2,
@@ -168,11 +179,13 @@ def test_postgresql_tool_error_redacts_password(tmp_path, monkeypatch):
     monkeypatch.setattr(backup_service.subprocess, "run", failed_run)
 
     with pytest.raises(BackupSecurityError) as captured:
-        _snapshot_postgresql(DATABASE_URL, tmp_path / "failed.dump", tmp_path)
+        _snapshot_postgresql(DATABASE_URL, target, tmp_path)
 
     message = str(captured.value)
     assert "p:a\\ss" not in message
     assert "[REDACTED]" in message
+    assert not target.exists()
+    assert not (tmp_path / ".pgpass").exists()
 
 
 def test_provider_rejects_unsupported_database_backend(tmp_path, monkeypatch):
