@@ -40,6 +40,20 @@ def test_ci_verifies_both_sqlite_and_postgresql_schemas():
     assert text.count("alembic upgrade head") >= 4
 
 
+def test_ci_creates_and_validates_real_postgresql_encrypted_backup():
+    text = workflow_text()
+
+    assert "PostgreSQL migration, schema and backup gate" in text
+    assert "postgresql-client" in text
+    assert "app.security.backup_cli create" in text
+    assert "app.security.backup_cli verify" in text
+    assert "app.security.backup_cli extract" in text
+    assert '"engine": "postgresql"' in text
+    assert '"format": "pg_dump_custom"' in text
+    assert "pg_restore --list /tmp/concierge-restore/database/database.dump" in text
+    assert "-name '.pgpass'" in text
+
+
 def test_ci_builds_and_starts_the_production_container():
     text = workflow_text()
 
