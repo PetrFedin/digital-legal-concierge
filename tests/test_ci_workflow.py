@@ -29,14 +29,15 @@ def test_ci_has_least_privilege_and_cancels_obsolete_runs():
     assert "branches: [main, feature/multi-role-access]" not in text
 
 
-def test_ci_verifies_both_sqlite_and_postgresql_schemas():
+def test_ci_verifies_source_and_restored_database_schemas():
     text = workflow_text()
 
     assert "sqlite-tests:" in text
     assert "postgres-migrations:" in text
     assert "postgres:16-alpine" in text
     assert "postgresql+asyncpg://" in text
-    assert text.count("alembic check") == 2
+    # SQLite source, PostgreSQL source and restored PostgreSQL staging database.
+    assert text.count("alembic check") == 3
     assert text.count("alembic upgrade head") >= 4
 
 
