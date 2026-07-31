@@ -20,7 +20,9 @@ def test_metadata_has_no_unresolved_table_dependency_cycles():
     ]
     assert unresolved == []
     assert set(ordered) == set(Base.metadata.tables)
-    assert ordered.index("consultations") < ordered.index("consultation_slots")
+    # The active FK is consultations.slot_id -> consultation_slots.id; the
+    # reverse edge is the deferred one. Therefore slots must be created first.
+    assert ordered.index("consultation_slots") < ordered.index("consultations")
 
 
 def test_consultation_bidirectional_foreign_keys_remain_declared():
