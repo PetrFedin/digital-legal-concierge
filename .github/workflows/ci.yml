@@ -126,3 +126,66 @@ jobs:
 
       - name: Verify PostgreSQL ORM schema matches migrations
         run: alembic check
+
+  container-smoke:
+    name: Container build and startup gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Build production image
+        run: docker build --tag digital-legal-concierge:ci .
+
+      - name: Verify image migration and backup tooling
+        run: |
+          docker run --rm --entrypoint sh digital-legal-concierge:ci -c '
+            test -f /app/alembic.ini
+            test -d /app/migrations/versions
+            test -f /app/scripts/init_db.py
+            pg_dump --version
+          '
+
+      - name: Start container through production command and verify health
+        env:
+          APP_ENV: test
+          DATABASE_URL: sqlite+aiosqlite:////tmp/container_smoke.db
+          BOT_TOKEN: CHANGE_ME
+          RUN_BOT: "false"
+          RUN_SCHEDULER: "false"
+          ADMIN_USERNAME: admin
+          ADMIN_PASSWORD: admin-change-me
+          ADMIN_API_TOKEN: ci-admin-token-change-me
+        run: |
+          container_id=$(docker run -d \
+            --name concierge-container-smoke \
+            -p 127.0.0.1:18080:8000 \
+            -e APP_ENV \
+            -e DATABASE_URL \
+            -e BOT_TOKEN \
+            -e RUN_BOT \
+            -e RUN_SCHEDULER \
+            -e ADMIN_USERNAME \
+            -e ADMIN_PASSWORD \
+            -e ADMIN_API_TOKEN \
+            digital-legal-concierge:ci)
+          cleanup() {
+            docker logs "$container_id" || true
+            docker rm -f "$container_id" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          for attempt in $(seq 1 45); do
+            if curl --fail --silent --show-error http://127.0.0.1:18080/health >/dev/null; then
+              exit 0
+            fi
+            if ! docker inspect --format='{{.State.Running}}' "$container_id" | grep -qx true; then
+              echo "Container exited before becoming healthy" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "Container did not become healthy within 45 seconds" >&2
+          exit 1
