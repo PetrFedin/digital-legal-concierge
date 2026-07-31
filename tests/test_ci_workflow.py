@@ -41,6 +41,18 @@ def test_ci_verifies_source_and_restored_database_schemas():
     assert text.count("alembic upgrade head") >= 4
 
 
+def test_ci_verifies_real_postgresql_scheduler_singleton_lease():
+    text = workflow_text()
+
+    assert "Verify PostgreSQL scheduler singleton lease" in text
+    assert "from app.scheduler.lease import SchedulerCycleLease" in text
+    assert "assert await first.acquire() is True" in text
+    assert "assert await second.acquire() is False" in text
+    assert "await first.assert_held()" in text
+    assert "assert await second.acquire() is True" in text
+    assert "await second.assert_held()" in text
+
+
 def test_ci_runs_real_postgresql_backup_and_restore_drill():
     text = workflow_text()
 
