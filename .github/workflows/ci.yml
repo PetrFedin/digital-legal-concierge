@@ -75,9 +75,9 @@ jobs:
         run: pytest -q
 
   postgres-migrations:
-    name: PostgreSQL migration and schema gate
+    name: PostgreSQL migration, schema and backup gate
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:16-alpine
@@ -101,6 +101,11 @@ jobs:
       ADMIN_USERNAME: admin
       ADMIN_PASSWORD: admin-change-me
       ADMIN_API_TOKEN: ci-admin-token-change-me
+      BACKUP_ENCRYPTION_KEY_ID: ci-postgresql-backup-key
+      BACKUP_ENCRYPTION_KEY: ci-postgresql-backup-key-012345678901234567890123456789
+      BACKUP_DIR: /tmp/concierge-backups
+      STORAGE_DIR: /tmp/concierge-storage
+      MAX_BACKUP_MB: "100"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -113,8 +118,11 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: Install
-        run: pip install -e ".[test]"
+      - name: Install application and PostgreSQL client
+        run: |
+          pip install -e ".[test]"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client
 
       - name: Apply all migrations
         run: alembic upgrade head
@@ -126,6 +134,45 @@ jobs:
 
       - name: Verify PostgreSQL ORM schema matches migrations
         run: alembic check
+
+      - name: Create, verify and extract encrypted PostgreSQL backup
+        run: |
+          rm -rf "$BACKUP_DIR" "$STORAGE_DIR" /tmp/concierge-restore
+          mkdir -p "$STORAGE_DIR"
+          printf 'postgresql backup integration\n' > "$STORAGE_DIR/integration.txt"
+          python -m app.security.backup_cli create \
+            --database-url "$DATABASE_URL" \
+            --storage-dir "$STORAGE_DIR" \
+            --backup-dir "$BACKUP_DIR" | tee /tmp/backup-create.json
+          archive=$(python -c 'import json; print(json.load(open("/tmp/backup-create.json"))["path"])')
+          test -f "$archive"
+          python -m app.security.backup_cli verify "$archive" | tee /tmp/backup-verify.json
+          python -m app.security.backup_cli extract "$archive" /tmp/concierge-restore
+          ARCHIVE="$archive" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          created = json.loads(Path("/tmp/backup-create.json").read_text())
+          verified = json.loads(Path("/tmp/backup-verify.json").read_text())
+          manifest = json.loads(
+              Path("/tmp/concierge-restore/manifest.json").read_text()
+          )
+          assert created["ok"] is True and created["verified"] is True
+          assert verified["ok"] is True and verified["verified"] is True
+          assert Path(os.environ["ARCHIVE"]).suffix == ".dlcbak"
+          assert manifest["database"] == {
+              "engine": "postgresql",
+              "file": "database/database.dump",
+              "format": "pg_dump_custom",
+          }
+          assert (
+              Path("/tmp/concierge-restore/storage/integration.txt").read_text()
+              == "postgresql backup integration\n"
+          )
+          PY
+          pg_restore --list /tmp/concierge-restore/database/database.dump >/dev/null
+          test -z "$(find "$BACKUP_DIR" -type f \( -name '*.dump' -o -name '.pgpass' -o -name '*.tar.gz' \) -print -quit)"
 
   container-smoke:
     name: Container build and startup gate
