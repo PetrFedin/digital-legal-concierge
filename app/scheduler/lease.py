@@ -45,6 +45,7 @@ class SchedulerCycleLease:
         self.lock_dir = Path(lock_dir or settings.backup_dir)
         self.dialect_name = dialect_name or self.db_engine.dialect.name
         self._connection: AsyncConnection | None = None
+        self._postgres_backend_pid: int | None = None
         self._file_descriptor: int | None = None
         self.acquired = False
 
@@ -67,17 +68,20 @@ class SchedulerCycleLease:
         connection = await self.db_engine.connect()
         try:
             result = await connection.execute(
-                text("SELECT pg_try_advisory_lock(:lock_key)"),
+                text(
+                    "SELECT pg_try_advisory_lock(:lock_key), pg_backend_pid()"
+                ),
                 {"lock_key": POSTGRES_SCHEDULER_LOCK_KEY},
             )
-            acquired = bool(result.scalar_one())
+            acquired, backend_pid = result.one()
             # Avoid holding an idle transaction for the full cycle; the
             # advisory lock itself remains bound to this connection session.
             await connection.commit()
-            if not acquired:
+            if not bool(acquired):
                 await connection.close()
                 return False
             self._connection = connection
+            self._postgres_backend_pid = int(backend_pid)
             self.acquired = True
             return True
         except Exception:
@@ -127,19 +131,20 @@ class SchedulerCycleLease:
         if self._connection is not None:
             try:
                 result = await self._connection.execute(
-                    text(
-                        "SELECT pg_advisory_lock_shared(:lock_key), "
-                        "pg_advisory_unlock_shared(:lock_key)"
-                    ),
-                    {"lock_key": POSTGRES_SCHEDULER_LOCK_KEY},
+                    text("SELECT pg_backend_pid()")
                 )
-                result.first()
+                backend_pid = int(result.scalar_one())
                 await self._connection.commit()
             except Exception as error:
                 self.acquired = False
                 raise SchedulerLeaseError(
                     "Соединение PostgreSQL scheduler lease потеряно"
                 ) from error
+            if backend_pid != self._postgres_backend_pid:
+                self.acquired = False
+                raise SchedulerLeaseError(
+                    "PostgreSQL scheduler lease потерян при смене backend session"
+                )
             return
         if self._file_descriptor is not None:
             try:
@@ -156,6 +161,7 @@ class SchedulerCycleLease:
         connection = self._connection
         descriptor = self._file_descriptor
         self._connection = None
+        self._postgres_backend_pid = None
         self._file_descriptor = None
         was_acquired = self.acquired
         self.acquired = False
