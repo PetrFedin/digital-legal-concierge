@@ -72,12 +72,13 @@ def _postgres_url(value: str, *, label: str) -> URL:
     return url
 
 
-def _endpoint(url: URL) -> tuple[str, int, str, str]:
+def _endpoint(url: URL) -> tuple[str, int, str]:
+    # Database identity does not depend on which login is used. Comparing the
+    # username would allow the same production database through another role.
     return (
         str(url.host or "localhost").lower().rstrip("."),
         int(url.port or 5432),
         str(url.database or ""),
-        str(url.username or ""),
     )
 
 
@@ -94,13 +95,6 @@ def validate_staging_target(
         raise PostgreSQLRestoreError(
             "Подтверждение имени staging-базы не совпадает с target URL"
         )
-    lowered = database.lower()
-    if lowered in _FORBIDDEN_DATABASES:
-        raise PostgreSQLRestoreError("Системная PostgreSQL база не может быть target")
-    if not lowered.endswith(_ALLOWED_STAGING_SUFFIXES):
-        raise PostgreSQLRestoreError(
-            "Имя target-базы должно явно оканчиваться на staging, restore, drill или test"
-        )
 
     production_value = str(production_database_url or settings.database_url)
     try:
@@ -114,6 +108,14 @@ def validate_staging_target(
     ):
         raise PostgreSQLRestoreError(
             "Восстановление в настроенную рабочую PostgreSQL базу запрещено"
+        )
+
+    lowered = database.lower()
+    if lowered in _FORBIDDEN_DATABASES:
+        raise PostgreSQLRestoreError("Системная PostgreSQL база не может быть target")
+    if not lowered.endswith(_ALLOWED_STAGING_SUFFIXES):
+        raise PostgreSQLRestoreError(
+            "Имя target-базы должно явно оканчиваться на staging, restore, drill или test"
         )
     return target
 
@@ -148,7 +150,7 @@ def _run_capture(
             result=result,
             password=password,
         )
-    return result.stdout.decode("utf-8", errors="strict").strip()
+    return result.stdout.decode("utf-8", errors="replace").strip()
 
 
 def _psql_scalar(
