@@ -2,14 +2,26 @@ name: CI
 
 on:
   push:
-    branches: [main, feature/multi-role-access]
+    branches: [main]
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PIP_NO_INPUT: "1"
+
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+  sqlite-tests:
+    name: SQLite application tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     env:
       APP_ENV: test
       DATABASE_URL: sqlite+aiosqlite:///./ci_test.db
@@ -21,10 +33,12 @@ jobs:
       ADMIN_API_TOKEN: ci-admin-token-change-me
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
@@ -59,3 +73,56 @@ jobs:
 
       - name: Run tests
         run: pytest -q
+
+  postgres-migrations:
+    name: PostgreSQL migration and schema gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: concierge_ci
+          POSTGRES_USER: concierge
+          POSTGRES_PASSWORD: concierge-ci-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U concierge -d concierge_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgresql+asyncpg://concierge:concierge-ci-password@localhost:5432/concierge_ci
+      BOT_TOKEN: CHANGE_ME
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: admin-change-me
+      ADMIN_API_TOKEN: ci-admin-token-change-me
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[test]"
+
+      - name: Apply all migrations
+        run: alembic upgrade head
+
+      - name: Verify current revision and idempotency
+        run: |
+          alembic current
+          alembic upgrade head
+
+      - name: Verify PostgreSQL ORM schema matches migrations
+        run: alembic check

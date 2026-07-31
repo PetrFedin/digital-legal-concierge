@@ -93,23 +93,33 @@ def upgrade() -> None:
         ),
     )
 
-    bind.execute(
-        sa.text(
-            "UPDATE admin_users SET mfa_enabled=0 "
-            "WHERE mfa_enabled IS NULL"
-        )
+    # Use typed SQLAlchemy expressions instead of SQLite-specific numeric
+    # boolean literals. PostgreSQL rejects assigning integer 0 to BOOLEAN.
+    admin_users = sa.table(
+        "admin_users",
+        sa.column("mfa_enabled", sa.Boolean()),
+        sa.column("mfa_failed_attempts", sa.Integer()),
+        sa.column("session_version", sa.Integer()),
     )
     bind.execute(
-        sa.text(
-            "UPDATE admin_users SET mfa_failed_attempts=0 "
-            "WHERE mfa_failed_attempts IS NULL"
-        )
+        sa.update(admin_users)
+        .where(admin_users.c.mfa_enabled.is_(None))
+        .values(mfa_enabled=sa.false())
     )
     bind.execute(
-        sa.text(
-            "UPDATE admin_users SET session_version=1 "
-            "WHERE session_version IS NULL OR session_version < 1"
+        sa.update(admin_users)
+        .where(admin_users.c.mfa_failed_attempts.is_(None))
+        .values(mfa_failed_attempts=0)
+    )
+    bind.execute(
+        sa.update(admin_users)
+        .where(
+            sa.or_(
+                admin_users.c.session_version.is_(None),
+                admin_users.c.session_version < 1,
+            )
         )
+        .values(session_version=1)
     )
 
     indexes = _indexes(bind)
