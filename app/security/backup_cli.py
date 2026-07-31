@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from dataclasses import asdict
 
 from app.security.backup_encryption import (
@@ -16,6 +17,7 @@ from app.security.backup_restore_fence import (
     purge_revoked_backups,
 )
 from app.security.backup_service import create_provider_encrypted_backup
+from app.security.postgresql_restore import restore_postgresql_staging
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -44,6 +46,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     extract.add_argument("archive")
     extract.add_argument("destination")
+
+    restore_postgres = subparsers.add_parser(
+        "restore-postgresql-staging",
+        help=(
+            "Verify, extract and restore a PostgreSQL backup into an empty "
+            "staging database from STAGING_DATABASE_URL"
+        ),
+    )
+    restore_postgres.add_argument("archive")
+    restore_postgres.add_argument("destination")
+    restore_postgres.add_argument(
+        "--confirm-database",
+        required=True,
+        help="Exact staging database name from STAGING_DATABASE_URL",
+    )
     return parser
 
 
@@ -68,7 +85,7 @@ def main() -> int:
                 assert_backup_not_revoked(args.archive)
                 metadata = verify_encrypted_backup(args.archive)
             payload = {"ok": True, "operation": "verify", **asdict(metadata)}
-        else:
+        elif args.command == "extract":
             with backup_maintenance_lock():
                 assert_backup_not_revoked(args.archive)
                 metadata = extract_encrypted_backup(args.archive, args.destination)
@@ -77,6 +94,23 @@ def main() -> int:
                 "operation": "extract",
                 "destination": args.destination,
                 **asdict(metadata),
+            }
+        else:
+            staging_database_url = os.getenv("STAGING_DATABASE_URL", "").strip()
+            if not staging_database_url:
+                raise BackupSecurityError(
+                    "Для staging restore требуется переменная STAGING_DATABASE_URL"
+                )
+            result = restore_postgresql_staging(
+                args.archive,
+                args.destination,
+                target_database_url=staging_database_url,
+                confirmed_database=args.confirm_database,
+            )
+            payload = {
+                "ok": True,
+                "operation": "restore-postgresql-staging",
+                **result.as_dict(),
             }
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         return 0
