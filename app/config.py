@@ -68,6 +68,14 @@ class Settings(BaseSettings):
     backup_dir: str = "./backups"
     max_backup_mb: int = 2048
     backup_retention_days: int = 30
+    # Production readiness is fail-closed when no fully verified, restorable
+    # encrypted backup exists within this recovery-point objective.
+    backup_readiness_required_in_production: bool = True
+    backup_max_age_hours: int = 26
+    # Full AES-GCM + manifest verification is cached only while every archive
+    # and the signed restore-fence retain the same filesystem fingerprint.
+    backup_freshness_cache_seconds: int = 300
+    backup_future_clock_skew_seconds: int = 300
 
     # Closed-case content retention. Discovery is non-destructive; deletion
     # always requires two different personal MFA-superadmin accounts.

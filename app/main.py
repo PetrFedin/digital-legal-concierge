@@ -55,6 +55,7 @@ from app.api.task_center import router as task_center_router
 from app.api.template_builder import router as template_builder_router
 from app.api.web_admin import router as web_admin_router
 from app.config import settings
+from app.security.backup_freshness import backup_freshness_status
 from app.security.client_address import (
     TrustedProxyClientAddressMiddleware,
     trusted_proxy_networks,
@@ -66,7 +67,7 @@ from app.security.http_security import (
 from app.security.keyring import security_key_status
 from app.security.session_guard import AdminSessionGuardMiddleware
 
-VERSION = "1.0.0-v44"
+VERSION = "1.0.0-v45"
 
 
 def create_app():
@@ -144,6 +145,7 @@ def create_app():
         from pathlib import Path
 
         key_status = security_key_status()
+        backup_freshness = await asyncio.to_thread(backup_freshness_status)
         payment_webhook_secret_ready = settings.app_env != "production" or (
             len(str(settings.payment_webhook_secret or "")) >= 32
             and settings.payment_webhook_secret
@@ -179,6 +181,16 @@ def create_app():
             <= 20,
             "backup_size_limit_valid": 1 <= int(settings.max_backup_mb) <= 10240,
             "backup_retention_valid": 1 <= int(settings.backup_retention_days) <= 3650,
+            "backup_max_age_valid": 1
+            <= int(settings.backup_max_age_hours)
+            <= min(8760, int(settings.backup_retention_days) * 24),
+            "backup_freshness_cache_valid": 0
+            <= int(settings.backup_freshness_cache_seconds)
+            <= 3600,
+            "backup_clock_skew_valid": 0
+            <= int(settings.backup_future_clock_skew_seconds)
+            <= 3600,
+            "recent_verified_backup": bool(backup_freshness.ok),
             "closed_case_retention_valid": 30
             <= int(settings.closed_case_retention_days)
             <= 36500,
@@ -267,6 +279,11 @@ def create_app():
                 "restore_mode": "verified_staging_only",
                 "max_backup_mb": settings.max_backup_mb,
                 "retention_days": settings.backup_retention_days,
+                "readiness_required_in_production": (
+                    settings.backup_readiness_required_in_production
+                ),
+                "max_age_hours": settings.backup_max_age_hours,
+                "freshness": backup_freshness.as_dict(),
             },
             "payment_webhook_security": {
                 "enabled": True,
