@@ -186,6 +186,7 @@ class AppScheduler:
         outcomes: list[SchedulerJobOutcome] = []
         try:
             for result_name, service_type, method_name in JOB_SPECS:
+                await lease.assert_held()
                 outcomes.append(
                     await self._run_job(
                         result_name=result_name,
@@ -222,9 +223,14 @@ class AppScheduler:
         while True:
             started = time.monotonic()
             try:
-                await self.run_once()
+                cycle = await self.run_cycle()
                 elapsed = time.monotonic() - started
-                await asyncio.sleep(max(1.0, self.interval_seconds - elapsed))
+                delay = (
+                    SCHEDULER_RETRY_SECONDS
+                    if cycle.acquired and not cycle.ok
+                    else self.interval_seconds
+                )
+                await asyncio.sleep(max(1.0, delay - elapsed))
             except asyncio.CancelledError:
                 raise
             except Exception:
