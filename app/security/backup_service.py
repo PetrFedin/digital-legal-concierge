@@ -197,37 +197,44 @@ def _snapshot_postgresql(database_url: str, target: Path, temporary: Path) -> No
 
     target.parent.mkdir(parents=True, exist_ok=True)
     pgpass_file = _write_pgpass(url, temporary)
-    environment = _postgres_environment(url, pgpass_file)
-    pg_dump = _safe_tool("pg_dump")
-    pg_restore = _safe_tool("pg_restore")
+    try:
+        environment = _postgres_environment(url, pgpass_file)
+        pg_dump = _safe_tool("pg_dump")
+        pg_restore = _safe_tool("pg_restore")
 
-    _run_postgres_tool(
-        [
-            pg_dump,
-            "--format=custom",
-            "--compress=6",
-            "--no-owner",
-            "--no-privileges",
-            "--no-password",
-            f"--file={target}",
-        ],
-        environment=environment,
-        password=url.password,
-    )
-    if target.is_symlink() or not target.is_file():
-        raise BackupSecurityError("pg_dump не создал ожидаемый файл")
-    target.chmod(0o600)
-    if target.stat().st_size < 5:
-        raise BackupSecurityError("PostgreSQL dump пуст или усечён")
-    with target.open("rb") as stream:
-        if stream.read(5) != b"PGDMP":
-            raise BackupSecurityError("PostgreSQL dump имеет неизвестный формат")
-    _sha256_file(target)
-    _run_postgres_tool(
-        [pg_restore, "--list", str(target)],
-        environment=environment,
-        password=url.password,
-    )
+        _run_postgres_tool(
+            [
+                pg_dump,
+                "--format=custom",
+                "--compress=6",
+                "--no-owner",
+                "--no-privileges",
+                "--no-password",
+                f"--file={target}",
+            ],
+            environment=environment,
+            password=url.password,
+        )
+        if target.is_symlink() or not target.is_file():
+            raise BackupSecurityError("pg_dump не создал ожидаемый файл")
+        target.chmod(0o600)
+        if target.stat().st_size < 5:
+            raise BackupSecurityError("PostgreSQL dump пуст или усечён")
+        with target.open("rb") as stream:
+            if stream.read(5) != b"PGDMP":
+                raise BackupSecurityError("PostgreSQL dump имеет неизвестный формат")
+        _sha256_file(target)
+        _run_postgres_tool(
+            [pg_restore, "--list", str(target)],
+            environment=environment,
+            password=url.password,
+        )
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    finally:
+        if pgpass_file is not None:
+            pgpass_file.unlink(missing_ok=True)
 
 
 def _write_provider_manifest(
@@ -344,7 +351,11 @@ def create_provider_encrypted_backup(
         _build_tar_payload(contents, payload)
         metadata = encrypt_backup_payload(payload, target)
 
-    verified = verify_encrypted_backup(target)
+    try:
+        verified = verify_encrypted_backup(target)
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
     return BackupResult(
         path=str(target),
         key_id=metadata.key_id,
