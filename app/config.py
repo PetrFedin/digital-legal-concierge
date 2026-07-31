@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     # encrypted backup exists within this recovery-point objective.
     backup_readiness_required_in_production: bool = True
     backup_max_age_hours: int = 26
+    automatic_encrypted_backups_enabled: bool = True
     # Full AES-GCM + manifest verification is cached only while every archive
     # and the signed restore-fence retain the same filesystem fingerprint.
     backup_freshness_cache_seconds: int = 300

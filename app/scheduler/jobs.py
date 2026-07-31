@@ -16,7 +16,13 @@ from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
 from app.models.payment import Payment
+from app.security.backup_freshness import backup_freshness_status
+from app.security.backup_restore_fence import (
+    backup_maintenance_lock,
+    purge_revoked_backups,
+)
 from app.security.backup_retention import cleanup_authenticated_backups
+from app.security.backup_service import create_provider_encrypted_backup
 from app.security.document_access import cleanup_document_access_grants
 from app.security.document_key_rotation import migrate_document_encryption
 from app.security.document_scanning import rescan_legacy_documents
@@ -32,10 +38,55 @@ def as_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _create_encrypted_backup() -> dict[str, object]:
+    with backup_maintenance_lock(settings.backup_dir):
+        purge_revoked_backups(settings.backup_dir)
+        result = create_provider_encrypted_backup(
+            database_url=settings.database_url,
+            storage_dir=settings.storage_dir,
+            backup_dir=settings.backup_dir,
+        )
+    return {
+        "created": True,
+        "archive": Path(result.path).name,
+        "key_id": result.key_id,
+        "created_at": result.created_at,
+        "encrypted_size": result.encrypted_size,
+        "verified": result.verified,
+    }
+
+
 class SchedulerJobs:
     def __init__(self, db: AsyncSession):
         self.db = db
         self.notifications = NotificationEngine(db)
+
+    async def create_encrypted_backup_if_due(self) -> dict[str, object]:
+        if settings.app_env != "production":
+            return {"created": False, "reason": "not_production"}
+        if not settings.automatic_encrypted_backups_enabled:
+            return {"created": False, "reason": "disabled"}
+
+        freshness = await asyncio.to_thread(
+            backup_freshness_status,
+            required=True,
+        )
+        if freshness.ok:
+            return {
+                "created": False,
+                "reason": "fresh_backup_exists",
+                "archive": freshness.archive,
+                "age_seconds": freshness.age_seconds,
+            }
+        if freshness.reason in {
+            "invalid_max_age_configuration",
+            "invalid_freshness_configuration",
+            "restore_fence_invalid",
+        }:
+            raise RuntimeError(
+                f"Automatic backup blocked by {freshness.reason}"
+            )
+        return await asyncio.to_thread(_create_encrypted_backup)
 
     async def check_unpaid_payments(self) -> int:
         now = datetime.now(timezone.utc)

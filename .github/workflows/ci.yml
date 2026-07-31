@@ -136,6 +136,29 @@ jobs:
       - name: Verify PostgreSQL ORM schema matches migrations
         run: alembic check
 
+      - name: Verify PostgreSQL scheduler singleton lease
+        run: |
+          python - <<'PY'
+          import asyncio
+
+          from app.db.session import engine
+          from app.scheduler.lease import SchedulerCycleLease
+
+          async def main():
+              first = SchedulerCycleLease()
+              second = SchedulerCycleLease()
+              assert await first.acquire() is True
+              await first.assert_held()
+              assert await second.acquire() is False
+              await first.release()
+              assert await second.acquire() is True
+              await second.assert_held()
+              await second.release()
+              await engine.dispose()
+
+          asyncio.run(main())
+          PY
+
       - name: Seed disaster recovery probe
         run: |
           export PGPASSWORD=concierge-ci-password
