@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncConnection
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from app.config import settings
 from app.db.session import engine
@@ -49,7 +49,11 @@ class SchedulerCycleLease:
         self.acquired = False
 
     async def acquire(self) -> bool:
-        if self.acquired or self._connection is not None or self._file_descriptor is not None:
+        if (
+            self.acquired
+            or self._connection is not None
+            or self._file_descriptor is not None
+        ):
             raise SchedulerLeaseError("Scheduler lease уже использован")
         if self.dialect_name == "postgresql":
             return await self._acquire_postgresql()
@@ -115,20 +119,55 @@ class SchedulerCycleLease:
                 pass
             raise
 
+    async def assert_held(self) -> None:
+        """Fail before a job if the process lost its singleton lease."""
+
+        if not self.acquired:
+            raise SchedulerLeaseError("Scheduler singleton lease не удерживается")
+        if self._connection is not None:
+            try:
+                result = await self._connection.execute(
+                    text(
+                        "SELECT pg_advisory_lock_shared(:lock_key), "
+                        "pg_advisory_unlock_shared(:lock_key)"
+                    ),
+                    {"lock_key": POSTGRES_SCHEDULER_LOCK_KEY},
+                )
+                result.first()
+                await self._connection.commit()
+            except Exception as error:
+                self.acquired = False
+                raise SchedulerLeaseError(
+                    "Соединение PostgreSQL scheduler lease потеряно"
+                ) from error
+            return
+        if self._file_descriptor is not None:
+            try:
+                await asyncio.to_thread(os.fstat, self._file_descriptor)
+            except OSError as error:
+                self.acquired = False
+                raise SchedulerLeaseError(
+                    "Файловый scheduler lease потерян"
+                ) from error
+            return
+        raise SchedulerLeaseError("Scheduler singleton lease не имеет ресурса")
+
     async def release(self) -> None:
         connection = self._connection
         descriptor = self._file_descriptor
         self._connection = None
         self._file_descriptor = None
+        was_acquired = self.acquired
         self.acquired = False
 
         if connection is not None:
             try:
-                await connection.execute(
-                    text("SELECT pg_advisory_unlock(:lock_key)"),
-                    {"lock_key": POSTGRES_SCHEDULER_LOCK_KEY},
-                )
-                await connection.commit()
+                if was_acquired:
+                    await connection.execute(
+                        text("SELECT pg_advisory_unlock(:lock_key)"),
+                        {"lock_key": POSTGRES_SCHEDULER_LOCK_KEY},
+                    )
+                    await connection.commit()
             finally:
                 await connection.close()
 
@@ -144,7 +183,8 @@ class SchedulerCycleLease:
             os.close(descriptor)
 
     async def __aenter__(self) -> SchedulerCycleLease:
-        await self.acquire()
+        if not await self.acquire():
+            raise SchedulerLeaseError("Scheduler singleton lease занят")
         return self
 
     async def __aexit__(self, exc_type, exc, traceback) -> None:
