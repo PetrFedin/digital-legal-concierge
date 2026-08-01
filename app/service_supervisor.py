@@ -25,11 +25,12 @@ class BackgroundService:
 
 
 async def _cancel_and_wait(tasks: Iterable[asyncio.Task[object]]) -> None:
-    pending = [task for task in tasks if not task.done()]
-    for task in pending:
-        task.cancel()
-    if pending:
-        await asyncio.gather(*pending, return_exceptions=True)
+    all_tasks = tuple(tasks)
+    for task in all_tasks:
+        if not task.done():
+            task.cancel()
+    if all_tasks:
+        await asyncio.gather(*all_tasks, return_exceptions=True)
 
 
 async def _stop_server(
@@ -40,6 +41,7 @@ async def _stop_server(
 ) -> None:
     server.should_exit = True
     if server_task.done():
+        await asyncio.gather(server_task, return_exceptions=True)
         return
     try:
         await asyncio.wait_for(
@@ -49,6 +51,8 @@ async def _stop_server(
     except asyncio.TimeoutError:
         server_task.cancel()
         await asyncio.gather(server_task, return_exceptions=True)
+    except BaseException:
+        await asyncio.gather(server_task, return_exceptions=True)
 
 
 async def supervise_server(
@@ -57,29 +61,43 @@ async def supervise_server(
     *,
     shutdown_timeout_seconds: float = 15.0,
 ) -> object:
-    """Run HTTP and background services as one failure domain.
+    """Run HTTP, Telegram and scheduler services as one failure domain.
 
-    A bot or scheduler task is expected to run until the HTTP server stops.
-    Returning normally or raising unexpectedly is therefore fatal: the server
-    is asked to shut down and the process receives an explicit exception.
-    When Uvicorn stops normally, all background tasks are cancelled and awaited
-    so database sessions, Telegram polling and file locks can close cleanly.
+    Background services are expected to run until the HTTP server stops.
+    Returning normally, being cancelled independently, or raising unexpectedly
+    is therefore fatal. The supervisor then asks the server to stop, cancels and
+    awaits every remaining service, and propagates an explicit process failure.
+    When the HTTP server stops normally, all services are cancelled and awaited
+    so polling sessions, database connections and cross-process locks close.
     """
 
     if shutdown_timeout_seconds <= 0:
         raise ValueError("shutdown_timeout_seconds must be positive")
 
+    normalized_services: list[BackgroundService] = []
+    service_names: set[str] = set()
+    for service in services:
+        name = str(service.name or "").strip()
+        if not name:
+            raise ValueError("background service name is required")
+        if name in service_names:
+            raise ValueError(f"duplicate background service name: {name}")
+        service_names.add(name)
+        normalized_services.append(BackgroundService(name=name, factory=service.factory))
+
     server_task = asyncio.create_task(server.serve(), name="http-server")
     service_tasks: dict[asyncio.Task[object], str] = {}
     try:
-        for service in services:
-            name = str(service.name or "").strip()
-            if not name:
-                raise ValueError("background service name is required")
-            if name in service_tasks.values():
-                raise ValueError(f"duplicate background service name: {name}")
-            task = asyncio.create_task(service.factory(), name=f"service:{name}")
-            service_tasks[task] = name
+        for service in normalized_services:
+            try:
+                awaitable = service.factory()
+            except Exception as error:
+                raise BackgroundServiceError(
+                    service.name,
+                    f"failed to start with {type(error).__name__}",
+                ) from error
+            task = asyncio.create_task(awaitable, name=f"service:{service.name}")
+            service_tasks[task] = service.name
 
         if not service_tasks:
             return await server_task
@@ -88,13 +106,18 @@ async def supervise_server(
         done, _ = await asyncio.wait(watched, return_when=asyncio.FIRST_COMPLETED)
 
         if server_task in done:
-            server_error = server_task.exception()
             await _cancel_and_wait(service_tasks)
+            if server_task.cancelled():
+                raise asyncio.CancelledError
+            server_error = server_task.exception()
             if server_error is not None:
                 raise server_error
             return server_task.result()
 
-        failed_task = next(task for task in done if task in service_tasks)
+        failed_task = min(
+            (task for task in done if task in service_tasks),
+            key=lambda task: service_tasks[task],
+        )
         service_name = service_tasks[failed_task]
         if failed_task.cancelled():
             failure = BackgroundServiceError(
@@ -141,7 +164,7 @@ async def supervise_server(
     finally:
         if not server_task.done():
             server_task.cancel()
-            await asyncio.gather(server_task, return_exceptions=True)
+        await asyncio.gather(server_task, return_exceptions=True)
         await _cancel_and_wait(service_tasks)
 
 
