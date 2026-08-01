@@ -1,0 +1,99 @@
+from __future__ import annotations
+
+import inspect
+from collections import Counter
+
+import pytest
+from fastapi.routing import APIRoute
+
+from app.main import app
+
+
+IGNORED_FRAMEWORK_PATHS = {
+    "/openapi.json",
+    "/docs",
+    "/docs/oauth2-redirect",
+    "/redoc",
+}
+
+
+def _application_routes() -> list[APIRoute]:
+    return [
+        route
+        for route in app.routes
+        if isinstance(route, APIRoute) and route.path not in IGNORED_FRAMEWORK_PATHS
+    ]
+
+
+def _route_by_path(path: str) -> APIRoute:
+    matches = [route for route in _application_routes() if route.path == path]
+    assert matches, f"route is not registered: {path}"
+    assert len(matches) == 1, f"route is registered more than once: {path}"
+    return matches[0]
+
+
+@pytest.mark.asyncio
+async def test_every_launch_check_internal_link_resolves_to_one_registered_route():
+    launch_route = _route_by_path("/launch-check")
+    result = launch_route.endpoint()
+    if inspect.isawaitable(result):
+        result = await result
+
+    assert isinstance(result, dict)
+    links = {
+        key: value
+        for key, value in result.items()
+        if isinstance(value, str) and value.startswith("/")
+    }
+    assert links, "launch-check must publish at least one internal route"
+
+    missing: dict[str, str] = {}
+    duplicated: dict[str, str] = {}
+    registered_paths = Counter(route.path for route in _application_routes())
+    for key, path in links.items():
+        count = registered_paths[path]
+        if count == 0:
+            missing[key] = path
+        elif count > 1:
+            duplicated[key] = path
+
+    assert missing == {}, f"launch-check contains missing routes: {missing}"
+    assert duplicated == {}, f"launch-check contains ambiguous routes: {duplicated}"
+
+
+def test_no_duplicate_http_method_and_path_handlers_are_registered():
+    registrations: Counter[tuple[str, str]] = Counter()
+    for route in _application_routes():
+        for method in route.methods or set():
+            if method in {"HEAD", "OPTIONS"}:
+                continue
+            registrations[(method, route.path)] += 1
+
+    duplicates = {
+        f"{method} {path}": count
+        for (method, path), count in registrations.items()
+        if count > 1
+    }
+    assert duplicates == {}, f"duplicate route handlers shadow each other: {duplicates}"
+
+
+def test_every_named_application_route_has_a_unique_name():
+    names = Counter(
+        route.name
+        for route in _application_routes()
+        if route.name and route.name not in {"openapi", "swagger_ui_html", "swagger_ui_redirect", "redoc_html"}
+    )
+    duplicates = {name: count for name, count in names.items() if count > 1}
+    assert duplicates == {}, f"duplicate route names make reverse routing ambiguous: {duplicates}"
+
+
+@pytest.mark.asyncio
+async def test_root_redirect_target_is_registered():
+    root_route = _route_by_path("/")
+    response = root_route.endpoint()
+    if inspect.isawaitable(response):
+        response = await response
+
+    location = response.headers.get("location")
+    assert location and location.startswith("/"), "root must redirect to an internal route"
+    _route_by_path(location)
