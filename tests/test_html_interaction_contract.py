@@ -57,7 +57,9 @@ class InteractionParser(HTMLParser):
             self.result.interactions.append(("form", method, values["action"]))
         elif tag in {"button", "input"} and values.get("formaction"):
             method = values.get("formmethod", "GET").upper()
-            self.result.interactions.append(("form-control", method, values["formaction"]))
+            self.result.interactions.append(
+                ("form-control", method, values["formaction"])
+            )
         elif tag in {"script", "img", "link", "source"}:
             target = values.get("src") or values.get("href")
             if target:
@@ -87,7 +89,18 @@ def _html_documents() -> list[tuple[str, str]]:
     seen: set[str] = set()
     for path in sorted(API_DIR.glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        parents = {
+            child: parent
+            for parent in ast.walk(tree)
+            for child in ast.iter_child_nodes(parent)
+        }
         for node in ast.walk(tree):
+            # Constant children of JoinedStr are fragments around f-string
+            # substitutions. Only the complete JoinedStr represents the page.
+            if isinstance(node, ast.Constant) and isinstance(
+                parents.get(node), ast.JoinedStr
+            ):
+                continue
             text = _literal_text(node)
             if not text:
                 continue
@@ -149,7 +162,9 @@ def _javascript_interactions(text: str) -> list[tuple[str, str, str]]:
     for pattern in navigation_patterns:
         for match in pattern.finditer(text):
             if not _is_concatenated(text, match.end()):
-                interactions.append(("javascript-navigation", "GET", match.group("path")))
+                interactions.append(
+                    ("javascript-navigation", "GET", match.group("path"))
+                )
 
     call_pattern = re.compile(
         r"(?P<callee>fetch|api)\s*\(\s*(?P<q>['\"])(?P<path>/[^'\"]*)(?P=q)(?P<tail>[^)]{0,320})\)",
@@ -165,7 +180,9 @@ def _javascript_interactions(text: str) -> list[tuple[str, str, str]]:
             continue
         method_match = method_pattern.search(tail)
         method = method_match.group("method").upper() if method_match else "GET"
-        interactions.append((f"javascript-{match.group('callee').lower()}", method, match.group("path")))
+        interactions.append(
+            (f"javascript-{match.group('callee').lower()}", method, match.group("path"))
+        )
 
     return interactions
 
@@ -293,15 +310,21 @@ def test_static_html_interactions_resolve_to_registered_http_handlers():
             )
 
     assert checked >= 25, f"HTML interaction audit is unexpectedly shallow: {checked} targets"
-    assert invalid_methods == [], "invalid HTML form/control methods:\n" + "\n".join(invalid_methods)
-    assert missing == [], "HTML interactions without matching handlers:\n" + "\n".join(missing)
+    assert invalid_methods == [], "invalid HTML form/control methods:\n" + "\n".join(
+        invalid_methods
+    )
+    assert missing == [], "HTML interactions without matching handlers:\n" + "\n".join(
+        missing
+    )
 
 
 def test_inline_html_event_handlers_reference_defined_javascript_functions():
     documents = _html_documents()
     _, missing_functions = _all_interactions()
 
-    assert len(documents) >= 10, f"HTML source discovery is unexpectedly shallow: {len(documents)}"
+    assert len(documents) >= 10, (
+        f"HTML source discovery is unexpectedly shallow: {len(documents)}"
+    )
     assert missing_functions == {}, (
         "HTML event handlers reference missing JavaScript functions: "
         f"{missing_functions}"
