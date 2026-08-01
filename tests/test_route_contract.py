@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import inspect
 from collections import Counter
+from dataclasses import dataclass
+from typing import Any, Iterable
 
 import pytest
-from fastapi.routing import APIRoute
 
 from app.main import app
 
@@ -17,15 +18,54 @@ IGNORED_FRAMEWORK_PATHS = {
 }
 
 
-def _application_routes() -> list[APIRoute]:
+@dataclass(frozen=True)
+class RouteRecord:
+    path: str
+    methods: frozenset[str]
+    name: str | None
+    endpoint: Any
+
+
+def _join_path(prefix: str, path: str) -> str:
+    if not prefix:
+        return path or "/"
+    if not path or path == "/":
+        return prefix or "/"
+    return f"{prefix.rstrip('/')}/{path.lstrip('/')}"
+
+
+def _walk_routes(routes: Iterable[Any], prefix: str = "") -> Iterable[RouteRecord]:
+    """Yield every terminal route, including routes nested below Mount-like nodes."""
+    for route in routes:
+        path = _join_path(prefix, str(getattr(route, "path", "")))
+        children = getattr(route, "routes", None)
+        endpoint = getattr(route, "endpoint", None)
+        methods = frozenset(getattr(route, "methods", None) or ())
+
+        if children is not None and endpoint is None:
+            yield from _walk_routes(children, path)
+            continue
+
+        if endpoint is None:
+            continue
+
+        yield RouteRecord(
+            path=path,
+            methods=methods,
+            name=getattr(route, "name", None),
+            endpoint=endpoint,
+        )
+
+
+def _application_routes() -> list[RouteRecord]:
     return [
         route
-        for route in app.routes
-        if isinstance(route, APIRoute) and route.path not in IGNORED_FRAMEWORK_PATHS
+        for route in _walk_routes(app.routes)
+        if route.path not in IGNORED_FRAMEWORK_PATHS
     ]
 
 
-def _route_by_path(path: str) -> APIRoute:
+def _route_by_path(path: str) -> RouteRecord:
     matches = [route for route in _application_routes() if route.path == path]
     assert matches, f"route is not registered: {path}"
     assert len(matches) == 1, f"route is registered more than once: {path}"
@@ -64,7 +104,7 @@ async def test_every_launch_check_internal_link_resolves_to_one_registered_route
 def test_no_duplicate_http_method_and_path_handlers_are_registered():
     registrations: Counter[tuple[str, str]] = Counter()
     for route in _application_routes():
-        for method in route.methods or set():
+        for method in route.methods:
             if method in {"HEAD", "OPTIONS"}:
                 continue
             registrations[(method, route.path)] += 1
@@ -81,7 +121,9 @@ def test_every_named_application_route_has_a_unique_name():
     names = Counter(
         route.name
         for route in _application_routes()
-        if route.name and route.name not in {"openapi", "swagger_ui_html", "swagger_ui_redirect", "redoc_html"}
+        if route.name
+        and route.name
+        not in {"openapi", "swagger_ui_html", "swagger_ui_redirect", "redoc_html"}
     )
     duplicates = {name: count for name, count in names.items() if count > 1}
     assert duplicates == {}, f"duplicate route names make reverse routing ambiguous: {duplicates}"
