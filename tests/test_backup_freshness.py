@@ -5,7 +5,8 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+import httpx
+import pytest
 
 import app.main as main_module
 import app.security.backup_encryption as backup_encryption
@@ -253,7 +254,8 @@ def test_non_production_readiness_does_not_require_backup(monkeypatch):
     assert status.reason == "not_required"
 
 
-def test_ready_endpoint_exposes_and_enforces_backup_freshness(monkeypatch):
+@pytest.mark.asyncio
+async def test_ready_endpoint_exposes_and_enforces_backup_freshness(monkeypatch):
     unavailable = BackupFreshnessStatus(
         required=True,
         ok=False,
@@ -269,7 +271,15 @@ def test_ready_endpoint_exposes_and_enforces_backup_freshness(monkeypatch):
     )
     monkeypatch.setattr(main_module, "backup_freshness_status", lambda: unavailable)
 
-    response = TestClient(main_module.create_app()).get("/ready")
+    transport = httpx.ASGITransport(
+        app=main_module.create_app(),
+        raise_app_exceptions=False,
+    )
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get("/ready")
     payload = response.json()
 
     assert response.status_code == 200
