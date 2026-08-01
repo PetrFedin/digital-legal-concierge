@@ -163,6 +163,7 @@ async def create_document_download_grant(
             {
                 "ok": True,
                 "document_id": document.id,
+                "file_name": document.file_name,
                 "download_url": download_path,
                 "expires_at": issued.grant.expires_at.isoformat(),
                 "one_time": True,
@@ -187,6 +188,9 @@ async def create_document_download_grant(
             actor_id=actor.account_id if actor else None,
             document_id=document_id,
         )
+        raise
+    except Exception:
+        await db.rollback()
         raise
 
 
