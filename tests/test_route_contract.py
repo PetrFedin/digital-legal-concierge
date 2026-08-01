@@ -3,9 +3,10 @@ from __future__ import annotations
 import inspect
 from collections import Counter
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 import pytest
+from fastapi.routing import iter_route_contexts
 
 from app.main import app
 
@@ -26,43 +27,22 @@ class RouteRecord:
     endpoint: Any
 
 
-def _join_path(prefix: str, path: str) -> str:
-    if not prefix:
-        return path or "/"
-    if not path or path == "/":
-        return prefix or "/"
-    return f"{prefix.rstrip('/')}/{path.lstrip('/')}"
-
-
-def _walk_routes(routes: Iterable[Any], prefix: str = "") -> Iterable[RouteRecord]:
-    """Yield every terminal route, including routes nested below Mount-like nodes."""
-    for route in routes:
-        path = _join_path(prefix, str(getattr(route, "path", "")))
-        children = getattr(route, "routes", None)
-        endpoint = getattr(route, "endpoint", None)
-        methods = frozenset(getattr(route, "methods", None) or ())
-
-        if children is not None and endpoint is None:
-            yield from _walk_routes(children, path)
-            continue
-
-        if endpoint is None:
-            continue
-
-        yield RouteRecord(
-            path=path,
-            methods=methods,
-            name=getattr(route, "name", None),
-            endpoint=endpoint,
-        )
-
-
 def _application_routes() -> list[RouteRecord]:
-    return [
-        route
-        for route in _walk_routes(app.routes)
-        if route.path not in IGNORED_FRAMEWORK_PATHS
-    ]
+    records: list[RouteRecord] = []
+    for route_context in iter_route_contexts(app.routes):
+        path = route_context.path
+        endpoint = route_context.endpoint
+        if not path or endpoint is None or path in IGNORED_FRAMEWORK_PATHS:
+            continue
+        records.append(
+            RouteRecord(
+                path=path,
+                methods=frozenset(route_context.methods or ()),
+                name=route_context.name,
+                endpoint=endpoint,
+            )
+        )
+    return records
 
 
 def _route_by_path(path: str) -> RouteRecord:
