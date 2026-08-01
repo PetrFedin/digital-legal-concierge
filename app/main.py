@@ -1,6 +1,5 @@
 import asyncio
 
-import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 
@@ -75,8 +74,6 @@ def create_app():
     app.add_middleware(AdminSessionGuardMiddleware)
     app.add_middleware(RequestOriginGuardMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
-    # Added last so forwarded headers are resolved before every downstream
-    # authentication, throttling, webhook and audit component sees client.host.
     app.add_middleware(TrustedProxyClientAddressMiddleware)
     for router in [
         maintenance_center_router,
@@ -167,53 +164,25 @@ def create_app():
                 and settings.admin_api_token != "dev-admin-token"
             ),
             "storage_dir_exists": Path(settings.storage_dir).exists(),
-            "document_upload_limit_valid": 1
-            <= int(settings.max_document_upload_mb)
-            <= 100,
-            "quarantine_retention_valid": 1
-            <= int(settings.upload_quarantine_retention_days)
-            <= 90,
-            "document_access_ttl_valid": 30
-            <= int(settings.document_access_grant_ttl_seconds)
-            <= 300,
-            "document_access_limit_valid": 1
-            <= int(settings.document_access_max_active_grants)
-            <= 20,
+            "document_upload_limit_valid": 1 <= int(settings.max_document_upload_mb) <= 100,
+            "quarantine_retention_valid": 1 <= int(settings.upload_quarantine_retention_days) <= 90,
+            "document_access_ttl_valid": 30 <= int(settings.document_access_grant_ttl_seconds) <= 300,
+            "document_access_limit_valid": 1 <= int(settings.document_access_max_active_grants) <= 20,
             "backup_size_limit_valid": 1 <= int(settings.max_backup_mb) <= 10240,
             "backup_retention_valid": 1 <= int(settings.backup_retention_days) <= 3650,
-            "backup_max_age_valid": 1
-            <= int(settings.backup_max_age_hours)
-            <= min(8760, int(settings.backup_retention_days) * 24),
-            "backup_freshness_cache_valid": 0
-            <= int(settings.backup_freshness_cache_seconds)
-            <= 3600,
-            "backup_clock_skew_valid": 0
-            <= int(settings.backup_future_clock_skew_seconds)
-            <= 3600,
+            "backup_max_age_valid": 1 <= int(settings.backup_max_age_hours) <= min(8760, int(settings.backup_retention_days) * 24),
+            "backup_freshness_cache_valid": 0 <= int(settings.backup_freshness_cache_seconds) <= 3600,
+            "backup_clock_skew_valid": 0 <= int(settings.backup_future_clock_skew_seconds) <= 3600,
             "recent_verified_backup": bool(backup_freshness.ok),
-            "closed_case_retention_valid": 30
-            <= int(settings.closed_case_retention_days)
-            <= 36500,
-            "case_retention_scan_batch_valid": 1
-            <= int(settings.case_retention_scan_batch_size)
-            <= 1000,
-            "case_retention_execution_timeout_valid": 60
-            <= int(settings.case_retention_execution_timeout_seconds)
-            <= 86400,
-            "payment_webhook_body_limit_valid": 1
-            <= int(settings.max_payment_webhook_kb)
-            <= 1024,
-            "payment_webhook_timeout_valid": 30
-            <= int(settings.payment_webhook_processing_timeout_seconds)
-            <= 3600,
-            "payment_webhook_attempt_limit_valid": 1
-            <= int(settings.payment_webhook_max_attempts)
-            <= 50,
+            "closed_case_retention_valid": 30 <= int(settings.closed_case_retention_days) <= 36500,
+            "case_retention_scan_batch_valid": 1 <= int(settings.case_retention_scan_batch_size) <= 1000,
+            "case_retention_execution_timeout_valid": 60 <= int(settings.case_retention_execution_timeout_seconds) <= 86400,
+            "payment_webhook_body_limit_valid": 1 <= int(settings.max_payment_webhook_kb) <= 1024,
+            "payment_webhook_timeout_valid": 30 <= int(settings.payment_webhook_processing_timeout_seconds) <= 3600,
+            "payment_webhook_attempt_limit_valid": 1 <= int(settings.payment_webhook_max_attempts) <= 50,
             "payment_webhook_secret_ready": payment_webhook_secret_ready,
             "trusted_proxy_config_valid": trusted_proxy_config_valid,
-            "trusted_proxy_hop_limit_valid": 1
-            <= int(settings.trusted_proxy_max_hops)
-            <= 20,
+            "trusted_proxy_hop_limit_valid": 1 <= int(settings.trusted_proxy_max_hops) <= 20,
             "database_url_configured": bool(settings.database_url),
             "scheduler_enabled": settings.run_scheduler,
             "bot_enabled": settings.run_bot,
@@ -243,9 +212,7 @@ def create_app():
                 "quarantine_retention_days": settings.upload_quarantine_retention_days,
                 "allowed_formats": ["pdf", "docx", "jpeg", "png"],
                 "encryption_at_rest": True,
-                "encryption_key_id": key_status["active_key_ids"].get(
-                    "document_encryption"
-                ),
+                "encryption_key_id": key_status["active_key_ids"].get("document_encryption"),
             },
             "document_delivery_security": {
                 "enabled": True,
@@ -260,9 +227,7 @@ def create_app():
                 "enabled": True,
                 "retention_days": settings.closed_case_retention_days,
                 "scheduler_dry_run": settings.case_retention_dry_run,
-                "execution_timeout_seconds": (
-                    settings.case_retention_execution_timeout_seconds
-                ),
+                "execution_timeout_seconds": settings.case_retention_execution_timeout_seconds,
                 "two_person_approval": True,
                 "personal_mfa_superadmin_required": True,
                 "legal_hold": True,
@@ -279,9 +244,7 @@ def create_app():
                 "restore_mode": "verified_staging_only",
                 "max_backup_mb": settings.max_backup_mb,
                 "retention_days": settings.backup_retention_days,
-                "readiness_required_in_production": (
-                    settings.backup_readiness_required_in_production
-                ),
+                "readiness_required_in_production": settings.backup_readiness_required_in_production,
                 "max_age_hours": settings.backup_max_age_hours,
                 "freshness": backup_freshness.as_dict(),
             },
@@ -290,12 +253,9 @@ def create_app():
                 "max_body_kb": settings.max_payment_webhook_kb,
                 "idempotent_ledger": True,
                 "replay_payload_conflict_detection": True,
-                "processing_timeout_seconds": (
-                    settings.payment_webhook_processing_timeout_seconds
-                ),
+                "processing_timeout_seconds": settings.payment_webhook_processing_timeout_seconds,
                 "max_attempts": settings.payment_webhook_max_attempts,
-                "authoritative_provider_recheck": settings.payment_provider
-                == "yookassa",
+                "authoritative_provider_recheck": settings.payment_provider == "yookassa",
                 "raw_provider_payload_persisted": False,
             },
             "security_event_monitoring": {
@@ -389,17 +349,10 @@ app = create_app()
 
 
 async def main():
-    if settings.run_bot:
-        from app.bot.bot import run_bot
+    """Compatibility entrypoint delegated to the canonical supervisor."""
+    from app.process import main as run_supervised_process
 
-        asyncio.create_task(run_bot())
-    if settings.run_scheduler:
-        from app.scheduler.scheduler import AppScheduler
-
-        asyncio.create_task(AppScheduler().run_forever())
-    config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
-    server = uvicorn.Server(config)
-    await server.serve()
+    return await run_supervised_process()
 
 
 if __name__ == "__main__":
