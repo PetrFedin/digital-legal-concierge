@@ -4,6 +4,7 @@ import ast
 import re
 from dataclasses import dataclass
 from hashlib import sha256
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -36,6 +37,48 @@ class RegisteredRoute:
     pattern: re.Pattern[str]
 
 
+@dataclass(frozen=True)
+class JavascriptFragment:
+    kind: str
+    text: str
+
+
+class JavascriptContextParser(HTMLParser):
+    """Extract executable JavaScript without treating surrounding HTML as JS."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.fragments: list[JavascriptFragment] = []
+        self._script_depth = 0
+        self._script_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = {name.lower(): value or "" for name, value in attrs}
+        if tag.lower() == "script":
+            self._script_depth += 1
+            if self._script_depth == 1:
+                self._script_parts = []
+        for name, value in values.items():
+            if name.startswith("on") and value.strip():
+                self.fragments.append(
+                    JavascriptFragment(kind=f"inline-{name}", text=value)
+                )
+
+    def handle_data(self, data: str) -> None:
+        if self._script_depth:
+            self._script_parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() != "script" or not self._script_depth:
+            return
+        self._script_depth -= 1
+        if self._script_depth == 0:
+            script = "".join(self._script_parts).strip()
+            if script:
+                self.fragments.append(JavascriptFragment(kind="script", text=script))
+            self._script_parts = []
+
+
 def _literal_text(node: ast.AST) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
@@ -45,7 +88,7 @@ def _literal_text(node: ast.AST) -> str | None:
             if isinstance(value, ast.Constant) and isinstance(value.value, str):
                 parts.append(value.value)
             else:
-                parts.append("{dynamic}")
+                parts.append(DYNAMIC_TOKEN)
         return "".join(parts)
     return None
 
@@ -105,12 +148,7 @@ def _read_quoted(expression: str, start: int) -> tuple[str, int] | None:
     while index < len(expression):
         char = expression[index]
         if escaped:
-            if char == "/":
-                chars.append("/")
-            elif char in {quote, "\\"}:
-                chars.append(char)
-            else:
-                chars.extend(("\\", char))
+            chars.append(char)
             escaped = False
         elif char == "\\":
             escaped = True
@@ -226,7 +264,11 @@ def _normalize_dynamic_expression(expression: str) -> str | None:
 
     if not tokens or tokens[0][0] != "literal" or not tokens[0][1].startswith("/"):
         return None
-    if not any(kind == "dynamic" for kind, _ in tokens):
+    has_dynamic_term = any(kind == "dynamic" for kind, _ in tokens)
+    has_embedded_dynamic = any(
+        DYNAMIC_TOKEN in value for kind, value in tokens if kind == "literal"
+    )
+    if not has_dynamic_term and not has_embedded_dynamic:
         return None
 
     normalized: list[str] = []
@@ -311,8 +353,11 @@ def _method_from_call(call_body: str, default: str = "GET") -> str:
     return match.group("method").upper() if match else default
 
 
-def _call_interactions(source: str, text: str) -> list[DynamicInteraction]:
+def _call_interactions(
+    source: str, fragment: JavascriptFragment
+) -> list[DynamicInteraction]:
     interactions: list[DynamicInteraction] = []
+    text = fragment.text
     call_pattern = re.compile(
         r"(?<![\w$])(?P<callee>fetch|api|location\.assign|window\.open)\s*\(",
         re.IGNORECASE,
@@ -331,11 +376,13 @@ def _call_interactions(source: str, text: str) -> list[DynamicInteraction]:
         if sample_path is None:
             continue
         callee = match.group("callee").lower()
-        method = _method_from_call(call_body) if callee in {"fetch", "api"} else "GET"
+        method = (
+            _method_from_call(call_body) if callee in {"fetch", "api"} else "GET"
+        )
         interactions.append(
             DynamicInteraction(
                 source=source,
-                kind=f"javascript-{callee}",
+                kind=f"{fragment.kind}-{callee}",
                 method=method,
                 expression=expression,
                 path_template=path_template,
@@ -345,8 +392,11 @@ def _call_interactions(source: str, text: str) -> list[DynamicInteraction]:
     return interactions
 
 
-def _assignment_interactions(source: str, text: str) -> list[DynamicInteraction]:
+def _assignment_interactions(
+    source: str, fragment: JavascriptFragment
+) -> list[DynamicInteraction]:
     interactions: list[DynamicInteraction] = []
+    text = fragment.text
     pattern = re.compile(
         r"(?:window\.)?location(?:\.href)?\s*=\s*",
         re.IGNORECASE,
@@ -387,7 +437,7 @@ def _assignment_interactions(source: str, text: str) -> list[DynamicInteraction]
         interactions.append(
             DynamicInteraction(
                 source=source,
-                kind="javascript-location",
+                kind=f"{fragment.kind}-location",
                 method="GET",
                 expression=expression,
                 path_template=path_template,
@@ -397,44 +447,81 @@ def _assignment_interactions(source: str, text: str) -> list[DynamicInteraction]
     return interactions
 
 
-def _dynamic_attribute_interactions(
-    source: str, text: str
+def _tag_attributes(attribute_text: str) -> dict[str, str]:
+    normalized = attribute_text.replace('\\"', '"').replace("\\'", "'")
+    return {
+        match.group("name").lower(): match.group("value")
+        for match in re.finditer(
+            r"(?P<name>[A-Za-z_:][\w:.-]*)\s*=\s*(?P<q>['\"])(?P<value>.*?)(?P=q)",
+            normalized,
+            re.DOTALL,
+        )
+    }
+
+
+def _markup_attribute_interactions(
+    source: str, markup: str, *, kind_prefix: str
 ) -> list[DynamicInteraction]:
     interactions: list[DynamicInteraction] = []
-    pattern = re.compile(
-        r"\b(?P<attribute>href|src|action|formaction)\s*=\s*\\?(?P<q>['\"])(?P<path>/[^'\"]*(?:\$\{|\{dynamic\})[^'\"]*)(?P=q)",
-        re.IGNORECASE,
-    )
-    for match in pattern.finditer(text):
-        path_template, dynamic = _replace_template_expressions(match.group("path"))
-        if not dynamic and "{dynamic}" not in path_template:
-            continue
-        sample_path = _sample_path(path_template)
-        if sample_path is None:
-            continue
-        interactions.append(
-            DynamicInteraction(
-                source=source,
-                kind=f"dynamic-{match.group('attribute').lower()}",
-                method="GET",
-                expression=match.group("path"),
-                path_template=path_template,
-                sample_path=sample_path,
+    for tag_match in re.finditer(
+        r"<(?P<tag>[A-Za-z][\w:-]*)\b(?P<attrs>[^<>]*)>",
+        markup,
+        re.DOTALL,
+    ):
+        tag = tag_match.group("tag").lower()
+        attrs = _tag_attributes(tag_match.group("attrs"))
+        for attribute in ("href", "src", "action", "formaction"):
+            expression = attrs.get(attribute, "").strip()
+            if not expression.startswith("/"):
+                continue
+            if "${" in expression:
+                path_template, dynamic = _replace_template_expressions(expression)
+            else:
+                path_template = expression
+                dynamic = DYNAMIC_TOKEN in path_template
+            if not dynamic:
+                continue
+            sample_path = _sample_path(path_template)
+            if sample_path is None:
+                continue
+            if attribute == "action" and tag == "form":
+                method = attrs.get("method", "GET").upper()
+            elif attribute == "formaction":
+                method = attrs.get("formmethod", "GET").upper()
+            else:
+                method = "GET"
+            interactions.append(
+                DynamicInteraction(
+                    source=source,
+                    kind=f"{kind_prefix}-{attribute}",
+                    method=method,
+                    expression=expression,
+                    path_template=path_template,
+                    sample_path=sample_path,
+                )
             )
-        )
     return interactions
 
 
 def _dynamic_interactions() -> list[DynamicInteraction]:
-    unique: dict[
-        tuple[str, str, str, str], DynamicInteraction
-    ] = {}
+    unique: dict[tuple[str, str, str, str], DynamicInteraction] = {}
     for source, text in _html_documents():
-        for interaction in (
-            _call_interactions(source, text)
-            + _assignment_interactions(source, text)
-            + _dynamic_attribute_interactions(source, text)
-        ):
+        parser = JavascriptContextParser()
+        parser.feed(text)
+        candidates = _markup_attribute_interactions(
+            source, text, kind_prefix="html"
+        )
+        for fragment in parser.fragments:
+            candidates.extend(_call_interactions(source, fragment))
+            candidates.extend(_assignment_interactions(source, fragment))
+            candidates.extend(
+                _markup_attribute_interactions(
+                    source,
+                    fragment.text,
+                    kind_prefix=f"{fragment.kind}-template",
+                )
+            )
+        for interaction in candidates:
             key = (
                 interaction.source,
                 interaction.kind,
