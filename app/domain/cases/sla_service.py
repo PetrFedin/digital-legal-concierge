@@ -286,6 +286,8 @@ class CaseSLAService:
         case_id: int,
         actor_id: int | None,
         comment: str,
+        expected_sla_status: str | None = None,
+        expected_escalation_level: int | None = None,
     ) -> Case:
         normalized_comment = str(comment or "").strip()
         if len(normalized_comment) < 5:
@@ -298,6 +300,22 @@ class CaseSLAService:
             SLA_ACTION_OVERDUE,
         }:
             raise CaseSLAError("Дело не находится в просроченном SLA")
+
+        if expected_sla_status is not None:
+            normalized_expected_status = str(expected_sla_status).strip().upper()
+            if normalized_expected_status != str(case.sla_status).upper():
+                raise CaseSLAError(
+                    "SLA изменился после загрузки экрана. Обновите список и повторите решение"
+                )
+        if expected_escalation_level is not None:
+            try:
+                normalized_expected_level = int(expected_escalation_level)
+            except (TypeError, ValueError) as error:
+                raise CaseSLAError("Некорректный ожидаемый уровень эскалации") from error
+            if normalized_expected_level != int(case.escalation_level or 0):
+                raise CaseSLAError(
+                    "Уровень эскалации изменился после загрузки экрана. Обновите список"
+                )
 
         old = self._snapshot(case)
         now = datetime.now(timezone.utc)

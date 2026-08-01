@@ -18,6 +18,10 @@ ROOT = Path(__file__).resolve().parents[1]
 API_DIR = ROOT / "app" / "api"
 HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"}
 DYNAMIC_MARKERS = ("${", "{", "}", "__ID__")
+EVENT_ATTRIBUTE_PATTERN = re.compile(
+    r"(?<![\w-])on[a-z]+\s*=\s*",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -188,22 +192,47 @@ def _javascript_interactions(text: str) -> list[tuple[str, str, str]]:
 
 
 def _inline_handler_sources(text: str) -> list[str]:
-    handlers = [
-        match.group("body")
-        for match in re.finditer(
-            r"on[a-z]+\s*=\s*(?P<q>['\"])(?P<body>.*?)(?P=q)",
-            text,
-            re.IGNORECASE | re.DOTALL,
+    """Extract quoted event handlers without crossing into adjacent JS code.
+
+    HTML embedded in JavaScript template literals commonly represents attribute
+    quotes as either ``"`` or ``\"``. A boundary-aware scanner avoids matching
+    the ``on`` suffix of ordinary assignments such as ``condition="..."`` and
+    respects backslash escapes in regular quoted attributes.
+    """
+
+    handlers: list[str] = []
+    for match in EVENT_ATTRIBUTE_PATTERN.finditer(text):
+        value_start = match.end()
+        if value_start >= len(text):
+            continue
+
+        escaped_delimiter = (
+            text[value_start] == "\\"
+            and value_start + 1 < len(text)
+            and text[value_start + 1] in {"'", '"'}
         )
-    ]
-    handlers.extend(
-        match.group("body")
-        for match in re.finditer(
-            r"on[a-z]+\s*=\s*\\\"(?P<body>.*?)\\\"",
-            text,
-            re.IGNORECASE | re.DOTALL,
-        )
-    )
+        if escaped_delimiter:
+            quote = text[value_start + 1]
+            body_start = value_start + 2
+            body_end = text.find("\\" + quote, body_start)
+            if body_end >= 0:
+                handlers.append(text[body_start:body_end])
+            continue
+
+        quote = text[value_start]
+        if quote not in {"'", '"'}:
+            continue
+        body_start = value_start + 1
+        index = body_start
+        while index < len(text):
+            if text[index] == "\\":
+                index += 2
+                continue
+            if text[index] == quote:
+                handlers.append(text[body_start:index])
+                break
+            index += 1
+
     return handlers
 
 
@@ -227,12 +256,16 @@ def _called_handler_functions(handler: str) -> set[str]:
     ignored = {
         "alert",
         "Boolean",
+        "catch",
         "confirm",
         "Date",
         "decodeURIComponent",
         "encodeURIComponent",
         "fetch",
+        "for",
         "FormData",
+        "function",
+        "if",
         "isNaN",
         "JSON",
         "Number",
@@ -242,8 +275,10 @@ def _called_handler_functions(handler: str) -> set[str]:
         "prompt",
         "setTimeout",
         "String",
+        "switch",
         "URL",
         "URLSearchParams",
+        "while",
     }
     return {
         name
@@ -279,6 +314,17 @@ def _all_interactions() -> tuple[list[Interaction], dict[str, list[str]]]:
             missing_functions[source] = missing
 
     return interactions, missing_functions
+
+
+def test_inline_handler_scanner_respects_attribute_boundaries_and_quotes():
+    generated = r'''const condition=\"if(notAHandler())\";
+    const markup=`<button onclick=\"ack(7,this)\">Подтвердить</button>`;
+    if(condition){refresh();}'''
+
+    handlers = _inline_handler_sources(generated)
+
+    assert handlers == ["ack(7,this)"]
+    assert _called_handler_functions(handlers[0]) == {"ack"}
 
 
 def test_static_html_interactions_resolve_to_registered_http_handlers():
