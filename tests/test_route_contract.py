@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import inspect
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Any
 
@@ -98,14 +98,29 @@ def test_no_duplicate_http_method_and_path_handlers_are_registered():
 
 
 def test_every_named_application_route_has_a_unique_name():
-    names = Counter(
-        route.name
-        for route in _application_routes()
-        if route.name
-        and route.name
-        not in {"openapi", "swagger_ui_html", "swagger_ui_redirect", "redoc_html"}
-    )
-    duplicates = {name: count for name, count in names.items() if count > 1}
+    routes_by_name: defaultdict[str, list[str]] = defaultdict(list)
+    for route in _application_routes():
+        if not route.name or route.name in {
+            "openapi",
+            "swagger_ui_html",
+            "swagger_ui_redirect",
+            "redoc_html",
+        }:
+            continue
+        endpoint_name = (
+            f"{getattr(route.endpoint, '__module__', '?')}."
+            f"{getattr(route.endpoint, '__qualname__', repr(route.endpoint))}"
+        )
+        methods = ",".join(sorted(route.methods)) or "ANY"
+        routes_by_name[route.name].append(
+            f"{methods} {route.path} -> {endpoint_name}"
+        )
+
+    duplicates = {
+        name: registrations
+        for name, registrations in routes_by_name.items()
+        if len(registrations) > 1
+    }
     assert duplicates == {}, f"duplicate route names make reverse routing ambiguous: {duplicates}"
 
 
