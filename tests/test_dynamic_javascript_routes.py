@@ -44,7 +44,7 @@ class JavascriptFragment:
 
 
 class JavascriptContextParser(HTMLParser):
-    """Extract executable JavaScript without treating surrounding HTML as JS."""
+    """Extract executable scripts and inline handlers from an HTML document."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -138,6 +138,92 @@ def _registered_routes() -> list[RegisteredRoute]:
     return routes
 
 
+def _skip_simple_string(text: str, start: int, quote: str) -> int:
+    index = start + 1
+    while index < len(text):
+        if text[index] == "\\":
+            index += 2
+        elif text[index] == quote:
+            return index + 1
+        else:
+            index += 1
+    return len(text)
+
+
+def _skip_line_comment(text: str, start: int) -> int:
+    newline = text.find("\n", start + 2)
+    return len(text) if newline < 0 else newline
+
+
+def _skip_block_comment(text: str, start: int) -> int:
+    end = text.find("*/", start + 2)
+    return len(text) if end < 0 else end + 2
+
+
+def _skip_template_expression(text: str, start: int) -> int:
+    depth = 1
+    index = start
+    while index < len(text) and depth:
+        char = text[index]
+        if char in {"'", '"'}:
+            index = _skip_simple_string(text, index, char)
+        elif char == "`":
+            index = _skip_template_literal(text, index)
+        elif text.startswith("//", index):
+            index = _skip_line_comment(text, index)
+        elif text.startswith("/*", index):
+            index = _skip_block_comment(text, index)
+        elif char == "{":
+            depth += 1
+            index += 1
+        elif char == "}":
+            depth -= 1
+            index += 1
+        else:
+            index += 1
+    return index
+
+
+def _skip_template_literal(text: str, start: int) -> int:
+    index = start + 1
+    while index < len(text):
+        if text[index] == "\\":
+            index += 2
+        elif text[index] == "`":
+            return index + 1
+        elif text.startswith("${", index):
+            index = _skip_template_expression(text, index + 2)
+        else:
+            index += 1
+    return len(text)
+
+
+def _mask_non_executable_javascript(text: str) -> str:
+    """Mask strings, templates and comments while preserving source offsets."""
+    masked = list(text)
+    index = 0
+    while index < len(text):
+        end = index
+        char = text[index]
+        if char in {"'", '"'}:
+            end = _skip_simple_string(text, index, char)
+        elif char == "`":
+            end = _skip_template_literal(text, index)
+        elif text.startswith("//", index):
+            end = _skip_line_comment(text, index)
+        elif text.startswith("/*", index):
+            end = _skip_block_comment(text, index)
+
+        if end > index:
+            for position in range(index, end):
+                if masked[position] not in {"\n", "\r"}:
+                    masked[position] = " "
+            index = end
+        else:
+            index += 1
+    return "".join(masked)
+
+
 def _read_quoted(expression: str, start: int) -> tuple[str, int] | None:
     quote = expression[start]
     if quote not in {"'", '"'}:
@@ -170,31 +256,12 @@ def _replace_template_expressions(content: str) -> tuple[str, bool]:
             output.append(content[index:])
             break
         output.append(content[index:marker])
-        depth = 1
-        cursor = marker + 2
-        quote: str | None = None
-        escaped = False
-        while cursor < len(content) and depth:
-            char = content[cursor]
-            if quote is not None:
-                if escaped:
-                    escaped = False
-                elif char == "\\":
-                    escaped = True
-                elif char == quote:
-                    quote = None
-            elif char in {"'", '"', "`"}:
-                quote = char
-            elif char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-            cursor += 1
-        if depth:
+        end = _skip_template_expression(content, marker + 2)
+        if end <= marker + 2 or end > len(content):
             return content, False
         output.append(DYNAMIC_TOKEN)
         dynamic = True
-        index = cursor
+        index = end
     return "".join(output), dynamic
 
 
@@ -227,6 +294,17 @@ def _consume_dynamic_term(expression: str, start: int) -> int:
     return index
 
 
+def _valid_path_template(path_template: str) -> bool:
+    if not path_template.startswith("/") or path_template.startswith("//"):
+        return False
+    if DYNAMIC_TOKEN not in path_template:
+        return False
+    return not any(
+        char.isspace() or char in {'<', '>', '"', "'", "`", "\\"}
+        for char in path_template
+    )
+
+
 def _normalize_dynamic_expression(expression: str) -> str | None:
     expression = expression.strip()
     if not expression:
@@ -236,9 +314,7 @@ def _normalize_dynamic_expression(expression: str) -> str | None:
         if not expression.endswith("`"):
             return None
         normalized, dynamic = _replace_template_expressions(expression[1:-1])
-        if not dynamic or not normalized.startswith("/"):
-            return None
-        return normalized
+        return normalized if dynamic and _valid_path_template(normalized) else None
 
     tokens: list[tuple[str, str]] = []
     index = 0
@@ -262,22 +338,16 @@ def _normalize_dynamic_expression(expression: str) -> str | None:
             tokens.append(("dynamic", term))
         index = end
 
-    if not tokens or tokens[0][0] != "literal" or not tokens[0][1].startswith("/"):
+    if not tokens or tokens[0][0] != "literal":
         return None
-    has_dynamic_term = any(kind == "dynamic" for kind, _ in tokens)
-    has_embedded_dynamic = any(
-        DYNAMIC_TOKEN in value for kind, value in tokens if kind == "literal"
-    )
-    if not has_dynamic_term and not has_embedded_dynamic:
-        return None
-
     normalized: list[str] = []
     for kind, value in tokens:
         if kind == "literal":
             normalized.append(value)
         elif not normalized or normalized[-1] != DYNAMIC_TOKEN:
             normalized.append(DYNAMIC_TOKEN)
-    return "".join(normalized)
+    result = "".join(normalized)
+    return result if _valid_path_template(result) else None
 
 
 def _sample_path(path_template: str) -> str | None:
@@ -358,12 +428,13 @@ def _call_interactions(
 ) -> list[DynamicInteraction]:
     interactions: list[DynamicInteraction] = []
     text = fragment.text
-    call_pattern = re.compile(
+    masked = _mask_non_executable_javascript(text)
+    pattern = re.compile(
         r"(?<![\w$])(?P<callee>fetch|api|location\.assign|window\.open)\s*\(",
         re.IGNORECASE,
     )
-    for match in call_pattern.finditer(text):
-        open_parenthesis = text.find("(", match.start())
+    for match in pattern.finditer(masked):
+        open_parenthesis = masked.find("(", match.start())
         call = _balanced_call(text, open_parenthesis)
         if call is None:
             continue
@@ -397,11 +468,12 @@ def _assignment_interactions(
 ) -> list[DynamicInteraction]:
     interactions: list[DynamicInteraction] = []
     text = fragment.text
+    masked = _mask_non_executable_javascript(text)
     pattern = re.compile(
         r"(?:window\.)?location(?:\.href)?\s*=\s*",
         re.IGNORECASE,
     )
-    for match in pattern.finditer(text):
+    for match in pattern.finditer(masked):
         cursor = match.end()
         quote: str | None = None
         escaped = False
@@ -459,17 +531,32 @@ def _tag_attributes(attribute_text: str) -> dict[str, str]:
     }
 
 
-def _markup_attribute_interactions(
-    source: str, markup: str, *, kind_prefix: str
-) -> list[DynamicInteraction]:
-    interactions: list[DynamicInteraction] = []
-    for tag_match in re.finditer(
+def _markup_fragments(markup: str) -> tuple[list[JavascriptFragment], list[dict[str, str]]]:
+    handlers: list[JavascriptFragment] = []
+    tags: list[dict[str, str]] = []
+    for match in re.finditer(
         r"<(?P<tag>[A-Za-z][\w:-]*)\b(?P<attrs>[^<>]*)>",
         markup,
         re.DOTALL,
     ):
-        tag = tag_match.group("tag").lower()
-        attrs = _tag_attributes(tag_match.group("attrs"))
+        attrs = _tag_attributes(match.group("attrs"))
+        attrs["__tag__"] = match.group("tag").lower()
+        tags.append(attrs)
+        for name, value in attrs.items():
+            if name.startswith("on") and value.strip():
+                handlers.append(
+                    JavascriptFragment(kind=f"template-{name}", text=value)
+                )
+    return handlers, tags
+
+
+def _markup_attribute_interactions(
+    source: str, markup: str, *, kind_prefix: str
+) -> list[DynamicInteraction]:
+    interactions: list[DynamicInteraction] = []
+    _, tags = _markup_fragments(markup)
+    for attrs in tags:
+        tag = attrs.get("__tag__", "")
         for attribute in ("href", "src", "action", "formaction"):
             expression = attrs.get(attribute, "").strip()
             if not expression.startswith("/"):
@@ -479,7 +566,7 @@ def _markup_attribute_interactions(
             else:
                 path_template = expression
                 dynamic = DYNAMIC_TOKEN in path_template
-            if not dynamic:
+            if not dynamic or not _valid_path_template(path_template):
                 continue
             sample_path = _sample_path(path_template)
             if sample_path is None:
@@ -511,7 +598,14 @@ def _dynamic_interactions() -> list[DynamicInteraction]:
         candidates = _markup_attribute_interactions(
             source, text, kind_prefix="html"
         )
-        for fragment in parser.fragments:
+        queue = list(parser.fragments)
+        seen_fragments: set[tuple[str, str]] = set()
+        while queue:
+            fragment = queue.pop()
+            fragment_key = (fragment.kind, fragment.text)
+            if fragment_key in seen_fragments:
+                continue
+            seen_fragments.add(fragment_key)
             candidates.extend(_call_interactions(source, fragment))
             candidates.extend(_assignment_interactions(source, fragment))
             candidates.extend(
@@ -521,6 +615,9 @@ def _dynamic_interactions() -> list[DynamicInteraction]:
                     kind_prefix=f"{fragment.kind}-template",
                 )
             )
+            nested_handlers, _ = _markup_fragments(fragment.text)
+            queue.extend(nested_handlers)
+
         for interaction in candidates:
             key = (
                 interaction.source,
