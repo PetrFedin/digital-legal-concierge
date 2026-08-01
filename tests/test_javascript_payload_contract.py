@@ -515,6 +515,53 @@ def _payload_calls() -> list[PayloadCall]:
     return calls
 
 
+def _test_mentions_optional_key(test: ast.AST, parameter_name: str, key: str) -> bool:
+    for node in ast.walk(test):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == parameter_name
+            and node.func.attr == "get"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == key
+        ):
+            return True
+        if isinstance(node, ast.Compare):
+            operands = [node.left, *node.comparators]
+            has_key = any(
+                isinstance(operand, ast.Constant) and operand.value == key
+                for operand in operands
+            )
+            has_payload = any(
+                isinstance(operand, ast.Name) and operand.id == parameter_name
+                for operand in operands
+            )
+            has_membership = any(
+                isinstance(operator, (ast.In, ast.NotIn)) for operator in node.ops
+            )
+            if has_key and has_payload and has_membership:
+                return True
+    return False
+
+
+def _subscript_is_guarded(
+    node: ast.Subscript,
+    parents: dict[ast.AST, ast.AST],
+    parameter_name: str,
+    key: str,
+) -> bool:
+    current = parents.get(node)
+    while current is not None:
+        if isinstance(current, ast.If) and _test_mentions_optional_key(
+            current.test, parameter_name, key
+        ):
+            return True
+        current = parents.get(current)
+    return False
+
+
 def _dict_body_contract(endpoint: Any, parameter_name: str) -> BodyContract | None:
     try:
         source = textwrap.dedent(inspect.getsource(endpoint))
@@ -522,6 +569,11 @@ def _dict_body_contract(endpoint: Any, parameter_name: str) -> BodyContract | No
     except (OSError, TypeError, SyntaxError):
         return None
 
+    parents = {
+        child: parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
     allowed: set[str] = set()
     required: set[str] = set()
     forwards_whole_payload = False
@@ -534,8 +586,10 @@ def _dict_body_contract(endpoint: Any, parameter_name: str) -> BodyContract | No
         ):
             key_node = node.slice
             if isinstance(key_node, ast.Constant) and isinstance(key_node.value, str):
-                allowed.add(key_node.value)
-                required.add(key_node.value)
+                key = key_node.value
+                allowed.add(key)
+                if not _subscript_is_guarded(node, parents, parameter_name, key):
+                    required.add(key)
         elif (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
