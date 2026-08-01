@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import re
+from pathlib import Path
 
 import pytest
 
@@ -28,12 +29,10 @@ def _function(name: str) -> str:
 
 
 def _deletion_pipeline_source() -> str:
-    """Return the public wrapper and the implementation helper, when split."""
-    sources = [inspect.getsource(CaseRetentionService.execute_deletion)]
-    implementation = getattr(CaseRetentionService, "_execute_deletion_locked", None)
-    if implementation is not None:
-        sources.append(inspect.getsource(implementation))
-    return "\n".join(sources)
+    """Read the deployed module, unaffected by runtime test monkeypatches."""
+    module = inspect.getmodule(CaseRetentionService)
+    assert module is not None and module.__file__
+    return Path(module.__file__).read_text(encoding="utf-8")
 
 
 def test_retention_actions_are_single_flight_per_case_and_scan():
