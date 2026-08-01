@@ -18,7 +18,6 @@ API_DIR = ROOT / "app" / "api"
 SUPPORTED_FORM_METHODS = {"GET", "POST"}
 DEFAULT_FORM_MEDIA_TYPE = "application/x-www-form-urlencoded"
 NON_DATA_INPUT_TYPES = {"button", "reset", "submit", "image"}
-DYNAMIC_MARKERS = ("{dynamic}", "__ID__")
 MIN_NATIVE_FORMS = 2
 
 
@@ -26,14 +25,13 @@ MIN_NATIVE_FORMS = 2
 class Control:
     tag: str
     attrs: dict[str, str]
-    line: int
 
 
 @dataclass
 class NativeForm:
     source: str
-    attrs: dict[str, str]
     line: int
+    attrs: dict[str, str]
     controls: list[Control] = field(default_factory=list)
 
 
@@ -58,18 +56,13 @@ class NativeFormParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
         values = self._attrs(attrs)
-        line, _ = self.getpos()
-
         if tag == "form":
-            form = NativeForm(source=self.source, attrs=values, line=line)
+            line, _ = self.getpos()
+            form = NativeForm(source=self.source, line=line, attrs=values)
             self.forms.append(form)
             self._stack.append(form)
-            return
-
-        if tag in {"input", "select", "textarea", "button"} and self._stack:
-            self._stack[-1].controls.append(
-                Control(tag=tag, attrs=values, line=line)
-            )
+        elif tag in {"input", "select", "textarea", "button"} and self._stack:
+            self._stack[-1].controls.append(Control(tag=tag, attrs=values))
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.handle_starttag(tag, attrs)
@@ -83,13 +76,12 @@ def _literal_text(node: ast.AST) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
     if isinstance(node, ast.JoinedStr):
-        parts: list[str] = []
-        for value in node.values:
-            if isinstance(value, ast.Constant) and isinstance(value.value, str):
-                parts.append(value.value)
-            else:
-                parts.append("{dynamic}")
-        return "".join(parts)
+        return "".join(
+            value.value
+            if isinstance(value, ast.Constant) and isinstance(value.value, str)
+            else "{dynamic}"
+            for value in node.values
+        )
     return None
 
 
@@ -128,101 +120,58 @@ def _native_forms() -> list[NativeForm]:
         parser = NativeFormParser(source)
         parser.feed(text)
         forms.extend(
-            form
-            for form in parser.forms
-            if form.attrs.get("action", "").strip()
+            form for form in parser.forms if form.attrs.get("action", "").strip()
         )
     return forms
 
 
-def _replace_template_expressions(value: str) -> str:
-    output: list[str] = []
-    index = 0
-    while index < len(value):
-        marker = value.find("${", index)
-        if marker < 0:
-            output.append(value[index:])
-            break
-        output.append(value[index:marker])
-        depth = 1
-        cursor = marker + 2
-        quote: str | None = None
-        escaped = False
-        while cursor < len(value) and depth:
-            char = value[cursor]
-            if quote is not None:
-                if escaped:
-                    escaped = False
-                elif char == "\\":
-                    escaped = True
-                elif char == quote:
-                    quote = None
-            elif char in {"'", '"', "`"}:
-                quote = char
-            elif char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-            cursor += 1
-        if depth:
-            return value
-        output.append("1")
-        index = cursor
-    return "".join(output)
+def _replace_js_templates(value: str) -> str:
+    return re.sub(r"\$\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", "1", value)
 
 
 def _sample_action(action: str) -> str | None:
-    action = action.strip()
+    action = _replace_js_templates(action.strip())
+    action = action.replace("{dynamic}", "1").replace("__ID__", "1")
     if not action.startswith("/") or action.startswith("//"):
         return None
-    action = _replace_template_expressions(action)
-    for marker in DYNAMIC_MARKERS:
-        action = action.replace(marker, "1")
     if any(char in action for char in {'<', '>', '"', "'", "`"}):
         return None
     return action
 
 
-def _openapi_operations() -> list[OperationContract]:
-    schema = app.openapi()
+def _openapi_operations(document: dict) -> list[OperationContract]:
     operations: list[OperationContract] = []
-    for route_path, item in schema.get("paths", {}).items():
-        if not isinstance(item, dict):
+    for route_path, path_item in document.get("paths", {}).items():
+        if not isinstance(path_item, dict):
             continue
         for method in ("get", "post", "put", "patch", "delete"):
-            operation = item.get(method)
+            operation = path_item.get(method)
             if isinstance(operation, dict):
                 operations.append(
-                    OperationContract(
-                        route_path=route_path,
-                        method=method.upper(),
-                        operation=operation,
-                    )
+                    OperationContract(route_path, method.upper(), operation)
                 )
     return operations
 
 
-def _match_operation(
-    method: str,
-    action_path: str,
-    operations: list[OperationContract],
+def _matching_operations(
+    operations: list[OperationContract], method: str, path: str
 ) -> list[OperationContract]:
     matches: list[OperationContract] = []
-    for contract in operations:
-        if contract.method != method:
+    for operation in operations:
+        if operation.method != method:
             continue
-        pattern, _, _ = compile_path(contract.route_path)
-        if pattern.fullmatch(action_path):
-            matches.append(contract)
+        pattern, _, _ = compile_path(operation.route_path)
+        if pattern.fullmatch(path):
+            matches.append(operation)
     return matches
 
 
-def _resolve_ref(schema: dict, document: dict) -> dict:
-    current = schema
+def _resolve_ref(value: dict, document: dict) -> dict:
+    current = value
     seen: set[str] = set()
     while isinstance(current, dict) and "$ref" in current:
         reference = str(current["$ref"])
-        if reference in seen or not reference.startswith("#/" ):
+        if reference in seen or not reference.startswith("#/"):
             break
         seen.add(reference)
         resolved: object = document
@@ -236,61 +185,64 @@ def _resolve_ref(schema: dict, document: dict) -> dict:
     return current
 
 
-def _merge_object_schema(schema: dict, document: dict) -> tuple[set[str], set[str], bool]:
+def _schema_contract(
+    schema: dict, document: dict
+) -> tuple[set[str], set[str], bool]:
     resolved = _resolve_ref(schema, document)
-    properties: set[str] = set()
-    required: set[str] = set()
+    properties = set(str(name) for name in resolved.get("properties", {}))
+    required = set(str(name) for name in resolved.get("required", []))
     allow_unknown = resolved.get("additionalProperties") is True
 
-    raw_properties = resolved.get("properties", {})
-    if isinstance(raw_properties, dict):
-        properties.update(str(name) for name in raw_properties)
-    raw_required = resolved.get("required", [])
-    if isinstance(raw_required, list):
-        required.update(str(name) for name in raw_required)
+    all_of = resolved.get("allOf", [])
+    if isinstance(all_of, list):
+        for child in all_of:
+            if not isinstance(child, dict):
+                continue
+            child_properties, child_required, child_unknown = _schema_contract(
+                child, document
+            )
+            properties.update(child_properties)
+            required.update(child_required)
+            allow_unknown = allow_unknown or child_unknown
 
-    for keyword in ("allOf", "anyOf", "oneOf"):
+    for keyword in ("anyOf", "oneOf"):
         alternatives = resolved.get(keyword, [])
         if not isinstance(alternatives, list):
             continue
-        alternative_properties: list[set[str]] = []
-        alternative_required: list[set[str]] = []
-        for alternative in alternatives:
-            if not isinstance(alternative, dict):
-                continue
-            child_properties, child_required, child_allow_unknown = _merge_object_schema(
-                alternative, document
-            )
-            alternative_properties.append(child_properties)
-            alternative_required.append(child_required)
-            allow_unknown = allow_unknown or child_allow_unknown
-        if keyword == "allOf":
-            for child_properties in alternative_properties:
-                properties.update(child_properties)
-            for child_required in alternative_required:
-                required.update(child_required)
-        elif alternative_properties:
-            properties.update().union(*alternative_properties)
-            common_required = set.intersection(*alternative_required) if alternative_required else set()
-            required.update(common_required)
+        child_contracts = [
+            _schema_contract(child, document)
+            for child in alternatives
+            if isinstance(child, dict)
+        ]
+        if not child_contracts:
+            continue
+        for child_properties, _, child_unknown in child_contracts:
+            properties.update(child_properties)
+            allow_unknown = allow_unknown or child_unknown
+        common_required = set.intersection(
+            *(child_required for _, child_required, _ in child_contracts)
+        )
+        required.update(common_required)
 
     return properties, required, allow_unknown
 
 
-def _operation_parameters(operation: dict, document: dict, location: str) -> tuple[set[str], set[str]]:
+def _parameters(
+    operation: dict, document: dict, location: str
+) -> tuple[set[str], set[str]]:
     names: set[str] = set()
     required: set[str] = set()
-    for parameter in operation.get("parameters", []):
-        if not isinstance(parameter, dict):
+    for raw_parameter in operation.get("parameters", []):
+        if not isinstance(raw_parameter, dict):
             continue
-        resolved = _resolve_ref(parameter, document)
-        if resolved.get("in") != location:
+        parameter = _resolve_ref(raw_parameter, document)
+        if parameter.get("in") != location:
             continue
-        name = str(resolved.get("name", "")).strip()
+        name = str(parameter.get("name", "")).strip()
         if not name:
             continue
         names.add(name)
-        if resolved.get("required") is True:
+        if parameter.get("required") is True:
             required.add(name)
     return names, required
 
@@ -302,25 +254,24 @@ def _successful_control_names(form: NativeForm) -> set[str]:
         if "disabled" in attrs:
             continue
         name = attrs.get("name", "").strip()
-        if not name:
+        if not name or control.tag == "button":
             continue
-        if control.tag == "button":
-            continue
-        if control.tag == "input" and attrs.get("type", "text").lower() in NON_DATA_INPUT_TYPES:
+        control_type = attrs.get("type", "text").lower()
+        if control.tag == "input" and control_type in NON_DATA_INPUT_TYPES:
             continue
         names.add(name)
     return names
 
 
-def _form_media_type(form: NativeForm) -> str:
-    enctype = form.attrs.get("enctype", DEFAULT_FORM_MEDIA_TYPE).strip().lower()
-    return enctype or DEFAULT_FORM_MEDIA_TYPE
+def _media_type(form: NativeForm) -> str:
+    value = form.attrs.get("enctype", DEFAULT_FORM_MEDIA_TYPE).strip().lower()
+    return value or DEFAULT_FORM_MEDIA_TYPE
 
 
 def test_native_form_fields_match_openapi_input_contracts():
     forms = _native_forms()
     document = app.openapi()
-    operations = _openapi_operations()
+    operations = _openapi_operations(document)
 
     unsupported_methods: list[str] = []
     unresolved_actions: list[str] = []
@@ -333,7 +284,10 @@ def test_native_form_fields_match_openapi_input_contracts():
 
     for form in forms:
         method = form.attrs.get("method", "GET").upper()
-        description = f"{form.source}:{form.line} {method} {form.attrs.get('action', '')!r}"
+        description = (
+            f"{form.source}:{form.line} {method} "
+            f"{form.attrs.get('action', '')!r}"
+        )
         if method not in SUPPORTED_FORM_METHODS:
             unsupported_methods.append(description)
             continue
@@ -342,10 +296,8 @@ def test_native_form_fields_match_openapi_input_contracts():
         if action is None:
             unresolved_actions.append(description)
             continue
-        parsed_action = urlsplit(action)
-        action_path = parsed_action.path or "/"
-        action_query_names = set(parse_qs(parsed_action.query, keep_blank_values=True))
-        matches = _match_operation(method, action_path, operations)
+        parsed = urlsplit(action)
+        matches = _matching_operations(operations, method, parsed.path or "/")
         if not matches:
             missing_routes.append(description)
             continue
@@ -358,60 +310,62 @@ def test_native_form_fields_match_openapi_input_contracts():
         verified += 1
         operation = matches[0].operation
         control_names = _successful_control_names(form)
-        query_names, required_query = _operation_parameters(operation, document, "query")
+        query_names, required_query = _parameters(operation, document, "query")
 
         if method == "GET":
-            provided = control_names
-            missing = required_query - provided
-            unknown = provided - query_names
+            missing = required_query - control_names
+            unknown = control_names - query_names
             if missing:
                 missing_required.append(
-                    f"{description}: missing required query fields {sorted(missing)}"
+                    f"{description}: missing query fields {sorted(missing)}"
                 )
             if unknown:
                 unknown_fields.append(
-                    f"{description}: unknown query fields {sorted(unknown)}; allowed={sorted(query_names)}"
+                    f"{description}: unknown query fields {sorted(unknown)}; "
+                    f"allowed={sorted(query_names)}"
                 )
             continue
 
+        action_query_names = set(parse_qs(parsed.query, keep_blank_values=True))
         missing_query = required_query - action_query_names
         if missing_query:
             missing_required.append(
-                f"{description}: action misses required query fields {sorted(missing_query)}"
+                f"{description}: action misses query fields {sorted(missing_query)}"
             )
 
         request_body = operation.get("requestBody")
         if not isinstance(request_body, dict):
             if control_names:
                 wrong_media_types.append(
-                    f"{description}: submits fields {sorted(control_names)} but endpoint has no request body"
+                    f"{description}: sends {sorted(control_names)} but endpoint has no body"
                 )
             continue
+
         request_body = _resolve_ref(request_body, document)
         content = request_body.get("content", {})
-        if not isinstance(content, dict):
-            content = {}
-        media_type = _form_media_type(form)
+        content = content if isinstance(content, dict) else {}
+        media_type = _media_type(form)
         media_contract = content.get(media_type)
         if not isinstance(media_contract, dict):
             wrong_media_types.append(
-                f"{description}: enctype {media_type!r} is unsupported; endpoint accepts {sorted(content)}"
+                f"{description}: enctype {media_type!r} is unsupported; "
+                f"accepted={sorted(content)}"
             )
             continue
 
-        schema = media_contract.get("schema", {})
-        if not isinstance(schema, dict):
-            schema = {}
-        allowed, required, allow_unknown = _merge_object_schema(schema, document)
+        raw_schema = media_contract.get("schema", {})
+        raw_schema = raw_schema if isinstance(raw_schema, dict) else {}
+        allowed, required, allow_unknown = _schema_contract(raw_schema, document)
         missing = required - control_names
         unknown = control_names - allowed
         if missing:
             missing_required.append(
-                f"{description}: missing required form fields {sorted(missing)}"
+                f"{description}: missing form fields {sorted(missing)}"
             )
         if unknown and not allow_unknown:
             unknown_fields.append(
-                f"{description}: unknown form fields {sorted(unknown)}; allowed={sorted(allowed)}"
+                f"{description}: unknown form fields {sorted(unknown)}; "
+                f"allowed={sorted(allowed)}"
             )
 
     assert len(forms) >= MIN_NATIVE_FORMS, (
@@ -425,7 +379,7 @@ def test_native_form_fields_match_openapi_input_contracts():
     assert unsupported_methods == [], "unsupported native form methods:\n" + "\n".join(
         unsupported_methods
     )
-    assert unresolved_actions == [], "native form actions could not be normalized:\n" + "\n".join(
+    assert unresolved_actions == [], "unresolved native form actions:\n" + "\n".join(
         unresolved_actions
     )
     assert missing_routes == [], "native forms target missing routes:\n" + "\n".join(
@@ -434,7 +388,7 @@ def test_native_form_fields_match_openapi_input_contracts():
     assert ambiguous_routes == [], "native forms target ambiguous routes:\n" + "\n".join(
         ambiguous_routes
     )
-    assert wrong_media_types == [], "native forms use incompatible request media types:\n" + "\n".join(
+    assert wrong_media_types == [], "native forms use incompatible media types:\n" + "\n".join(
         wrong_media_types
     )
     assert missing_required == [], "native forms omit required backend fields:\n" + "\n".join(
