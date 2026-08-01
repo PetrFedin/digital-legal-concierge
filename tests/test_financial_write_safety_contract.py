@@ -69,6 +69,7 @@ def test_financial_decisions_require_confirmation_and_report_exact_outcomes(
     del minimum_action_buttons
     function = _action_function(html, function_name)
     compact = _compact(function)
+    html_compact = _compact(html)
 
     confirmation = function.index("confirm(")
     single_flight = function.index("withPaymentAction(")
@@ -79,7 +80,7 @@ def test_financial_decisions_require_confirmation_and_report_exact_outcomes(
     assert "сохранено, но список не обновился" in function, label
     assert "role=\"status\"" in html, label
     assert "aria-live=\"polite\"" in html, label
-    assert "if(!r.ok)throw" in compact, label
+    assert "if(!r.ok)throw" in html_compact, label
 
 
 def test_refund_completion_explicitly_requires_external_provider_confirmation():
