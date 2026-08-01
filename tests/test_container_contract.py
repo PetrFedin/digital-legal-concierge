@@ -13,7 +13,8 @@ def test_docker_image_contains_runtime_migration_assets_and_postgres_client():
     assert "COPY migrations ./migrations" in dockerfile
     assert "COPY scripts ./scripts" in dockerfile
     assert "postgresql-client" in dockerfile
-    assert "python scripts/init_db.py && exec python -m app.main" in dockerfile
+    assert "python scripts/init_db.py && exec python -m app.process" in dockerfile
+    assert "exec python -m app.main" not in dockerfile
 
 
 def test_docker_context_excludes_secrets_databases_and_legal_documents():

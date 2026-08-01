@@ -26,4 +26,4 @@ RUN mkdir -p /app/data /app/storage /app/logs /app/backups
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "python scripts/init_db.py && exec python -m app.main"]
+CMD ["sh", "-c", "python scripts/init_db.py && exec python -m app.process"]
