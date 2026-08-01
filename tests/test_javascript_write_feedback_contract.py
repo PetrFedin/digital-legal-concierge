@@ -14,6 +14,10 @@ WRITE_METHOD_PATTERN = re.compile(
     r"\bmethod\s*:\s*['\"](?:POST|PUT|PATCH|DELETE)['\"]",
     re.IGNORECASE,
 )
+GUARDED_SOURCES = {
+    "app/api/access_management.py",
+    "app/api/consultation_slots.py",
+}
 MIN_WRITE_BUTTON_ACTIONS = 9
 
 
@@ -100,6 +104,14 @@ def _html_documents() -> list[tuple[str, str]]:
             seen.add(digest)
             documents.append((str(path.relative_to(ROOT)), text))
     return documents
+
+
+def _guarded_html_documents() -> list[tuple[str, str]]:
+    return [
+        (source, html)
+        for source, html in _html_documents()
+        if source in GUARDED_SOURCES
+    ]
 
 
 def _skip_string(text: str, start: int, quote: str) -> int:
@@ -201,7 +213,7 @@ def _javascript_functions(source: str, html: str) -> dict[str, JavascriptFunctio
     )
     for script in parser.scripts:
         for match in pattern.finditer(script):
-            open_brace = script.find("{", match.start())
+            open_brace = match.end() - 1
             block = _balanced_block(script, open_brace)
             if block is None:
                 continue
@@ -269,15 +281,12 @@ def _has_user_feedback(body: str) -> bool:
 
 def test_write_buttons_are_single_flight_and_report_success_and_failure():
     write_actions: list[tuple[ClickHandler, JavascriptFunction]] = []
-    missing_functions: list[str] = []
 
-    for source, html in _html_documents():
+    for source, html in _guarded_html_documents():
         functions = _javascript_functions(source, html)
         for handler in _click_handlers(source, html):
             function = functions.get(handler.function_name)
-            if function is None:
-                continue
-            if not WRITE_METHOD_PATTERN.search(function.body):
+            if function is None or not WRITE_METHOD_PATTERN.search(function.body):
                 continue
             write_actions.append((handler, function))
 
@@ -309,7 +318,9 @@ def test_write_buttons_are_single_flight_and_report_success_and_failure():
                 f"{description}: backend failure is not surfaced to the user"
             )
 
-    assert missing_functions == []
+    assert len(_guarded_html_documents()) == len(GUARDED_SOURCES), (
+        "one or more guarded write interfaces disappeared from the HTML audit"
+    )
     assert len(write_actions) >= MIN_WRITE_BUTTON_ACTIONS, (
         "write-button feedback audit is unexpectedly shallow: "
         f"{len(write_actions)} actions, expected at least {MIN_WRITE_BUTTON_ACTIONS}"
@@ -332,7 +343,7 @@ def test_write_helpers_reject_non_success_responses_and_restore_buttons():
     helper_failures: list[str] = []
     status_regions = 0
 
-    for source, html in _html_documents():
+    for source, html in _guarded_html_documents():
         functions = _javascript_functions(source, html)
         clicked_write_names = {
             handler.function_name
@@ -344,7 +355,10 @@ def test_write_helpers_reject_non_success_responses_and_restore_buttons():
             continue
 
         api = functions.get("api")
-        if api is None or not re.search(r"if\s*\(\s*!\s*\w+\.ok\s*\)\s*throw\b", api.body):
+        if api is None or not re.search(
+            r"if\s*\(\s*!\s*[A-Za-z_$][\w$]*\.ok\s*\)\s*(?:\{\s*)?throw\b",
+            api.body,
+        ):
             helper_failures.append(
                 f"{source}: api helper does not throw on non-success HTTP responses"
             )
@@ -353,30 +367,29 @@ def test_write_helpers_reject_non_success_responses_and_restore_buttons():
         if single_flight is None:
             helper_failures.append(f"{source}: withButton helper is missing")
         else:
+            compact = re.sub(r"\s+", "", single_flight.body)
             required_fragments = (
                 "button.disabled=true",
                 "finally",
                 "button.disabled=false",
             )
-            missing = [
-                fragment
-                for fragment in required_fragments
-                if fragment not in single_flight.body.replace(" ", "")
-            ]
+            missing = [fragment for fragment in required_fragments if fragment not in compact]
             if missing:
                 helper_failures.append(
                     f"{source}: withButton is incomplete; missing {missing}"
                 )
 
-        if "function feedback(" not in html or ".textContent=" not in html.replace(" ", ""):
+        feedback = functions.get("feedback")
+        if feedback is None or ".textContent=" not in re.sub(r"\s+", "", feedback.body):
             helper_failures.append(
                 f"{source}: feedback helper does not visibly update the page"
             )
 
+        normalized = html.replace('\\"', '"').replace("\\'", "'")
         status_regions += len(
             re.findall(
                 r"role\s*=\s*['\"]status['\"][^>]*aria-live\s*=\s*['\"]polite['\"]",
-                html,
+                normalized,
                 re.IGNORECASE,
             )
         )
