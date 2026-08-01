@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -162,7 +163,7 @@ async def test_grant_is_bound_to_session_consumed_once_and_decrypts(
         assert grant.used_at is not None
         assert consumed_document.id == document.id
         assert consumed_case.id == case.id
-        assert plaintext not in open(document.file_path, "rb").read()
+        assert plaintext not in Path(document.file_path).read_bytes()
         assert (
             LocalStorageService().read_document_bytes(
                 document.file_path,
