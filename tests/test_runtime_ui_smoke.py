@@ -17,7 +17,6 @@ UI_ENTRYPOINTS = {
     "/launch-assistant",
     "/login",
     "/mfa/manage",
-    "/security-check",
 }
 REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 AUTH_STATUSES = {401, 403}
