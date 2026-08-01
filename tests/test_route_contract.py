@@ -53,7 +53,7 @@ def _route_by_path(path: str) -> RouteRecord:
 
 
 @pytest.mark.asyncio
-async def test_every_launch_check_internal_link_resolves_to_one_registered_route():
+async def test_every_launch_check_internal_link_resolves_to_one_registered_get_route():
     launch_route = _route_by_path("/launch-check")
     result = launch_route.endpoint()
     if inspect.isawaitable(result):
@@ -69,16 +69,18 @@ async def test_every_launch_check_internal_link_resolves_to_one_registered_route
 
     missing: dict[str, str] = {}
     duplicated: dict[str, str] = {}
-    registered_paths = Counter(route.path for route in _application_routes())
+    registered_get_paths = Counter(
+        route.path for route in _application_routes() if "GET" in route.methods
+    )
     for key, path in links.items():
-        count = registered_paths[path]
+        count = registered_get_paths[path]
         if count == 0:
             missing[key] = path
         elif count > 1:
             duplicated[key] = path
 
-    assert missing == {}, f"launch-check contains missing routes: {missing}"
-    assert duplicated == {}, f"launch-check contains ambiguous routes: {duplicated}"
+    assert missing == {}, f"launch-check contains missing GET routes: {missing}"
+    assert duplicated == {}, f"launch-check contains ambiguous GET routes: {duplicated}"
 
 
 def test_no_duplicate_http_method_and_path_handlers_are_registered():
