@@ -27,6 +27,15 @@ def _function(name: str) -> str:
     return RETENTION_HTML[start:end]
 
 
+def _deletion_pipeline_source() -> str:
+    """Return the public wrapper and the implementation helper, when split."""
+    sources = [inspect.getsource(CaseRetentionService.execute_deletion)]
+    implementation = getattr(CaseRetentionService, "_execute_deletion_locked", None)
+    if implementation is not None:
+        sources.append(inspect.getsource(implementation))
+    return "\n".join(sources)
+
+
 def test_retention_actions_are_single_flight_per_case_and_scan():
     compact = _compact(RETENTION_HTML)
 
@@ -146,13 +155,16 @@ def test_retention_requires_two_different_superadmins():
 def test_retention_blocks_unsettled_operations_and_legal_hold():
     eligibility = inspect.getsource(CaseRetentionService._assert_eligible)
     settled = inspect.getsource(CaseRetentionService._assert_operationally_settled)
+    settled_compact = _compact(settled)
 
     assert "record.legal_hold" in eligibility
     assert "retention_due_at" in eligibility
     assert "UNRESOLVED_PAYMENT_STATUSES" in settled
+    assert "KNOWN_TERMINAL_PAYMENT_STATUSES" in settled
     assert "ACTIVE_CONSULTATION_STATUSES" in settled
-    assert "незавершённые или неизвестные платёжные статусы" in settled
-    assert "незавершённая консультация" in settled
+    assert "незавершённыеилинеизвестные" in settled_compact
+    assert "платёжныестатусы" in settled_compact
+    assert "незавершённаяконсультация" in settled_compact
 
 
 def test_retention_preflights_paths_and_rejects_symlink_escape():
@@ -169,8 +181,7 @@ def test_retention_preflights_paths_and_rejects_symlink_escape():
 
 
 def test_execute_deletion_claims_state_before_touching_filesystem():
-    source = inspect.getsource(CaseRetentionService.execute_deletion)
-    compact = _compact(source)
+    source = _deletion_pipeline_source()
 
     claim = source.index("update(CaseRetentionRecord)")
     executing = source.index("status=STATUS_EXECUTING", claim)
@@ -186,7 +197,7 @@ def test_execute_deletion_claims_state_before_touching_filesystem():
 
 
 def test_execute_deletion_preserves_financial_and_audit_tombstone():
-    source = inspect.getsource(CaseRetentionService.execute_deletion)
+    source = _deletion_pipeline_source()
 
     assert "delete(DocumentAccessGrant)" in source
     assert "delete(Document)" in source
