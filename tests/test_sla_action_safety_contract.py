@@ -42,9 +42,10 @@ def test_sla_writes_are_single_flight_for_run_and_case_actions():
     assert ".disabled=false" in compact
     assert "data-sla-run" in compact
     assert "data-case-id=" in compact
+    assert "data-sla-status=" in compact
+    assert "data-escalation-level=" in compact
     assert "runCheck(this)" in compact
-    assert "ack(${x.case_id}" in SLA_CENTER_HTML
-    assert ",this)" in compact
+    assert "ack(${x.case_id},this)" in compact
 
 
 def test_sla_filter_loads_abort_stale_requests_and_restore_controls():
@@ -77,6 +78,10 @@ def test_acknowledgement_validates_confirms_and_sends_displayed_snapshot():
     function = _function("ack")
     compact = _compact(function)
 
+    assert "button.dataset.slaStatus" in function
+    assert "button.dataset.escalationLevel" in function
+    assert "Number.isInteger(expectedLevel)" in function
+    assert "Snapshot SLA отсутствует или повреждён" in function
     assert "comment.trim().length<5" in compact
     assert function.index("confirm(") < function.index("withCaseAction(")
     assert function.index("withCaseAction(") < function.index("await api(")
