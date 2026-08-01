@@ -166,6 +166,14 @@ async def issue_document_grant(
     now = datetime.now(timezone.utc)
     ttl = min(max(int(settings.document_access_grant_ttl_seconds), 30), 300)
     max_active = min(max(int(settings.document_access_max_active_grants), 1), 20)
+
+    # Serialize issuance per account. Without this lock, two tabs can both read
+    # the same active-grant count and exceed the configured security limit.
+    await db.execute(
+        select(AdminUser.id)
+        .where(AdminUser.id == actor.account_id)
+        .with_for_update()
+    )
     active = (
         await db.execute(
             select(DocumentAccessGrant)
