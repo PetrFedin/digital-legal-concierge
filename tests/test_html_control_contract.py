@@ -15,7 +15,22 @@ API_DIR = ROOT / "app" / "api"
 FORM_METHODS = {"GET", "POST"}
 FIELD_TAGS = {"input", "select", "textarea"}
 NON_DATA_INPUT_TYPES = {"button", "reset", "submit", "image"}
-VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+VOID_TAGS = {
+    "area",
+    "base",
+    "br",
+    "col",
+    "embed",
+    "hr",
+    "img",
+    "input",
+    "link",
+    "meta",
+    "param",
+    "source",
+    "track",
+    "wbr",
+}
 
 
 @dataclass(frozen=True)
@@ -115,7 +130,19 @@ def _html_documents() -> list[tuple[str, str]]:
     seen: set[str] = set()
     for path in sorted(API_DIR.glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        parents = {
+            child: parent
+            for parent in ast.walk(tree)
+            for child in ast.iter_child_nodes(parent)
+        }
         for node in ast.walk(tree):
+            # A JoinedStr is the complete f-string. Its Constant children are
+            # incomplete fragments split around substitutions and must never be
+            # treated as standalone HTML documents.
+            if isinstance(node, ast.Constant) and isinstance(
+                parents.get(node), ast.JoinedStr
+            ):
+                continue
             text = _literal_text(node)
             if not text:
                 continue
@@ -169,6 +196,22 @@ def _javascript_id_references(text: str) -> list[str]:
     return references
 
 
+def _declared_static_and_template_ids(
+    text: str, document: ParsedControls
+) -> set[str]:
+    """Include IDs declared in the page and in JavaScript HTML templates."""
+    declared = set(document.ids)
+    for match in re.finditer(
+        r"\bid\s*=\s*(?P<q>['\"])(?P<id>[^'\"]+)(?P=q)",
+        text,
+        re.IGNORECASE,
+    ):
+        element_id = match.group("id").strip()
+        if element_id and "${" not in element_id and "{dynamic}" not in element_id:
+            declared.add(element_id)
+    return declared
+
+
 def test_html_ids_labels_and_javascript_dom_references_are_consistent():
     parsed = _parse_documents()
     duplicate_ids: list[str] = []
@@ -177,6 +220,7 @@ def test_html_ids_labels_and_javascript_dom_references_are_consistent():
     checked_references = 0
 
     for source, text, document in parsed:
+        declared_ids = _declared_static_and_template_ids(text, document)
         duplicate_ids.extend(
             f"{source}: id={element_id!r} occurs {count} times"
             for element_id, count in document.ids.items()
@@ -185,11 +229,11 @@ def test_html_ids_labels_and_javascript_dom_references_are_consistent():
         missing_label_targets.extend(
             f"{source}:{line}: label for={target!r} has no matching id"
             for target, line in document.labels_for
-            if target not in document.ids
+            if target not in declared_ids
         )
         for target in _javascript_id_references(text):
             checked_references += 1
-            if target not in document.ids:
+            if target not in declared_ids:
                 missing_dom_targets.append(
                     f"{source}: JavaScript references missing id={target!r}"
                 )
@@ -283,7 +327,9 @@ def test_html_input_constraints_are_not_self_contradictory():
             checked_controls += 1
             attrs = control.attrs
 
-            if _is_truthy_attribute(attrs, "required") and _is_truthy_attribute(attrs, "disabled"):
+            if _is_truthy_attribute(attrs, "required") and _is_truthy_attribute(
+                attrs, "disabled"
+            ):
                 contradictions.append(
                     f"{source}:{control.line}: required control is disabled"
                 )
