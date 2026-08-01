@@ -90,6 +90,9 @@ async def resolve_refund(
     except ValueError as error:
         await db.rollback()
         raise HTTPException(status_code=409, detail=str(error)) from error
+    except Exception:
+        await db.rollback()
+        raise
 
     return {
         "ok": True,
@@ -115,8 +118,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;ba
 header{background:#111827;color:#fff;padding:18px 24px;display:flex;justify-content:space-between;align-items:center}
 main{max-width:1200px;margin:auto;padding:24px}.card{background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:18px;margin-bottom:16px}
 table{width:100%;border-collapse:collapse}th,td{padding:10px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top}
-button{border:0;border-radius:9px;padding:9px 12px;color:#fff;font-weight:700;cursor:pointer;background:#2563eb}.green{background:#15803d}.red{background:#b91c1c}
-.muted{color:#6b7280;font-size:13px}.notice{background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:12px;margin-bottom:16px}
+button{border:0;border-radius:9px;padding:9px 12px;color:#fff;font-weight:700;cursor:pointer;background:#2563eb}button:disabled{opacity:.55;cursor:wait}.green{background:#15803d}.red{background:#b91c1c}
+.muted{color:#6b7280;font-size:13px}.ok{color:#15803d}.bad{color:#b91c1c}.warn{color:#a16207}.notice{background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:12px;margin-bottom:16px}
 @media(max-width:800px){table{font-size:12px}.actions button{display:block;width:100%;margin:4px 0}}
 </style>
 </head>
@@ -125,15 +128,18 @@ button{border:0;border-radius:9px;padding:9px 12px;color:#fff;font-weight:700;cu
 <main>
 <div class="notice"><b>Важно.</b> Эта панель не отправляет деньги через платежного провайдера. Сначала выполните фактический возврат в кабинете провайдера, затем нажмите «Возврат выполнен» для фиксации результата в системе.</div>
 <div class="card"><h2>Ожидают решения</h2><div id="content">Загрузка…</div></div>
-<div id="message" class="muted"></div>
+<div id="message" class="muted" role="status" aria-live="polite"></div>
 </main>
 <script>
-let token='';
+let token='';const pendingPayments=new Set();
 async function api(path,opts={}){const r=await fetch(path,{...opts,headers:{'x-admin-token':token,'Content-Type':'application/json',...(opts.headers||{})}});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||'Ошибка');return d}
+function feedback(text,state='ok'){message.textContent=text;message.className='muted '+state}
+function paymentButtons(id){return Array.from(document.querySelectorAll(`[data-payment-id="${id}"]`))}
+async function withPaymentAction(id,button,work){if(pendingPayments.has(id))return;pendingPayments.add(id);const buttons=paymentButtons(id);const labels=new Map(buttons.map(x=>[x,x.textContent]));buttons.forEach(x=>{x.disabled=true;x.setAttribute('aria-busy','true')});if(button)button.textContent='Выполняется…';try{return await work()}finally{pendingPayments.delete(id);buttons.forEach(x=>{x.disabled=false;x.removeAttribute('aria-busy')});labels.forEach((label,x)=>{x.textContent=label})}}
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-async function boot(){const r=await fetch('/auth/session');if(!r.ok){location.href='/login';return}const s=await r.json();token=s.api_token;await load()}
-async function load(){const rows=await api('/admin/refunds');content.innerHTML=rows.length?`<table><thead><tr><th>Платёж</th><th>Дело / клиент</th><th>Сумма</th><th>Провайдер</th><th>Действия</th></tr></thead><tbody>${rows.map(x=>`<tr><td>#${x.payment_id}<br><span class="muted">${esc(x.status)}</span></td><td><b>${esc(x.case_number)}</b><br>${esc(x.client_name||'—')}<br><span class="muted">TG ${esc(x.telegram_id)}</span></td><td>${x.amount.toLocaleString('ru-RU')} ${esc(x.currency)}</td><td>${esc(x.provider||'—')}<br><span class="muted">${esc(x.provider_payment_id||'')}</span></td><td class="actions"><button class="green" onclick="resolveRefund(${x.payment_id},'refunded')">Возврат выполнен</button> <button class="red" onclick="resolveRefund(${x.payment_id},'declined')">Отказать</button></td></tr>`).join('')}</tbody></table>`:'Заявок на возврат нет.'}
-async function resolveRefund(id,decision){const comment=prompt(decision==='refunded'?'Укажите номер операции возврата или комментарий:':'Укажите причину отказа:');if(!comment)return;try{await api('/admin/refunds/'+id+'/resolve',{method:'POST',body:JSON.stringify({decision,comment})});message.textContent='Решение сохранено';await load()}catch(e){message.textContent=e.message}}
+async function boot(){const r=await fetch('/auth/session');if(!r.ok){location.href='/login';return}const s=await r.json();token=s.api_token;try{await load()}catch(e){feedback(e.message,'bad')}}
+async function load(){const rows=await api('/admin/refunds');content.innerHTML=rows.length?`<table><thead><tr><th>Платёж</th><th>Дело / клиент</th><th>Сумма</th><th>Провайдер</th><th>Действия</th></tr></thead><tbody>${rows.map(x=>`<tr><td>#${x.payment_id}<br><span class="muted">${esc(x.status)}</span></td><td><b>${esc(x.case_number)}</b><br>${esc(x.client_name||'—')}<br><span class="muted">TG ${esc(x.telegram_id)}</span></td><td>${x.amount.toLocaleString('ru-RU')} ${esc(x.currency)}</td><td>${esc(x.provider||'—')}<br><span class="muted">${esc(x.provider_payment_id||'')}</span></td><td class="actions"><button data-payment-id="${x.payment_id}" class="green" onclick="resolveRefund(${x.payment_id},'refunded',this)">Возврат выполнен</button> <button data-payment-id="${x.payment_id}" class="red" onclick="resolveRefund(${x.payment_id},'declined',this)">Отказать</button></td></tr>`).join('')}</tbody></table>`:'Заявок на возврат нет.'}
+async function resolveRefund(id,decision,button){const question=decision==='refunded'?'Укажите номер операции возврата или комментарий:':'Укажите причину отказа:';const comment=prompt(question);if(!comment)return;if(comment.trim().length<5){feedback('Комментарий должен содержать не менее 5 символов','bad');return}const warning=decision==='refunded'?`Подтвердите, что деньги по платежу #${id} уже фактически возвращены через платёжного провайдера. Эта кнопка только фиксирует результат в системе.`:`Подтвердите отказ в возврате по платежу #${id}. Причина будет сохранена в истории дела.`;if(!confirm(warning))return;return withPaymentAction(id,button,async()=>{try{const result=await api('/admin/refunds/'+id+'/resolve',{method:'POST',body:JSON.stringify({decision,comment})});feedback(`Решение по платежу #${result.payment_id} сохранено: ${result.status}`,'ok');try{await load()}catch(e){feedback(`Решение сохранено, но список не обновился: ${e.message}`,'warn')}}catch(e){feedback(`Решение по платежу #${id} не сохранено: ${e.message}`,'bad')}})}
 boot();
 </script>
 </body>
