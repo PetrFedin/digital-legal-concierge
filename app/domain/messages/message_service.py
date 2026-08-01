@@ -10,7 +10,36 @@ class MessageService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def create_client_message(self, *, case: Case, user_id: int, text: str) -> Message:
+    async def lock_case(self, case_id: int) -> Case:
+        case = (
+            await self.db.execute(
+                select(Case)
+                .where(Case.id == int(case_id))
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if not case:
+            raise LookupError("Дело не найдено")
+        return case
+
+    async def latest_message_id(self, case_id: int) -> int | None:
+        return (
+            await self.db.execute(
+                select(Message.id)
+                .where(Message.case_id == int(case_id))
+                .order_by(Message.created_at.desc(), Message.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+    async def create_client_message(
+        self,
+        *,
+        case: Case,
+        user_id: int,
+        text: str,
+    ) -> Message:
+        case = await self.lock_case(case.id)
         msg = Message(
             case_id=case.id,
             sender_type="client",
@@ -37,6 +66,7 @@ class MessageService:
         lawyer_id: int | None,
         text: str,
     ) -> Message:
+        case = await self.lock_case(case.id)
         msg = Message(
             case_id=case.id,
             sender_type="lawyer",
@@ -56,7 +86,11 @@ class MessageService:
         )
         return msg
 
-    async def list_case_messages(self, case_id: int, limit: int = 100) -> list[Message]:
+    async def list_case_messages(
+        self,
+        case_id: int,
+        limit: int = 100,
+    ) -> list[Message]:
         result = await self.db.execute(
             select(Message)
             .where(Message.case_id == case_id)
