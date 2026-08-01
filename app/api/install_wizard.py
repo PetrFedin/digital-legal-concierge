@@ -1,5 +1,6 @@
 from pathlib import Path
 from fastapi import APIRouter
+from fastapi.responses import HTMLResponse
 from app.config import settings
 
 router = APIRouter(prefix="/install-wizard", tags=["install-wizard"])
@@ -15,7 +16,7 @@ async def install_wizard_status():
     ]
     return {"ok": all(s['ok'] for s in steps), "steps": steps, "next": "./bot-control.sh setup или scripts/production_wizard.py"}
 
-@router.get("/ui")
+@router.get("/ui", response_class=HTMLResponse)
 async def install_wizard_ui():
     return """
     <html><head><meta charset='utf-8'><title>Install Wizard</title><style>body{font-family:Arial;margin:30px;background:#f7f7f7}.card{background:white;padding:18px;border-radius:14px;margin:12px 0}</style></head>

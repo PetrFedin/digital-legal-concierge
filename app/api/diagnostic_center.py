@@ -3,6 +3,7 @@ import os
 import sys
 import shutil
 from fastapi import APIRouter
+from fastapi.responses import HTMLResponse
 from app.config import settings
 
 router = APIRouter(prefix="/diagnostic-center", tags=["diagnostic-center"])
@@ -31,7 +32,7 @@ async def diagnostic_center():
         "pages": ["/health-center/ui", "/recovery-center/ui", "/launch-assistant", "/operator", "/admin-ui"],
     }
 
-@router.get("/ui")
+@router.get("/ui", response_class=HTMLResponse)
 async def diagnostic_center_ui():
     return """
     <html><head><meta charset='utf-8'><title>Diagnostic Center</title>

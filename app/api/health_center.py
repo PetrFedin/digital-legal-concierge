@@ -1,6 +1,7 @@
 from pathlib import Path
 import shutil
 from fastapi import APIRouter, Depends
+from fastapi.responses import HTMLResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -46,7 +47,7 @@ async def health_center(db: AsyncSession = Depends(get_db)):
     return {"ok": ok, "version": "1.0.0-v20", "checks": checks}
 
 
-@router.get("/ui")
+@router.get("/ui", response_class=HTMLResponse)
 async def health_center_ui():
     return """
     <html><head><meta charset='utf-8'><title>Health Center</title>

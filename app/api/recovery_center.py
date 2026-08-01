@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import update
 from app.config import settings
@@ -32,7 +33,7 @@ async def expire_waiting_payments(db: AsyncSession = Depends(get_db), x_admin_to
     await db.commit()
     return {"ok": True, "updated": result.rowcount or 0}
 
-@router.get("/ui")
+@router.get("/ui", response_class=HTMLResponse)
 async def recovery_ui():
     return """
     <html><head><meta charset='utf-8'><title>Recovery Center</title>
