@@ -15,6 +15,12 @@ from app.api.retention_center import (
 from app.domain.retention.case_retention_service import CaseRetentionService
 
 
+ROOT = Path(__file__).resolve().parents[1]
+RETENTION_SERVICE_PATH = (
+    ROOT / "app" / "domain" / "retention" / "case_retention_service.py"
+)
+
+
 def _compact(value: str) -> str:
     return re.sub(r"\s+", "", value)
 
@@ -29,10 +35,8 @@ def _function(name: str) -> str:
 
 
 def _deletion_pipeline_source() -> str:
-    """Read the deployed module, unaffected by runtime test monkeypatches."""
-    module = inspect.getmodule(CaseRetentionService)
-    assert module is not None and module.__file__
-    return Path(module.__file__).read_text(encoding="utf-8")
+    """Read the production implementation, not a runtime test wrapper."""
+    return RETENTION_SERVICE_PATH.read_text(encoding="utf-8")
 
 
 def test_retention_actions_are_single_flight_per_case_and_scan():
