@@ -16,6 +16,7 @@ CLOSED_CASE_STATUSES = {
     "M1_CLOSED",
     "M2_CLOSED",
 }
+_UNSET = object()
 
 
 class CaseAssignmentService:
@@ -67,6 +68,28 @@ class CaseAssignmentService:
             )
         return lawyers
 
+    @staticmethod
+    def _assert_expected_snapshot(
+        case: Case,
+        *,
+        expected_lawyer_id=_UNSET,
+        expected_status: str | None = None,
+    ) -> None:
+        if expected_lawyer_id is not _UNSET:
+            normalized_lawyer_id = (
+                int(expected_lawyer_id)
+                if expected_lawyer_id not in (None, "")
+                else None
+            )
+            if case.assigned_lawyer_id != normalized_lawyer_id:
+                raise ValueError(
+                    "Назначение дела изменилось после загрузки экрана. Обновите данные"
+                )
+        if expected_status is not None and str(case.status) != str(expected_status):
+            raise ValueError(
+                "Статус дела изменился после загрузки экрана. Обновите данные"
+            )
+
     async def assign_case(
         self,
         *,
@@ -76,8 +99,15 @@ class CaseAssignmentService:
         actor_id: int | None,
         comment: str | None = None,
         allow_overload: bool = False,
+        expected_lawyer_id=_UNSET,
+        expected_status: str | None = None,
     ) -> Case:
         case = await self._get_case(case_id, for_update=True)
+        self._assert_expected_snapshot(
+            case,
+            expected_lawyer_id=expected_lawyer_id,
+            expected_status=expected_status,
+        )
         lawyer = await self._get_lawyer(lawyer_id)
         active_cases = await self._count_active_cases(lawyer.id)
         return await self._assign_case_model(
@@ -97,8 +127,15 @@ class CaseAssignmentService:
         actor_type: str = "system",
         actor_id: int | None = None,
         comment: str | None = "Автоматическое назначение по текущей загрузке",
+        expected_lawyer_id=_UNSET,
+        expected_status: str | None = None,
     ) -> Case | None:
         case = await self._get_case(case_id, for_update=True)
+        self._assert_expected_snapshot(
+            case,
+            expected_lawyer_id=expected_lawyer_id,
+            expected_status=expected_status,
+        )
         if case.assigned_lawyer_id is not None:
             return case
         self._ensure_case_can_be_assigned(case)
