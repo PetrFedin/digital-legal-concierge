@@ -1,4 +1,5 @@
 import asyncio
+from collections import Counter
 
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
@@ -69,64 +70,92 @@ from app.security.session_guard import AdminSessionGuardMiddleware
 VERSION = "1.0.0-v45"
 
 
+def _namespace_duplicate_route_names(router_specs):
+    """Make reverse-route names deterministic without changing unique public names."""
+    counts = Counter(
+        route.name
+        for _, router in router_specs
+        for route in router.routes
+        if getattr(route, "name", None)
+    )
+    used_names = {name for name, count in counts.items() if count == 1}
+
+    for namespace, router in router_specs:
+        for route in router.routes:
+            original_name = getattr(route, "name", None)
+            if not original_name or counts[original_name] <= 1:
+                continue
+
+            candidate = f"{namespace}_{original_name}"
+            suffix = 2
+            while candidate in used_names:
+                candidate = f"{namespace}_{original_name}_{suffix}"
+                suffix += 1
+            route.name = candidate
+            used_names.add(candidate)
+
+
 def create_app():
     app = FastAPI(title="Digital Legal Concierge Bot", version=VERSION)
     app.add_middleware(AdminSessionGuardMiddleware)
     app.add_middleware(RequestOriginGuardMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(TrustedProxyClientAddressMiddleware)
-    for router in [
-        maintenance_center_router,
-        final_handover_center_router,
-        final_qa_center_router,
-        go_live_center_router,
-        production_center_router,
-        initial_setup_wizard_router,
-        template_builder_router,
-        calculator_builder_router,
-        integration_center_router,
-        operations_center_router,
-        monitoring_center_router,
-        backup_manager_router,
-        release_manager_router,
-        acceptance_center_router,
-        search_center_router,
-        message_center_router,
-        audit_center_router,
-        security_event_center_router,
-        notification_center_router,
-        backup_center_router,
-        auth_router,
-        mfa_router,
-        access_management_router,
-        consultation_slots_router,
-        case_assignment_router,
-        refund_center_router,
-        retention_center_router,
-        payment_review_center_router,
-        consultation_outcomes_router,
-        sla_center_router,
-        security_router,
-        launch_assistant_router,
-        health_center_router,
-        diagnostic_center_router,
-        recovery_center_router,
-        install_wizard_router,
-        task_center_router,
-        settings_ui_router,
-        admin_router,
-        payment_router,
-        lawyer_router,
-        document_access_router,
-        document_access_portal_router,
-        runtime_router,
-        web_admin_router,
-        operator_router,
-        exports_router,
-        scenario_map_router,
-        ops_guide_router,
-        handover_router,
-    ]:
+
+    router_specs = [
+        ("maintenance_center", maintenance_center_router),
+        ("final_handover_center", final_handover_center_router),
+        ("final_qa_center", final_qa_center_router),
+        ("go_live_center", go_live_center_router),
+        ("production_center", production_center_router),
+        ("initial_setup_wizard", initial_setup_wizard_router),
+        ("template_builder", template_builder_router),
+        ("calculator_builder", calculator_builder_router),
+        ("integration_center", integration_center_router),
+        ("operations_center", operations_center_router),
+        ("monitoring_center", monitoring_center_router),
+        ("backup_manager", backup_manager_router),
+        ("release_manager", release_manager_router),
+        ("acceptance_center", acceptance_center_router),
+        ("search_center", search_center_router),
+        ("message_center", message_center_router),
+        ("audit_center", audit_center_router),
+        ("security_event_center", security_event_center_router),
+        ("notification_center", notification_center_router),
+        ("backup_center", backup_center_router),
+        ("auth", auth_router),
+        ("mfa", mfa_router),
+        ("access_management", access_management_router),
+        ("consultation_slots", consultation_slots_router),
+        ("case_assignment", case_assignment_router),
+        ("refund_center", refund_center_router),
+        ("retention_center", retention_center_router),
+        ("payment_review_center", payment_review_center_router),
+        ("consultation_outcomes", consultation_outcomes_router),
+        ("sla_center", sla_center_router),
+        ("security", security_router),
+        ("launch_assistant", launch_assistant_router),
+        ("health_center", health_center_router),
+        ("diagnostic_center", diagnostic_center_router),
+        ("recovery_center", recovery_center_router),
+        ("install_wizard", install_wizard_router),
+        ("task_center", task_center_router),
+        ("settings_ui", settings_ui_router),
+        ("admin", admin_router),
+        ("payment_webhooks", payment_router),
+        ("lawyer", lawyer_router),
+        ("document_access", document_access_router),
+        ("document_access_portal", document_access_portal_router),
+        ("runtime", runtime_router),
+        ("web_admin", web_admin_router),
+        ("operator", operator_router),
+        ("exports", exports_router),
+        ("scenario_map", scenario_map_router),
+        ("ops_guide", ops_guide_router),
+        ("handover", handover_router),
+    ]
+    _namespace_duplicate_route_names(router_specs)
+    for _, router in router_specs:
         app.include_router(router)
 
     @app.get("/")
