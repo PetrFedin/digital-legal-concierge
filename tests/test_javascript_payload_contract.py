@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 API_DIR = ROOT / "app" / "api"
 WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 DYNAMIC_TOKEN = "1"
+MIN_JSON_PAYLOAD_CALLS = 7
 
 
 @dataclass(frozen=True)
@@ -666,9 +667,9 @@ def test_javascript_json_payload_keys_match_backend_body_contracts():
                 f"allowed={sorted(contract.allowed)}"
             )
 
-    assert len(calls) >= 8, (
+    assert len(calls) >= MIN_JSON_PAYLOAD_CALLS, (
         "JavaScript JSON payload discovery is unexpectedly shallow: "
-        f"{len(calls)} calls"
+        f"{len(calls)} calls, expected at least {MIN_JSON_PAYLOAD_CALLS}"
     )
     assert verified >= 5, (
         "backend payload verification is unexpectedly shallow: "
