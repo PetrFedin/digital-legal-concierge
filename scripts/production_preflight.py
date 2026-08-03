@@ -52,11 +52,12 @@ def build_report() -> dict[str, object]:
             settings.backup_encryption_key,
         ]
         database_url = str(settings.database_url or "")
+        redis_url = str(settings.redis_url or "")
         postgres = database_url.startswith("postgresql+asyncpg://")
         persistent_sqlite = database_url.startswith(
             "sqlite+aiosqlite:////app/data/"
         )
-        payment_ready = settings.payment_provider == "fake" or (
+        payment_ready = (
             settings.payment_provider == "yookassa"
             and bool(settings.yookassa_shop_id)
             and _secret_ready(settings.yookassa_secret_key, minimum=8)
@@ -84,17 +85,27 @@ def build_report() -> dict[str, object]:
                 "payment_webhook_secret_ready": _secret_ready(
                     settings.payment_webhook_secret
                 ),
-                "public_base_url_https": str(settings.public_base_url).lower().startswith(
-                    "https://"
+                "public_base_url_https": str(settings.public_base_url)
+                .lower()
+                .startswith("https://"),
+                "trusted_proxy_configured": bool(
+                    str(settings.trusted_proxy_cidrs or "").strip()
                 ),
                 "database_is_persistent": postgres or persistent_sqlite,
                 "postgres_requirement_satisfied": (
                     postgres if settings.require_postgres_in_production else True
                 ),
+                "fsm_storage_is_redis": settings.fsm_storage_backend == "redis",
+                "redis_url_ready": redis_url.startswith(("redis://", "rediss://")),
+                "redis_wait_valid": 10
+                <= int(settings.redis_startup_wait_seconds)
+                <= 300,
                 "token_query_disabled": not settings.allow_token_query,
                 "demo_mode_disabled": not settings.demo_mode,
                 "demo_bootstrap_disabled": not settings.bootstrap_demo_data,
-                "legacy_key_fallback_disabled": not settings.allow_legacy_security_key_fallback,
+                "legacy_key_fallback_disabled": (
+                    not settings.allow_legacy_security_key_fallback
+                ),
                 "recovery_actions_disabled": not settings.enable_recovery_actions,
                 "payment_provider_ready": payment_ready,
                 "retention_is_dry_run": bool(settings.case_retention_dry_run),
@@ -106,14 +117,6 @@ def build_report() -> dict[str, object]:
                 <= 30,
             }
         )
-        if settings.payment_provider == "fake":
-            warnings.append(
-                "PAYMENT_PROVIDER=fake: реальные платежи не будут приниматься"
-            )
-        if not settings.trusted_proxy_cidrs:
-            warnings.append(
-                "TRUSTED_PROXY_CIDRS пуст: X-Forwarded-* не будут доверенными"
-            )
         if persistent_sqlite:
             warnings.append(
                 "Production использует SQLite: разрешён только один экземпляр приложения"
