@@ -19,10 +19,13 @@ class Settings(BaseSettings):
     require_postgres_in_production: bool = False
     startup_backup_enabled: bool = True
 
-    # Telegram polling restart policy.
+    # Telegram polling and restart-safe FSM policy.
     telegram_drop_pending_updates: bool = False
     telegram_singleton_wait_seconds: int = 120
     telegram_singleton_retry_seconds: int = 3
+    fsm_storage_backend: str = "memory"
+    redis_url: str = ""
+    redis_startup_wait_seconds: int = 60
 
     # Explicit API credential. It is not used for sessions, MFA encryption or
     # internal HMAC once dedicated production keys are configured.
