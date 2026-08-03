@@ -8,7 +8,7 @@ services:
       - --appendfsync
       - everysec
     volumes:
-      - ./redis-data:/data
+      - concierge_redis:/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -54,3 +54,6 @@ services:
       options:
         max-size: 20m
         max-file: "5"
+
+volumes:
+  concierge_redis:
