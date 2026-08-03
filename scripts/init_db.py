@@ -57,8 +57,10 @@ async def get_or_create_admin(db):
 
 async def bootstrap_data() -> None:
     async with AsyncSessionLocal() as db:
-        await get_or_create_lawyer(db)
-        await get_or_create_admin(db)
+        if settings.bootstrap_demo_data:
+            await get_or_create_lawyer(db)
+        if settings.bootstrap_admin:
+            await get_or_create_admin(db)
         await SettingsService(db).bootstrap_defaults()
         await db.commit()
 
