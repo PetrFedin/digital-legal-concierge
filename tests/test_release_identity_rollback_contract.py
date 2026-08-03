@@ -3,9 +3,9 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+import pytest
 
-from app.main import create_app
+from app.api.runtime import release_info
 from app.release import expected_migration_heads, release_metadata
 
 
@@ -39,15 +39,14 @@ def test_release_metadata_exposes_only_non_sensitive_build_identity(monkeypatch)
         assert forbidden not in serialized
 
 
-def test_runtime_release_endpoint_matches_environment(monkeypatch):
+@pytest.mark.asyncio
+async def test_runtime_release_endpoint_matches_environment(monkeypatch):
     monkeypatch.setenv("APP_RELEASE", "release-contract")
     monkeypatch.setenv("GIT_COMMIT_SHA", "b" * 40)
     monkeypatch.setenv("APP_IMAGE_TAG", "bbbbbbbbbbbb")
 
-    response = TestClient(create_app()).get("/runtime/release")
+    payload = await release_info()
 
-    assert response.status_code == 200
-    payload = response.json()
     assert payload["ok"] is True
     assert payload["release"] == "release-contract"
     assert payload["git_commit"] == "b" * 40
