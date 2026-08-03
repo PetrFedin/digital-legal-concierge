@@ -34,6 +34,24 @@ class BasePaymentProvider:
         raise NotImplementedError
 
 
+class DisabledPaymentProvider(BasePaymentProvider):
+    async def create_payment(
+        self,
+        *,
+        payment_id: int,
+        amount: Decimal,
+        currency: str,
+        title: str,
+        metadata: dict,
+    ) -> PaymentProviderResult:
+        raise RuntimeError(
+            "Онлайн-оплата временно отключена. Свяжитесь с администратором."
+        )
+
+    async def retrieve_payment(self, provider_payment_id: str) -> dict:
+        raise RuntimeError("Онлайн-оплата временно отключена")
+
+
 class FakePaymentProvider(BasePaymentProvider):
     async def create_payment(
         self,
@@ -137,6 +155,9 @@ class YooKassaPaymentProvider(BasePaymentProvider):
 
 
 def get_payment_provider() -> BasePaymentProvider:
-    if settings.payment_provider == "yookassa":
+    provider = settings.payment_provider.strip().lower()
+    if provider == "disabled":
+        return DisabledPaymentProvider()
+    if provider == "yookassa":
         return YooKassaPaymentProvider()
     return FakePaymentProvider()
