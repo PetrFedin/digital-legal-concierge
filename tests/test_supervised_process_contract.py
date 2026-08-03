@@ -5,9 +5,12 @@ from pathlib import Path
 
 def test_docker_runs_supervised_process_entrypoint():
     dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+    entrypoint = Path("docker-entrypoint.sh").read_text(encoding="utf-8")
 
-    assert "exec python -m app.process" in dockerfile
-    assert "exec python -m app.main" not in dockerfile
+    assert 'ENTRYPOINT ["dlc-entrypoint"]' in dockerfile
+    assert 'CMD ["python", "-m", "app.process"]' in dockerfile
+    assert 'exec "$@"' in entrypoint
+    assert "python -m app.main" not in dockerfile
 
 
 def test_process_uses_supervisor_for_all_background_services():
