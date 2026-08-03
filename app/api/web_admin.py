@@ -20,7 +20,7 @@ ADMIN_HTML = r"""
 </style>
 </head>
 <body>
-<header><div><b>⚖ Digital Legal Concierge</b><div class="muted">Единая административная панель</div></div><div class="row"><input id="token" type="password" readonly placeholder="Персональная сессия" style="width:220px;margin:0"><a href="/access/ui">Права</a><a href="/logout">Выйти</a></div></header>
+<header><div><b>⚖ Digital Legal Concierge</b><div class="muted">Единая административная панель</div></div><div class="row"><input id="token" type="password" readonly placeholder="Персональная сессия" style="width:220px;margin:0"><a href="/access/ui">Права</a><form method="post" action="/logout" style="margin:0"><button class="gray" type="submit">Выйти</button></form></div></header>
 <div class="layout">
 <nav><button class="nav-button active" data-tab="dashboard" onclick="showTab('dashboard',this)">Дашборд</button><button class="nav-button" data-tab="queue" onclick="showTab('queue',this)">Очередь дел</button><button class="nav-button" data-tab="cases" onclick="showTab('cases',this)">Все дела</button><button class="nav-button" data-tab="payments" onclick="showTab('payments',this)">Платежи</button><button class="nav-button" data-tab="documents" onclick="showTab('documents',this)">Документы</button><button class="nav-button" data-tab="lawyers" onclick="showTab('lawyers',this)">Юристы</button><button class="nav-button" data-tab="settings" onclick="showTab('settings',this)">Настройки</button><button class="nav-button" data-tab="notifications" onclick="showTab('notifications',this)">Уведомления</button><hr><a class="button gray" href="/message-center/ui">Сообщения</a> <a class="button gray" href="/admin/sla/ui">SLA</a> <a class="button gray" href="/retention/ui">Retention</a></nav>
 <main class="content"><div class="row"><button data-global-action="scheduler" class="green" onclick="runScheduler(this)">Запустить проверки</button><button class="gray" onclick="reloadCurrent(this)">Обновить раздел</button></div><div id="message" class="muted" role="status" aria-live="polite"></div><div id="view" class="card">Загрузка…</div></main>
@@ -29,7 +29,7 @@ ADMIN_HTML = r"""
 <script>
 let currentTab='dashboard',currentCase=null;let loadController=null;const pending=new Set();
 const view=document.getElementById('view'),side=document.getElementById('side'),raw=document.getElementById('raw'),message=document.getElementById('message'),token=document.getElementById('token');
-function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function esc(v){return String(v??'').replace(/[&<>\x22\x27]/g,c=>c==='&'?'&amp;':c==='<'?'&lt;':c==='>'?'&gt;':c.charCodeAt(0)===34?'&quot;':'&#39;')}
 function feedback(text,state='muted'){message.textContent=text;message.className=state}
 function compactError(e){return e&&e.message?e.message:String(e)}
 async function api(path,opts={}){if(!token.value)throw new Error('Персональная admin-сессия не загружена');const r=await fetch(path,{...opts,credentials:'same-origin',cache:'no-store',headers:{'x-admin-token':token.value,'Content-Type':'application/json',...(opts.headers||{})}});if(r.status===401){location.href='/login';throw new Error('Сессия истекла')}const data=await r.json().catch(()=>({}));raw.textContent=JSON.stringify(data,null,2);if(!r.ok){const e=new Error(data.detail||'Ошибка запроса');e.status=r.status;throw e}return data}
