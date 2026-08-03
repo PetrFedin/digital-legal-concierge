@@ -10,7 +10,7 @@ show_menu() {
 
 Digital Legal Concierge — Docker control
 1) Проверить compose и production env
-2) Собрать образ
+2) Собрать production-образ
 3) Запустить / обновить
 4) Перезапустить контейнер
 5) Показать статус /health и /ready
@@ -18,8 +18,9 @@ Digital Legal Concierge — Docker control
 7) Создать зашифрованный backup
 8) Выполнить миграции и bootstrap
 9) Выполнить production acceptance внутри Docker
-10) Остановить сервис
-11) Сгенерировать production-секреты
+10) Выполнить полный pytest-набор в отдельном Docker-образе
+11) Остановить сервис
+12) Сгенерировать production-секреты
 0) Выход
 EOF
 }
@@ -39,12 +40,13 @@ case "$choice" in
   3|deploy|start) COMPOSE_FILE="$compose_file" bash ./deploy.sh ;;
   4|restart) dc restart app ;;
   5|status) COMPOSE_FILE="$compose_file" bash ./status.sh ;;
-  6|logs) dc logs -f --tail=300 app ;;
+  6|logs) dc logs -f --tail=300 app redis ;;
   7|backup) COMPOSE_FILE="$compose_file" bash ./backup.sh ;;
   8|migrate) dc run --rm --no-deps --entrypoint python app scripts/init_db.py ;;
   9|accept) COMPOSE_FILE="$compose_file" bash ./acceptance.sh ;;
-  10|stop) dc down ;;
-  11|secrets) bash ./generate-secrets.sh ;;
+  10|test) bash ./test.sh ;;
+  11|stop) dc down ;;
+  12|secrets) bash ./generate-secrets.sh ;;
   0|exit) exit 0 ;;
   *) echo "Неизвестная команда: $choice"; exit 1 ;;
 esac
