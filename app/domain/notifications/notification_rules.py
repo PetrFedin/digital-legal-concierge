@@ -4,6 +4,18 @@ NOTIFICATION_RULES = {
         "recipients": ["lawyer"],
         "template": "lawyer_assigned",
     },
+    "M1_CASE_ACCEPTED": {
+        "recipients": ["client"],
+        "template": "m1_case_accepted",
+    },
+    "M1_DOCUMENTS_REQUESTED": {
+        "recipients": ["client"],
+        "template": "m1_documents_requested",
+    },
+    "M1_CASE_TRANSFERRED_TO_M2": {
+        "recipients": ["client", "admin"],
+        "template": "m1_case_transferred_to_m2",
+    },
     "CASE_SLA_FIRST_RESPONSE_OVERDUE": {
         "recipients": ["lawyer", "admin"],
         "template": "case_sla_first_response_overdue",
