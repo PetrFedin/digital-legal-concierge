@@ -18,10 +18,10 @@ RUN apt-get update \
 
 COPY pyproject.toml constraints.txt README.md alembic.ini ./
 COPY Dockerfile Dockerfile.test docker-compose.yml docker-compose.timeweb.yml ./
-COPY .dockerignore .env.example .env.production.example ./
+COPY .gitignore .dockerignore .env.example .env.production.example ./
 COPY .github/workflows ./.github/workflows
 COPY docker-entrypoint.sh run.sh check-and-run.sh bot-control.sh ./
-COPY backup.sh restore.sh status.sh acceptance.sh test.sh ./
+COPY backup.sh restore.sh rollback.sh status.sh acceptance.sh test.sh ./
 COPY deploy.sh timeweb-deploy.sh generate-secrets.sh ./
 COPY migrations ./migrations
 COPY app ./app

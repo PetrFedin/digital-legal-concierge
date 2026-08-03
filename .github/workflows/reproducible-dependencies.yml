@@ -34,9 +34,23 @@ jobs:
           docker run --rm digital-legal-concierge:test-locked pip check
 
       - name: Run the complete suite in the locked test image
-        run: >-
-          docker run --rm digital-legal-concierge:test-locked
-          sh -c 'python scripts/init_db.py && pytest -q'
+        run: |
+          set +e
+          docker run --rm digital-legal-concierge:test-locked \
+            sh -c 'python scripts/init_db.py && pytest -q --tb=short' \
+            > locked-pytest.log 2>&1
+          status=$?
+          cat locked-pytest.log
+          exit "$status"
+
+      - name: Upload locked pytest diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: locked-pytest-diagnostics
+          path: locked-pytest.log
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Build locked production image
         run: docker build --pull -t digital-legal-concierge:production-locked .

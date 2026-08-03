@@ -52,16 +52,19 @@ bash ./timeweb-deploy.sh
 
 ## Что выполняется автоматически
 
-1. Проверка production-переменных без вывода секретов.
-2. Запуск Redis с AOF и ожидание его healthcheck.
-3. Проверка доступности Redis из контейнера приложения.
-4. Ожидание PostgreSQL и проверка `SELECT 1` с ограниченным retry.
-5. Alembic-миграции базы.
-6. Создание системного администратора, если он отсутствует.
-7. Демо-юрист не создаётся при `BOOTSTRAP_DEMO_DATA=false`.
-8. Создание и полная проверка зашифрованного startup-backup, если свежего backup нет.
-9. Запуск API, Telegram polling и scheduler единым supervisor-процессом.
-10. Проверка Redis, `/health` и fail-closed `/ready` после запуска.
+1. Проверяется, что deploy выполняется из чистого commit ветки `main`.
+2. Image получает immutable tag из первых 12 символов Git SHA и OCI release labels.
+3. Проверяются production-переменные без вывода секретов.
+4. Запускается Redis с AOF и ожидается его healthcheck.
+5. Проверяется доступность Redis из контейнера приложения.
+6. Ожидается PostgreSQL и выполняется `SELECT 1` с ограниченным retry.
+7. Применяются Alembic-миграции.
+8. Создаётся системный администратор, если он отсутствует.
+9. Демо-юрист не создаётся при `BOOTSTRAP_DEMO_DATA=false`.
+10. Создаётся и полностью проверяется encrypted startup-backup, если свежего backup нет.
+11. Запускаются API, Telegram polling и scheduler единым supervisor-процессом.
+12. Проверяются Redis, `/health`, fail-closed `/ready` и `/runtime/release`.
+13. Release state обновляется только после совпадения работающего commit с OCI image label.
 
 ## Повторный деплой
 
@@ -72,15 +75,44 @@ bash ./test.sh
 bash ./timeweb-deploy.sh
 ```
 
-Перед заменой работающего контейнера deploy-скрипт создаёт зашифрованный backup. Если
-production preflight не пройден, работающая версия не заменяется. Состояния FSM остаются в
-`concierge_redis`, поэтому незавершённые диалоги не сбрасываются при обновлении приложения.
+Перед заменой контейнера deploy-скрипт создаёт encrypted backup. Если production preflight
+не пройден, работающая версия не заменяется. Состояния FSM остаются в `concierge_redis`,
+поэтому незавершённые диалоги не сбрасываются при обновлении приложения.
+
+Новый image хранится как `<repository>:<12-char-git-sha>`. Предыдущий successful release
+остаётся локальным rollback-кандидатом. `.release/current.env` и
+`.release/previous.env` не содержат секретов, не коммитятся и не попадают в Docker context.
+
+## Проверка работающего release
+
+```bash
+COMPOSE_FILE=docker-compose.timeweb.yml bash ./status.sh
+```
+
+Команда проверяет Redis, `/health`, `/ready`, `/runtime/release` и совпадение полного Git
+commit с `org.opencontainers.image.revision` реально запущенного контейнера.
+
+## Schema-safe rollback
+
+```bash
+COMPOSE_FILE=docker-compose.timeweb.yml bash ./rollback.sh
+```
+
+Rollback разрешён только при одинаковой Alembic-head current и previous image. Перед
+переключением создаётся новый encrypted backup. Previous image запускается без rebuild и
+должен подтвердить свой commit и readiness. Если он не проходит проверки, исходный current
+image возвращается автоматически.
+
+При изменённой или неизвестной Alembic-head автоматический rollback блокируется. База данных
+не понижается автоматически: используйте backup и проверенное staging restore. Подробно:
+[`RELEASE_ROLLBACK.md`](RELEASE_ROLLBACK.md).
 
 ## Операционные команды
 
 ```bash
 COMPOSE_FILE=docker-compose.timeweb.yml bash ./status.sh
 COMPOSE_FILE=docker-compose.timeweb.yml bash ./backup.sh
+COMPOSE_FILE=docker-compose.timeweb.yml bash ./rollback.sh
 COMPOSE_FILE=docker-compose.timeweb.yml bash ./bot-control.sh
 COMPOSE_FILE=docker-compose.timeweb.yml docker compose logs -f --tail=300 app redis
 bash ./test.sh
@@ -89,7 +121,7 @@ bash ./test.sh
 Точечный запуск теста также не требует Python на сервере:
 
 ```bash
-bash ./test.sh tests/test_docker_only_deployment_contract.py
+bash ./test.sh tests/test_release_identity_rollback_contract.py
 ```
 
 ## Ограничения и правила
@@ -103,10 +135,11 @@ bash ./test.sh tests/test_docker_only_deployment_contract.py
 - Не публикуйте порт Redis наружу и не добавляйте `ports` к сервису `redis`.
 - Timeweb compose публикует API только на `127.0.0.1:8000`; внешний TLS-доступ должен идти
   через host reverse proxy. Укажите его фактический адрес в `TRUSTED_PROXY_CIDRS`.
+- Не обходите migration-head guard для rollback старого image.
 - `CASE_RETENTION_DRY_RUN=true` оставляйте включённым до отдельного юридического
   утверждения политики удаления.
 - Старые ключи переносите в соответствующие `*_PREVIOUS_KEYS`; не удаляйте их до
   завершения миграции документов и срока хранения backup.
-- Не коммитьте `.env`, `.env.generated.secrets`, ключи, дампы и пользовательские документы.
+- Не коммитьте `.env`, `.env.generated.secrets`, `.release`, ключи, дампы и документы.
 - Перед переходом со старой базы обязательно создайте отдельную проверенную копию и
   выполните тестовое восстановление в staging.

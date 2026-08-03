@@ -22,9 +22,16 @@ services:
         max-file: "3"
 
   app:
+    image: "${APP_IMAGE_REPOSITORY:-digital-legal-concierge}:${APP_IMAGE_TAG:-timeweb}"
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        APP_RELEASE: "${APP_RELEASE:-timeweb}"
+        GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:-unknown}"
+        BUILD_TIMESTAMP: "${BUILD_TIMESTAMP:-unknown}"
+        APP_IMAGE_REPOSITORY: "${APP_IMAGE_REPOSITORY:-digital-legal-concierge}"
+        APP_IMAGE_TAG: "${APP_IMAGE_TAG:-timeweb}"
     env_file:
       - .env
     depends_on:

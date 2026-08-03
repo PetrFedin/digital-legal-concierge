@@ -2,11 +2,27 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+ARG APP_RELEASE=dev
+ARG GIT_COMMIT_SHA=unknown
+ARG BUILD_TIMESTAMP=unknown
+ARG APP_IMAGE_REPOSITORY=digital-legal-concierge
+ARG APP_IMAGE_TAG=dev
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_CONSTRAINT=/app/constraints.txt
+    PIP_CONSTRAINT=/app/constraints.txt \
+    APP_RELEASE=${APP_RELEASE} \
+    GIT_COMMIT_SHA=${GIT_COMMIT_SHA} \
+    BUILD_TIMESTAMP=${BUILD_TIMESTAMP} \
+    APP_IMAGE_REPOSITORY=${APP_IMAGE_REPOSITORY} \
+    APP_IMAGE_TAG=${APP_IMAGE_TAG}
+
+LABEL org.opencontainers.image.title="Digital Legal Concierge" \
+      org.opencontainers.image.version="${APP_RELEASE}" \
+      org.opencontainers.image.revision="${GIT_COMMIT_SHA}" \
+      org.opencontainers.image.created="${BUILD_TIMESTAMP}"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends postgresql-client ca-certificates \
