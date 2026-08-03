@@ -6,6 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
+    PIP_CONSTRAINT=/app/constraints.txt \
     APP_ENV=local \
     DATABASE_URL=sqlite+aiosqlite:////tmp/legal_concierge_test.db \
     STORAGE_DIR=/tmp/legal-concierge-storage \
@@ -15,7 +16,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends postgresql-client ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml README.md alembic.ini ./
+COPY pyproject.toml constraints.txt README.md alembic.ini ./
 COPY Dockerfile Dockerfile.test docker-compose.yml docker-compose.timeweb.yml ./
 COPY .dockerignore .env.example .env.production.example ./
 COPY docker-entrypoint.sh run.sh check-and-run.sh bot-control.sh ./
