@@ -107,8 +107,9 @@ def build_report() -> dict[str, object]:
         persistent_sqlite = database_url.startswith(
             "sqlite+aiosqlite:////app/data/"
         )
-        payment_ready = (
-            settings.payment_provider == "yookassa"
+        payment_provider = settings.payment_provider.strip().lower()
+        payment_ready = payment_provider == "disabled" or (
+            payment_provider == "yookassa"
             and bool(settings.yookassa_shop_id)
             and _secret_ready(settings.yookassa_secret_key, minimum=8)
         )
@@ -172,6 +173,10 @@ def build_report() -> dict[str, object]:
                 <= 30,
             }
         )
+        if payment_provider == "disabled":
+            warnings.append(
+                "Онлайн-оплата отключена: бот и кабинеты работают без создания платёжных ссылок"
+            )
         if persistent_sqlite:
             warnings.append(
                 "Production использует SQLite: разрешён только один экземпляр приложения"
