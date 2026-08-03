@@ -9,8 +9,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_CONSTRAINT=/app/constraints.txt \
     APP_ENV=local \
     DATABASE_URL=sqlite+aiosqlite:////tmp/legal_concierge_test.db \
-    STORAGE_DIR=/tmp/legal-concierge-storage \
-    BACKUP_DIR=/tmp/legal-concierge-backups
+    STORAGE_DIR=./storage \
+    BACKUP_DIR=./backups
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends postgresql-client ca-certificates \
@@ -19,6 +19,7 @@ RUN apt-get update \
 COPY pyproject.toml constraints.txt README.md alembic.ini ./
 COPY Dockerfile Dockerfile.test docker-compose.yml docker-compose.timeweb.yml ./
 COPY .dockerignore .env.example .env.production.example ./
+COPY .github/workflows ./.github/workflows
 COPY docker-entrypoint.sh run.sh check-and-run.sh bot-control.sh ./
 COPY backup.sh restore.sh status.sh acceptance.sh test.sh ./
 COPY deploy.sh timeweb-deploy.sh generate-secrets.sh ./
@@ -31,6 +32,6 @@ COPY tests ./tests
 
 RUN pip install --upgrade pip \
     && pip install ".[test]" \
-    && mkdir -p /tmp/legal-concierge-storage /tmp/legal-concierge-backups
+    && mkdir -p /app/storage /app/backups
 
-CMD ["pytest", "-q"]
+CMD ["sh", "-c", "python scripts/init_db.py && pytest -q"]
