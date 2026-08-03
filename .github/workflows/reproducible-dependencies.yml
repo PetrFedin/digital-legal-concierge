@@ -34,7 +34,9 @@ jobs:
           docker run --rm digital-legal-concierge:test-locked pip check
 
       - name: Run the complete suite in the locked test image
-        run: docker run --rm digital-legal-concierge:test-locked pytest -q
+        run: >-
+          docker run --rm digital-legal-concierge:test-locked
+          sh -c 'python scripts/init_db.py && pytest -q'
 
       - name: Build locked production image
         run: docker build --pull -t digital-legal-concierge:production-locked .
