@@ -22,10 +22,15 @@ def test_container_owns_python_startup_and_canonical_process():
 
     assert 'ENTRYPOINT ["dlc-entrypoint"]' in dockerfile
     assert 'CMD ["python", "-m", "app.process"]' in dockerfile
-    assert "scripts/production_preflight.py" in entrypoint
-    assert "scripts/init_db.py" in entrypoint
-    assert "scripts/ensure_startup_backup.py" in entrypoint
-    assert entrypoint.index("production_preflight") < entrypoint.index("init_db")
+    for command in (
+        "scripts/production_preflight.py",
+        "scripts/wait_for_redis.py",
+        "scripts/init_db.py",
+        "scripts/ensure_startup_backup.py",
+    ):
+        assert command in entrypoint
+    assert entrypoint.index("production_preflight") < entrypoint.index("wait_for_redis")
+    assert entrypoint.index("wait_for_redis") < entrypoint.index("init_db")
     assert entrypoint.index("init_db") < entrypoint.index("ensure_startup_backup")
     assert 'exec "$@"' in entrypoint
 
@@ -48,19 +53,23 @@ def test_operator_shell_scripts_do_not_require_host_python_or_virtualenv():
         assert "docker compose" in source or "bash ./deploy.sh" in source
 
 
-def test_compose_persists_database_documents_and_backups():
+def test_compose_persists_documents_backups_and_telegram_fsm():
     local_compose = read("docker-compose.yml")
     timeweb_compose = read("docker-compose.timeweb.yml")
 
-    assert "sqlite+aiosqlite:////app/data/legal_bot.db" in local_compose
-    for mount in ("/app/data", "/app/storage", "/app/backups", "/app/logs"):
-        assert mount in local_compose
-        assert mount in timeweb_compose
-    assert "stop_grace_period: 45s" in local_compose
-    assert "stop_grace_period: 45s" in timeweb_compose
+    for source in (local_compose, timeweb_compose):
+        assert "redis:7.4-alpine" in source
+        assert "--appendonly" in source
+        assert "condition: service_healthy" in source
+        assert "/data" in source
+        for mount in ("/app/data", "/app/storage", "/app/backups", "/app/logs"):
+            assert mount in source
+        assert "stop_grace_period: 45s" in source
+    assert "DATABASE_URL:" not in local_compose
+    assert "concierge_redis:/data" in timeweb_compose
 
 
-def test_production_template_is_fail_closed_for_demo_and_browser_token_query():
+def test_production_template_is_fail_closed_and_restart_safe():
     template = read(".env.production.example")
 
     assert "APP_ENV=production" in template
@@ -71,6 +80,9 @@ def test_production_template_is_fail_closed_for_demo_and_browser_token_query():
     assert "ENABLE_RECOVERY_ACTIONS=false" in template
     assert "REQUIRE_POSTGRES_IN_PRODUCTION=true" in template
     assert "STARTUP_BACKUP_ENABLED=true" in template
+    assert "FSM_STORAGE_BACKEND=redis" in template
+    assert "REDIS_URL=redis://redis:6379/0" in template
+    assert "PAYMENT_PROVIDER=yookassa" in template
 
 
 def test_demo_lawyer_bootstrap_is_explicit():
@@ -83,7 +95,7 @@ def test_demo_lawyer_bootstrap_is_explicit():
     assert "if settings.bootstrap_admin:" in source
 
 
-def test_settings_include_container_and_telegram_restart_policy():
+def test_settings_include_container_telegram_and_fsm_restart_policy():
     settings = Settings(_env_file=None)
 
     assert settings.bootstrap_demo_data is False
@@ -92,6 +104,28 @@ def test_settings_include_container_and_telegram_restart_policy():
     assert settings.telegram_drop_pending_updates is False
     assert settings.telegram_singleton_wait_seconds == 120
     assert settings.telegram_singleton_retry_seconds == 3
+    assert settings.fsm_storage_backend == "memory"
+    assert settings.redis_startup_wait_seconds == 60
+
+
+def test_bot_rejects_memory_fsm_in_production():
+    source = read("app/bot/bot.py")
+
+    assert "RedisStorage.from_url(settings.redis_url)" in source
+    assert 'backend == "memory"' in source
+    assert 'settings.app_env.strip().lower() != "production"' in source
+    assert "Production Telegram FSM должен использовать" in source
+    assert "raise PollingExitedError" in source
+
+
+def test_production_preflight_requires_redis_proxy_and_real_payments():
+    source = read("scripts/production_preflight.py")
+
+    assert '"fsm_storage_is_redis"' in source
+    assert '"redis_url_ready"' in source
+    assert '"trusted_proxy_configured"' in source
+    assert 'settings.payment_provider == "yookassa"' in source
+    assert "secrets_exposed" in source
 
 
 def test_local_preflight_does_not_require_or_expose_secrets(monkeypatch, tmp_path):
