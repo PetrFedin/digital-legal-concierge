@@ -1,0 +1,35 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    APP_ENV=local \
+    DATABASE_URL=sqlite+aiosqlite:////tmp/legal_concierge_test.db \
+    STORAGE_DIR=/tmp/legal-concierge-storage \
+    BACKUP_DIR=/tmp/legal-concierge-backups
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-client ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml README.md alembic.ini ./
+COPY Dockerfile Dockerfile.test docker-compose.yml docker-compose.timeweb.yml ./
+COPY .dockerignore .env.example .env.production.example ./
+COPY docker-entrypoint.sh run.sh check-and-run.sh bot-control.sh ./
+COPY backup.sh restore.sh status.sh acceptance.sh test.sh ./
+COPY deploy.sh timeweb-deploy.sh generate-secrets.sh ./
+COPY migrations ./migrations
+COPY app ./app
+COPY scripts ./scripts
+COPY content ./content
+COPY docs ./docs
+COPY tests ./tests
+
+RUN pip install --upgrade pip \
+    && pip install ".[test]" \
+    && mkdir -p /tmp/legal-concierge-storage /tmp/legal-concierge-backups
+
+CMD ["pytest", "-q"]

@@ -57,8 +57,11 @@ async def test_legacy_main_delegates_to_canonical_supervisor(monkeypatch):
 
 def test_docker_and_legacy_module_share_one_runtime_implementation():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    entrypoint = (ROOT / "docker-entrypoint.sh").read_text(encoding="utf-8")
     main_source = (ROOT / "app/main.py").read_text(encoding="utf-8")
 
-    assert "exec python -m app.process" in dockerfile
+    assert 'ENTRYPOINT ["dlc-entrypoint"]' in dockerfile
+    assert 'CMD ["python", "-m", "app.process"]' in dockerfile
+    assert 'exec "$@"' in entrypoint
     assert "from app.process import main as run_supervised_process" in main_source
     assert "return await run_supervised_process()" in main_source

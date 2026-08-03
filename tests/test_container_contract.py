@@ -8,13 +8,17 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_docker_image_contains_runtime_migration_assets_and_postgres_client():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    entrypoint = (ROOT / "docker-entrypoint.sh").read_text(encoding="utf-8")
 
     assert "COPY pyproject.toml README.md alembic.ini ./" in dockerfile
     assert "COPY migrations ./migrations" in dockerfile
     assert "COPY scripts ./scripts" in dockerfile
     assert "postgresql-client" in dockerfile
-    assert "python scripts/init_db.py && exec python -m app.process" in dockerfile
-    assert "exec python -m app.main" not in dockerfile
+    assert 'ENTRYPOINT ["dlc-entrypoint"]' in dockerfile
+    assert 'CMD ["python", "-m", "app.process"]' in dockerfile
+    assert "python scripts/init_db.py" in entrypoint
+    assert 'exec "$@"' in entrypoint
+    assert "python -m app.main" not in dockerfile
 
 
 def test_docker_context_excludes_secrets_databases_and_legal_documents():
@@ -27,10 +31,12 @@ def test_docker_context_excludes_secrets_databases_and_legal_documents():
     assert ".env" in ignored
     assert ".env.*" in ignored
     assert "!.env.example" in ignored
+    assert "!.env.production.example" in ignored
     assert "backups/" in ignored
     assert "data/" in ignored
     assert "storage/" in ignored
     assert "logs/" in ignored
+    assert "redis-data/" in ignored
     assert "*.db" in ignored
     assert "*.sqlite" in ignored
     assert "*.dlcbak" in ignored

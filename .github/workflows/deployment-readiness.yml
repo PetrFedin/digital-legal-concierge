@@ -1,0 +1,79 @@
+name: Deployment Readiness
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deployment-readiness-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  redis-fsm-integration:
+    name: Redis FSM persistence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      APP_ENV: test
+      DATABASE_URL: sqlite+aiosqlite:///./redis_fsm_ci.db
+      REDIS_TEST_URL: redis://localhost:6379/15
+      BOT_TOKEN: CHANGE_ME
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install test dependencies
+        run: pip install -e ".[test]"
+
+      - name: Verify Redis FSM reconnect persistence
+        run: pytest -q tests/test_telegram_redis_fsm_integration.py
+
+  docker-deployment-contract:
+    name: Docker-only deployment contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Validate Compose profiles
+        run: |
+          cp .env.example .env
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.timeweb.yml config --quiet
+
+      - name: Build isolated test image
+        run: docker build --pull -f Dockerfile.test -t digital-legal-concierge:test .
+
+      - name: Run deployment contract tests
+        run: >-
+          docker run --rm digital-legal-concierge:test
+          pytest -q
+          tests/test_docker_only_deployment_contract.py

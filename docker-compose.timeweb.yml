@@ -33,10 +33,10 @@ services:
     ports:
       - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8000}:8000"
     volumes:
-      - ./data:/app/data
-      - ./storage:/app/storage
-      - ./logs:/app/logs
-      - ./backups:/app/backups
+      - concierge_data:/app/data
+      - concierge_storage:/app/storage
+      - concierge_logs:/app/logs
+      - concierge_backups:/app/backups
     restart: unless-stopped
     stop_grace_period: 45s
     healthcheck:
@@ -56,4 +56,8 @@ services:
         max-file: "5"
 
 volumes:
+  concierge_data:
+  concierge_storage:
+  concierge_logs:
+  concierge_backups:
   concierge_redis:

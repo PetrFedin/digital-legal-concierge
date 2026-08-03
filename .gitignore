@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+!.env.production.example
 *.pem
 *.key
 
@@ -14,6 +15,7 @@ storage/
 data/
 logs/
 backups/
+redis-data/
 
 # Python
 __pycache__/

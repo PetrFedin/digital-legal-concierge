@@ -2,13 +2,13 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1
-ENV PIP_NO_CACHE_DIR=1
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends postgresql-client \
+    && apt-get install -y --no-install-recommends postgresql-client ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml README.md alembic.ini ./
@@ -18,12 +18,17 @@ COPY scripts ./scripts
 COPY content ./content
 COPY docs ./docs
 COPY .env.example ./
+COPY docker-entrypoint.sh /usr/local/bin/dlc-entrypoint
 
 RUN pip install --upgrade pip \
-    && pip install -e .
-
-RUN mkdir -p /app/data /app/storage /app/logs /app/backups
+    && pip install . \
+    && chmod 0755 /usr/local/bin/dlc-entrypoint \
+    && mkdir -p /app/data /app/storage /app/logs /app/backups
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "python scripts/init_db.py && exec python -m app.process"]
+HEALTHCHECK --interval=20s --timeout=7s --start-period=45s --retries=5 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)" || exit 1
+
+ENTRYPOINT ["dlc-entrypoint"]
+CMD ["python", "-m", "app.process"]
