@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import argparse
 import json
 import re
-import sys
 import tomllib
 from importlib import metadata
 from pathlib import Path
@@ -42,26 +42,36 @@ def load_constraints(path: Path = CONSTRAINTS_PATH) -> dict[str, tuple[str, str]
     return constraints
 
 
-def project_requirements(path: Path = PYPROJECT_PATH) -> list[Requirement]:
+def project_requirements(
+    path: Path = PYPROJECT_PATH,
+    *,
+    include_optional: bool,
+) -> list[Requirement]:
     config = tomllib.loads(path.read_text(encoding="utf-8"))
     project = config["project"]
     values = list(project.get("dependencies", []))
-    for extra_values in project.get("optional-dependencies", {}).values():
-        values.extend(extra_values)
+    if include_optional:
+        for extra_values in project.get("optional-dependencies", {}).values():
+            values.extend(extra_values)
     return [Requirement(value) for value in values]
 
 
-def verify() -> dict[str, object]:
+def verify(*, require_all_constraints: bool) -> dict[str, object]:
     constraints = load_constraints()
-    requirements = project_requirements()
+    requirements = project_requirements(
+        include_optional=require_all_constraints,
+    )
     errors: list[str] = []
     checked_installed = 0
+    missing_constraints: list[str] = []
 
-    for canonical, (display_name, expected_version) in sorted(constraints.items()):
+    for _canonical, (display_name, expected_version) in sorted(constraints.items()):
         try:
             actual_version = metadata.version(display_name)
         except metadata.PackageNotFoundError:
-            errors.append(f"{display_name} отсутствует в environment")
+            missing_constraints.append(display_name)
+            if require_all_constraints:
+                errors.append(f"{display_name} отсутствует в environment")
             continue
         checked_installed += 1
         if Version(actual_version) != Version(expected_version):
@@ -81,11 +91,19 @@ def verify() -> dict[str, object]:
                 f"{requirement.name}=={locked_version} не соответствует "
                 f"{requirement.specifier}"
             )
+        try:
+            metadata.version(requirement.name)
+        except metadata.PackageNotFoundError:
+            errors.append(f"Прямая зависимость {requirement.name} не установлена")
 
     result = {
         "ok": not errors,
+        "mode": "full" if require_all_constraints else "production",
         "constraints": len(constraints),
         "installed_constraints_checked": checked_installed,
+        "missing_optional_constraints": (
+            [] if require_all_constraints else sorted(missing_constraints)
+        ),
         "direct_requirements_checked": len(requirements),
         "errors": errors,
     }
@@ -93,7 +111,14 @@ def verify() -> dict[str, object]:
 
 
 def main() -> int:
-    result = verify()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--require-all",
+        action="store_true",
+        help="Require every production and test constraint to be installed.",
+    )
+    arguments = parser.parse_args()
+    result = verify(require_all_constraints=arguments.require_all)
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0 if result["ok"] else 2
 
