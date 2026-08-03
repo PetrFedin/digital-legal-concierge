@@ -16,6 +16,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml README.md alembic.ini ./
+COPY Dockerfile Dockerfile.test docker-compose.yml docker-compose.timeweb.yml ./
+COPY .dockerignore .env.example .env.production.example ./
+COPY docker-entrypoint.sh run.sh check-and-run.sh bot-control.sh ./
+COPY backup.sh restore.sh status.sh acceptance.sh test.sh ./
+COPY deploy.sh timeweb-deploy.sh generate-secrets.sh ./
 COPY migrations ./migrations
 COPY app ./app
 COPY scripts ./scripts
