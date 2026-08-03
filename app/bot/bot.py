@@ -154,10 +154,10 @@ async def run_bot() -> None:
 
     retry_delay = 5
     max_retry_delay = 60
-    dispatcher = build_dispatcher()
-    logger.info("Telegram polling singleton lock получен.")
 
     try:
+        dispatcher = build_dispatcher()
+        logger.info("Telegram polling singleton lock получен.")
         while True:
             bot = Bot(token=settings.bot_token)
             try:
