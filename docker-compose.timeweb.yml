@@ -1,10 +1,35 @@
 services:
+  redis:
+    image: redis:7.4-alpine
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+    volumes:
+      - concierge_redis:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
   app:
     build:
       context: .
       dockerfile: Dockerfile
     env_file:
       - .env
+    depends_on:
+      redis:
+        condition: service_healthy
     ports:
       - "${APP_BIND_ADDRESS:-0.0.0.0}:${APP_PORT:-8000}:8000"
     volumes:
@@ -35,3 +60,4 @@ volumes:
   concierge_storage:
   concierge_logs:
   concierge_backups:
+  concierge_redis:
