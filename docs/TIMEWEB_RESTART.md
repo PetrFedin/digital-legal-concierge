@@ -4,11 +4,13 @@
 
 Для текущей версии используйте облачный сервер Timeweb с Docker Compose и постоянными
 Docker volumes. Базу данных размещайте в PostgreSQL; предпочтительно — в управляемом
-PostgreSQL Timeweb в той же приватной сети.
+PostgreSQL Timeweb в той же приватной сети. Redis запускается рядом с приложением без
+публикации порта и хранит незавершённые Telegram-сценарии в постоянном AOF-volume.
 
 App Platform через Docker Compose не подходит для текущего файлового контура без переноса
 документов и backup в S3: App Platform создаёт новое окружение при деплое и запрещает
-директиву `volumes`, а приложению нужны постоянные `/app/storage` и `/app/backups`.
+директиву `volumes`, а приложению нужны постоянные `/app/storage`, `/app/backups` и Redis
+FSM data.
 
 Официальная документация:
 
@@ -25,8 +27,8 @@ App Platform через Docker Compose не подходит для текуще
 - Docker Engine;
 - Docker Compose plugin.
 
-Python, pip и virtualenv на сервере не нужны. Python и все зависимости находятся внутри
-Docker-образа приложения.
+Python, pip, Redis и virtualenv отдельно на сервере не нужны. Python, Redis и зависимости
+запускаются контейнерами Docker.
 
 ## Первый запуск
 
@@ -38,8 +40,9 @@ bash ./generate-secrets.sh
 ```
 
 Перенесите значения из `.env.generated.secrets` в `.env`, заполните `BOT_TOKEN`,
-`DATABASE_URL`, домен, YooKassa и фактические CIDR reverse proxy. Затем удалите файл с
-сгенерированными секретами.
+`DATABASE_URL`, домен, YooKassa и фактические CIDR reverse proxy. Не меняйте
+`FSM_STORAGE_BACKEND=redis` и `REDIS_URL=redis://redis:6379/0` для штатного Compose.
+Затем удалите файл с сгенерированными секретами.
 
 ```bash
 rm -f .env.generated.secrets
@@ -49,12 +52,14 @@ bash ./timeweb-deploy.sh
 ## Что выполняется автоматически
 
 1. Проверка production-переменных без вывода секретов.
-2. Alembic-миграции базы.
-3. Создание системного администратора, если он отсутствует.
-4. Демо-юрист не создаётся при `BOOTSTRAP_DEMO_DATA=false`.
-5. Создание и полная проверка зашифрованного startup-backup, если свежего backup нет.
-6. Запуск API, Telegram polling и scheduler единым supervisor-процессом.
-7. Проверка `/health` и fail-closed `/ready` после запуска.
+2. Запуск Redis с AOF и ожидание его healthcheck.
+3. Проверка доступности Redis из контейнера приложения.
+4. Alembic-миграции базы.
+5. Создание системного администратора, если он отсутствует.
+6. Демо-юрист не создаётся при `BOOTSTRAP_DEMO_DATA=false`.
+7. Создание и полная проверка зашифрованного startup-backup, если свежего backup нет.
+8. Запуск API, Telegram polling и scheduler единым supervisor-процессом.
+9. Проверка `/health` и fail-closed `/ready` после запуска.
 
 ## Повторный деплой
 
@@ -65,7 +70,8 @@ bash ./timeweb-deploy.sh
 ```
 
 Перед заменой работающего контейнера deploy-скрипт создаёт зашифрованный backup. Если
-production preflight не пройден, работающая версия не заменяется.
+production preflight не пройден, работающая версия не заменяется. Состояния FSM остаются в
+`concierge_redis`, поэтому незавершённые диалоги не сбрасываются при обновлении приложения.
 
 ## Операционные команды
 
@@ -73,7 +79,7 @@ production preflight не пройден, работающая версия не
 COMPOSE_FILE=docker-compose.timeweb.yml bash ./status.sh
 COMPOSE_FILE=docker-compose.timeweb.yml bash ./backup.sh
 COMPOSE_FILE=docker-compose.timeweb.yml bash ./bot-control.sh
-COMPOSE_FILE=docker-compose.timeweb.yml docker compose logs -f --tail=300 app
+COMPOSE_FILE=docker-compose.timeweb.yml docker compose logs -f --tail=300 app redis
 ```
 
 ## Ограничения и правила
@@ -82,6 +88,9 @@ COMPOSE_FILE=docker-compose.timeweb.yml docker compose logs -f --tail=300 app
   удерживает singleton-lock в PostgreSQL или общем backup-volume.
 - `TELEGRAM_DROP_PENDING_UPDATES=false` сохраняет накопленные Telegram updates при
   перезапуске.
+- Redis FSM обеспечивает продолжение незавершённого диалога, но не заменяет PostgreSQL как
+  юридически значимый источник данных.
+- Не публикуйте порт Redis наружу и не добавляйте `ports` к сервису `redis`.
 - `CASE_RETENTION_DRY_RUN=true` оставляйте включённым до отдельного юридического
   утверждения политики удаления.
 - Старые ключи переносите в соответствующие `*_PREVIOUS_KEYS`; не удаляйте их до
