@@ -16,6 +16,7 @@ data/
 logs/
 backups/
 redis-data/
+.release/
 
 # Python
 __pycache__/
