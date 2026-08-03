@@ -83,6 +83,7 @@ async def settings_list(
             "title": item.title,
             "value": item.value,
             "editable": item.is_editable_in_admin,
+            "updated_at": item.updated_at.isoformat(),
         }
         for item in items
     ]
@@ -96,13 +97,26 @@ async def set_setting(
     x_admin_token: str | None = Header(default=None),
 ):
     actor = require_admin(x_admin_token)
-    setting = await SettingsService(db).set_value(
-        key=key,
-        value=payload.get("value"),
-        actor_id=actor_id_from_token(actor) or 0,
-    )
-    await db.commit()
-    return {"key": setting.key, "value": setting.value}
+    try:
+        setting = await SettingsService(db).set_value(
+            key=key,
+            value=payload.get("value"),
+            actor_id=actor_id_from_token(actor) or 0,
+            expected_updated_at=payload.get("expected_updated_at"),
+        )
+        await db.commit()
+        await db.refresh(setting)
+        return {
+            "key": setting.key,
+            "value": setting.value,
+            "updated_at": setting.updated_at.isoformat(),
+        }
+    except ValueError as error:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except Exception:
+        await db.rollback()
+        raise
 
 
 @router.get("/cases")
@@ -179,8 +193,11 @@ async def create_lawyer(
 ):
     require_admin(x_admin_token)
     full_name = str(payload.get("full_name") or "").strip()
+    email = str(payload.get("email") or "").strip().lower()
     if not full_name:
         raise HTTPException(status_code=400, detail="ФИО юриста обязательно")
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Укажите корректный email юриста")
     try:
         workload_limit = int(payload.get("workload_limit", 30))
     except (TypeError, ValueError) as error:
@@ -190,17 +207,37 @@ async def create_lawyer(
             status_code=400,
             detail="Лимит активных дел должен быть от 1 до 500",
         )
-    lawyer = Lawyer(
-        full_name=full_name,
-        phone=payload.get("phone"),
-        email=payload.get("email"),
-        specialization=payload.get("specialization"),
-        workload_limit=workload_limit,
-        is_active=bool(payload.get("is_active", True)),
-    )
-    db.add(lawyer)
-    await db.commit()
-    return {"id": lawyer.id, "full_name": lawyer.full_name}
+    try:
+        duplicate = (
+            await db.execute(
+                select(Lawyer).where(Lawyer.email == email).with_for_update()
+            )
+        ).scalar_one_or_none()
+        if duplicate:
+            raise HTTPException(409, "Юрист с таким email уже существует")
+        lawyer = Lawyer(
+            full_name=full_name,
+            phone=payload.get("phone"),
+            email=email,
+            specialization=payload.get("specialization"),
+            workload_limit=workload_limit,
+            is_active=bool(payload.get("is_active", True)),
+        )
+        db.add(lawyer)
+        await db.flush()
+        await db.commit()
+        return {
+            "ok": True,
+            "id": lawyer.id,
+            "full_name": lawyer.full_name,
+            "email": lawyer.email,
+        }
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception:
+        await db.rollback()
+        raise
 
 
 @router.post("/cases/{case_id}/assign/{lawyer_id}")
@@ -226,6 +263,9 @@ async def assign(
     except ValueError as error:
         await db.rollback()
         raise HTTPException(status_code=409, detail=str(error)) from error
+    except Exception:
+        await db.rollback()
+        raise
     return {
         "ok": True,
         "case_id": case.id,
@@ -236,29 +276,38 @@ async def assign(
 @router.post("/cases/{case_id}/auto-assign")
 async def auto_assign(
     case_id: int,
+    payload: dict | None = None,
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
     actor = require_admin(x_admin_token)
+    snapshot = payload or {}
     try:
         case = await CaseAssignmentService(db).auto_assign_case(
             case_id=case_id,
             actor_type="admin",
             actor_id=actor_id_from_token(actor),
             comment="Автоматическое назначение из административной панели",
+            expected_lawyer_id=snapshot.get("expected_lawyer_id"),
+            expected_status=snapshot.get("expected_status"),
         )
+        if not case:
+            raise ValueError("Нет доступных юристов с оставшейся ёмкостью")
         await db.commit()
+        lawyer = await db.get(Lawyer, case.assigned_lawyer_id)
     except LookupError as error:
         await db.rollback()
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:
         await db.rollback()
         raise HTTPException(status_code=409, detail=str(error)) from error
-    if not case:
-        return {"ok": False, "message": "Нет доступных юристов"}
-    lawyer = await db.get(Lawyer, case.assigned_lawyer_id)
+    except Exception:
+        await db.rollback()
+        raise
     return {
         "ok": True,
+        "case_id": case.id,
+        "status": case.status,
         "lawyer_id": case.assigned_lawyer_id,
         "lawyer": lawyer.full_name if lawyer else None,
     }
@@ -319,6 +368,7 @@ async def case_detail(
             "status": case.status,
             "next_action": case.next_action,
             "lawyer_id": case.assigned_lawyer_id,
+            "updated_at": case.updated_at.isoformat(),
         },
         "client": (
             {
@@ -367,25 +417,44 @@ async def manual_status(
     next_status = payload.get("status")
     if not next_status:
         raise HTTPException(status_code=400, detail="status required")
-    case = await db.get(Case, case_id)
-    if not case:
-        raise HTTPException(status_code=404, detail="case not found")
+    comment = str(payload.get("comment") or "").strip()
+    if len(comment) < 5:
+        raise HTTPException(
+            status_code=400,
+            detail="Комментарий к ручному изменению должен содержать не менее 5 символов",
+        )
     try:
+        case = (
+            await db.execute(
+                select(Case).where(Case.id == case_id).with_for_update()
+            )
+        ).scalar_one_or_none()
+        if not case:
+            raise HTTPException(status_code=404, detail="case not found")
+        expected_status = payload.get("expected_status")
+        if expected_status is not None and str(case.status) != str(expected_status):
+            raise HTTPException(
+                status_code=409,
+                detail="Статус дела изменился после загрузки экрана. Обновите карточку",
+            )
         await CaseService(db).change_status(
             case=case,
             next_status=next_status,
             actor_type="admin",
             actor_id=actor_id_from_token(actor),
             force=True,
-            comment=(
-                payload.get("comment")
-                or "Ручное изменение статуса администратором"
-            ),
+            comment=comment,
         )
         await db.commit()
+    except HTTPException:
+        await db.rollback()
+        raise
     except CaseTransitionError as error:
         await db.rollback()
         raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception:
+        await db.rollback()
+        raise
     return {
         "ok": True,
         "case_id": case.id,
@@ -398,6 +467,7 @@ async def manual_status(
 @router.post("/payments/{payment_id}/confirm")
 async def manual_confirm_payment(
     payment_id: int,
+    payload: dict | None = None,
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
@@ -410,53 +480,80 @@ async def manual_confirm_payment(
                 "В production статус должен поступать только от провайдера."
             ),
         )
-    payment = await db.get(Payment, payment_id)
-    if not payment:
-        raise HTTPException(status_code=404, detail="payment not found")
-    if not payment_can_be_manually_confirmed(payment):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Этот платёж нельзя подтвердить вручную: "
-                "провайдер или статус не соответствует тестовому сценарию"
-            ),
-        )
-    case = await db.get(Case, payment.case_id)
-    if not case:
-        raise HTTPException(status_code=404, detail="case not found")
+    snapshot = payload or {}
+    try:
+        payment = (
+            await db.execute(
+                select(Payment)
+                .where(Payment.id == payment_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if not payment:
+            raise HTTPException(status_code=404, detail="payment not found")
+        expected_status = snapshot.get("expected_status")
+        if expected_status is not None and str(payment.status) != str(expected_status):
+            raise HTTPException(
+                status_code=409,
+                detail="Статус платежа изменился после загрузки экрана. Обновите список",
+            )
+        if not payment_can_be_manually_confirmed(payment):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Этот платёж нельзя подтвердить вручную: "
+                    "провайдер или статус не соответствует тестовому сценарию"
+                ),
+            )
+        case = (
+            await db.execute(
+                select(Case)
+                .where(Case.id == payment.case_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if not case:
+            raise HTTPException(status_code=404, detail="case not found")
 
-    old_status = payment.status
-    await PaymentWebhookService(db).process_successful_payment(
-        payment=payment,
-        case=case,
-        provider_payload={
-            "source": "admin_fake_manual_confirm",
-            "actor_id": actor_id_from_token(actor),
-        },
-    )
-    await add_case_history_event(
-        db,
-        actor_type="admin",
-        actor_id=actor_id_from_token(actor),
-        case_id=case.id,
-        action="ADMIN_FAKE_PAYMENT_CONFIRMED",
-        old_value={
-            "payment_id": payment.id,
-            "status": old_status,
-        },
-        new_value={
+        old_status = payment.status
+        await PaymentWebhookService(db).process_successful_payment(
+            payment=payment,
+            case=case,
+            provider_payload={
+                "source": "admin_fake_manual_confirm",
+                "actor_id": actor_id_from_token(actor),
+            },
+        )
+        await add_case_history_event(
+            db,
+            actor_type="admin",
+            actor_id=actor_id_from_token(actor),
+            case_id=case.id,
+            action="ADMIN_FAKE_PAYMENT_CONFIRMED",
+            old_value={
+                "payment_id": payment.id,
+                "status": old_status,
+            },
+            new_value={
+                "payment_id": payment.id,
+                "status": payment.status,
+            },
+            comment="Тестовое ручное подтверждение платежа в административной панели",
+        )
+        await db.commit()
+        return {
+            "ok": True,
             "payment_id": payment.id,
             "status": payment.status,
-        },
-        comment="Тестовое ручное подтверждение платежа в административной панели",
-    )
-    await db.commit()
-    return {
-        "ok": True,
-        "payment_id": payment.id,
-        "status": payment.status,
-        "case_status": case.status,
-    }
+            "case_id": case.id,
+            "case_status": case.status,
+        }
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception:
+        await db.rollback()
+        raise
 
 
 @router.get("/payments")

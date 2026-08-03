@@ -13,141 +13,50 @@ ADMIN_HTML = r"""
 <!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Digital Legal Concierge — Admin v44</title>
-  <style>
-    :root { --bg:#f5f6fa; --card:#fff; --text:#111827; --muted:#6b7280; --line:#e5e7eb; --blue:#2563eb; --green:#16a34a; --red:#dc2626; --yellow:#ca8a04; }
-    * { box-sizing:border-box; }
-    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif; background:var(--bg); color:var(--text); }
-    header { padding:16px 22px; background:#111827; color:white; display:flex; align-items:center; justify-content:space-between; gap:16px; position:sticky; top:0; z-index:5; }
-    header h1 { margin:0; font-size:18px; }
-    header input { width:340px; max-width:55vw; padding:10px 12px; border-radius:10px; border:1px solid #374151; background:#030712; color:white; }
-    main { padding:22px; display:grid; gap:16px; }
-    .grid { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:12px; }
-    .layout { display:grid; grid-template-columns:1.3fr .9fr; gap:16px; align-items:start; }
-    .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; box-shadow:0 1px 2px rgba(0,0,0,.04); }
-    .metric { font-size:28px; font-weight:800; margin-top:6px; }
-    .muted { color:var(--muted); font-size:13px; }
-    .tabs { display:flex; flex-wrap:wrap; gap:8px; }
-    button { border:0; border-radius:10px; padding:9px 12px; background:var(--blue); color:white; cursor:pointer; font-weight:650; }
-    button.secondary { background:#e5e7eb; color:#111827; }
-    button.green { background:var(--green); }
-    button.red { background:var(--red); }
-    button.yellow { background:var(--yellow); }
-    table { width:100%; border-collapse:collapse; font-size:14px; }
-    th,td { border-bottom:1px solid var(--line); text-align:left; padding:9px 8px; vertical-align:top; }
-    th { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.04em; }
-    input,select,textarea { padding:9px 10px; border:1px solid var(--line); border-radius:10px; width:100%; }
-    textarea { min-height:70px; }
-    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-    .row > * { flex:1; }
-    .pill { display:inline-block; padding:4px 8px; border-radius:999px; background:#eef2ff; color:#3730a3; font-size:12px; font-weight:700; }
-    .actions { display:flex; flex-wrap:wrap; gap:6px; }
-    pre { white-space:pre-wrap; background:#0b1020; color:#d1e7ff; border-radius:12px; padding:12px; max-height:260px; overflow:auto; }
-    @media (max-width: 1400px) { .grid { grid-template-columns:repeat(4,1fr); } }
-    @media (max-width: 1000px) { .grid { grid-template-columns:repeat(2,1fr); } .layout { grid-template-columns:1fr; } }
-    @media (max-width: 560px) { .grid { grid-template-columns:1fr; } header { flex-direction:column; align-items:flex-start; } header input { max-width:100%; width:100%; } }
-  </style>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Digital Legal Concierge — Admin</title>
+<style>
+:root{--blue:#2563eb;--green:#15803d;--red:#b91c1c;--amber:#b45309;--line:#e5e7eb;--muted:#6b7280}*{box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;background:#f4f5f7;margin:0;color:#111827}header{background:#111827;color:#fff;padding:18px 24px;display:flex;justify-content:space-between;align-items:center;gap:16px}header a{color:#fff}.layout{display:grid;grid-template-columns:250px minmax(0,1fr) 360px;min-height:calc(100vh - 70px)}nav{background:#fff;border-right:1px solid var(--line);padding:18px}.content{padding:22px;overflow:auto}.side{background:#fff;border-left:1px solid var(--line);padding:18px;overflow:auto}.card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}.nav-button{display:block;width:100%;text-align:left;background:transparent;color:#111827;border:0;border-radius:9px;padding:10px;cursor:pointer}.nav-button.active,.nav-button:hover{background:#eff6ff}.metric-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.metric{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px}.metric b{display:block;font-size:24px}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.list-item{border:1px solid var(--line);border-radius:11px;padding:12px;margin:8px 0}.muted{font-size:13px;color:var(--muted)}.ok{color:var(--green)}.bad{color:var(--red)}.warn{color:var(--amber)}button,.button{border:0;border-radius:9px;padding:9px 12px;background:var(--blue);color:#fff;font-weight:700;cursor:pointer;text-decoration:none;display:inline-block}button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.55;cursor:wait}.green{background:var(--green)}.red{background:var(--red)}.gray{background:#4b5563}.amber{background:var(--amber)}input,select,textarea{width:100%;padding:9px;border:1px solid #d1d5db;border-radius:8px;margin:5px 0}textarea{min-height:90px;resize:vertical}table{width:100%;border-collapse:collapse}th,td{padding:9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}.badge{display:inline-block;padding:3px 7px;border-radius:999px;background:#e5e7eb;font-size:12px}pre{white-space:pre-wrap;word-break:break-word;background:#111827;color:#e5e7eb;padding:12px;border-radius:10px;max-height:260px;overflow:auto}@media(max-width:1100px){.layout{grid-template-columns:220px 1fr}.side{grid-column:1/-1;border-left:0;border-top:1px solid var(--line)}}@media(max-width:720px){.layout{display:block}.metric-grid{grid-template-columns:1fr 1fr}nav{border-right:0}.side{border-top:1px solid var(--line)}}
+</style>
 </head>
 <body>
-  <header>
-    <h1>⚖ Digital Legal Concierge — Admin v44</h1><div><a style="color:white;margin-right:12px" href="/login">Вход</a><form style="display:inline" method="post" action="/logout"><button style="background:#374151">Выход</button></form></div>
-    <input id="token" type="hidden" />
-  </header>
-  <main>
-    <section class="tabs">
-      <button onclick="loadDashboard()">Дашборд</button>
-      <button onclick="loadCases()" class="secondary">Дела</button>
-      <button onclick="loadQueue()" class="secondary">Очередь</button>
-      <button onclick="window.location.href='/admin/sla/ui'" class="red">SLA и просрочки</button>
-      <button onclick="loadPayments()" class="secondary">Оплаты</button>
-      <button onclick="window.location.href='/admin/payment-reviews/ui'" class="yellow">Проверка оплат</button>
-      <button onclick="window.location.href='/admin/refunds/ui'" class="yellow">Возвраты</button>
-      <button onclick="window.location.href='/admin/consultation-outcomes/ui'" class="yellow">Контроль встреч</button>
-      <button onclick="window.location.href='/retention/ui'" class="red">Хранение / Legal hold</button>
-      <button onclick="window.location.href='/lawyer/ui'" class="secondary">Кабинет юриста</button>
-      <button onclick="loadDocuments()" class="secondary">Документы</button>
-      <button onclick="loadLawyers()" class="secondary">Юристы</button>
-      <button onclick="window.location.href='/consultation-slots/ui'" class="secondary">Слоты консультаций</button>
-      <button onclick="loadSettings()" class="secondary">Настройки</button>
-      <button onclick="window.location.href='/access/ui'" class="secondary">Пользователи и роли</button>
-      <button onclick="loadNotifications()" class="secondary">Уведомления</button>
-      <button onclick="loadExports()" class="secondary">Экспорт</button>
-      <button onclick="loadReady()" class="green">Готовность</button><button onclick="window.location.href='/operator'" class="green">Оператор</button><button onclick="runScheduler()" class="green">Проверки</button>
-    </section>
-
-    <section id="dashboard" class="grid"></section>
-    <section class="layout">
-      <div class="card"><div id="content">Загрузка...</div></div>
-      <div class="card"><div id="side"><b>Рабочая область</b><p class="muted">Откройте дело, чтобы увидеть быстрые действия.</p></div></div>
-    </section>
-    <section class="card"><div class="muted">Технический ответ</div><pre id="raw"></pre></section>
-  </main>
+<header><div><b>⚖ Digital Legal Concierge</b><div class="muted">Единая административная панель</div></div><div class="row"><input id="token" type="password" readonly placeholder="Персональная сессия" style="width:220px;margin:0"><a href="/access/ui">Права</a><form method="post" action="/logout" style="margin:0"><button class="gray" type="submit">Выйти</button></form></div></header>
+<div class="layout">
+<nav><button class="nav-button active" data-tab="dashboard" onclick="showTab('dashboard',this)">Дашборд</button><button class="nav-button" data-tab="queue" onclick="showTab('queue',this)">Очередь дел</button><button class="nav-button" data-tab="cases" onclick="showTab('cases',this)">Все дела</button><button class="nav-button" data-tab="payments" onclick="showTab('payments',this)">Платежи</button><button class="nav-button" data-tab="documents" onclick="showTab('documents',this)">Документы</button><button class="nav-button" data-tab="lawyers" onclick="showTab('lawyers',this)">Юристы</button><button class="nav-button" data-tab="settings" onclick="showTab('settings',this)">Настройки</button><button class="nav-button" data-tab="notifications" onclick="showTab('notifications',this)">Уведомления</button><hr><a class="button gray" href="/message-center/ui">Сообщения</a> <a class="button gray" href="/admin/sla/ui">SLA</a> <a class="button gray" href="/retention/ui">Retention</a></nav>
+<main class="content"><div class="row"><button data-global-action="scheduler" class="green" onclick="runScheduler(this)">Запустить проверки</button><button class="gray" onclick="reloadCurrent(this)">Обновить раздел</button></div><div id="message" class="muted" role="status" aria-live="polite"></div><div id="view" class="card">Загрузка…</div></main>
+<aside class="side"><h3>Карточка / действие</h3><div id="side" class="muted">Выберите дело или действие.</div><h3>Ответ API</h3><pre id="raw">{}</pre></aside>
+</div>
 <script>
-document.getElementById('token').value = localStorage.getItem('admin_token') || '';
-async function loadSession(){const r=await fetch('/auth/session'); if(!r.ok){location.href='/login'; return;} const s=await r.json(); document.getElementById('token').value=s.api_token; localStorage.setItem('admin_token',s.api_token);}
-
-const api = async (path, opts={}) => {
-  const token = document.getElementById('token').value || 'dev-admin-token';
-  const res = await fetch(path, { ...opts, headers: { 'x-admin-token': token, 'Content-Type':'application/json', ...(opts.headers||{}) }});
-  const data = await res.json().catch(() => ({}));
-  document.getElementById('raw').textContent = JSON.stringify(data, null, 2);
-  if (!res.ok) throw new Error(data.detail || 'Ошибка запроса');
-  return data;
-};
-function esc(v) { return String(v ?? '').replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s])); }
-function metric(title, value, note='') { return `<div class="card"><div class="muted">${title}</div><div class="metric">${value}</div><div class="muted">${note}</div></div>`; }
-function table(rows, cols, extra=''){
-  if (!rows.length) return '<p class="muted">Нет данных.</p>';
-  return `<table><thead><tr>${cols.map(c=>`<th>${c}</th>`).join('')}${extra?'<th>Действия</th>':''}</tr></thead><tbody>${rows.map(r=>`<tr>${cols.map(c=>`<td>${esc(r[c])}</td>`).join('')}${extra?`<td>${extra.replaceAll('__ID__', esc(r.id))}</td>`:''}</tr>`).join('')}</tbody></table>`;
-}
-async function loadDashboard(){
-  const d = await api('/admin/dashboard');
-  document.getElementById('dashboard').innerHTML = metric('Новые дела', d.new_cases) + metric('Активные дела', d.active_cases) + metric('SLA просрочен', d.sla_overdue, 'требуют эскалации') + metric('Ожидают оплату', d.waiting_payment) + metric('Проверка оплат', d.payment_reviews, 'PAID_REVIEW') + metric('Консультации', d.consultations_booked) + metric('Закрытые', d.closed_cases);
-  document.getElementById('content').innerHTML = '<h3>Дашборд</h3><p>Просроченные юридические действия контролируются через «SLA и просрочки». Финансовые исключения обрабатываются через «Проверка оплат» и «Возвраты», а завершение и неявки — через «Контроль встреч».</p>';
-}
-async function loadCases(){
-  const rows = await api('/admin/cases');
-  document.getElementById('content').innerHTML = '<h3>Дела</h3>'+table(rows, ['id','number','route','status','lawyer_id','next_action'], '<button onclick="openCase(__ID__)">Открыть</button>');
-}
-async function loadQueue(){
-  const rows = await api('/admin/queue');
-  document.getElementById('content').innerHTML = '<h3>Очередь без юриста</h3>'+table(rows, ['id','number','route','status','next_action'], '<button onclick="autoAssign(__ID__)" class="green">Автоназначить</button> <button onclick="openCase(__ID__)">Открыть</button>');
-}
-async function openCase(id){
-  const d = await api('/admin/cases/'+id);
-  const c = d.case, cl = d.client || {};
-  document.getElementById('side').innerHTML = `<h3>Дело ${esc(c.number)}</h3><p><span class="pill">${esc(c.route||'—')}</span> <span class="pill">${esc(c.status)}</span></p><p><b>Клиент:</b><br>${esc(cl.name)}<br>@${esc(cl.username)}<br>TG: ${esc(cl.telegram_id)}</p><p><b>Следующий шаг:</b><br>${esc(c.next_action)}</p><h4>Быстрые действия</h4><div class="actions"><button class="green" onclick="autoAssign(${id})">Автоназначить</button><button onclick="setStatus(${id})">Сменить статус</button><button class="yellow" onclick="openPaymentsForCase(${id})">Оплаты</button><button class="red" onclick="window.location.href='/admin/sla/ui'">SLA</button></div>`;
-  const pay = d.payments.map(p=>`<tr><td>${p.id}</td><td>${esc(p.title)}</td><td>${p.amount}</td><td>${esc(p.status)}</td><td>${p.status==='PAID_REVIEW'?`<button onclick="window.location.href='/admin/payment-reviews/ui'" class="yellow">Проверить</button>`:p.manual_confirm_allowed?`<button onclick="confirmPayment(${p.id}, ${id})" class="green">DEV подтвердить</button>`:'—'}</td></tr>`).join('') || '<tr><td colspan="5">Нет платежей</td></tr>';
-  const docs = d.documents.map(x=>`<tr><td>${x.id}</td><td>${esc(x.title)}</td><td>${esc(x.file_name)}</td><td>${esc(x.status)}</td><td>v${x.version}</td></tr>`).join('') || '<tr><td colspan="5">Нет документов</td></tr>';
-  document.getElementById('content').innerHTML = `<h3>Карточка дела</h3><p><b>${esc(c.number)}</b></p><h4>Платежи</h4><table><tr><th>ID</th><th>Название</th><th>Сумма</th><th>Статус</th><th>Действие</th></tr>${pay}</table><h4>Документы</h4><table><tr><th>ID</th><th>Тип</th><th>Файл</th><th>Статус</th><th>Версия</th></tr>${docs}</table>`;
-}
-async function setStatus(id){
-  const statuses = await api('/admin/statuses');
-  document.getElementById('side').innerHTML += `<div class="card"><h4>Смена статуса</h4><select id="status_${id}">${statuses.map(s=>`<option>${esc(s)}</option>`).join('')}</select><textarea id="comment_${id}" placeholder="Комментарий"></textarea><button onclick="saveStatus(${id})">Сохранить статус</button></div>`;
-}
-async function saveStatus(id){ await api('/admin/cases/'+id+'/status',{method:'POST', body:JSON.stringify({status:document.getElementById('status_'+id).value, comment:document.getElementById('comment_'+id).value})}); await openCase(id); }
-async function autoAssign(id){ await api('/admin/cases/'+id+'/auto-assign',{method:'POST'}); await openCase(id); }
-async function confirmPayment(pid, cid){ if(!confirm('Подтвердить fake-платёж в тестовой среде?'))return; await api('/admin/payments/'+pid+'/confirm',{method:'POST'}); if (cid && cid > 0) { await openCase(cid); } else { await loadPayments(); } }
-async function openPaymentsForCase(id){ await openCase(id); }
-async function loadPayments(){
-  const rows = await api('/admin/payments');
-  const body = rows.map(p=>`<tr><td>${p.id}</td><td>${p.case_id}</td><td>${esc(p.code)}</td><td>${esc(p.title)}</td><td>${p.amount}</td><td>${esc(p.status)}</td><td>${esc(p.provider||'—')}</td><td>${p.status==='PAID_REVIEW'?`<button onclick="window.location.href='/admin/payment-reviews/ui'" class="yellow">Проверить</button>`:p.manual_confirm_allowed?`<button onclick="confirmPayment(${p.id},0)" class="green">DEV подтвердить</button>`:'—'}</td></tr>`).join('') || '<tr><td colspan="8">Нет платежей</td></tr>';
-  document.getElementById('content').innerHTML = `<h3>Оплаты</h3><p class="muted">Production-платежи подтверждаются провайдером. Полученные деньги без подтверждённого слота обрабатываются только через центр «Проверка оплат».</p><table><tr><th>ID</th><th>Дело</th><th>Код</th><th>Название</th><th>Сумма</th><th>Статус</th><th>Провайдер</th><th>Действие</th></tr>${body}</table>`;
-}
-async function loadDocuments(){ const rows = await api('/admin/documents'); document.getElementById('content').innerHTML = '<h3>Документы</h3>'+table(rows, ['id','case_id','type','title','file_name','status','version']); }
-async function loadLawyers(){ const rows = await api('/admin/lawyers'); document.getElementById('content').innerHTML = '<h3>Юристы</h3>'+table(rows, ['id','full_name','email','is_active','workload_limit'])+`<h4>Добавить юриста</h4><div class="row"><input id="lw_name" placeholder="ФИО"><input id="lw_email" placeholder="email"><button onclick="createLawyer()">Создать</button></div>`; }
-async function createLawyer(){ await api('/admin/lawyers',{method:'POST', body:JSON.stringify({full_name:document.getElementById('lw_name').value,email:document.getElementById('lw_email').value})}); await loadLawyers(); }
-async function loadSettings(){ const rows = await api('/admin/settings'); document.getElementById('content').innerHTML = '<h3>Настройки</h3>'+rows.map(r => `<div class="card"><b>${esc(r.title)}</b><div class="muted">${esc(r.key)}</div><div class="row"><input id="set_${esc(r.key)}" value="${esc(r.value?.value)}"><button onclick="saveSetting('${esc(r.key)}')">Сохранить</button></div></div>`).join(''); }
-async function saveSetting(key){ const value = document.getElementById('set_'+key).value; const normalized = isNaN(Number(value)) ? value : Number(value); await api('/admin/settings/'+key,{method:'POST', body:JSON.stringify({value: normalized})}); await loadSettings(); }
-async function loadNotifications(){ const rows = await api('/admin/notifications'); document.getElementById('content').innerHTML = '<h3>Уведомления</h3>'+table(rows, ['id','case_id','event','title','status','text']); }
-function loadExports(){ const token = encodeURIComponent(document.getElementById('token').value || 'dev-admin-token'); document.getElementById('content').innerHTML = `<h3>Экспорт CSV</h3><p class="muted">Скачивание данных для контроля, сверки и резервной операционной выгрузки.</p><div class="actions"><a href="/admin/export/cases.csv?token=${token}" target="_blank"><button>Дела</button></a><a href="/admin/export/clients.csv?token=${token}" target="_blank"><button>Клиенты</button></a><a href="/admin/export/payments.csv?token=${token}" target="_blank"><button>Оплаты</button></a><a href="/admin/export/documents.csv?token=${token}" target="_blank"><button>Документы</button></a></div><p class="muted">В проде лучше выключить ALLOW_TOKEN_QUERY и пользоваться API с заголовком x-admin-token.</p>`; }
-async function loadReady(){ const r = await fetch('/ready').then(x=>x.json()); document.getElementById('content').innerHTML = '<h3>Готовность сервиса</h3><pre>'+esc(JSON.stringify(r,null,2))+'</pre>'; document.getElementById('raw').textContent = JSON.stringify(r,null,2); }
-async function runScheduler(){ await api('/admin/scheduler/run-once',{method:'POST'}); document.getElementById('content').innerHTML = '<h3>Проверки выполнены</h3><p>Scheduler run-once завершен.</p>'; }
-loadSession()
-  .then(() => loadDashboard())
-  .catch(e => document.getElementById('content').innerHTML = '<b>Ошибка:</b> '+esc(e.message));
+let currentTab='dashboard',currentCase=null;let loadController=null;const pending=new Set();
+const view=document.getElementById('view'),side=document.getElementById('side'),raw=document.getElementById('raw'),message=document.getElementById('message'),token=document.getElementById('token');
+function esc(v){return String(v??'').replace(/[&<>\x22\x27]/g,c=>c==='&'?'&amp;':c==='<'?'&lt;':c==='>'?'&gt;':c.charCodeAt(0)===34?'&quot;':'&#39;')}
+function feedback(text,state='muted'){message.textContent=text;message.className=state}
+function compactError(e){return e&&e.message?e.message:String(e)}
+async function api(path,opts={}){if(!token.value)throw new Error('Персональная admin-сессия не загружена');const r=await fetch(path,{...opts,credentials:'same-origin',cache:'no-store',headers:{'x-admin-token':token.value,'Content-Type':'application/json',...(opts.headers||{})}});if(r.status===401){location.href='/login';throw new Error('Сессия истекла')}const data=await r.json().catch(()=>({}));raw.textContent=JSON.stringify(data,null,2);if(!r.ok){const e=new Error(data.detail||'Ошибка запроса');e.status=r.status;throw e}return data}
+function controls(selector){return Array.from(document.querySelectorAll(selector))}
+async function withAction(key,button,selector,work,label='Выполняется…'){if(pending.has(key))return;pending.add(key);const items=selector?controls(selector):(button?[button]:[]);const labels=new Map(items.filter(x=>x.tagName==='BUTTON').map(x=>[x,x.textContent]));items.forEach(x=>{x.disabled=true;x.setAttribute('aria-busy','true')});if(button)button.textContent=label;try{return await work()}finally{pending.delete(key);items.forEach(x=>{x.disabled=false;x.removeAttribute('aria-busy')});labels.forEach((value,x)=>{x.textContent=value})}}
+async function boot(){try{const s=await fetch('/auth/session',{credentials:'same-origin',cache:'no-store'});if(!s.ok){location.href='/login';return}const session=await s.json();if(!(session.roles||[session.role]).includes('admin')){view.innerHTML='<p class="bad">Недостаточно прав: требуется роль администратора.</p>';return}token.value=session.api_token||'';await loadCurrent()}catch(e){feedback(`Админка не загружена: ${compactError(e)}`,'bad')}}
+function showTab(name,button){currentTab=name;document.querySelectorAll('.nav-button').forEach(x=>x.classList.toggle('active',x===button));side.innerHTML='Выберите дело или действие.';void loadCurrent()}
+async function reloadCurrent(button){return withAction('reload:'+currentTab,button,null,async()=>{await loadCurrent()},'Обновление…')}
+async function loadCurrent(){if(loadController)loadController.abort();const controller=new AbortController();loadController=controller;view.innerHTML='Загрузка…';try{if(currentTab==='dashboard')await loadDashboard(controller);else if(currentTab==='queue')await loadQueue(controller);else if(currentTab==='cases')await loadCases(controller);else if(currentTab==='payments')await loadPayments(controller);else if(currentTab==='documents')await loadDocuments(controller);else if(currentTab==='lawyers')await loadLawyers(controller);else if(currentTab==='settings')await loadSettings(controller);else if(currentTab==='notifications')await loadNotifications(controller)}catch(e){if(e.name!=='AbortError'){view.innerHTML='<p class="bad">'+esc(compactError(e))+'</p>';feedback(`Раздел не загружен: ${compactError(e)}`,'bad')}}finally{if(loadController===controller)loadController=null}}
+async function loadDashboard(controller){const d=await api('/admin/dashboard',{signal:controller.signal});view.innerHTML=`<h2>Состояние системы</h2><div class="metric-grid"><div class="metric"><b>${d.cases?.total||0}</b>дел</div><div class="metric"><b>${d.payments?.total||0}</b>платежей</div><div class="metric"><b>${d.documents?.total||0}</b>документов</div><div class="metric"><b>${d.queue?.unassigned||0}</b>без юриста</div></div><p class="muted">Обновлено: ${esc(d.generated_at||'—')}</p>`}
+async function loadQueue(controller){const rows=await api('/admin/queue',{signal:controller.signal});view.innerHTML='<h2>Очередь без юриста</h2>'+(rows.length?rows.map(x=>`<div class="list-item"><b>${esc(x.number)}</b> · ${esc(x.route)} · <span class="badge">${esc(x.status)}</span><div class="muted">${esc(x.next_action||'')}</div><button data-case-id="${x.id}" onclick="openCase(${x.id})">Открыть</button> <button data-case-id="${x.id}" class="green" data-expected-status="${esc(x.status)}" data-expected-lawyer="" onclick="autoAssign(${x.id},this)">Автоназначение</button></div>`).join(''):'Очередь пуста.')}
+async function loadCases(controller){const rows=await api('/admin/cases',{signal:controller.signal});view.innerHTML='<h2>Все дела</h2><table><tr><th>Дело</th><th>Маршрут</th><th>Статус</th><th>Юрист</th><th></th></tr>'+rows.map(x=>`<tr><td><b>${esc(x.number)}</b><br><span class="muted">#${x.id}</span></td><td>${esc(x.route)}</td><td>${esc(x.status)}</td><td>${esc(x.lawyer_id||'не назначен')}</td><td><button data-case-id="${x.id}" onclick="openCase(${x.id})">Открыть</button></td></tr>`).join('')+'</table>'}
+async function openCase(id){try{const d=await api('/admin/cases/'+id);currentCase=d.case;const paymentRows=(d.payments||[]).map(p=>`<div class="list-item">${esc(p.title)} · ${p.amount} · <span class="badge">${esc(p.status)}</span>${p.manual_confirm_allowed?`<br><button data-case-id="${id}" data-payment-id="${p.id}" data-expected-status="${esc(p.status)}" class="green" onclick="confirmPayment(${p.id},${id},this)">Подтвердить fake-платёж</button>`:''}</div>`).join('');side.innerHTML=`<h3>${esc(d.case.number)}</h3><p>${esc(d.case.route)} · <b>${esc(d.case.status)}</b></p><p class="muted">${esc(d.case.next_action||'')}<br>Юрист: ${esc(d.case.lawyer_id||'не назначен')}</p><div class="row"><button data-case-id="${id}" onclick="showStatusForm(${id},this)">Изменить статус</button>${d.case.lawyer_id?'':`<button data-case-id="${id}" class="green" data-expected-status="${esc(d.case.status)}" data-expected-lawyer="" onclick="autoAssign(${id},this)">Автоназначение</button>`}</div><h4>Платежи</h4>${paymentRows||'Нет платежей'}<h4>Документы</h4>${(d.documents||[]).map(x=>`<div class="muted">${esc(x.title)} · ${esc(x.status)}</div>`).join('')||'Нет документов'}`;return d}catch(e){feedback(`Карточка дела не загружена: ${compactError(e)}`,'bad');throw e}}
+async function showStatusForm(id){try{const statuses=await api('/admin/statuses');const d=currentCase&&currentCase.id===id?{case:currentCase}:await openCase(id);const caseData=d.case||currentCase;side.insertAdjacentHTML('beforeend',`<div class="card"><h4>Ручное изменение статуса</h4><select id="newStatus">${statuses.map(s=>`<option value="${esc(s)}" ${s===caseData.status?'selected':''}>${esc(s)}</option>`).join('')}</select><textarea id="statusComment" placeholder="Причина изменения (минимум 5 символов)"></textarea><button data-case-id="${id}" data-expected-status="${esc(caseData.status)}" onclick="saveStatus(${id},this)">Сохранить статус</button></div>`)}catch(e){feedback(`Форма статуса не загружена: ${compactError(e)}`,'bad')}}
+async function saveStatus(id,button){const next=document.getElementById('newStatus')?.value||'',comment=(document.getElementById('statusComment')?.value||'').trim(),expected=button.dataset.expectedStatus||'';if(comment.length<5){feedback('Комментарий должен содержать не менее 5 символов','bad');return}if(next===expected){feedback('Выберите новый статус, отличный от текущего','bad');return}if(!confirm(`Изменить статус дела #${id}: ${expected} → ${next}?`))return;return withAction('case:'+id,button,`[data-case-id="${id}"]`,async()=>{try{const result=await api('/admin/cases/'+id+'/status',{method:'POST',body:JSON.stringify({status:next,comment,expected_status:expected})});feedback(`Статус дела #${id} сохранён: ${result.status}`,'ok');try{await openCase(id);await loadCurrent()}catch(e){feedback(`Статус сохранён, но экран не обновился: ${compactError(e)}`,'warn')}}catch(e){feedback(`Статус дела #${id} не изменён: ${compactError(e)}`,'bad')}})}
+async function autoAssign(id,button){const expectedStatus=button.dataset.expectedStatus||'',expectedLawyer=button.dataset.expectedLawyer||null;if(!confirm(`Автоматически назначить юриста на дело #${id}? Это запустит SLA первой реакции.`))return;return withAction('case:'+id,button,`[data-case-id="${id}"]`,async()=>{try{const result=await api('/admin/cases/'+id+'/auto-assign',{method:'POST',body:JSON.stringify({expected_status:expectedStatus,expected_lawyer_id:expectedLawyer})});feedback(`Дело #${id} назначено: ${result.lawyer||result.lawyer_id}`,'ok');try{await openCase(id);await loadCurrent()}catch(e){feedback(`Назначение сохранено, но экран не обновился: ${compactError(e)}`,'warn')}}catch(e){feedback(`Дело #${id} не назначено: ${compactError(e)}`,'bad')}})}
+async function loadPayments(controller){const rows=await api('/admin/payments',{signal:controller.signal});view.innerHTML='<h2>Платежи</h2><table><tr><th>ID</th><th>Дело</th><th>Назначение</th><th>Сумма</th><th>Статус</th><th></th></tr>'+rows.map(p=>`<tr><td>${p.id}</td><td>${p.case_id}</td><td>${esc(p.title)}</td><td>${p.amount}</td><td>${esc(p.status)}</td><td>${p.manual_confirm_allowed?`<button data-payment-id="${p.id}" data-case-id="${p.case_id}" data-expected-status="${esc(p.status)}" class="green" onclick="confirmPayment(${p.id},${p.case_id},this)">Подтвердить fake</button>`:'—'}</td></tr>`).join('')+'</table>'}
+async function confirmPayment(paymentId,caseId,button){const expected=button.dataset.expectedStatus||'';if(!confirm(`Подтвердить тестовый платёж #${paymentId} со статусом ${expected}? В production эта операция недоступна.`))return;return withAction('payment:'+paymentId,button,`[data-payment-id="${paymentId}"]`,async()=>{try{const result=await api('/admin/payments/'+paymentId+'/confirm',{method:'POST',body:JSON.stringify({expected_status:expected})});feedback(`Платёж #${result.payment_id} подтверждён: ${result.status}`,'ok');try{if(caseId)await openCase(caseId);await loadCurrent()}catch(e){feedback(`Платёж подтверждён, но экран не обновился: ${compactError(e)}`,'warn')}}catch(e){feedback(`Платёж #${paymentId} не подтверждён: ${compactError(e)}`,'bad')}})}
+async function loadDocuments(controller){const rows=await api('/admin/documents',{signal:controller.signal});view.innerHTML='<h2>Документы</h2><table><tr><th>ID</th><th>Дело</th><th>Тип</th><th>Файл</th><th>Статус</th></tr>'+rows.map(x=>`<tr><td>${x.id}</td><td><button onclick="openCase(${x.case_id})">${x.case_id}</button></td><td>${esc(x.type)}</td><td>${esc(x.file_name)}</td><td>${esc(x.status)}</td></tr>`).join('')+'</table>'}
+async function loadLawyers(controller){const rows=await api('/admin/lawyers',{signal:controller.signal});view.innerHTML='<h2>Юристы</h2><button data-global-action="create-lawyer" onclick="showLawyerForm()">Добавить юриста</button><table><tr><th>ID</th><th>ФИО</th><th>Email</th><th>Статус</th><th>Лимит</th></tr>'+rows.map(x=>`<tr><td>${x.id}</td><td>${esc(x.full_name)}</td><td>${esc(x.email||'')}</td><td>${x.is_active?'активен':'отключён'}</td><td>${x.workload_limit}</td></tr>`).join('')+'</table>'}
+function showLawyerForm(){side.innerHTML=`<div class="card"><h4>Новый юрист</h4><input id="lawyerName" placeholder="ФИО"><input id="lawyerEmail" type="email" placeholder="Email"><input id="lawyerPhone" placeholder="Телефон"><input id="lawyerSpec" placeholder="Специализация"><input id="lawyerLimit" type="number" min="1" max="500" value="30"><button data-global-action="create-lawyer" onclick="createLawyer(this)">Создать</button></div>`}
+async function createLawyer(button){const fullName=(document.getElementById('lawyerName')?.value||'').trim(),email=(document.getElementById('lawyerEmail')?.value||'').trim().toLowerCase(),limit=Number(document.getElementById('lawyerLimit')?.value||0);if(fullName.length<3){feedback('Укажите ФИО юриста','bad');return}if(!email.includes('@')){feedback('Укажите корректный email','bad');return}if(!Number.isInteger(limit)||limit<1||limit>500){feedback('Лимит должен быть от 1 до 500','bad');return}return withAction('global:create-lawyer',button,'[data-global-action="create-lawyer"]',async()=>{try{const result=await api('/admin/lawyers',{method:'POST',body:JSON.stringify({full_name:fullName,email,phone:document.getElementById('lawyerPhone')?.value||'',specialization:document.getElementById('lawyerSpec')?.value||'',workload_limit:limit})});feedback(`Юрист ${result.full_name} создан`,'ok');side.innerHTML='Юрист создан.';try{await loadCurrent()}catch(e){feedback(`Юрист создан, но список не обновился: ${compactError(e)}`,'warn')}}catch(e){feedback(`Юрист не создан: ${compactError(e)}`,'bad')}})}
+async function loadSettings(controller){const rows=await api('/admin/settings',{signal:controller.signal});view.innerHTML='<h2>Настройки</h2>'+rows.map((r,index)=>`<div class="list-item"><b>${esc(r.title)}</b><div class="muted">${esc(r.key)} · обновлено ${esc(r.updated_at)}</div><input id="setting_${index}" value="${esc(r.value?.value??'')}" ${r.editable?'':'disabled'}>${r.editable?`<button data-setting-key="${esc(r.key)}" data-input-id="setting_${index}" data-expected-updated-at="${esc(r.updated_at)}" onclick="saveSetting(this)">Сохранить</button>`:''}</div>`).join('')}
+async function saveSetting(button){const key=button.dataset.settingKey,input=document.getElementById(button.dataset.inputId),expected=button.dataset.expectedUpdatedAt,value=input?.value;if(!key||!input){feedback('Настройка не найдена на странице','bad');return}if(!confirm(`Сохранить системную настройку ${key}? Изменение применяется к следующим операциям.`))return;return withAction('setting:'+key,button,`[data-setting-key="${CSS.escape(key)}"]`,async()=>{try{const result=await api('/admin/settings/'+encodeURIComponent(key),{method:'POST',body:JSON.stringify({value,expected_updated_at:expected})});button.dataset.expectedUpdatedAt=result.updated_at;feedback(`Настройка ${key} сохранена`,'ok');try{await loadCurrent()}catch(e){feedback(`Настройка сохранена, но список не обновился: ${compactError(e)}`,'warn')}}catch(e){feedback(`Настройка ${key} не сохранена: ${compactError(e)}`,'bad')}})}
+async function loadNotifications(controller){const rows=await api('/admin/notifications',{signal:controller.signal});view.innerHTML='<h2>Уведомления</h2>'+rows.map(x=>`<div class="list-item"><b>${esc(x.title)}</b> · ${esc(x.status)}<div>${esc(x.text)}</div><div class="muted">${esc(x.event)} · дело ${esc(x.case_id||'—')}</div></div>`).join('')}
+async function runScheduler(button){if(!confirm('Запустить все плановые проверки сейчас? Повторные уведомления защищены dedupe-ключами, но операция может изменить SLA и очереди.'))return;return withAction('global:scheduler',button,'[data-global-action="scheduler"]',async()=>{try{const result=await api('/admin/scheduler/run-once',{method:'POST',body:'{}'});feedback(`Плановые проверки завершены: ${Object.keys(result||{}).length} блоков результата`,'ok');try{await loadCurrent()}catch(e){feedback(`Проверки завершены, но раздел не обновился: ${compactError(e)}`,'warn')}}catch(e){feedback(`Плановые проверки не выполнены: ${compactError(e)}`,'bad')}})}
+boot();
 </script>
 </body>
 </html>
