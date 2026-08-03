@@ -70,8 +70,10 @@ def test_test_dependencies_are_isolated_from_production_image():
     assert 'pip install ".[test]"' not in production
     assert 'pip install ".[test]"' in test_image
     assert "COPY tests ./tests" in test_image
+    assert "COPY .github/workflows ./.github/workflows" in test_image
     assert "Dockerfile.test" in test_script
-    assert 'docker run --rm "$image" pytest -q "$@"' in test_script
+    assert "python scripts/init_db.py" in test_script
+    assert 'exec pytest -q "$@"' in test_script
 
 
 def test_startup_scripts_are_installed_with_the_application():
