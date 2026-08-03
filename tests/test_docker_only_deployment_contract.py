@@ -6,6 +6,7 @@ import pytest
 
 from app.bot.lease import TelegramPollingLease
 from app.config import Settings
+from app.db.migrations import build_alembic_config, resolve_project_root
 from scripts import production_preflight
 
 
@@ -71,6 +72,22 @@ def test_test_dependencies_are_isolated_from_production_image():
     assert "COPY tests ./tests" in test_image
     assert "Dockerfile.test" in test_script
     assert 'docker run --rm "$image" pytest -q "$@"' in test_script
+
+
+def test_startup_scripts_are_installed_with_the_application():
+    pyproject = read("pyproject.toml")
+
+    assert 'include = ["app*", "scripts*"]' in pyproject
+    assert (ROOT / "scripts" / "__init__.py").is_file()
+
+
+def test_runtime_alembic_files_resolve_outside_the_installed_wheel():
+    project_root = resolve_project_root()
+    config = build_alembic_config("sqlite+aiosqlite:////tmp/migration-contract.db")
+
+    assert project_root == ROOT
+    assert Path(config.config_file_name).resolve() == ROOT / "alembic.ini"
+    assert Path(config.get_main_option("script_location")).resolve() == ROOT / "migrations"
 
 
 def test_compose_persists_documents_backups_and_telegram_fsm():
