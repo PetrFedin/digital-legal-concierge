@@ -18,6 +18,7 @@ data/
 storage/
 logs/
 redis-data/
+.release/
 *.db
 *.sqlite
 *.sqlite3
