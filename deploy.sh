@@ -27,6 +27,12 @@ dc run --rm --no-deps --entrypoint python app scripts/production_preflight.py
 echo "Запуск новой версии..."
 dc up -d --remove-orphans
 
+if [ "$(dc exec -T redis redis-cli ping 2>/dev/null || true)" != "PONG" ]; then
+  echo "Redis FSM storage не прошёл проверку после запуска. Последние логи:"
+  dc logs --tail=200 redis app
+  exit 1
+fi
+
 attempt=1
 max_attempts="${DEPLOY_HEALTH_ATTEMPTS:-45}"
 while [ "$attempt" -le "$max_attempts" ]; do
@@ -39,7 +45,7 @@ done
 
 if [ "$attempt" -gt "$max_attempts" ]; then
   echo "Сервис не прошёл liveness-проверку. Последние логи:"
-  dc logs --tail=200 app
+  dc logs --tail=200 app redis
   exit 1
 fi
 
@@ -54,9 +60,9 @@ raise SystemExit(0 if payload.get("ok") is True else 2)
 PY
 then
   echo "Контейнер жив, но production readiness не пройдена. Последние логи:"
-  dc logs --tail=200 app
+  dc logs --tail=200 app redis
   exit 1
 fi
 
-echo "Деплой завершён. Контейнер прошёл /health и /ready."
+echo "Деплой завершён. Redis, /health и /ready прошли проверку."
 dc ps
