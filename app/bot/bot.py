@@ -9,7 +9,9 @@ from aiogram.exceptions import (
     TelegramServerError,
     TelegramUnauthorizedError,
 )
+from aiogram.fsm.storage.base import BaseStorage
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.types import BotCommand, BotCommandScopeDefault, CallbackQuery, Message
 
 from app.bot.lease import TelegramPollingLease
@@ -29,6 +31,10 @@ from app.config import settings
 from app.db.session import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
+
+
+class PollingExitedError(RuntimeError):
+    pass
 
 
 class DbMiddleware:
@@ -96,8 +102,21 @@ async def setup_telegram_commands(bot: Bot) -> None:
     await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
 
 
+def build_fsm_storage() -> BaseStorage:
+    backend = settings.fsm_storage_backend.strip().lower()
+    if backend == "redis":
+        if not settings.redis_url.strip():
+            raise RuntimeError("REDIS_URL не задан для Redis FSM storage")
+        return RedisStorage.from_url(settings.redis_url)
+    if backend == "memory" and settings.app_env.strip().lower() != "production":
+        return MemoryStorage()
+    raise RuntimeError(
+        "Production Telegram FSM должен использовать FSM_STORAGE_BACKEND=redis"
+    )
+
+
 def build_dispatcher() -> Dispatcher:
-    dispatcher = Dispatcher(storage=MemoryStorage())
+    dispatcher = Dispatcher(storage=build_fsm_storage())
     dispatcher.update.middleware(DbMiddleware())
     flood_control = FloodControlMiddleware()
     dispatcher.message.middleware(flood_control)
@@ -161,8 +180,11 @@ async def run_bot() -> None:
                     handle_signals=False,
                     close_bot_session=False,
                 )
-            except TelegramUnauthorizedError:
-                logger.exception("BOT_TOKEN отклонён Telegram API.")
+                raise PollingExitedError(
+                    "Telegram polling завершился без остановки процесса"
+                )
+            except (TelegramUnauthorizedError, PollingExitedError):
+                logger.exception("Telegram polling остановлен фатальной ошибкой.")
                 raise
             except TelegramRetryAfter as exc:
                 wait_seconds = max(int(exc.retry_after), retry_delay)
