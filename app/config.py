@@ -8,6 +8,7 @@ class Settings(BaseSettings):
 
     app_env: str = "local"
     database_url: str = "sqlite+aiosqlite:///./legal_bot.db"
+    database_startup_wait_seconds: int = 120
     bot_token: str = "CHANGE_ME"
     run_bot: bool = False
     run_scheduler: bool = False
