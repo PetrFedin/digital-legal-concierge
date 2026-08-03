@@ -145,6 +145,9 @@ def build_report() -> dict[str, object]:
                 "postgres_requirement_satisfied": (
                     postgres if settings.require_postgres_in_production else True
                 ),
+                "database_wait_valid": 10
+                <= int(settings.database_startup_wait_seconds)
+                <= 600,
                 "fsm_storage_is_redis": (
                     settings.fsm_storage_backend.strip().lower() == "redis"
                 ),
