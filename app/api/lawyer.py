@@ -11,6 +11,7 @@ from app.domain.consultations.outcome_service import (
     ConsultationOutcomeError,
     ConsultationOutcomeService,
 )
+from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.statuses.case_statuses import CaseStatus
 from app.lawyer.lawyer_decisions import LawyerDecisionService
 from app.models.case import Case
@@ -204,6 +205,7 @@ async def accept(
             expected_status=expected_status,
             expected_updated_at=expected_updated_at,
         )
+        source_version = case.updated_at.isoformat()
         await LawyerDecisionService(db).accept_m1_case(
             case=case,
             lawyer_id=actor.lawyer.id,
@@ -214,6 +216,15 @@ async def accept(
             lawyer_id=actor.lawyer.id,
             action="M1_CASE_ACCEPTED",
             comment=comment,
+        )
+        await NotificationEngine(db).emit(
+            event_code="M1_CASE_ACCEPTED",
+            case_id=case.id,
+            payload={
+                "case_number": case.case_number,
+                "next_action": case.next_action or "Ожидать подготовки договора",
+            },
+            dedupe_key=f"case:{case.id}:lawyer-accept:{source_version}",
         )
         await db.commit()
         await db.refresh(case)
@@ -264,6 +275,7 @@ async def request_docs(
             expected_status=expected_status,
             expected_updated_at=expected_updated_at,
         )
+        source_version = case.updated_at.isoformat()
         await LawyerDecisionService(db).request_more_documents(
             case=case,
             lawyer_id=actor.lawyer.id,
@@ -274,6 +286,16 @@ async def request_docs(
             lawyer_id=actor.lawyer.id,
             action="DOCUMENTS_REQUESTED",
             comment=comment,
+        )
+        await NotificationEngine(db).emit(
+            event_code="M1_DOCUMENTS_REQUESTED",
+            case_id=case.id,
+            payload={
+                "case_number": case.case_number,
+                "request": comment,
+                "next_action": case.next_action or "Загрузить документы",
+            },
+            dedupe_key=f"case:{case.id}:docs-request:{source_version}",
         )
         await db.commit()
         await db.refresh(case)
@@ -324,6 +346,7 @@ async def transfer_to_m2(
             expected_status=expected_status,
             expected_updated_at=expected_updated_at,
         )
+        source_version = case.updated_at.isoformat()
         await LawyerDecisionService(db).transfer_m1_to_m2(
             case=case,
             lawyer_id=actor.lawyer.id,
@@ -334,6 +357,15 @@ async def transfer_to_m2(
             lawyer_id=actor.lawyer.id,
             action="M1_CASE_TRANSFERRED_TO_M2",
             comment=reason,
+        )
+        await NotificationEngine(db).emit(
+            event_code="M1_CASE_TRANSFERRED_TO_M2",
+            case_id=case.id,
+            payload={
+                "case_number": case.case_number,
+                "next_action": case.next_action or "Описать ситуацию",
+            },
+            dedupe_key=f"case:{case.id}:route-m2:{source_version}",
         )
         await db.commit()
         await db.refresh(case)

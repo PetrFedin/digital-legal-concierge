@@ -1,6 +1,18 @@
 TEMPLATES = {
     "case_created": "Новое обращение {case_number}.",
     "lawyer_assigned": "Вам назначено дело {case_number}.",
+    "m1_case_accepted": (
+        "Дело {case_number} принято юристом в работу. "
+        "Следующий шаг: {next_action}."
+    ),
+    "m1_documents_requested": (
+        "По делу {case_number} юрист запросил дополнительные документы: "
+        "{request}. Следующий шаг: {next_action}."
+    ),
+    "m1_case_transferred_to_m2": (
+        "По делу {case_number} выбран консультационный маршрут. "
+        "Следующий шаг: {next_action}."
+    ),
     "case_sla_first_response_overdue": (
         "Просрочена первая реакция по делу {case_number}. "
         "Юрист: {lawyer}. Срок был {due_at}. Уровень эскалации: {level}."
