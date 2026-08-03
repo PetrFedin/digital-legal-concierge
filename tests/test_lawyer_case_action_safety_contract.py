@@ -12,6 +12,7 @@ from app.api.lawyer import (
     assert_case_snapshot,
     lawyer_cases,
     request_docs,
+    transfer_to_m2,
 )
 
 
@@ -39,33 +40,49 @@ def test_lawyer_ui_exposes_assigned_cases_and_locks_each_case_action():
     assert "pendingCases.delete(id)" in compact
     assert "data-expected-status=" in LAWYER_HTML
     assert "data-expected-updated-at=" in LAWYER_HTML
-    assert compact.count("data-case-id=") >= 2
+    assert compact.count("data-case-id=") >= 3
     assert "acceptCase(${x.case_id},this)" in LAWYER_HTML
     assert "requestDocuments(${x.case_id},this)" in LAWYER_HTML
+    assert "transferToM2(${x.case_id},this)" in LAWYER_HTML
 
 
 @pytest.mark.parametrize(
-    ("function_name", "path_suffix", "success_marker", "failure_marker"),
     (
-        ("acceptCase", "/accept", "Дело #", "не принято"),
+        "function_name",
+        "path_suffix",
+        "minimum_length",
+        "success_marker",
+        "failure_marker",
+    ),
+    (
+        ("acceptCase", "/accept", 5, "Дело #", "не принято"),
         (
             "requestDocuments",
             "/request-documents",
+            5,
             "Запрос документов",
             "не сохранён",
+        ),
+        (
+            "transferToM2",
+            "/transfer-to-m2",
+            10,
+            "переведено в маршрут",
+            "не переведено",
         ),
     ),
 )
 def test_case_actions_validate_confirm_send_snapshot_and_report_result(
     function_name: str,
     path_suffix: str,
+    minimum_length: int,
     success_marker: str,
     failure_marker: str,
 ):
     function = _action_function(function_name)
     compact = _compact(function)
 
-    assert ".trim().length<5" in compact
+    assert f".trim().length<{minimum_length}" in compact
     assert function.index("confirm(") < function.index("withCaseAction(")
     assert function.index("withCaseAction(") < function.index("await api(")
     assert path_suffix in function
@@ -85,6 +102,9 @@ def test_case_reads_are_personal_and_action_availability_matches_transition_poli
     assert "CaseStatus.M1_DOCUMENTS_RECEIVED" in source
     assert '"can_accept"' in source
     assert '"can_request_documents"' in source
+    assert '"can_transfer_to_m2"' in source
+    assert "CaseStatus.M1_DOCUMENTS_PENDING" in source
+    assert "CaseStatus.M1_DOCS_REQUESTED" in source
     assert '"updated_at"' in source
 
 
@@ -105,7 +125,7 @@ def test_snapshot_rejects_changed_status_or_row_version():
     assert "case.updated_at.isoformat()" in source
 
 
-@pytest.mark.parametrize("endpoint", (accept, request_docs))
+@pytest.mark.parametrize("endpoint", (accept, request_docs, transfer_to_m2))
 def test_case_action_endpoints_lock_recheck_and_rollback_every_failure(endpoint):
     source = inspect.getsource(endpoint)
     compact = _compact(source)

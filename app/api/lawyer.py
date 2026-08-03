@@ -112,6 +112,13 @@ async def lawyer_cases(
                 CaseStatus.M1_DOCUMENTS_RECEIVED,
                 CaseStatus.M1_LAWYER_REVIEW,
             },
+            "can_transfer_to_m2": case.status
+            in {
+                CaseStatus.M1_DOCUMENTS_PENDING,
+                CaseStatus.M1_DOCUMENTS_RECEIVED,
+                CaseStatus.M1_LAWYER_REVIEW,
+                CaseStatus.M1_DOCS_REQUESTED,
+            },
         }
         for case, user in rows
     ]
@@ -289,6 +296,67 @@ async def request_docs(
     }
 
 
+@router.post("/cases/{case_id}/transfer-to-m2")
+async def transfer_to_m2(
+    case_id: int,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    actor = await require_lawyer_actor(db, x_admin_token)
+    reason = str(payload.get("reason") or "").strip()
+    expected_status = payload.get("expected_status")
+    expected_updated_at = payload.get("expected_updated_at")
+    if len(reason) < 10:
+        raise HTTPException(
+            status_code=400,
+            detail="Укажите содержательную причину перевода в консультационный маршрут",
+        )
+    try:
+        case = await assigned_case(
+            db,
+            case_id,
+            actor.lawyer.id,
+            for_update=True,
+        )
+        assert_case_snapshot(
+            case,
+            expected_status=expected_status,
+            expected_updated_at=expected_updated_at,
+        )
+        await LawyerDecisionService(db).transfer_m1_to_m2(
+            case=case,
+            lawyer_id=actor.lawyer.id,
+            reason=reason,
+        )
+        await CaseSLAService(db).record_lawyer_activity(
+            case=case,
+            lawyer_id=actor.lawyer.id,
+            action="M1_CASE_TRANSFERRED_TO_M2",
+            comment=reason,
+        )
+        await db.commit()
+        await db.refresh(case)
+    except HTTPException:
+        await db.rollback()
+        raise
+    except (ValueError, CaseSLAError) as error:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except Exception:
+        await db.rollback()
+        raise
+    return {
+        "ok": True,
+        "case_id": case.id,
+        "route": case.route,
+        "status": case.status,
+        "updated_at": case.updated_at.isoformat(),
+        "sla_status": case.sla_status,
+        "sla_due_at": case.sla_due_at,
+    }
+
+
 @router.post("/consultations/{consultation_id}/complete")
 async def complete_consultation(
     consultation_id: int,
@@ -419,13 +487,15 @@ function dt(v){return v?new Date(v).toLocaleString('ru-RU'):'—'}
 function slaClass(v){return String(v||'').includes('OVERDUE')?'badge overdue':'badge'}
 function decisionOptions(id){return `<select data-consultation-id="${id}" id="decision_${id}"><option value="">Выберите итоговое решение</option><option value="close">Закрыть обращение</option><option value="to_m1">Перевести в маршрут М1</option><option value="follow_up">Нужна следующая консультация</option><option value="other">Иное решение</option></select>`}
 function decisionLabel(value){return {close:'закрыть обращение',to_m1:'перевести дело в маршрут М1',follow_up:'назначить следующую консультацию',other:'зафиксировать иное решение'}[value]||value}
-function caseActions(x){const items=[];if(x.can_accept)items.push(`<button data-case-id="${x.case_id}" data-expected-status="${esc(x.status)}" data-expected-updated-at="${esc(x.updated_at)}" class="green" onclick="acceptCase(${x.case_id},this)">Принять дело</button>`);if(x.can_request_documents)items.push(`<button data-case-id="${x.case_id}" data-expected-status="${esc(x.status)}" data-expected-updated-at="${esc(x.updated_at)}" class="amber" onclick="requestDocuments(${x.case_id},this)">Запросить документы</button>`);return items.join('')||'—'}
+function caseActions(x){const items=[];if(x.can_accept)items.push(`<button data-case-id="${x.case_id}" data-expected-status="${esc(x.status)}" data-expected-updated-at="${esc(x.updated_at)}" class="green" onclick="acceptCase(${x.case_id},this)">Принять дело</button>`);if(x.can_request_documents)items.push(`<button data-case-id="${x.case_id}" data-expected-status="${esc(x.status)}" data-expected-updated-at="${esc(x.updated_at)}" class="amber" onclick="requestDocuments(${x.case_id},this)">Запросить документы</button>`);if(x.can_transfer_to_m2)items.push(`<button data-case-id="${x.case_id}" data-expected-status="${esc(x.status)}" data-expected-updated-at="${esc(x.updated_at)}" class="red" onclick="transferToM2(${x.case_id},this)">Перевести в консультацию</button>`);return items.join('')||'—'}
 async function boot(){const r=await fetch('/auth/session',{credentials:'same-origin',cache:'no-store'});if(!r.ok){location.href='/login';return}const s=await r.json();if(!(s.roles||[s.role]).includes('lawyer')){casesContent.innerHTML='Недостаточно прав: требуется роль юриста.';consultationsContent.innerHTML='';return}token=s.api_token;try{await load()}catch(e){feedback(e.message,'bad')}}
 async function load(){if(loadController)loadController.abort();const controller=new AbortController();loadController=controller;casesContent.innerHTML='Загрузка…';consultationsContent.innerHTML='Загрузка…';try{await Promise.all([loadCases(controller),loadConsultations(controller)])}catch(e){if(e.name!=='AbortError')throw e}finally{if(loadController===controller)loadController=null}}
 async function loadCases(controller){const rows=await api('/lawyer/cases',{signal:controller.signal});casesContent.innerHTML=rows.length?`<table><tr><th>Дело / клиент</th><th>Маршрут</th><th>Статус / SLA</th><th>Следующее действие</th><th>Решение</th></tr>${rows.map(x=>`<tr><td><b>${esc(x.case_number)}</b><br>${esc(x.client_name)}<br><span class="muted">TG ${esc(x.telegram_id)} · обновлено ${esc(dt(x.updated_at))}</span></td><td>${esc(x.route||'—')}</td><td><span class="badge">${esc(x.status)}</span><br><span class="${slaClass(x.sla_status)}">${esc(x.sla_status||'NOT_STARTED')}</span><br><span class="muted">до ${esc(dt(x.sla_due_at))}<br>эскалация ${esc(x.escalation_level)}</span></td><td>${esc(x.next_action||'—')}</td><td><div class="actions">${caseActions(x)}</div></td></tr>`).join('')}</table>`:'Назначенных активных дел нет.'}
 async function loadConsultations(controller){const rows=await api('/lawyer/consultations',{signal:controller.signal});consultationsContent.innerHTML=rows.length?`<table><tr><th>Встреча</th><th>Дело / клиент</th><th>Вопрос</th><th>Статус / SLA</th><th>Действия</th></tr>${rows.map(x=>`<tr><td>${esc(dt(x.scheduled_at))}<br><span class="muted">${esc(x.slot_status||'')}</span></td><td><b>${esc(x.case_number)}</b><br>${esc(x.client_name)}<br><span class="muted">TG ${esc(x.telegram_id)}</span></td><td>${esc(x.subject||'не указан')}</td><td><span class="badge">${esc(x.status)}</span><br><span class="${slaClass(x.case_sla_status)}">${esc(x.case_sla_status||'NOT_STARTED')}</span><br><span class="muted">до ${esc(dt(x.case_sla_due_at))}<br>эскалация ${esc(x.case_escalation_level)}</span></td><td><div class="actions">${x.status==='BOOKED'?`${decisionOptions(x.consultation_id)}<button data-consultation-id="${x.consultation_id}" onclick="completeConsultation(${x.consultation_id},this)">Зафиксировать результат</button><button data-consultation-id="${x.consultation_id}" class="red" onclick="noShow(${x.consultation_id},this)">Клиент не явился</button>`:'—'}</div></td></tr>`).join('')}</table>`:'Консультаций нет.'}
 async function acceptCase(id,button){const expectedStatus=button.dataset.expectedStatus||'',expectedUpdatedAt=button.dataset.expectedUpdatedAt||'';const comment=prompt('Укажите основание принятия дела (минимум 5 символов):');if(comment===null)return;if(comment.trim().length<5){feedback('Комментарий должен содержать не менее 5 символов','bad');return}if(!confirm(`Принять дело #${id} и открыть этап подготовки договора?`))return;return withCaseAction(id,button,async()=>{try{const response=await api('/lawyer/cases/'+id+'/accept',{method:'POST',body:JSON.stringify({comment:comment.trim(),expected_status:expectedStatus,expected_updated_at:expectedUpdatedAt})});feedback(`Дело #${response.case_id} принято: ${response.status}`,'ok');try{await load()}catch(e){feedback(`Дело принято, но список не обновился: ${e.message}`,'warn')}}catch(e){feedback(`Дело #${id} не принято: ${e.message}`,'bad')}})}
 async function requestDocuments(id,button){const expectedStatus=button.dataset.expectedStatus||'',expectedUpdatedAt=button.dataset.expectedUpdatedAt||'';const comment=prompt('Перечислите недостающие документы (минимум 5 символов):');if(comment===null)return;if(comment.trim().length<5){feedback('Комментарий должен содержать не менее 5 символов','bad');return}if(!confirm(`Запросить дополнительные документы по делу #${id}? Клиент получит новое следующее действие.`))return;return withCaseAction(id,button,async()=>{try{const response=await api('/lawyer/cases/'+id+'/request-documents',{method:'POST',body:JSON.stringify({comment:comment.trim(),expected_status:expectedStatus,expected_updated_at:expectedUpdatedAt})});feedback(`Запрос документов по делу #${response.case_id} сохранён`,'ok');try{await load()}catch(e){feedback(`Запрос сохранён, но список не обновился: ${e.message}`,'warn')}}catch(e){feedback(`Запрос документов по делу #${id} не сохранён: ${e.message}`,'bad')}})}
+async function transferToM2(id,button){const expectedStatus=button.dataset.expectedStatus||'',expectedUpdatedAt=button.dataset.expectedUpdatedAt||'';const reason=prompt('Укажите причину перевода в консультационный маршрут (минимум 10 символов):');if(reason===null)return;if(reason.trim().length<10){feedback('Причина должна содержать не менее 10 символов','bad');return}if(!confirm(`Перевести дело #${id} из полного сопровождения M1 в консультационный маршрут M2? Действие изменит клиентский сценарий.`))return;return withCaseAction(id,button,async()=>{try{const response=await api('/lawyer/cases/'+id+'/transfer-to-m2',{method:'POST',body:JSON.stringify({reason:reason.trim(),expected_status:expectedStatus,expected_updated_at:expectedUpdatedAt})});feedback(`Дело #${response.case_id} переведено в маршрут ${response.route}: ${response.status}`,'ok');try{await load()}catch(e){feedback(`Перевод сохранён, но список не обновился: ${e.message}`,'warn')}}catch(e){feedback(`Дело #${id} не переведено: ${e.message}`,'bad')}})}
+
 async function completeConsultation(id,button){const decision=document.getElementById('decision_'+id).value;if(!decision){feedback('Выберите итоговое решение по консультации','bad');return}const result=prompt('Опишите результат консультации (минимум 20 символов):');if(!result)return;if(result.trim().length<20){feedback('Результат должен содержать не менее 20 символов','bad');return}if(!confirm(`Подтвердите итог консультации #${id}: ${decisionLabel(decision)}.`))return;return withConsultationAction(id,button,async()=>{try{const response=await api('/lawyer/consultations/'+id+'/complete',{method:'POST',body:JSON.stringify({result,decision})});feedback(`Результат консультации #${response.consultation_id} сохранён: ${response.decision}`,'ok');try{await load()}catch(e){feedback(`Результат сохранён, но список не обновился: ${e.message}`,'warn')}}catch(e){feedback(`Результат консультации #${id} не сохранён: ${e.message}`,'bad')}})}
 async function noShow(id,button){const comment=prompt('Укажите обстоятельства неявки клиента:');if(!comment)return;if(comment.trim().length<5){feedback('Комментарий должен содержать не менее 5 символов','bad');return}if(!confirm(`Подтвердите неявку клиента по консультации #${id}. Зафиксировать результат этой встречи после этого будет нельзя.`))return;return withConsultationAction(id,button,async()=>{try{const response=await api('/lawyer/consultations/'+id+'/client-no-show',{method:'POST',body:JSON.stringify({comment})});feedback(`Неявка клиента по консультации #${response.consultation_id} зафиксирована`,'ok');try{await load()}catch(e){feedback(`Неявка сохранена, но список не обновился: ${e.message}`,'warn')}}catch(e){feedback(`Неявка по консультации #${id} не сохранена: ${e.message}`,'bad')}})}
 boot();
