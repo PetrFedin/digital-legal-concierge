@@ -1,4 +1,26 @@
 services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: legal_concierge
+      POSTGRES_USER: legal_concierge
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - concierge_postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U legal_concierge -d legal_concierge
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
   redis:
     image: redis:7.4-alpine
     command:
@@ -35,6 +57,8 @@ services:
     env_file:
       - .env
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
     ports:
@@ -63,6 +87,7 @@ services:
         max-file: "5"
 
 volumes:
+  concierge_postgres:
   concierge_data:
   concierge_storage:
   concierge_logs:
