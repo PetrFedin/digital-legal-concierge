@@ -46,6 +46,7 @@ bash ./generate-secrets.sh
 
 ```bash
 rm -f .env.generated.secrets
+bash ./test.sh
 bash ./timeweb-deploy.sh
 ```
 
@@ -54,18 +55,20 @@ bash ./timeweb-deploy.sh
 1. Проверка production-переменных без вывода секретов.
 2. Запуск Redis с AOF и ожидание его healthcheck.
 3. Проверка доступности Redis из контейнера приложения.
-4. Alembic-миграции базы.
-5. Создание системного администратора, если он отсутствует.
-6. Демо-юрист не создаётся при `BOOTSTRAP_DEMO_DATA=false`.
-7. Создание и полная проверка зашифрованного startup-backup, если свежего backup нет.
-8. Запуск API, Telegram polling и scheduler единым supervisor-процессом.
-9. Проверка `/health` и fail-closed `/ready` после запуска.
+4. Ожидание PostgreSQL и проверка `SELECT 1` с ограниченным retry.
+5. Alembic-миграции базы.
+6. Создание системного администратора, если он отсутствует.
+7. Демо-юрист не создаётся при `BOOTSTRAP_DEMO_DATA=false`.
+8. Создание и полная проверка зашифрованного startup-backup, если свежего backup нет.
+9. Запуск API, Telegram polling и scheduler единым supervisor-процессом.
+10. Проверка Redis, `/health` и fail-closed `/ready` после запуска.
 
 ## Повторный деплой
 
 ```bash
 cd digital-legal-concierge
 git pull --ff-only
+bash ./test.sh
 bash ./timeweb-deploy.sh
 ```
 
@@ -80,6 +83,13 @@ COMPOSE_FILE=docker-compose.timeweb.yml bash ./status.sh
 COMPOSE_FILE=docker-compose.timeweb.yml bash ./backup.sh
 COMPOSE_FILE=docker-compose.timeweb.yml bash ./bot-control.sh
 COMPOSE_FILE=docker-compose.timeweb.yml docker compose logs -f --tail=300 app redis
+bash ./test.sh
+```
+
+Точечный запуск теста также не требует Python на сервере:
+
+```bash
+bash ./test.sh tests/test_docker_only_deployment_contract.py
 ```
 
 ## Ограничения и правила
@@ -91,6 +101,8 @@ COMPOSE_FILE=docker-compose.timeweb.yml docker compose logs -f --tail=300 app re
 - Redis FSM обеспечивает продолжение незавершённого диалога, но не заменяет PostgreSQL как
   юридически значимый источник данных.
 - Не публикуйте порт Redis наружу и не добавляйте `ports` к сервису `redis`.
+- Timeweb compose публикует API только на `127.0.0.1:8000`; внешний TLS-доступ должен идти
+  через host reverse proxy. Укажите его фактический адрес в `TRUSTED_PROXY_CIDRS`.
 - `CASE_RETENTION_DRY_RUN=true` оставляйте включённым до отдельного юридического
   утверждения политики удаления.
 - Старые ключи переносите в соответствующие `*_PREVIOUS_KEYS`; не удаляйте их до
