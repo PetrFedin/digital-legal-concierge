@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
-BASE_URL="${BASE_URL:-http://localhost:8000}"
-echo "Проверяю сервис: $BASE_URL"
-python scripts/self_check.py || true
-if [ -f .env ]; then
-  ADMIN_TOKEN=$(grep -E '^ADMIN_API_TOKEN=' .env | cut -d= -f2- || true)
-  if [ -n "${ADMIN_TOKEN:-}" ]; then
-    echo ""
-    echo "Снимок системы:"
-    curl -s -H "x-admin-token: $ADMIN_TOKEN" "$BASE_URL/runtime/snapshot" | python -m json.tool || true
-  fi
-fi
+compose_file="${COMPOSE_FILE:-docker-compose.yml}"
+dc() { docker compose -f "$compose_file" "$@"; }
+
+dc ps
+
+dc exec -T app python - <<'PY'
+import json
+import urllib.request
+
+for path in ("/health", "/ready"):
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:8000{path}", timeout=10) as response:
+            payload = json.load(response)
+        print(path, json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    except Exception as error:
+        print(path, "ERROR", type(error).__name__, str(error))
+PY
