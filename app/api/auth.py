@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from html import escape
+
 from fastapi import APIRouter, Depends, Form, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import func, or_, select
@@ -79,9 +81,32 @@ def _rate_limit_error(retry_after: int) -> HTTPException:
     )
 
 
+def _prefers_html(request: Request) -> bool:
+    return "text/html" in request.headers.get("accept", "").lower()
+
+
+def _login_response(
+    *,
+    error: str | None = None,
+    username: str = "",
+    status_code: int = 200,
+    retry_after: int | None = None,
+) -> HTMLResponse:
+    error_html = ""
+    if error:
+        error_html = f'<div class="error" role="alert">{escape(error)}</div>'
+    body = LOGIN_HTML.replace("__ERROR__", error_html).replace(
+        "__USERNAME__", escape(username, quote=True)
+    )
+    headers = dict(NO_STORE_HEADERS)
+    if retry_after is not None:
+        headers["Retry-After"] = str(max(1, int(retry_after)))
+    return HTMLResponse(body, status_code=status_code, headers=headers)
+
+
 @router.get("/login", response_class=HTMLResponse)
 async def login_page():
-    return HTMLResponse(LOGIN_HTML, headers=NO_STORE_HEADERS)
+    return _login_response()
 
 
 @router.post("/login")
@@ -100,6 +125,13 @@ async def login(
             client_address=client_address,
         )
     except LoginRateLimitError as error:
+        if _prefers_html(request):
+            return _login_response(
+                error="Слишком много попыток входа. Повторите позже.",
+                username=username,
+                status_code=429,
+                retry_after=error.retry_after,
+            )
         raise _rate_limit_error(error.retry_after) from error
 
     user = (
@@ -139,6 +171,19 @@ async def login(
                 comment="Превышен лимит неверных попыток административного входа",
             )
         await db.commit()
+        if _prefers_html(request):
+            if retry_after:
+                return _login_response(
+                    error="Слишком много попыток входа. Повторите позже.",
+                    username=username,
+                    status_code=429,
+                    retry_after=retry_after,
+                )
+            return _login_response(
+                error="Неверный логин или пароль.",
+                username=username,
+                status_code=401,
+            )
         if retry_after:
             raise _rate_limit_error(retry_after)
         raise HTTPException(status_code=401, detail="Неверный логин или пароль")
@@ -243,8 +288,33 @@ async def logout(
 
 
 LOGIN_HTML = """
-<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Вход в Digital Legal Concierge</title><style>
-body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;background:#f3f4f6;color:#111827;display:grid;place-items:center;min-height:100vh}.card{background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:24px;width:min(440px,92vw);box-shadow:0 8px 30px rgba(0,0,0,.08)}input{width:100%;box-sizing:border-box;margin:8px 0 14px;padding:12px;border:1px solid #d1d5db;border-radius:12px}button{width:100%;border:0;border-radius:12px;background:#111827;color:#fff;padding:12px;font-weight:800}.muted{color:#6b7280;font-size:13px}</style></head>
-<body><form class="card" method="post" action="/login"><h1>⚖ Вход в админку</h1><p class="muted">Введите логин или email и пароль. Для суперадминистраторов после пароля обязательна проверка TOTP или резервным кодом.</p><label>Логин или email</label><input name="username" autocomplete="username" required autofocus><label>Пароль</label><input name="password" type="password" autocomplete="current-password" required><button>Войти</button></form></body></html>
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Вход в Digital Legal Concierge</title>
+<style>
+:root{--ink:#172033;--muted:#667085;--line:#dfe3ea;--primary:#3157d5;--error:#b42318;--error-bg:#fef3f2}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;background:linear-gradient(145deg,#eef2ff,#f7f8fb 45%,#eef4ff);color:var(--ink);display:grid;place-items:center;min-height:100vh;padding:20px}
+.card{background:#fff;border:1px solid var(--line);border-radius:22px;padding:28px;width:min(460px,96vw);box-shadow:0 20px 55px rgba(16,24,40,.12)}
+.brand{display:flex;gap:12px;align-items:center;margin-bottom:18px}.mark{width:44px;height:44px;border-radius:14px;background:#111827;color:#fff;display:grid;place-items:center;font-size:24px}.brand h1{font-size:22px;margin:0}.brand p{margin:3px 0 0;color:var(--muted);font-size:13px}
+label{display:block;font-weight:700;font-size:14px;margin-top:14px}input{width:100%;margin-top:7px;padding:12px 13px;border:1px solid #cfd5df;border-radius:12px;font-size:16px}input:focus{outline:3px solid #dfe6ff;border-color:var(--primary)}button{width:100%;border:0;border-radius:12px;background:var(--primary);color:#fff;padding:13px;font-weight:800;font-size:15px;margin-top:18px;cursor:pointer}button:hover{background:#2748bd}.muted{color:var(--muted);font-size:13px;line-height:1.5}.error{background:var(--error-bg);border:1px solid #fecdca;color:var(--error);padding:11px 12px;border-radius:12px;margin:12px 0;font-size:14px}.help{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}a{color:var(--primary)}
+</style>
+</head>
+<body>
+<form class="card" method="post" action="/login">
+  <div class="brand"><div class="mark">⚖</div><div><h1>Вход в кабинет</h1><p>Digital Legal Concierge</p></div></div>
+  <p class="muted">Используйте логин или email вашей учетной записи кабинета. Пароль из переменных сервера не заменяет пароль уже созданного пользователя.</p>
+  __ERROR__
+  <label for="username">Логин или email</label>
+  <input id="username" name="username" value="__USERNAME__" autocomplete="username" required autofocus>
+  <label for="password">Пароль</label>
+  <input id="password" name="password" type="password" autocomplete="current-password" required>
+  <button type="submit">Войти в кабинет</button>
+  <div class="help muted">Для суперадминистратора после пароля потребуется код MFA. <a href="/operator">Вернуться в рабочее пространство</a>.</div>
+</form>
+</body>
+</html>
 """
