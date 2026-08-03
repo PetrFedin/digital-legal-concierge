@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from urllib.parse import urlparse
 
 from app.config import settings
 
@@ -34,6 +35,55 @@ def _directory_ready(value: str) -> bool:
         return False
 
 
+def _postgres_url_ready(value: str) -> bool:
+    try:
+        parsed = urlparse(value)
+        database_name = parsed.path.strip("/").lower()
+        _ = parsed.port
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme == "postgresql+asyncpg"
+        and parsed.hostname
+        and parsed.hostname.lower() not in {"host", "localhost"}
+        and parsed.username
+        and parsed.username.lower() not in {"user", "username"}
+        and parsed.password
+        and parsed.password.lower() not in {"password", "change_me", "changeme"}
+        and database_name
+        and database_name not in {"database", "dbname"}
+    )
+
+
+def _redis_url_ready(value: str) -> bool:
+    try:
+        parsed = urlparse(value)
+        _ = parsed.port
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme in {"redis", "rediss"}
+        and parsed.hostname
+        and parsed.path.strip("/").isdigit()
+    )
+
+
+def _public_url_ready(value: str) -> bool:
+    try:
+        parsed = urlparse(value)
+        hostname = str(parsed.hostname or "").lower()
+        _ = parsed.port
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme == "https"
+        and hostname
+        and "." in hostname
+        and hostname not in {"localhost", "example.com"}
+        and "your-domain" not in hostname
+    )
+
+
 def build_report() -> dict[str, object]:
     production = settings.app_env.strip().lower() == "production"
     checks: dict[str, bool] = {
@@ -53,7 +103,7 @@ def build_report() -> dict[str, object]:
         ]
         database_url = str(settings.database_url or "")
         redis_url = str(settings.redis_url or "")
-        postgres = database_url.startswith("postgresql+asyncpg://")
+        postgres = _postgres_url_ready(database_url)
         persistent_sqlite = database_url.startswith(
             "sqlite+aiosqlite:////app/data/"
         )
@@ -85,9 +135,9 @@ def build_report() -> dict[str, object]:
                 "payment_webhook_secret_ready": _secret_ready(
                     settings.payment_webhook_secret
                 ),
-                "public_base_url_https": str(settings.public_base_url)
-                .lower()
-                .startswith("https://"),
+                "public_base_url_ready": _public_url_ready(
+                    str(settings.public_base_url or "")
+                ),
                 "trusted_proxy_configured": bool(
                     str(settings.trusted_proxy_cidrs or "").strip()
                 ),
@@ -95,8 +145,10 @@ def build_report() -> dict[str, object]:
                 "postgres_requirement_satisfied": (
                     postgres if settings.require_postgres_in_production else True
                 ),
-                "fsm_storage_is_redis": settings.fsm_storage_backend == "redis",
-                "redis_url_ready": redis_url.startswith(("redis://", "rediss://")),
+                "fsm_storage_is_redis": (
+                    settings.fsm_storage_backend.strip().lower() == "redis"
+                ),
+                "redis_url_ready": _redis_url_ready(redis_url),
                 "redis_wait_valid": 10
                 <= int(settings.redis_startup_wait_seconds)
                 <= 300,
