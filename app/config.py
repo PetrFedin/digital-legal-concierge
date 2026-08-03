@@ -12,6 +12,18 @@ class Settings(BaseSettings):
     run_bot: bool = False
     run_scheduler: bool = False
 
+    # Container/bootstrap policy. Production defaults are supplied by
+    # .env.production.example; local development may opt into demo data.
+    bootstrap_admin: bool = True
+    bootstrap_demo_data: bool = False
+    require_postgres_in_production: bool = False
+    startup_backup_enabled: bool = True
+
+    # Telegram polling restart policy.
+    telegram_drop_pending_updates: bool = False
+    telegram_singleton_wait_seconds: int = 120
+    telegram_singleton_retry_seconds: int = 3
+
     # Explicit API credential. It is not used for sessions, MFA encryption or
     # internal HMAC once dedicated production keys are configured.
     admin_api_token: str = "dev-admin-token"
@@ -50,8 +62,6 @@ class Settings(BaseSettings):
     payment_webhook_processing_timeout_seconds: int = 300
     payment_webhook_max_attempts: int = 8
     public_base_url: str = "http://localhost:8000"
-    # Comma-separated CIDRs of reverse proxies that are allowed to supply
-    # X-Forwarded-For / X-Real-IP / X-Forwarded-Proto. Empty means trust none.
     trusted_proxy_cidrs: str = ""
     trusted_proxy_max_hops: int = 5
     trust_forwarded_proto: bool = True
@@ -68,13 +78,9 @@ class Settings(BaseSettings):
     backup_dir: str = "./backups"
     max_backup_mb: int = 2048
     backup_retention_days: int = 30
-    # Production readiness is fail-closed when no fully verified, restorable
-    # encrypted backup exists within this recovery-point objective.
     backup_readiness_required_in_production: bool = True
     backup_max_age_hours: int = 26
     automatic_encrypted_backups_enabled: bool = True
-    # Full AES-GCM + manifest verification is cached only while every archive
-    # and the signed restore-fence retain the same filesystem fingerprint.
     backup_freshness_cache_seconds: int = 300
     backup_future_clock_skew_seconds: int = 300
 
