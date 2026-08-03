@@ -1,0 +1,50 @@
+name: Reproducible Dependencies
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reproducible-dependencies-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  locked-release-images:
+    name: Locked production and test images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Build locked test image
+        run: docker build --pull -f Dockerfile.test -t digital-legal-concierge:test-locked .
+
+      - name: Verify every locked test dependency
+        run: |
+          docker run --rm digital-legal-concierge:test-locked \
+            python scripts/verify_constraints.py --require-all
+          docker run --rm digital-legal-concierge:test-locked pip check
+
+      - name: Run the complete suite in the locked test image
+        run: >-
+          docker run --rm digital-legal-concierge:test-locked
+          sh -c 'python scripts/init_db.py && pytest -q'
+
+      - name: Build locked production image
+        run: docker build --pull -t digital-legal-concierge:production-locked .
+
+      - name: Verify production dependencies and package consistency
+        run: |
+          docker run --rm --entrypoint python \
+            digital-legal-concierge:production-locked \
+            scripts/verify_constraints.py
+          docker run --rm --entrypoint pip \
+            digital-legal-concierge:production-locked check
