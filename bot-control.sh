@@ -17,7 +17,7 @@ Digital Legal Concierge — Docker control
 6) Показать логи
 7) Создать зашифрованный backup
 8) Выполнить миграции и bootstrap
-9) Полная pytest-проверка внутри Docker
+9) Выполнить production acceptance внутри Docker
 10) Остановить сервис
 11) Сгенерировать production-секреты
 0) Выход
@@ -36,15 +36,15 @@ case "$choice" in
     dc run --rm --no-deps --entrypoint python app scripts/production_preflight.py
     ;;
   2|build) dc build --pull app ;;
-  3|deploy|start) COMPOSE_FILE="$compose_file" ./deploy.sh ;;
+  3|deploy|start) COMPOSE_FILE="$compose_file" bash ./deploy.sh ;;
   4|restart) dc restart app ;;
-  5|status) COMPOSE_FILE="$compose_file" ./status.sh ;;
+  5|status) COMPOSE_FILE="$compose_file" bash ./status.sh ;;
   6|logs) dc logs -f --tail=300 app ;;
-  7|backup) COMPOSE_FILE="$compose_file" ./backup.sh ;;
+  7|backup) COMPOSE_FILE="$compose_file" bash ./backup.sh ;;
   8|migrate) dc run --rm --no-deps --entrypoint python app scripts/init_db.py ;;
-  9|test) dc run --rm --no-deps --entrypoint pytest app -q ;;
+  9|accept) COMPOSE_FILE="$compose_file" bash ./acceptance.sh ;;
   10|stop) dc down ;;
-  11|secrets) ./generate-secrets.sh ;;
+  11|secrets) bash ./generate-secrets.sh ;;
   0|exit) exit 0 ;;
   *) echo "Неизвестная команда: $choice"; exit 1 ;;
 esac
