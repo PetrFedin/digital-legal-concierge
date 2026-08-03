@@ -10,7 +10,8 @@ def test_docker_image_contains_runtime_migration_assets_and_postgres_client():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     entrypoint = (ROOT / "docker-entrypoint.sh").read_text(encoding="utf-8")
 
-    assert "COPY pyproject.toml README.md alembic.ini ./" in dockerfile
+    assert "COPY pyproject.toml constraints.txt README.md alembic.ini ./" in dockerfile
+    assert "PIP_CONSTRAINT=/app/constraints.txt" in dockerfile
     assert "COPY migrations ./migrations" in dockerfile
     assert "COPY scripts ./scripts" in dockerfile
     assert "postgresql-client" in dockerfile
