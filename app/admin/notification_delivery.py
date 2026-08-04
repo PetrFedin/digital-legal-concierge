@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import case as sql_case
+from sqlalchemy import and_, case as sql_case
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -50,16 +50,41 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
 
+def _recipient_code(notification: Notification) -> str:
+    return str(notification.recipient_type or notification.title or "").strip()
+
+
 def _recipient_label(notification: Notification) -> str:
-    recipient = str(notification.recipient_type or notification.title or "").strip()
+    recipient = _recipient_code(notification)
     return RECIPIENT_LABELS.get(recipient, recipient or "Получатель не определён")
 
 
 def _target_recoverable(notification: Notification) -> bool:
-    return bool(
-        notification.target_chat_id is not None
-        or notification.user_id is not None
-        or notification.case_id is not None
+    if notification.target_chat_id is not None:
+        return True
+    recipient = _recipient_code(notification)
+    if recipient == "client":
+        return bool(notification.user_id is not None or notification.case_id is not None)
+    if recipient == "lawyer":
+        return notification.case_id is not None
+    if recipient == "admin":
+        return True
+    return False
+
+
+def _recoverable_target_clause():
+    recipient = func.coalesce(Notification.recipient_type, Notification.title)
+    return or_(
+        Notification.target_chat_id.is_not(None),
+        and_(
+            recipient == "client",
+            or_(
+                Notification.user_id.is_not(None),
+                Notification.case_id.is_not(None),
+            ),
+        ),
+        and_(recipient == "lawyer", Notification.case_id.is_not(None)),
+        recipient == "admin",
     )
 
 
@@ -167,13 +192,7 @@ class NotificationDeliveryService:
                     Notification.next_attempt_at <= current,
                 )
             )
-            .where(
-                or_(
-                    Notification.target_chat_id.is_not(None),
-                    Notification.user_id.is_not(None),
-                    Notification.case_id.is_not(None),
-                )
-            )
+            .where(_recoverable_target_clause())
         )
         return {
             "attention": pending + retry + failed,
@@ -249,7 +268,7 @@ class NotificationDeliveryService:
             )
         if not _target_recoverable(notification):
             raise NotificationDeliveryError(
-                "Уведомление не связано с пользователем или делом; адрес получателя восстановить нельзя"
+                "Уведомление не связано с получателем, которого Telegram sender может определить повторно"
             )
         if expected_status is not None and str(notification.status) != str(
             expected_status
@@ -311,13 +330,7 @@ class NotificationDeliveryService:
                     Notification.next_attempt_at <= now,
                 )
             )
-            .where(
-                or_(
-                    Notification.target_chat_id.is_not(None),
-                    Notification.user_id.is_not(None),
-                    Notification.case_id.is_not(None),
-                )
-            )
+            .where(_recoverable_target_clause())
             .order_by(Notification.created_at.asc(), Notification.id.asc())
             .limit(safe_limit)
         )
