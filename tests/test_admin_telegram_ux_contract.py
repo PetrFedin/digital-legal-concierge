@@ -107,3 +107,29 @@ def test_telegram_stale_buttons_return_to_current_state_without_demo_language():
     assert "В тестовом режиме" not in source
     assert "PILOT_NEXT_ACTIONS" in source
     assert "Онлайн-оплата сейчас отключена" in source
+
+
+def test_telegram_document_list_uses_client_statuses_not_security_codes():
+    source = read("app/bot/screens/documents.py")
+
+    assert "def _client_document_status" in source
+    assert '"UPLOADED": "Безопасно загружен"' in source
+    assert '"PENDING_REVIEW": "Проверяет юрист"' in source
+    assert '"APPROVED": "Принят юристом"' in source
+    assert '"REJECTED": "Нужно заменить файл"' in source
+    assert "Что исправить:" in source
+    assert "безопасность:" not in source
+    assert "хранение:" not in source
+
+
+def test_telegram_document_empty_and_failure_states_have_safe_exits():
+    source = read("app/bot/screens/documents.py")
+
+    assert "if not case:" in source
+    assert "_new_case_buttons()" in source
+    assert "Пока документов нет" in source
+    assert "Продолжить без документов" in source
+    assert '("🔄 Повторить передачу", "doc_finish_upload")' in source
+    assert "Загруженные файлы сохранены" in source
+    assert "Документ не сохранён" in source
+    assert '("🏠 Главная", "nav_home")' in source
