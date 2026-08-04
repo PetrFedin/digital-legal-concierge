@@ -33,11 +33,17 @@ def test_admin_workspace_has_real_queue_endpoints_and_recovery_states():
     source = read("app/api/web_admin.py")
 
     assert '@router.get("/admin/work-queues/{queue_name}")' in source
+    assert '@router.get("/admin/case-workspace/{case_id}")' in source
     assert 'QUEUE_NAMES = {"unassigned", "documents", "consultations", "overdue"}' in source
     assert 'Case.assigned_lawyer_id.is_(None)' in source
     assert 'Document.status.in_(DOCUMENT_REVIEW_STATUSES)' in source
     assert 'Consultation.status == "BOOKED"' in source
     assert 'Case.sla_status.in_(["FIRST_RESPONSE_OVERDUE", "ACTION_OVERDUE"])' in source
+    assert "status_label" in source
+    assert "lawyer_name" in source
+    assert "sla_label" in source
+    assert "lawyer_comment" in source
+    assert "Рекомендуемое действие" in source
     assert "Не удалось загрузить раздел" in source
     assert "Повторить" in source
     assert "Очередь пуста" in source
@@ -66,3 +72,38 @@ def test_telegram_case_screen_does_not_show_payment_controls_when_disabled():
     assert '("💳 Оплаты", "payments_open")' in source
     assert "payments_count = 0" in source
     assert "В режиме без онлайн-оплаты" not in source
+
+
+def test_telegram_lawyer_contact_matches_no_payment_mode_and_has_no_implicit_dead_end():
+    source = read("app/bot/screens/messages.py")
+
+    assert "payments_disabled()" in source
+    assert "записаться на консультацию без онлайн-оплаты" in source
+    assert "платную консультацию" not in source
+    assert "оплатите встречу" not in source
+    assert "После отправки вопроса будет создано новое обращение" in source
+    assert '("✉️ Задать вопрос", "message_create")' in source
+    assert '("🧮 Рассчитать неустойку", "calc_start")' in source
+
+
+def test_telegram_message_failures_rollback_and_offer_recovery():
+    source = read("app/bot/screens/messages.py")
+
+    assert source.count("await db.rollback()") >= 2
+    assert "Не удалось загрузить переписку" in source
+    assert '("🔄 Повторить", "message_history")' in source
+    assert "Не удалось отправить вопрос" in source
+    assert '("🔄 Начать отправку заново", "message_create")' in source
+    assert "Текст не был зарегистрирован" in source
+
+
+def test_telegram_stale_buttons_return_to_current_state_without_demo_language():
+    source = read("app/bot/screens/common.py")
+
+    assert 'c.data == "noop"' in source
+    assert "Эта кнопка больше не актуальна" in source
+    assert "_home_text(db, callback)" in source
+    assert "DEV подтверждения" not in source
+    assert "В тестовом режиме" not in source
+    assert "PILOT_NEXT_ACTIONS" in source
+    assert "Онлайн-оплата сейчас отключена" in source
