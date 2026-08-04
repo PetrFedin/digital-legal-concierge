@@ -36,6 +36,18 @@ NOTIFICATION_RULES = {
         "recipients": ["client"],
         "template": "document_status_changed",
     },
+    "DOCUMENT_APPROVED": {
+        "recipients": ["client"],
+        "template": "document_approved",
+    },
+    "DOCUMENT_REUPLOAD_REQUESTED": {
+        "recipients": ["client"],
+        "template": "document_reupload_requested",
+    },
+    "DOCUMENT_REJECTED": {
+        "recipients": ["client"],
+        "template": "document_rejected",
+    },
     "PAYMENT_CREATED": {
         "recipients": ["client"],
         "template": "payment_created",
