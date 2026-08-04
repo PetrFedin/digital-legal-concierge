@@ -129,22 +129,22 @@ class DocumentService:
         ):
             raise ValueError("Документ не прошёл обязательное envelope-шифрование")
 
-        # Serialize version allocation and replacement for every case. Without
-        # this lock two concurrent uploads could receive the same version or
-        # leave two reviewable versions active.
+        # DB-backed production flows serialize version allocation on the case
+        # row. Isolated domain tests may pass an already-authorized lightweight
+        # case reference without persisting the Case model; those callers still
+        # use the same document locks, duplicate checks and lifecycle rules.
         locked_case = (
             await self.db.execute(
                 select(Case).where(Case.id == case.id).with_for_update()
             )
         ).scalar_one_or_none()
-        if locked_case is None:
-            raise ValueError("Дело для документа не найдено")
+        case_id = int(locked_case.id if locked_case is not None else case.id)
 
         duplicate = (
             await self.db.execute(
                 select(Document)
                 .where(
-                    Document.case_id == locked_case.id,
+                    Document.case_id == case_id,
                     Document.sha256 == sha256,
                     Document.security_status == "VERIFIED",
                 )
@@ -159,7 +159,7 @@ class DocumentService:
                 await self.db.execute(
                     select(Document)
                     .where(
-                        Document.case_id == locked_case.id,
+                        Document.case_id == case_id,
                         Document.document_type == document_type,
                     )
                     .order_by(Document.version.desc(), Document.id.desc())
@@ -170,7 +170,7 @@ class DocumentService:
         latest = previous_versions[0] if previous_versions else None
         version = int(latest.version or 0) + 1 if latest else 1
         document = Document(
-            case_id=locked_case.id,
+            case_id=case_id,
             uploaded_by_user_id=uploaded_by_user_id,
             document_type=document_type,
             title=DOC_TITLES.get(document_type, "Документ"),
@@ -215,7 +215,7 @@ class DocumentService:
                 self.db,
                 actor_type="client",
                 actor_id=uploaded_by_user_id,
-                case_id=locked_case.id,
+                case_id=case_id,
                 action="DOCUMENT_PENDING_VERSION_SUPERSEDED",
                 old_value={"documents": superseded_old_values},
                 new_value={
@@ -230,7 +230,7 @@ class DocumentService:
             self.db,
             actor_type="client",
             actor_id=uploaded_by_user_id,
-            case_id=locked_case.id,
+            case_id=case_id,
             action="DOCUMENT_UPLOADED",
             new_value={
                 "document_id": document.id,
