@@ -127,9 +127,9 @@ async def operator_page():
               <p>Очередь, дела, документы, переписка и задачи.</p>
               <div class="links">
                 <a class="link primary" href="/admin-ui"><b>Административная панель</b><span>Дела, очереди, документы и команда</span></a>
+                <a class="link" href="/lawyer/workspace/ui"><b>Рабочий кабинет юриста</b><span>Приоритеты, дела, документы, консультации и SLA</span></a>
                 <a class="link" href="/document-access/review/ui"><b>Проверка документов</b><span>Скачать файл, принять, отклонить или запросить новую версию</span></a>
                 <a class="link" href="/message-center/ui"><b>Сообщения</b><span>Диалоги клиентов и ответы команды</span></a>
-                <a class="link" href="/lawyer/ui"><b>Кабинет юриста</b><span>Назначенные дела и консультации</span></a>
                 <a class="link" href="/task-center/ui"><b>Задачи</b><span>Контроль текущих операционных действий</span></a>
               </div>
             </article>
@@ -187,18 +187,25 @@ async def operator_page():
 @router.get("/operator/status")
 async def operator_status():
     return {
-        "version": "1.0.0-v27",
+        "version": "1.0.0-v28",
         "bot_enabled": settings.run_bot,
         "scheduler_enabled": settings.run_scheduler,
         "payment_provider": settings.payment_provider,
         "storage_dir": settings.storage_dir,
         "public_base_url": settings.public_base_url,
-        "recommended_next_step": "Откройте /operator, затем /admin-ui для ежедневной работы",
+        "recommended_next_step": "Откройте /operator, затем рабочий кабинет своей роли",
         "workspaces": {
             "admin": "/admin-ui",
-            "lawyer": "/lawyer/ui",
+            "lawyer": "/lawyer/workspace/ui",
+            "lawyer_legacy": "/lawyer/ui",
             "document_review": "/document-access/review/ui",
             "messages": "/message-center/ui",
             "monitoring": "/monitoring-center/ui",
         },
     }
+
+
+# Mounted here because /operator is the role-workspace hub.
+from app.api.lawyer_workspace import router as lawyer_workspace_router  # noqa: E402
+
+router.include_router(lawyer_workspace_router)
