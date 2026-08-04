@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.admin.case_detail_page import CASE_DETAIL_HTML
 from app.admin.notification_delivery import (
     NotificationDeliveryError,
     NotificationDeliveryService,
@@ -93,6 +94,10 @@ async def _fresh_notification(
             .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
+
+
+def _admin_token(request: Request, header_token: str | None) -> str | None:
+    return header_token or request.cookies.get(settings.admin_session_cookie)
 
 
 @router.get("")
@@ -190,14 +195,28 @@ async def retry_notification(
         raise
 
 
+@router.get("/case/{case_id}/ui", response_class=HTMLResponse)
+async def notification_case_detail_ui(
+    case_id: int,
+    request: Request,
+    x_admin_token: str | None = Header(default=None),
+):
+    try:
+        require_admin(_admin_token(request, x_admin_token))
+    except HTTPException:
+        return RedirectResponse(url="/login", status_code=303)
+    return HTMLResponse(
+        CASE_DETAIL_HTML.replace("__CASE_ID__", str(int(case_id)))
+    )
+
+
 @router.get("/ui", response_class=HTMLResponse)
 async def notification_delivery_ui(
     request: Request,
     x_admin_token: str | None = Header(default=None),
 ):
-    token = x_admin_token or request.cookies.get(settings.admin_session_cookie)
     try:
-        require_admin(token)
+        require_admin(_admin_token(request, x_admin_token))
     except HTTPException:
         return RedirectResponse(url="/login", status_code=303)
     return HTMLResponse(DELIVERY_HTML)
@@ -226,16 +245,17 @@ let token='',currentFilter='attention',loadController=null;const pending=new Set
 function esc(v){return String(v??'').replace(/[&<>\x22\x27]/g,c=>c==='&'?'&amp;':c==='<'?'&lt;':c==='>'?'&gt;':c.charCodeAt(0)===34?'&quot;':'&#39;')}
 function feedback(text,state=''){statusBox.textContent=text;statusBox.className='status '+state}
 function dt(v){return v?new Intl.DateTimeFormat('ru-RU',{dateStyle:'short',timeStyle:'short'}).format(new Date(v)):'—'}
+function targetState(x){if(x.target_available)return 'Telegram подключён';if(x.target_recoverable)return 'адрес будет найден из дела или профиля';return 'получатель не связан с системой'}
 async function api(path,opts={}){const r=await fetch(path,{...opts,credentials:'same-origin',cache:'no-store',headers:{'x-admin-token':token,'Content-Type':'application/json',...(opts.headers||{})}});if(r.status===401||r.status===403){location.href='/login';throw new Error('Сессия истекла или недостаточно прав')}const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||'Ошибка запроса');return d}
 async function withAction(key,button,work,label='Выполняется…'){if(pending.has(key))return;pending.add(key);const old=button?.textContent;if(button){button.disabled=true;button.setAttribute('aria-busy','true');button.textContent=label}try{return await work()}finally{pending.delete(key);if(button){button.disabled=false;button.removeAttribute('aria-busy');button.textContent=old}}}
 function setFilter(name,button){currentFilter=name;document.querySelectorAll('[data-filter]').forEach(x=>x.classList.toggle('active',x===button));void load()}
 function renderMetrics(s){metrics.innerHTML=`<article class="metric failed"><b>${s.failed||0}</b><span>не доставлено</span></article><article class="metric retry"><b>${s.retry||0}</b><span>на повторе</span></article><article class="metric"><b>${s.pending||0}</b><span>ожидают отправки</span></article><article class="metric"><b>${s.due_now||0}</b><span>можно отправить сейчас</span></article><article class="metric"><b>${s.sent_recent||0}</b><span>доставлено за 24 часа</span></article>`;document.getElementById('retryDue').disabled=!(s.due_now>0)}
 function badgeClass(x){return String(x.status||'').toLowerCase()}
-function card(x){const failure=x.last_error?`<div class="error-box"><b>Причина</b><br>${esc(x.last_error)}</div>`:'';const retry=x.can_retry?`<button data-notification-id="${x.id}" data-expected-status="${esc(x.status)}" data-expected-updated-at="${esc(x.updated_at)}" onclick="retryOne(${x.id},this)">Повторить сейчас</button>`:'';return `<article class="card ${badgeClass(x)}" id="notification_${x.id}"><div class="card-head"><div><h3>${esc(x.title||'Telegram-уведомление')}</h3><div class="muted">${esc(x.event)} · дело ${esc(x.case_id||'—')}</div></div><span class="badge ${badgeClass(x)}">${esc(x.status_label)}</span></div><div class="message-text">${esc(x.text)}</div>${failure}<div class="action-box"><b>Рекомендуемое действие</b>${esc(x.recommended_action)}</div><div class="meta"><div class="cell"><span>Получатель</span>${esc(x.recipient)} · ${x.target_available?'Telegram подключён':'адрес не найден'}</div><div class="cell"><span>Попытки</span>${esc(x.attempt_count)}</div><div class="cell"><span>Создано / отправлено</span>${esc(dt(x.created_at))} / ${esc(dt(x.sent_at))}</div><div class="cell"><span>Следующая попытка</span>${esc(dt(x.next_attempt_at))}</div></div><div class="actions" style="margin-top:11px">${retry}${x.case_id?`<a class="button secondary" href="/admin-ui">Открыть дело #${x.case_id}</a>`:''}</div></article>`}
+function card(x){const failure=x.last_error?`<div class="error-box"><b>Причина</b><br>${esc(x.last_error)}</div>`:'';const retry=x.can_retry?`<button data-notification-id="${x.id}" data-expected-status="${esc(x.status)}" data-expected-updated-at="${esc(x.updated_at)}" onclick="retryOne(${x.id},this)">${esc(x.retry_label||'Повторить сейчас')}</button>`:'';const caseLink=x.case_id?`<a class="button secondary" href="/admin/notification-delivery/case/${x.case_id}/ui">Открыть дело #${x.case_id}</a>`:'';return `<article class="card ${badgeClass(x)}" id="notification_${x.id}"><div class="card-head"><div><h3>${esc(x.title||'Telegram-уведомление')}</h3><div class="muted">${esc(x.event)} · дело ${esc(x.case_id||'—')}</div></div><span class="badge ${badgeClass(x)}">${esc(x.status_label)}</span></div><div class="message-text">${esc(x.text)}</div>${failure}<div class="action-box"><b>Рекомендуемое действие</b>${esc(x.recommended_action)}</div><div class="meta"><div class="cell"><span>Получатель</span>${esc(x.recipient)} · ${esc(targetState(x))}</div><div class="cell"><span>Попытки</span>${esc(x.attempt_count)}</div><div class="cell"><span>Создано / отправлено</span>${esc(dt(x.created_at))} / ${esc(dt(x.sent_at))}</div><div class="cell"><span>Следующая попытка</span>${esc(dt(x.next_attempt_at))}</div></div><div class="actions" style="margin-top:11px">${retry}${caseLink}</div></article>`}
 function showError(e){grid.innerHTML=`<div class="error"><b>Не удалось загрузить доставку</b><p>${esc(e.message||e)}</p><button onclick="load()">Повторить</button></div>`;feedback(e.message||String(e),'bad')}
 async function load(){if(loadController)loadController.abort();const controller=new AbortController();loadController=controller;grid.innerHTML='<div class="loading">Загрузка очереди…</div>';feedback('');try{const d=await api('/admin/notification-delivery?filter='+encodeURIComponent(currentFilter),{signal:controller.signal});renderMetrics(d.summary||{});freshness.textContent='Обновлено '+dt(d.generated_at);grid.innerHTML=d.items?.length?d.items.map(card).join(''):`<div class="empty"><b>Записей нет</b><p>Для выбранного фильтра очередь пуста.</p><button onclick="load()">Обновить</button></div>`}catch(e){if(e.name!=='AbortError')showError(e)}finally{if(loadController===controller)loadController=null}}
 function deliveryMessage(d){const status=d?.status||'queued';if(status==='delivered')return ['Сообщение доставлено в Telegram','ok'];if(status==='failed')return ['Повтор выполнен, но Telegram отклонил сообщение','warn'];if(status==='already_processing')return ['Сообщение уже обрабатывается другим процессом','warn'];return ['Повтор сохранён и поставлен в очередь доставки','warn']}
-async function retryOne(id,button){const expectedStatus=button.dataset.expectedStatus||'',expectedUpdatedAt=button.dataset.expectedUpdatedAt||'';if(!confirm(`Повторить Telegram-доставку уведомления #${id}?`))return;return withAction('notification:'+id,button,async()=>{let d;try{d=await api('/admin/notification-delivery/'+id+'/retry',{method:'POST',body:JSON.stringify({expected_status:expectedStatus,expected_updated_at:expectedUpdatedAt})})}catch(e){feedback('Повтор не выполнен: '+e.message,'bad');return}const [text,state]=deliveryMessage(d.delivery);feedback(text,state);try{await load()}catch(e){feedback(text+', но экран не обновился: '+e.message,'warn')}},'Отправка…')}
+async function retryOne(id,button){const expectedStatus=button.dataset.expectedStatus||'',expectedUpdatedAt=button.dataset.expectedUpdatedAt||'',label=button.textContent||'Повторить сейчас';if(!confirm(`${label} для уведомления #${id}?`))return;return withAction('notification:'+id,button,async()=>{let d;try{d=await api('/admin/notification-delivery/'+id+'/retry',{method:'POST',body:JSON.stringify({expected_status:expectedStatus,expected_updated_at:expectedUpdatedAt})})}catch(e){feedback('Повтор не выполнен: '+e.message,'bad');return}const [text,state]=deliveryMessage(d.delivery);feedback(text,state);try{await load()}catch(e){feedback(text+', но экран не обновился: '+e.message,'warn')}},'Отправка…')}
 async function retryDue(button){if(!confirm('Отправить все доступные сейчас PENDING/RETRY уведомления (не более 50)?'))return;return withAction('retry-due',button,async()=>{let d;try{d=await api('/admin/notification-delivery/retry-due',{method:'POST',body:JSON.stringify({limit:50})})}catch(e){feedback('Массовая отправка не выполнена: '+e.message,'bad');return}const x=d.delivery||{};feedback(`Обработано: ${x.processed||0}, доставлено: ${x.sent||0}, повтор: ${x.retry||0}, ошибок: ${x.failed||0}`,x.failed?'warn':'ok');try{await load()}catch(e){feedback('Отправка выполнена, но экран не обновился: '+e.message,'warn')}},'Отправка…')}
 async function boot(){try{const r=await fetch('/auth/session',{credentials:'same-origin',cache:'no-store'});if(!r.ok){location.href='/login';return}const s=await r.json();if(!(s.roles||[s.role]).includes('admin')){throw new Error('Требуется роль администратора')}token=s.api_token||'';await load()}catch(e){showError(e)}}
 boot();
