@@ -46,6 +46,7 @@ class ReviewResult:
     case: Case
     changed: bool
     decision: str
+    notification_ids: tuple[int, ...] = ()
 
 
 class DocumentReviewService:
@@ -172,6 +173,56 @@ class DocumentReviewService:
             comment=request_comment,
         )
 
+    async def _archive_previous_versions(
+        self,
+        *,
+        actor: DocumentActor,
+        case: Case,
+        document: Document,
+    ) -> list[int]:
+        previous = list(
+            (
+                await self.db.execute(
+                    select(Document)
+                    .where(Document.case_id == case.id)
+                    .where(Document.document_type == document.document_type)
+                    .where(Document.id != document.id)
+                    .where(Document.version < document.version)
+                    .where(Document.status != DocumentStatus.ARCHIVED)
+                    .with_for_update()
+                )
+            ).scalars().all()
+        )
+        if not previous:
+            return []
+        archived = []
+        old_values = []
+        for item in previous:
+            old_values.append(
+                {
+                    "document_id": item.id,
+                    "version": item.version,
+                    "status": str(item.status),
+                }
+            )
+            item.status = DocumentStatus.ARCHIVED
+            archived.append(item.id)
+        await add_case_history_event(
+            self.db,
+            actor_type="lawyer" if actor.role == "lawyer" else "admin_user",
+            actor_id=actor.lawyer_id or actor.account_id,
+            case_id=case.id,
+            action="DOCUMENT_PREVIOUS_VERSIONS_ARCHIVED",
+            old_value={"documents": old_values},
+            new_value={
+                "current_document_id": document.id,
+                "current_version": document.version,
+                "archived_document_ids": archived,
+            },
+            comment="Предыдущие версии архивированы после принятия новой версии",
+        )
+        return archived
+
     async def review(
         self,
         *,
@@ -208,7 +259,7 @@ class DocumentReviewService:
         current_status = DocumentStatus(str(document.status))
         if current_status == target:
             if str(document.lawyer_comment or "").strip() == clean_comment:
-                return ReviewResult(document, case, False, normalized)
+                return ReviewResult(document, case, False, normalized, ())
             raise DocumentReviewError(
                 "Решение уже принято с другим комментарием. Обновите карточку"
             )
@@ -240,6 +291,12 @@ class DocumentReviewService:
                 document=document,
                 comment=clean_comment,
             )
+        elif normalized == "approve":
+            await self._archive_previous_versions(
+                actor=actor,
+                case=case,
+                document=document,
+            )
 
         await add_case_history_event(
             self.db,
@@ -256,7 +313,7 @@ class DocumentReviewService:
             },
             comment=clean_comment or DECISION_LABELS[normalized],
         )
-        await NotificationEngine(self.db).emit(
+        notifications = await NotificationEngine(self.db).emit(
             event_code=DECISION_EVENTS[normalized],
             case_id=case.id,
             user_id=case.client_id,
@@ -272,4 +329,15 @@ class DocumentReviewService:
             ),
         )
         await self.db.flush()
-        return ReviewResult(document, case, True, normalized)
+        notification_ids = tuple(
+            int(notification.id)
+            for notification in notifications
+            if notification.id is not None
+        )
+        return ReviewResult(
+            document,
+            case,
+            True,
+            normalized,
+            notification_ids,
+        )
