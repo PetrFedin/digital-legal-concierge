@@ -1,6 +1,12 @@
 TEMPLATES = {
     "case_created": "Новое обращение {case_number}.",
     "lawyer_assigned": "Вам назначено дело {case_number}.",
+    "staff_message_reply": (
+        "💬 Ответ юридической команды\n\n"
+        "Дело: {case_number}\n\n"
+        "{text}\n\n"
+        "Ответ сохранён в переписке по делу."
+    ),
     "m1_case_accepted": (
         "Дело {case_number} принято юристом в работу. "
         "Следующий шаг: {next_action}."
