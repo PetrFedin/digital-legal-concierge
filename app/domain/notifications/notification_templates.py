@@ -27,6 +27,18 @@ TEMPLATES = {
     ),
     "document_uploaded": "Загружен новый документ по делу {case_number}.",
     "document_status_changed": "Статус документа изменен: {status}.",
+    "document_approved": (
+        "По делу {case_number} документ «{document}» принят юристом. "
+        "Комментарий: {comment}."
+    ),
+    "document_reupload_requested": (
+        "По делу {case_number} нужно загрузить новую версию документа "
+        "«{document}». Причина: {comment}."
+    ),
+    "document_rejected": (
+        "По делу {case_number} документ «{document}» отклонён. "
+        "Причина: {comment}."
+    ),
     "payment_created": "Выставлен платеж по делу {case_number}: {amount} ₽.",
     "payment_paid": "Оплата подтверждена по делу {case_number}.",
     "payment_reminder": "Напоминание: по делу {case_number} ожидается оплата.",
