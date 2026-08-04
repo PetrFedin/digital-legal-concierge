@@ -47,7 +47,7 @@ class AdminDashboardService:
             .where(Case.assigned_lawyer_id.is_(None))
             .where(Case.status.notin_(CLOSED_CASE_STATUSES))
         )
-        sla_overdue = await self._count(
+        overdue_cases = await self._count(
             select(func.count(Case.id)).where(
                 Case.sla_status.in_(SLA_OVERDUE_STATUSES)
             )
@@ -64,7 +64,7 @@ class AdminDashboardService:
         )
 
         total_documents = await self._count(select(func.count(Document.id)))
-        documents_for_review = await self._count(
+        documents_review = await self._count(
             select(func.count(Document.id)).where(
                 Document.status.in_(DOCUMENT_REVIEW_STATUSES)
             )
@@ -92,9 +92,12 @@ class AdminDashboardService:
             },
             "queue": {
                 "unassigned": unassigned_cases,
-                "documents_for_review": documents_for_review,
+                "documents_review": documents_review,
                 "consultations_today": consultations_today,
-                "sla_overdue": sla_overdue,
+                "overdue": overdue_cases,
+                # Compatibility aliases for already deployed UI versions.
+                "documents_for_review": documents_review,
+                "sla_overdue": overdue_cases,
             },
             "payments": {
                 "total": total_payments,
@@ -103,7 +106,7 @@ class AdminDashboardService:
             },
             "documents": {
                 "total": total_documents,
-                "for_review": documents_for_review,
+                "for_review": documents_review,
             },
             "consultations": {
                 "booked": consultations_booked,
@@ -114,7 +117,7 @@ class AdminDashboardService:
             "active_cases": active_cases,
             "waiting_payment": waiting_payment,
             "payment_reviews": payment_reviews,
-            "sla_overdue": sla_overdue,
+            "sla_overdue": overdue_cases,
             "consultations_booked": consultations_booked,
             "closed_cases": closed_cases,
         }
