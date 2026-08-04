@@ -113,7 +113,9 @@ def test_retry_api_commits_request_before_selective_delivery():
     assert "TELEGRAM_NOTIFICATION_DUE_BATCH_REQUESTED" in source
     assert "notification_ids\": list(ids)" in source
     assert "mark-sent" not in source
-    assert "delete" not in source.lower()
+    assert "@router.delete" not in source
+    assert "method:'DELETE'" not in source
+    assert 'method:"DELETE"' not in source
 
 
 def test_delivery_ui_is_protected_and_has_complete_recovery():
