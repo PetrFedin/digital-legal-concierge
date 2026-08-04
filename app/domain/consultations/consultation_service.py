@@ -7,6 +7,7 @@ from app.domain.cases.case_history import add_case_history_event
 from app.domain.consultations.slot_service import SlotService, SlotUnavailableError
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.statuses.consultation_statuses import ConsultationStatus
+from app.models.case import Case
 from app.models.consultation import Consultation
 
 
@@ -49,6 +50,30 @@ class ConsultationService:
         await self.db.flush()
         return consultation
 
+    async def _validate_related_case(
+        self,
+        *,
+        client_id: int,
+        subject_type: str,
+        related_case_id: int | None,
+    ) -> int | None:
+        if subject_type != "existing_case":
+            return None
+        if related_case_id is None:
+            raise ValueError("Выберите дело, к которому относится консультация")
+        related_case = (
+            await self.db.execute(
+                select(Case)
+                .where(Case.id == related_case_id)
+                .where(Case.client_id == client_id)
+            )
+        ).scalar_one_or_none()
+        if not related_case:
+            raise ValueError(
+                "Выбранное дело не найдено или принадлежит другому клиенту"
+            )
+        return related_case.id
+
     async def save_description(
         self,
         *,
@@ -59,9 +84,14 @@ class ConsultationService:
         subject_type: str = "new_or_other",
         related_case_id: int | None = None,
     ):
+        verified_related_case_id = await self._validate_related_case(
+            client_id=client_id,
+            subject_type=subject_type,
+            related_case_id=related_case_id,
+        )
         consultation.client_description = description
         consultation.subject_type = subject_type
-        consultation.related_case_id = related_case_id
+        consultation.related_case_id = verified_related_case_id
         if consultation.status != ConsultationStatus.BOOKED:
             consultation.status = ConsultationStatus.DOCUMENTS_OPTIONAL
         await add_case_history_event(
@@ -73,7 +103,7 @@ class ConsultationService:
             new_value={
                 "description": description,
                 "subject_type": subject_type,
-                "related_case_id": related_case_id,
+                "related_case_id": verified_related_case_id,
             },
         )
         await self.db.flush()
