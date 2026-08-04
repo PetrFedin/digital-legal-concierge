@@ -22,6 +22,7 @@ router = APIRouter(tags=["web-admin"])
 CLOSED_STATUSES = {"M1_CLOSED", "M2_CLOSED", "ARCHIVED"}
 DOCUMENT_REVIEW_STATUSES = {
     "UPLOADED",
+    "ON_REVIEW",
     "PENDING_REVIEW",
     "REVIEW_REQUIRED",
     "PENDING",
@@ -44,7 +45,8 @@ SLA_LABELS = {
     "ACTION_OVERDUE": "Действие просрочено",
 }
 DOCUMENT_STATUS_LABELS = {
-    "UPLOADED": "Ожидает проверки",
+    "UPLOADED": "Ожидает передачи юристу",
+    "ON_REVIEW": "На проверке у юриста",
     "PENDING": "Ожидает проверки",
     "PENDING_REVIEW": "Ожидает проверки",
     "REVIEW_PENDING": "Ожидает проверки",
