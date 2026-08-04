@@ -100,9 +100,9 @@ def test_client_actions_do_not_claim_unperformed_legal_events():
         no_payment_legal.court_status_without_side_effects
     )
 
-    assert "CaseStatus.M1_POA_RECEIVED" in poa
-    assert "CaseStatus.M1_CLAIM_SENT" not in poa
-    assert "CaseStatus.M1_WAITING_30_DAYS" in poa
+    assert "next_status=CaseStatus.M1_POA_RECEIVED" in _compact(poa)
+    assert "next_status=CaseStatus.M1_CLAIM_SENT" not in _compact(poa)
+    assert "next_status=CaseStatus.M1_WAITING_30_DAYS" not in _compact(poa)
     assert "change_status" not in court
     assert "change_status" not in pilot_court
     assert "Просмотр этого экрана не переводит дело в суд" in pilot_court
