@@ -1,6 +1,8 @@
 import logging
+from collections.abc import Iterable
 
 from aiogram import Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
@@ -63,9 +65,20 @@ _DOCUMENT_STATUS_LABELS = {
     "VERIFIED": "Принят юристом",
     "REJECTED": "Нужно заменить файл",
     "NEEDS_REUPLOAD": "Нужно загрузить новую версию",
-    "ARCHIVED": "В архиве",
+    "ARCHIVED": "Предыдущая версия",
 }
 _DOCUMENT_REPLACEMENT_STATUSES = {"REJECTED", "NEEDS_REUPLOAD"}
+_DOCUMENT_REVIEW_STATUSES = {
+    "PENDING",
+    "PENDING_REVIEW",
+    "REVIEW_PENDING",
+    "REVIEW_REQUIRED",
+    "NEEDS_REVIEW",
+    "ON_REVIEW",
+}
+_DOCUMENT_APPROVED_STATUSES = {"APPROVED", "ACCEPTED", "VERIFIED"}
+_PAGE_SIZE = 8
+_MAX_CLIENT_COMMENT_LENGTH = 240
 
 
 def _case_status(case) -> CaseStatus:
@@ -74,20 +87,79 @@ def _case_status(case) -> CaseStatus:
     return CaseStatus(str(case.status))
 
 
+def _status(document) -> str:
+    return str(document.status)
+
+
+def _short_text(value: str, limit: int = _MAX_CLIENT_COMMENT_LENGTH) -> str:
+    clean = " ".join(str(value or "").split())
+    if len(clean) <= limit:
+        return clean
+    return clean[: max(limit - 1, 1)].rstrip() + "…"
+
+
 def _client_document_status(document) -> str:
     return _DOCUMENT_STATUS_LABELS.get(
-        str(document.status),
+        _status(document),
         "Безопасно загружен",
     )
 
 
 def _client_document_comment(document) -> str | None:
-    comment = str(document.lawyer_comment or "").strip()
+    comment = _short_text(str(document.lawyer_comment or ""))
     if not comment:
         return None
-    if str(document.status) in _DOCUMENT_REPLACEMENT_STATUSES:
+    if _status(document) in _DOCUMENT_REPLACEMENT_STATUSES:
         return f"Что исправить: {comment}"
     return f"Комментарий юриста: {comment}"
+
+
+def _active_documents(documents: Iterable) -> list:
+    return [document for document in documents if _status(document) != "ARCHIVED"]
+
+
+def _archived_documents(documents: Iterable) -> list:
+    return [document for document in documents if _status(document) == "ARCHIVED"]
+
+
+def _document_block(document, *, history: bool = False) -> str:
+    heading = f"• {document.title}, версия {document.version}"
+    lines = [heading, f"  {_client_document_status(document)}"]
+    comment = _client_document_comment(document)
+    if comment and not history:
+        lines.append(f"  {comment}")
+    return "\n".join(lines)
+
+
+def _paginate(items: list, page: int) -> tuple[list, int, int]:
+    total_pages = max(1, (len(items) + _PAGE_SIZE - 1) // _PAGE_SIZE)
+    current_page = min(max(int(page), 0), total_pages - 1)
+    start = current_page * _PAGE_SIZE
+    return items[start : start + _PAGE_SIZE], current_page, total_pages
+
+
+def _page_navigation(prefix: str, page: int, total_pages: int):
+    buttons: list[tuple[str, str]] = []
+    if page > 0:
+        buttons.append(("⬅️ Предыдущая страница", f"{prefix}:{page - 1}"))
+    if page + 1 < total_pages:
+        buttons.append(("Следующая страница ➡️", f"{prefix}:{page + 1}"))
+    return buttons
+
+
+async def _safe_edit(
+    callback: CallbackQuery,
+    text: str,
+    *,
+    reply_markup,
+    unchanged_notice: str = "Статусы пока не изменились.",
+) -> None:
+    try:
+        await callback.message.edit_text(text, reply_markup=reply_markup)
+    except TelegramBadRequest as error:
+        if "message is not modified" not in str(error).lower():
+            raise
+        await callback.answer(unchanged_notice)
 
 
 def _new_case_buttons() -> tuple[tuple[str, str], ...]:
@@ -103,6 +175,7 @@ def _after_documents_buttons(case) -> tuple[tuple[str, str], ...]:
     if status == CaseStatus.M2_CONSULTATION_BOOKED:
         return (
             ("👨‍⚖ Открыть консультацию", "consultation_booked_open"),
+            ("📄 Документы", "documents_open"),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         )
@@ -113,23 +186,79 @@ def _after_documents_buttons(case) -> tuple[tuple[str, str], ...]:
     }:
         return (
             ("📅 Выбрать время", "consult_slot_open"),
+            ("📄 Документы", "documents_open"),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         )
     if status == CaseStatus.M2_PAYMENT_PENDING:
         return (
             ("Продолжить подтверждение", "consult_pay"),
+            ("📄 Документы", "documents_open"),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         )
     return (
+        ("📄 Документы", "documents_open"),
         ("📁 Моё дело", "my_case_open"),
         ("🏠 Главная", "nav_home"),
     )
 
 
-@router.callback_query(lambda c: c.data == "documents_open")
-async def docs(callback: CallbackQuery, db):
+def _document_counts(documents: list) -> dict[str, int]:
+    return {
+        "new": sum(_status(item) == "UPLOADED" for item in documents),
+        "review": sum(_status(item) in _DOCUMENT_REVIEW_STATUSES for item in documents),
+        "approved": sum(
+            _status(item) in _DOCUMENT_APPROVED_STATUSES for item in documents
+        ),
+        "replacement": sum(
+            _status(item) in _DOCUMENT_REPLACEMENT_STATUSES for item in documents
+        ),
+    }
+
+
+def _recommended_step(case, documents: list) -> tuple[str, list[tuple[str, str]]]:
+    counts = _document_counts(documents)
+    if counts["replacement"]:
+        return (
+            "Загрузите новую версию файла с учётом комментария юриста.",
+            [("🔁 Загрузить новую версию", "documents_upload_open")],
+        )
+    if counts["new"]:
+        return (
+            "Передайте новые файлы юристу. До передачи они остаются только в вашем деле.",
+            [("✅ Передать новые файлы юристу", "doc_finish_upload")],
+        )
+    if not documents and case.route == "M2" and _case_status(case) in _M2_CAN_SKIP_STATUSES:
+        return (
+            "Документы необязательны. Можно добавить файл или перейти к выбору времени.",
+            [
+                ("Продолжить без документов", "doc_skip_m2"),
+                ("➕ Добавить документ", "documents_upload_open"),
+            ],
+        )
+    if not documents:
+        return (
+            "Загрузите ДДУ — без него дело нельзя передать юристу.",
+            [("➕ Загрузить документ", "documents_upload_open")],
+        )
+    if counts["review"]:
+        return (
+            "Действий не требуется: юрист проверяет переданные файлы.",
+            [("🔄 Обновить статусы", "documents_open")],
+        )
+    if counts["approved"] == len(documents):
+        return (
+            "Все актуальные документы приняты. Новый файл можно добавить при необходимости.",
+            [("➕ Добавить документ", "documents_upload_open")],
+        )
+    return (
+        "Проверьте актуальные документы и добавьте недостающий файл.",
+        [("➕ Добавить документ", "documents_upload_open")],
+    )
+
+
+async def _load_case_documents(callback: CallbackQuery, db):
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     case = await ctx.case_service.get_active_case_for_user(user.id)
@@ -139,33 +268,90 @@ async def docs(callback: CallbackQuery, db):
             "Начните с расчёта неустойки или записи на консультацию.",
             reply_markup=one(*_new_case_buttons()),
         )
+        return None, []
+    documents = await DocumentService(db).list_case_documents(case.id)
+    return case, documents
+
+
+async def _render_documents_home(callback: CallbackQuery, db):
+    case, documents = await _load_case_documents(callback, db)
+    if not case:
         return
 
-    items = [(f"Загрузить: {title}", f"doc_type:{code}") for title, code in TYPES]
-    items.extend(
-        [
-            ("📋 Список документов", "documents_list_open"),
-            ("✅ Завершить загрузку", "doc_finish_upload"),
-        ]
+    active = _active_documents(documents)
+    archived = _archived_documents(documents)
+    counts = _document_counts(active)
+    next_step, primary_buttons = _recommended_step(case, active)
+
+    summary = (
+        f"Актуальные: {len(active)} · готово к передаче: {counts['new']} · "
+        f"на проверке: {counts['review']} · принято: {counts['approved']}"
     )
-    if case.route == "M2" and _case_status(case) in _M2_CAN_SKIP_STATUSES:
-        items.append(("Продолжить без документов", "doc_skip_m2"))
-    items.extend(
+    preview_items = active[:4]
+    preview = (
+        "\n\n".join(_document_block(item) for item in preview_items)
+        if preview_items
+        else "Пока документов нет."
+    )
+    if len(active) > len(preview_items):
+        preview += f"\n\nЕщё актуальных документов: {len(active) - len(preview_items)}."
+
+    buttons = list(primary_buttons)
+    primary_callbacks = {callback_data for _, callback_data in primary_buttons}
+    if active:
+        buttons.append(("📋 Все актуальные документы", "documents_list_open"))
+    if "documents_upload_open" not in primary_callbacks and not counts["replacement"]:
+        buttons.append(("➕ Добавить документ", "documents_upload_open"))
+    if archived:
+        buttons.append((f"🕘 История версий ({len(archived)})", "documents_history_open"))
+    buttons.extend(
         [
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         ]
     )
 
+    await _safe_edit(
+        callback,
+        "📄 Документы\n\n"
+        f"{summary}\n\n"
+        f"{preview}\n\n"
+        f"Следующий шаг: {next_step}",
+        reply_markup=one(*buttons),
+    )
+
+
+@router.callback_query(lambda c: c.data == "documents_open")
+async def docs(callback: CallbackQuery, db):
+    await _render_documents_home(callback, db)
+
+
+@router.callback_query(lambda c: c.data == "documents_upload_open")
+async def upload_menu(callback: CallbackQuery, db):
+    case, _ = await _load_case_documents(callback, db)
+    if not case:
+        return
+
+    items = [(f"Загрузить: {title}", f"doc_type:{code}") for title, code in TYPES]
+    if case.route == "M2" and _case_status(case) in _M2_CAN_SKIP_STATUSES:
+        items.append(("Продолжить без документов", "doc_skip_m2"))
+    items.extend(
+        [
+            ("⬅️ К обзору документов", "documents_open"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ]
+    )
+
     requirement = (
-        "Для передачи дела на проверку обязательно загрузите ДДУ."
+        "Для передачи дела на проверку обязательно загрузите актуальный ДДУ."
         if case.route == "M1"
         else "Для консультации документы необязательны, но помогут юристу подготовиться."
     )
     await callback.message.edit_text(
-        "📄 Документы\n\n"
-        "Поддерживаются PDF, DOCX, JPG и PNG. Перед сохранением каждый файл "
-        "проходит проверку и защищается.\n\n"
+        "➕ Добавить документ\n\n"
+        "Выберите тип, затем прикрепите PDF, DOCX, JPG или PNG. Каждый файл "
+        "проверяется и защищается до сохранения.\n\n"
         f"{requirement}",
         reply_markup=one(*items),
     )
@@ -186,7 +372,7 @@ async def choose(callback: CallbackQuery, state: FSMContext):
         "Прикрепите PDF, DOCX, JPG или PNG.\n\n"
         "После проверки бот подтвердит, что файл безопасно загружен.",
         reply_markup=one(
-            ("Выбрать другой тип", "documents_open"),
+            ("Выбрать другой тип", "documents_upload_open"),
             ("Отменить действие", "nav_cancel"),
             ("🏠 Главная", "nav_home"),
         ),
@@ -199,7 +385,7 @@ async def upload(message: Message, state: FSMContext, db):
         await message.answer(
             "⚠️ Прикрепите файл или изображение.",
             reply_markup=one(
-                ("Выбрать другой тип", "documents_open"),
+                ("Выбрать другой тип", "documents_upload_open"),
                 ("Отменить действие", "nav_cancel"),
             ),
         )
@@ -274,7 +460,7 @@ async def upload(message: Message, state: FSMContext, db):
             f"⚠️ {error.user_message}\n\n"
             "Документ не сохранён. Исправьте файл и прикрепите его ещё раз.",
             reply_markup=one(
-                ("Выбрать другой тип", "documents_open"),
+                ("Выбрать другой тип", "documents_upload_open"),
                 ("Отменить действие", "nav_cancel"),
                 ("🏠 Главная", "nav_home"),
             ),
@@ -291,7 +477,7 @@ async def upload(message: Message, state: FSMContext, db):
             "⚠️ Не удалось безопасно обработать файл. Документ не сохранён.\n\n"
             "Прикрепите файл повторно либо выберите другой тип документа.",
             reply_markup=one(
-                ("Выбрать другой тип", "documents_open"),
+                ("Выбрать другой тип", "documents_upload_open"),
                 ("Отменить действие", "nav_cancel"),
                 ("🏠 Главная", "nav_home"),
             ),
@@ -334,8 +520,8 @@ async def upload(message: Message, state: FSMContext, db):
         await message.answer(
             f"ℹ️ {error}",
             reply_markup=one(
-                ("📋 Список документов", "documents_list_open"),
-                ("Загрузить другой файл", "documents_open"),
+                ("📋 Актуальные документы", "documents_list_open"),
+                ("Загрузить другой файл", "documents_upload_open"),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
@@ -370,66 +556,132 @@ async def upload(message: Message, state: FSMContext, db):
     await state.clear()
     await message.answer(
         f"✅ Файл безопасно загружен: {document.title}, версия {document.version}.\n\n"
-        "Теперь можно добавить ещё документы или передать загруженные файлы юристу.",
+        "Он ещё не передан юристу. Передайте новые файлы, когда закончите загрузку.",
         reply_markup=one(
-            ("Загрузить ещё", "documents_open"),
-            ("📋 Список документов", "documents_list_open"),
-            ("✅ Передать юристу", "doc_finish_upload"),
+            ("✅ Передать новые файлы юристу", "doc_finish_upload"),
+            ("➕ Добавить ещё", "documents_upload_open"),
+            ("📄 Обзор документов", "documents_open"),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         ),
+    )
+
+
+async def _render_current_documents(callback: CallbackQuery, db, page: int = 0):
+    case, documents = await _load_case_documents(callback, db)
+    if not case:
+        return
+    active = _active_documents(documents)
+    archived = _archived_documents(documents)
+    if not active:
+        next_step, buttons = _recommended_step(case, active)
+        if archived:
+            buttons.append((f"🕘 История версий ({len(archived)})", "documents_history_open"))
+        buttons.extend(
+            [
+                ("⬅️ К обзору", "documents_open"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ]
+        )
+        await _safe_edit(
+            callback,
+            "📋 Актуальные документы\n\nПока документов нет.\n\n"
+            f"Следующий шаг: {next_step}",
+            reply_markup=one(*buttons),
+        )
+        return
+
+    page_items, current_page, total_pages = _paginate(active, page)
+    next_step, action_buttons = _recommended_step(case, active)
+    buttons = _page_navigation("documents_current_page", current_page, total_pages)
+    buttons.extend(action_buttons)
+    if archived:
+        buttons.append((f"🕘 История версий ({len(archived)})", "documents_history_open"))
+    buttons.extend(
+        [
+            ("⬅️ К обзору", "documents_open"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ]
+    )
+    await _safe_edit(
+        callback,
+        "📋 Актуальные документы\n\n"
+        + "\n\n".join(_document_block(item) for item in page_items)
+        + f"\n\nСтраница {current_page + 1} из {total_pages}.\n\n"
+        + f"Следующий шаг: {next_step}",
+        reply_markup=one(*buttons),
+        unchanged_notice="Список актуальных документов не изменился.",
     )
 
 
 @router.callback_query(lambda c: c.data == "documents_list_open")
 async def list_docs(callback: CallbackQuery, db):
-    ctx = BotContextService(db)
-    user = await ctx.get_user_from_callback(callback)
-    case = await ctx.case_service.get_active_case_for_user(user.id)
-    if not case:
-        await callback.message.edit_text(
-            "📋 Список документов\n\nАктивное обращение не найдено.",
-            reply_markup=one(*_new_case_buttons()),
-        )
-        return
+    await _render_current_documents(callback, db, 0)
 
-    documents = await DocumentService(db).list_case_documents(case.id)
-    if not documents:
-        buttons = [("Загрузить документ", "documents_open")]
-        if case.route == "M2" and _case_status(case) in _M2_CAN_SKIP_STATUSES:
-            buttons.append(("Продолжить без документов", "doc_skip_m2"))
-        buttons.extend(
-            [
+
+@router.callback_query(lambda c: c.data.startswith("documents_current_page:"))
+async def list_docs_page(callback: CallbackQuery, db):
+    try:
+        page = int(callback.data.rsplit(":", 1)[1])
+    except (TypeError, ValueError):
+        page = 0
+    await _render_current_documents(callback, db, page)
+
+
+async def _render_document_history(callback: CallbackQuery, db, page: int = 0):
+    case, documents = await _load_case_documents(callback, db)
+    if not case:
+        return
+    archived = _archived_documents(documents)
+    if not archived:
+        await _safe_edit(
+            callback,
+            "🕘 История версий\n\nПредыдущих версий пока нет.",
+            reply_markup=one(
+                ("⬅️ К обзору документов", "documents_open"),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
-            ]
-        )
-        await callback.message.edit_text(
-            "📋 Список документов\n\nПока документов нет.",
-            reply_markup=one(*buttons),
+            ),
+            unchanged_notice="История версий пока пуста.",
         )
         return
 
-    rows = []
-    for document in documents:
-        lines = [
-            f"#{document.id} {document.title}, версия {document.version}",
-            f"Статус: {_client_document_status(document)}",
-        ]
-        comment = _client_document_comment(document)
-        if comment:
-            lines.append(comment)
-        rows.append("\n".join(lines))
-
-    await callback.message.edit_text(
-        "📋 Список документов\n\n" + "\n\n".join(rows),
-        reply_markup=one(
-            ("Загрузить документ", "documents_open"),
-            ("✅ Передать новые файлы юристу", "doc_finish_upload"),
-            ("📁 Моё дело", "my_case_open"),
+    page_items, current_page, total_pages = _paginate(archived, page)
+    buttons = _page_navigation("documents_history_page", current_page, total_pages)
+    buttons.extend(
+        [
+            ("📋 Актуальные документы", "documents_list_open"),
+            ("⬅️ К обзору документов", "documents_open"),
             ("🏠 Главная", "nav_home"),
-        ),
+        ]
     )
+    await _safe_edit(
+        callback,
+        "🕘 История версий\n\n"
+        "Эти файлы сохранены в истории, но больше не участвуют в текущей проверке.\n\n"
+        + "\n\n".join(
+            _document_block(item, history=True) for item in page_items
+        )
+        + f"\n\nСтраница {current_page + 1} из {total_pages}.",
+        reply_markup=one(*buttons),
+        unchanged_notice="Эта страница истории не изменилась.",
+    )
+
+
+@router.callback_query(lambda c: c.data == "documents_history_open")
+async def documents_history(callback: CallbackQuery, db):
+    await _render_document_history(callback, db, 0)
+
+
+@router.callback_query(lambda c: c.data.startswith("documents_history_page:"))
+async def documents_history_page(callback: CallbackQuery, db):
+    try:
+        page = int(callback.data.rsplit(":", 1)[1])
+    except (TypeError, ValueError):
+        page = 0
+    await _render_document_history(callback, db, page)
 
 
 @router.callback_query(lambda c: c.data == "doc_finish_upload")
@@ -444,9 +696,47 @@ async def finish(callback: CallbackQuery, db):
         )
         return
 
+    document_service = DocumentService(db)
+    existing = await document_service.list_case_documents(case.id)
+    active = _active_documents(existing)
+    new_uploads = [item for item in active if _status(item) == "UPLOADED"]
+    if not new_uploads:
+        replacement = [
+            item for item in active if _status(item) in _DOCUMENT_REPLACEMENT_STATUSES
+        ]
+        review = [item for item in active if _status(item) in _DOCUMENT_REVIEW_STATUSES]
+        if replacement:
+            text = (
+                "Новых файлов для передачи нет. Юрист запросил новую версию:\n\n"
+                + "\n\n".join(_document_block(item) for item in replacement[:4])
+            )
+            primary = ("🔁 Загрузить новую версию", "documents_upload_open")
+        elif review:
+            text = (
+                "Все новые файлы уже переданы юристу. Дождитесь результата проверки."
+            )
+            primary = ("🔄 Обновить статусы", "documents_open")
+        else:
+            text = "Новых файлов для передачи нет. Сначала добавьте документ."
+            primary = ("➕ Добавить документ", "documents_upload_open")
+        buttons = [
+            primary,
+            ("📋 Актуальные документы", "documents_list_open"),
+        ]
+        if not active and case.route == "M2" and _case_status(case) in _M2_CAN_SKIP_STATUSES:
+            buttons.insert(0, ("Продолжить без документов", "doc_skip_m2"))
+        buttons.extend(
+            [
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ]
+        )
+        await callback.message.edit_text(text, reply_markup=one(*buttons))
+        return
+
     required_types = {"DDU"} if case.route == "M1" else set()
     try:
-        new_count = await DocumentService(db).send_documents_to_review(
+        new_count = await document_service.send_documents_to_review(
             case=case,
             actor_id=user.id,
             required_types=required_types,
@@ -460,10 +750,12 @@ async def finish(callback: CallbackQuery, db):
                 actor_id=user.id,
                 comment="Безопасные документы переданы юристу",
             )
-            response_text = "✅ Документы переданы юристу на проверку."
+            response_text = (
+                f"✅ Передано файлов: {new_count}. Юрист начал проверку документов."
+            )
         elif case.route == "M1":
             response_text = (
-                "✅ Дополнительные документы переданы команде. "
+                f"✅ Дополнительных файлов передано: {new_count}. "
                 "Текущий этап дела не изменён."
             )
         elif status in {
@@ -477,26 +769,27 @@ async def finish(callback: CallbackQuery, db):
                 actor_id=user.id,
                 comment="Документы консультации сохранены",
             )
-            response_text = "✅ Документы сохранены. Теперь выберите время."
+            response_text = (
+                f"✅ Документов сохранено: {new_count}. Теперь выберите время."
+            )
         elif status == CaseStatus.M2_CONSULTATION_BOOKED:
             response_text = (
-                "✅ Документы добавлены к подтверждённой консультации. "
+                f"✅ К подтверждённой консультации добавлено файлов: {new_count}. "
                 "Дата и время сохранены."
             )
         else:
             response_text = (
-                "✅ Документы переданы команде. Текущий этап обращения сохранён."
+                f"✅ Команде передано файлов: {new_count}. "
+                "Текущий этап обращения сохранён."
             )
-        if new_count == 0:
-            response_text += " Новых версий для передачи не было."
         await db.commit()
     except (DocumentSecurityPendingError, MissingRequiredDocumentsError) as error:
         await db.rollback()
         await callback.message.edit_text(
             f"⚠️ {error}",
             reply_markup=one(
-                ("Загрузить документ", "documents_open"),
-                ("📋 Список документов", "documents_list_open"),
+                ("➕ Загрузить документ", "documents_upload_open"),
+                ("📋 Актуальные документы", "documents_list_open"),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
@@ -508,7 +801,7 @@ async def finish(callback: CallbackQuery, db):
             f"Документы не переданы: {error}",
             reply_markup=one(
                 ("🔄 Повторить передачу", "doc_finish_upload"),
-                ("📋 Список документов", "documents_list_open"),
+                ("📋 Актуальные документы", "documents_list_open"),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
@@ -521,7 +814,7 @@ async def finish(callback: CallbackQuery, db):
             "Документы временно не переданы. Загруженные файлы сохранены.",
             reply_markup=one(
                 ("🔄 Повторить передачу", "doc_finish_upload"),
-                ("📋 Список документов", "documents_list_open"),
+                ("📋 Актуальные документы", "documents_list_open"),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
@@ -571,6 +864,7 @@ async def skip(callback: CallbackQuery, db):
             f"Переход не выполнен: {error}",
             reply_markup=one(
                 ("🔄 Повторить", "doc_skip_m2"),
+                ("📄 Документы", "documents_open"),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
@@ -580,6 +874,7 @@ async def skip(callback: CallbackQuery, db):
         "Хорошо. Документы можно добавить позже без потери выбранного этапа.",
         reply_markup=one(
             ("📅 Выбрать время", "consult_slot_open"),
+            ("📄 Документы", "documents_open"),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         ),
