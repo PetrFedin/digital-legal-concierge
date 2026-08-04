@@ -133,3 +133,32 @@ def test_telegram_document_empty_and_failure_states_have_safe_exits():
     assert "Загруженные файлы сохранены" in source
     assert "Документ не сохранён" in source
     assert '("🏠 Главная", "nav_home")' in source
+
+
+def test_consultation_related_case_is_verified_for_current_client():
+    service = read("app/domain/consultations/consultation_service.py")
+    screen = read("app/bot/screens/consultations.py")
+
+    assert "def _validate_related_case" in service
+    assert "Case.id == related_case_id" in service
+    assert "Case.client_id == client_id" in service
+    assert "принадлежит другому клиенту" in service
+    assert "verified_related_case_id" in service
+    assert "Case.id == case_id" in screen
+    assert "Case.client_id == user.id" in screen
+    assert "Выбранное дело больше недоступно" in screen
+
+
+def test_consultation_screen_uses_human_status_and_recovers_stale_buttons():
+    source = read("app/bot/screens/consultations.py")
+
+    assert "CONSULTATION_STATUS_LABELS" in source
+    assert 'ConsultationStatus.BOOKED: "Консультация подтверждена"' in source
+    assert "consultation_status_label(consultation.status)" in source
+    assert 'f"Статус: {consultation.status}' not in source
+    assert "booking_recovery_buttons()" in source
+    assert "Эта кнопка выбора времени больше не актуальна" in source
+    assert "Эта кнопка переноса больше не актуальна" in source
+    assert "Текущая запись сохранена" in source
+    assert '("🔄 Повторить отмену", "consult_cancel_confirm")' in source
+    assert '("📁 Моё дело", "my_case_open")' in source
