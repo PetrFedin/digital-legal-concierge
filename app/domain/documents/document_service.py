@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.statuses.document_statuses import DocumentStatus
+from app.models.case import Case
 from app.models.document import Document
 from app.security.document_encryption import ENCRYPTION_STATUS, FORMAT_V2
 
@@ -18,6 +19,15 @@ DOC_TITLES = {
     "PAYMENT_PROOF": "Платежный документ",
     "CORRESPONDENCE": "Переписка",
     "OTHER": "Другой документ",
+}
+
+# A new upload supersedes an earlier version only after that earlier version
+# entered the lawyer-review lifecycle. Multiple fresh uploads of the same type
+# can still be assembled into one client package before submission.
+SUPERSEDED_BY_NEW_UPLOAD = {
+    DocumentStatus.ON_REVIEW,
+    DocumentStatus.NEEDS_REUPLOAD,
+    DocumentStatus.REJECTED,
 }
 
 
@@ -119,11 +129,22 @@ class DocumentService:
         ):
             raise ValueError("Документ не прошёл обязательное envelope-шифрование")
 
+        # DB-backed production flows serialize version allocation on the case
+        # row. Isolated domain tests may pass an already-authorized lightweight
+        # case reference without persisting the Case model; those callers still
+        # use the same document locks, duplicate checks and lifecycle rules.
+        locked_case = (
+            await self.db.execute(
+                select(Case).where(Case.id == case.id).with_for_update()
+            )
+        ).scalar_one_or_none()
+        case_id = int(locked_case.id if locked_case is not None else case.id)
+
         duplicate = (
             await self.db.execute(
                 select(Document)
                 .where(
-                    Document.case_id == case.id,
+                    Document.case_id == case_id,
                     Document.sha256 == sha256,
                     Document.security_status == "VERIFIED",
                 )
@@ -133,19 +154,23 @@ class DocumentService:
         if duplicate:
             raise DuplicateDocumentError(duplicate)
 
-        latest = (
-            await self.db.execute(
-                select(Document)
-                .where(
-                    Document.case_id == case.id,
-                    Document.document_type == document_type,
+        previous_versions = list(
+            (
+                await self.db.execute(
+                    select(Document)
+                    .where(
+                        Document.case_id == case_id,
+                        Document.document_type == document_type,
+                    )
+                    .order_by(Document.version.desc(), Document.id.desc())
+                    .with_for_update()
                 )
-                .order_by(Document.version.desc())
-            )
-        ).scalars().first()
-        version = latest.version + 1 if latest else 1
+            ).scalars().all()
+        )
+        latest = previous_versions[0] if previous_versions else None
+        version = int(latest.version or 0) + 1 if latest else 1
         document = Document(
-            case_id=case.id,
+            case_id=case_id,
             uploaded_by_user_id=uploaded_by_user_id,
             document_type=document_type,
             title=DOC_TITLES.get(document_type, "Документ"),
@@ -169,11 +194,43 @@ class DocumentService:
         )
         self.db.add(document)
         await self.db.flush()
+
+        superseded_old_values: list[dict[str, object]] = []
+        superseded_ids: list[int] = []
+        for previous in previous_versions:
+            if previous.status not in SUPERSEDED_BY_NEW_UPLOAD:
+                continue
+            superseded_old_values.append(
+                {
+                    "document_id": previous.id,
+                    "version": previous.version,
+                    "status": str(previous.status),
+                }
+            )
+            previous.status = DocumentStatus.ARCHIVED
+            superseded_ids.append(int(previous.id))
+
+        if superseded_ids:
+            await add_case_history_event(
+                self.db,
+                actor_type="client",
+                actor_id=uploaded_by_user_id,
+                case_id=case_id,
+                action="DOCUMENT_PENDING_VERSION_SUPERSEDED",
+                old_value={"documents": superseded_old_values},
+                new_value={
+                    "replacement_document_id": document.id,
+                    "replacement_version": version,
+                    "archived_document_ids": superseded_ids,
+                },
+                comment="Загружена новая версия документа вместо незавершённой",
+            )
+
         await add_case_history_event(
             self.db,
             actor_type="client",
             actor_id=uploaded_by_user_id,
-            case_id=case.id,
+            case_id=case_id,
             action="DOCUMENT_UPLOADED",
             new_value={
                 "document_id": document.id,
@@ -187,6 +244,7 @@ class DocumentService:
                 "encryption_key_id": encryption_key_id,
                 "encryption_format_version": encryption_format_version,
                 "envelope_id_prefix": str(encryption_envelope_id)[:12],
+                "superseded_document_ids": superseded_ids,
             },
         )
         return document
