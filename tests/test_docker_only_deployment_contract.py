@@ -163,17 +163,83 @@ def test_bot_rejects_memory_fsm_in_production():
     )
 
 
-def test_production_preflight_requires_runtime_dependencies_and_real_payments():
+def test_production_preflight_requires_runtime_dependencies_and_valid_payment_mode():
     source = read("scripts/production_preflight.py")
 
     assert '"database_wait_valid"' in source
     assert '"fsm_storage_is_redis"' in source
     assert '"redis_url_ready"' in source
     assert '"trusted_proxy_configured"' in source
-    assert 'settings.payment_provider == "yookassa"' in source
+    assert 'payment_provider == "disabled"' in source
+    assert 'payment_provider == "yookassa"' in source
+    assert '"payment_provider_ready": payment_ready' in source
+    assert "Онлайн-оплата отключена" in source
     assert "secrets_exposed" in source
     assert "your-domain" in source
     assert 'not in {"host", "localhost"}' in source
+
+
+def _configure_preflight_paths(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(production_preflight.settings, "app_env", "production")
+    monkeypatch.setattr(
+        production_preflight.settings,
+        "storage_dir",
+        str(tmp_path / "storage"),
+    )
+    monkeypatch.setattr(
+        production_preflight.settings,
+        "backup_dir",
+        str(tmp_path / "backups"),
+    )
+
+
+def test_production_preflight_accepts_explicit_disabled_mode_but_rejects_fake(
+    monkeypatch,
+    tmp_path,
+):
+    _configure_preflight_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(production_preflight.settings, "payment_provider", "disabled")
+
+    disabled_report = production_preflight.build_report()
+
+    assert disabled_report["checks"]["payment_provider_ready"] is True
+    assert any(
+        "Онлайн-оплата отключена" in warning
+        for warning in disabled_report["warnings"]
+    )
+
+    monkeypatch.setattr(production_preflight.settings, "payment_provider", "fake")
+    fake_report = production_preflight.build_report()
+
+    assert fake_report["checks"]["payment_provider_ready"] is False
+    assert "payment_provider_ready" in fake_report["failed"]
+
+
+def test_production_preflight_requires_complete_yookassa_credentials(
+    monkeypatch,
+    tmp_path,
+):
+    _configure_preflight_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(production_preflight.settings, "payment_provider", "yookassa")
+    monkeypatch.setattr(production_preflight.settings, "yookassa_shop_id", "")
+    monkeypatch.setattr(production_preflight.settings, "yookassa_secret_key", "")
+
+    incomplete_report = production_preflight.build_report()
+    assert incomplete_report["checks"]["payment_provider_ready"] is False
+
+    monkeypatch.setattr(
+        production_preflight.settings,
+        "yookassa_shop_id",
+        "production-shop",
+    )
+    monkeypatch.setattr(
+        production_preflight.settings,
+        "yookassa_secret_key",
+        "production-secret-key",
+    )
+
+    complete_report = production_preflight.build_report()
+    assert complete_report["checks"]["payment_provider_ready"] is True
 
 
 def test_local_preflight_does_not_require_or_expose_secrets(monkeypatch, tmp_path):
