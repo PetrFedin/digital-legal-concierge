@@ -110,17 +110,22 @@ def test_retry_api_commits_request_before_selective_delivery():
     assert "await db.rollback()" in source
     assert '@router.post("/retry-due")' in source
     assert '@router.post("/{notification_id}/retry")' in source
+    assert "TELEGRAM_NOTIFICATION_DUE_BATCH_REQUESTED" in source
+    assert "notification_ids\": list(ids)" in source
     assert "mark-sent" not in source
     assert "delete" not in source.lower()
 
 
-def test_delivery_ui_has_filters_single_flight_recovery_and_no_secrets():
+def test_delivery_ui_is_protected_and_has_complete_recovery():
     source = read("app/api/notification_delivery.py")
 
+    assert "request.cookies.get(settings.admin_session_cookie)" in source
+    assert "require_admin(token)" in source
+    assert 'RedirectResponse(url="/login", status_code=303)' in source
     assert "Требуют внимания" in source
     assert "Не доставлено" in source
     assert "На повторе" in source
-    assert "Доставлено за 24 часа" in source.lower() or "доставлено за 24 часа" in source
+    assert "доставлено за 24 часа" in source
     assert "Отправить доступные сейчас" in source
     assert "Повторить сейчас" in source
     assert "const pending=new Set()" in source
