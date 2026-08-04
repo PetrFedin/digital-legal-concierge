@@ -123,30 +123,46 @@ class NotificationSender:
         notification.next_attempt_at = None
         notification.sent_at = datetime.now(timezone.utc)
 
-    async def send_pending(self, limit: int = 50) -> int:
+    async def _load_pending(
+        self,
+        *,
+        limit: int,
+        notification_ids: list[int] | tuple[int, ...] | None = None,
+    ) -> list[Notification]:
         now = datetime.now(timezone.utc)
-        notifications = list(
-            (
-                await self.db.execute(
-                    select(Notification)
-                    .where(Notification.status.in_(["PENDING", "RETRY"]))
-                    .where(
-                        or_(
-                            Notification.next_attempt_at.is_(None),
-                            Notification.next_attempt_at <= now,
-                        )
-                    )
-                    .order_by(Notification.created_at.asc(), Notification.id.asc())
-                    .limit(limit)
-                    .with_for_update(skip_locked=True)
+        statement = (
+            select(Notification)
+            .where(Notification.status.in_(["PENDING", "RETRY"]))
+            .where(
+                or_(
+                    Notification.next_attempt_at.is_(None),
+                    Notification.next_attempt_at <= now,
                 )
-            ).scalars().all()
+            )
         )
+        if notification_ids is not None:
+            ids = sorted({int(item) for item in notification_ids if int(item) > 0})
+            if not ids:
+                return []
+            statement = statement.where(Notification.id.in_(ids))
+        result = await self.db.execute(
+            statement.order_by(Notification.created_at.asc(), Notification.id.asc())
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        return list(result.scalars().all())
+
+    async def _deliver(self, notifications: list[Notification]) -> dict[str, int]:
+        summary = {
+            "processed": len(notifications),
+            "sent": 0,
+            "retry": 0,
+            "failed": 0,
+        }
         if not notifications:
-            return 0
+            return summary
 
         bot = await self._build_bot()
-        sent = 0
         try:
             for notification in notifications:
                 notification.attempt_count = int(notification.attempt_count or 0) + 1
@@ -163,6 +179,7 @@ class NotificationSender:
                             f"{notification.recipient_type or notification.title}"
                         ),
                     )
+                    summary["failed"] += 1
                     continue
 
                 if bot is None:
@@ -171,6 +188,7 @@ class NotificationSender:
                         error="BOT_TOKEN не настроен; сообщение не отправлено",
                         retry_after=timedelta(minutes=15),
                     )
+                    summary["retry"] += 1
                     continue
 
                 try:
@@ -186,8 +204,10 @@ class NotificationSender:
                             seconds=max(int(error.retry_after), 1)
                         ),
                     )
+                    summary["retry"] += 1
                 except TelegramBadRequest as error:
                     self._mark_failed(notification, error=str(error))
+                    summary["failed"] += 1
                 except (
                     TelegramNetworkError,
                     TelegramServerError,
@@ -195,20 +215,39 @@ class NotificationSender:
                     OSError,
                 ) as error:
                     self._mark_retry(notification, error=str(error))
+                    summary["retry"] += 1
                 except Exception as error:
                     logger.exception(
                         "Неожиданная ошибка отправки уведомления %s",
                         notification.id,
                     )
                     self._mark_retry(notification, error=str(error))
+                    summary["retry"] += 1
                 else:
                     self._mark_sent(notification)
-                    sent += 1
+                    summary["sent"] += 1
 
             await self.db.flush()
-            return sent
+            return summary
         finally:
             if self._owns_bot and self.bot is not None:
                 await self.bot.session.close()
                 self.bot = None
                 self._owns_bot = False
+
+    async def send_selected(
+        self,
+        notification_ids: list[int] | tuple[int, ...],
+    ) -> dict[str, int]:
+        ids = sorted({int(item) for item in notification_ids if int(item) > 0})
+        notifications = await self._load_pending(
+            limit=max(len(ids), 1),
+            notification_ids=ids,
+        )
+        summary = await self._deliver(notifications)
+        return {"requested": len(ids), **summary}
+
+    async def send_pending(self, limit: int = 50) -> int:
+        notifications = await self._load_pending(limit=limit)
+        summary = await self._deliver(notifications)
+        return int(summary["sent"])
