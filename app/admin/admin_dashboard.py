@@ -1,10 +1,11 @@
 from datetime import datetime, time, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.document import Document
+from app.models.notification import Notification
 from app.models.payment import Payment
 
 
@@ -32,6 +33,7 @@ class AdminDashboardService:
         now = datetime.now(timezone.utc)
         today_start = datetime.combine(now.date(), time.min, tzinfo=timezone.utc)
         tomorrow_start = today_start + timedelta(days=1)
+        sent_since = now - timedelta(hours=24)
 
         total_cases = await self._count(select(func.count(Case.id)))
         new_cases = await self._count(
@@ -87,6 +89,36 @@ class AdminDashboardService:
             .where(Consultation.scheduled_at < tomorrow_start)
         )
 
+        notification_pending = await self._count(
+            select(func.count(Notification.id)).where(
+                Notification.status == "PENDING"
+            )
+        )
+        notification_retry = await self._count(
+            select(func.count(Notification.id)).where(Notification.status == "RETRY")
+        )
+        notification_failed = await self._count(
+            select(func.count(Notification.id)).where(Notification.status == "FAILED")
+        )
+        notification_due = await self._count(
+            select(func.count(Notification.id))
+            .where(Notification.status.in_(["PENDING", "RETRY"]))
+            .where(
+                or_(
+                    Notification.next_attempt_at.is_(None),
+                    Notification.next_attempt_at <= now,
+                )
+            )
+        )
+        notification_sent_recent = await self._count(
+            select(func.count(Notification.id))
+            .where(Notification.status == "SENT")
+            .where(Notification.sent_at >= sent_since)
+        )
+        notification_attention = (
+            notification_pending + notification_retry + notification_failed
+        )
+
         return {
             "generated_at": now.isoformat(),
             "cases": {
@@ -100,6 +132,7 @@ class AdminDashboardService:
                 "documents_review": documents_review,
                 "consultations_today": consultations_today,
                 "overdue": overdue_cases,
+                "telegram_delivery": notification_attention,
                 # Compatibility aliases for already deployed UI versions.
                 "documents_for_review": documents_review,
                 "sla_overdue": overdue_cases,
@@ -116,6 +149,15 @@ class AdminDashboardService:
             "consultations": {
                 "booked": consultations_booked,
                 "today": consultations_today,
+            },
+            "notifications": {
+                "attention": notification_attention,
+                "pending": notification_pending,
+                "retry": notification_retry,
+                "failed": notification_failed,
+                "due_now": notification_due,
+                "sent_recent": notification_sent_recent,
+                "workspace": "/admin/notification-delivery/ui",
             },
             # Backward-compatible fields for existing integrations and reports.
             "new_cases": new_cases,
