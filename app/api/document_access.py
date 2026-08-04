@@ -320,3 +320,9 @@ async def revoke_document_grant(
             public_id=public_id,
         )
         raise
+
+
+# Mounted here to reuse the same personal-session document security boundary.
+from app.api.document_review import router as document_review_router  # noqa: E402
+
+router.include_router(document_review_router)
