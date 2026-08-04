@@ -51,6 +51,17 @@ def test_admin_workspace_has_real_queue_endpoints_and_recovery_states():
     assert "Автоназначить" in source
 
 
+def test_document_review_queue_matches_domain_status():
+    service = read("app/domain/documents/document_service.py")
+    dashboard = read("app/admin/admin_dashboard.py")
+    workspace = read("app/api/web_admin.py")
+
+    assert "document.status = DocumentStatus.ON_REVIEW" in service
+    assert '"ON_REVIEW"' in dashboard
+    assert '"ON_REVIEW"' in workspace
+    assert '"ON_REVIEW": "На проверке у юриста"' in workspace
+
+
 def test_telegram_case_actions_are_current_state_driven():
     source = read("app/bot/screens/my_case.py")
 
