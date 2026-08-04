@@ -107,3 +107,11 @@ def test_document_review_ui_has_complete_recovery_and_stale_protection():
     assert "Решение сохранено, но очередь не обновилась" in source
     assert "window.location.assign(d.download_url)" in source
     assert "file_path" not in source
+
+
+def test_document_review_center_is_visible_from_operator_workspace():
+    source = read("app/api/operator.py")
+
+    assert 'href="/document-access/review/ui"' in source
+    assert "Проверка документов" in source
+    assert '"document_review": "/document-access/review/ui"' in source
