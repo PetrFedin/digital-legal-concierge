@@ -40,7 +40,7 @@ def test_document_review_service_is_locked_scoped_and_idempotent():
     assert "expected_version" in source
     assert "expected_updated_at" in source
     assert "current_status == target" in source
-    assert "ReviewResult(document, case, False, normalized)" in source
+    assert "ReviewResult(document, case, False, normalized, ())" in source
     assert source.index("current_status == target") < source.index(
         "self.assert_snapshot("
     )
