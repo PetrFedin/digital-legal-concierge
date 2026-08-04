@@ -63,26 +63,35 @@ def test_document_review_queue_matches_domain_status():
 
 
 def test_telegram_case_actions_are_current_state_driven():
-    source = read("app/bot/screens/my_case.py")
+    screen = read("app/bot/screens/my_case.py")
+    presenter = read("app/bot/client_case_view.py")
 
-    assert 'f"next_action:{case.id}:{case.status}"' in source
-    assert "requested_case_id != case.id" in source
-    assert "requested_status != current_status" in source
-    assert "Статус дела уже изменился" in source
-    assert "Показан актуальный следующий шаг" in source
-    assert "Сейчас действие от вас не требуется" in source
-    assert "Совместимость со старыми сообщениями" in source
-    assert "CLIENT_ACTIONS" in source
-    assert "client_action_for(case)" in source
+    assert 'f"next_action:v2:{view.case_id}:{view.action_key}"' in screen
+    assert "requested_case_id != case.id" in screen
+    assert "requested_action_key != view.action_key" in screen
+    assert "requested_status != view.case_status" in screen
+    assert "Данные дела или документов уже изменились" in screen
+    assert "Показан актуальный следующий шаг" in screen
+    assert "Сейчас действие от вас не требуется" in screen
+    assert "Compatibility with messages" in screen
+    assert "CLIENT_ACTIONS" in presenter
+    assert "def client_action_for" in presenter
+    assert "documents.uploaded_count" in presenter
+    assert "documents.replacement_count" in presenter
+    assert '"doc_finish_upload"' in presenter
 
 
 def test_telegram_case_screen_does_not_show_payment_controls_when_disabled():
-    source = read("app/bot/screens/my_case.py")
+    screen = read("app/bot/screens/my_case.py")
+    presenter = read("app/bot/client_case_view.py")
 
-    assert "if not payments_disabled():" in source
-    assert '("💳 Оплаты", "payments_open")' in source
-    assert "payments_count = 0" in source
-    assert "В режиме без онлайн-оплаты" not in source
+    assert "if not payments_disabled():" in screen
+    assert '("💳 Оплаты", "payments_open")' in screen
+    assert presenter.count("if not payments_disabled():") >= 2
+    assert "payments_summary = None" in presenter
+    assert "select(Payment.id)" in presenter
+    assert "В режиме без онлайн-оплаты" not in screen
+    assert "В режиме без онлайн-оплаты" not in presenter
 
 
 def test_telegram_lawyer_contact_matches_no_payment_mode_and_has_no_implicit_dead_end():
