@@ -25,6 +25,7 @@ from app.bot.screens import (
     messages,
     my_case,
     no_payment,
+    no_payment_legal,
     payments,
 )
 from app.bot.security import SlidingWindowRateLimiter
@@ -128,6 +129,7 @@ def build_dispatcher() -> Dispatcher:
         calculator.router,
         my_case.router,
         documents.router,
+        no_payment_legal.router,
         no_payment.router,
         payments.router,
         consultations.router,
