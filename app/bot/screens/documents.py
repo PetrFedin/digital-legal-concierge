@@ -2,6 +2,7 @@ import logging
 from collections.abc import Iterable
 
 from aiogram import Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
@@ -52,7 +53,7 @@ _M2_CAN_SKIP_STATUSES = {
     CaseStatus.M2_SLOT_PENDING,
 }
 _DOCUMENT_STATUS_LABELS = {
-    "UPLOADED": "Готов к передаче юристу",
+    "UPLOADED": "Безопасно загружен",
     "PENDING": "Проверяет юрист",
     "PENDING_REVIEW": "Проверяет юрист",
     "REVIEW_PENDING": "Проверяет юрист",
@@ -77,6 +78,7 @@ _DOCUMENT_REVIEW_STATUSES = {
 }
 _DOCUMENT_APPROVED_STATUSES = {"APPROVED", "ACCEPTED", "VERIFIED"}
 _PAGE_SIZE = 8
+_MAX_CLIENT_COMMENT_LENGTH = 240
 
 
 def _case_status(case) -> CaseStatus:
@@ -89,6 +91,13 @@ def _status(document) -> str:
     return str(document.status)
 
 
+def _short_text(value: str, limit: int = _MAX_CLIENT_COMMENT_LENGTH) -> str:
+    clean = " ".join(str(value or "").split())
+    if len(clean) <= limit:
+        return clean
+    return clean[: max(limit - 1, 1)].rstrip() + "…"
+
+
 def _client_document_status(document) -> str:
     return _DOCUMENT_STATUS_LABELS.get(
         _status(document),
@@ -97,7 +106,7 @@ def _client_document_status(document) -> str:
 
 
 def _client_document_comment(document) -> str | None:
-    comment = str(document.lawyer_comment or "").strip()
+    comment = _short_text(str(document.lawyer_comment or ""))
     if not comment:
         return None
     if _status(document) in _DOCUMENT_REPLACEMENT_STATUSES:
@@ -136,6 +145,21 @@ def _page_navigation(prefix: str, page: int, total_pages: int):
     if page + 1 < total_pages:
         buttons.append(("Следующая страница ➡️", f"{prefix}:{page + 1}"))
     return buttons
+
+
+async def _safe_edit(
+    callback: CallbackQuery,
+    text: str,
+    *,
+    reply_markup,
+    unchanged_notice: str = "Статусы пока не изменились.",
+) -> None:
+    try:
+        await callback.message.edit_text(text, reply_markup=reply_markup)
+    except TelegramBadRequest as error:
+        if "message is not modified" not in str(error).lower():
+            raise
+        await callback.answer(unchanged_notice)
 
 
 def _new_case_buttons() -> tuple[tuple[str, str], ...]:
@@ -267,7 +291,7 @@ async def _render_documents_home(callback: CallbackQuery, db):
     preview = (
         "\n\n".join(_document_block(item) for item in preview_items)
         if preview_items
-        else "Актуальных документов пока нет."
+        else "Пока документов нет."
     )
     if len(active) > len(preview_items):
         preview += f"\n\nЕщё актуальных документов: {len(active) - len(preview_items)}."
@@ -287,7 +311,8 @@ async def _render_documents_home(callback: CallbackQuery, db):
         ]
     )
 
-    await callback.message.edit_text(
+    await _safe_edit(
+        callback,
         "📄 Документы\n\n"
         f"{summary}\n\n"
         f"{preview}\n\n"
@@ -559,8 +584,9 @@ async def _render_current_documents(callback: CallbackQuery, db, page: int = 0):
                 ("🏠 Главная", "nav_home"),
             ]
         )
-        await callback.message.edit_text(
-            "📋 Актуальные документы\n\nАктуальных документов пока нет.\n\n"
+        await _safe_edit(
+            callback,
+            "📋 Актуальные документы\n\nПока документов нет.\n\n"
             f"Следующий шаг: {next_step}",
             reply_markup=one(*buttons),
         )
@@ -579,12 +605,14 @@ async def _render_current_documents(callback: CallbackQuery, db, page: int = 0):
             ("🏠 Главная", "nav_home"),
         ]
     )
-    await callback.message.edit_text(
+    await _safe_edit(
+        callback,
         "📋 Актуальные документы\n\n"
         + "\n\n".join(_document_block(item) for item in page_items)
         + f"\n\nСтраница {current_page + 1} из {total_pages}.\n\n"
         + f"Следующий шаг: {next_step}",
         reply_markup=one(*buttons),
+        unchanged_notice="Список актуальных документов не изменился.",
     )
 
 
@@ -608,13 +636,15 @@ async def _render_document_history(callback: CallbackQuery, db, page: int = 0):
         return
     archived = _archived_documents(documents)
     if not archived:
-        await callback.message.edit_text(
+        await _safe_edit(
+            callback,
             "🕘 История версий\n\nПредыдущих версий пока нет.",
             reply_markup=one(
                 ("⬅️ К обзору документов", "documents_open"),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
+            unchanged_notice="История версий пока пуста.",
         )
         return
 
@@ -627,7 +657,8 @@ async def _render_document_history(callback: CallbackQuery, db, page: int = 0):
             ("🏠 Главная", "nav_home"),
         ]
     )
-    await callback.message.edit_text(
+    await _safe_edit(
+        callback,
         "🕘 История версий\n\n"
         "Эти файлы сохранены в истории, но больше не участвуют в текущей проверке.\n\n"
         + "\n\n".join(
@@ -635,6 +666,7 @@ async def _render_document_history(callback: CallbackQuery, db, page: int = 0):
         )
         + f"\n\nСтраница {current_page + 1} из {total_pages}.",
         reply_markup=one(*buttons),
+        unchanged_notice="Эта страница истории не изменилась.",
     )
 
 
