@@ -13,11 +13,19 @@ class LawyerDecisionService:
         self.db = db
         self.cases = CaseService(db)
 
+    @staticmethod
+    def _document_status(value: object) -> DocumentStatus | None:
+        try:
+            return DocumentStatus(str(value))
+        except ValueError:
+            return None
+
     async def assert_documents_ready_for_acceptance(self, *, case) -> None:
         documents = (
             await self.db.execute(
                 select(Document)
                 .where(Document.case_id == case.id)
+                .where(Document.status != DocumentStatus.ARCHIVED)
                 .order_by(
                     Document.document_type.asc(),
                     Document.version.desc(),
@@ -35,7 +43,7 @@ class LawyerDecisionService:
             raise ValueError(
                 "Нельзя принять дело: актуальная версия ДДУ не загружена"
             )
-        if DocumentStatus(str(ddu.status)) != DocumentStatus.APPROVED:
+        if self._document_status(ddu.status) != DocumentStatus.APPROVED:
             raise ValueError(
                 "Нельзя принять дело: актуальная версия ДДУ ещё не принята юристом"
             )
@@ -43,8 +51,7 @@ class LawyerDecisionService:
         unresolved = [
             document.title
             for document in latest_by_type.values()
-            if DocumentStatus(str(document.status))
-            not in {DocumentStatus.APPROVED, DocumentStatus.ARCHIVED}
+            if self._document_status(document.status) != DocumentStatus.APPROVED
         ]
         if unresolved:
             labels = ", ".join(sorted(set(unresolved)))
