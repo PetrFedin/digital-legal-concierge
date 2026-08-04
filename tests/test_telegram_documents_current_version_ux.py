@@ -55,6 +55,20 @@ def test_reupload_reason_has_priority_over_other_document_actions():
     )
 
 
+def test_long_lawyer_comment_is_bounded_for_telegram_message():
+    replacement = document(
+        "NEEDS_REUPLOAD",
+        comment="слово " * 100,
+    )
+
+    visible = _client_document_comment(replacement)
+
+    assert visible is not None
+    assert visible.startswith("Что исправить: ")
+    assert visible.endswith("…")
+    assert len(visible) <= len("Что исправить: ") + 240
+
+
 def test_new_upload_is_the_only_document_submission_trigger():
     new = document("UPLOADED")
     review = document("ON_REVIEW", version=2)
@@ -121,5 +135,22 @@ def test_source_keeps_legacy_callbacks_and_blocks_empty_submission():
     assert "Все новые файлы уже переданы юристу" in source
     assert "Эти файлы сохранены в истории, но больше не участвуют" in source
     assert "Следующий шаг:" in source
-    assert "security_status" not in source
-    assert "encryption_status" not in source
+
+
+def test_security_metadata_stays_internal_and_refresh_is_idempotent():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "app/bot/screens/documents.py"
+    ).read_text(encoding="utf-8")
+
+    # Technical metadata is required by the secure document domain service.
+    assert "security_status=stored.security_status" in source
+    assert "encryption_status=stored.encryption_status" in source
+    # It must never be rendered as a client-facing status label.
+    assert "Статус безопасности" not in source
+    assert "Статус шифрования" not in source
+    assert "def _safe_edit" in source
+    assert "message is not modified" in source
+    assert "Статусы пока не изменились." in source
