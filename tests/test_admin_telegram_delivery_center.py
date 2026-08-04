@@ -184,7 +184,8 @@ def test_delivery_ui_is_protected_and_has_complete_recovery():
     assert "доставлено за 24 часа" in source
     assert "Отправить доступные сейчас" in source
     assert "retry_label" in source
-    assert "Повторно определить адрес" in source
+    assert "${esc(x.retry_label||'Повторить сейчас')}" in source
+    assert "адрес будет найден из дела или профиля" in source
     assert "const pending=new Set()" in source
     assert "aria-busy" in source
     assert "Не удалось загрузить доставку" in source
