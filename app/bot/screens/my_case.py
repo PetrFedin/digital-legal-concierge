@@ -1,138 +1,41 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import timezone
-
-from sqlalchemy import func, select
-
 from aiogram import Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery
 
+from app.bot.client_case_view import (
+    CLIENT_ACTIONS,
+    ClientAction,
+    client_action_for,
+    format_consultation_time,
+    format_updated_at,
+    load_client_case_view,
+    money,
+    next_action_text,
+    progress_bar,
+    route_label,
+)
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
-from app.domain.cases.case_timeline import (
-    get_case_progress_percent,
-    get_client_visible_status,
-)
 from app.domain.payments.mode import payments_disabled
-from app.models.calculation import Calculation
-from app.models.consultation import Consultation
-from app.models.document import Document
-from app.models.payment import Payment
 
 router = Router()
 
 
-@dataclass(frozen=True)
-class ClientAction:
-    label: str
-    callback: str
-    description: str
-
-
-CLIENT_ACTIONS: dict[str, ClientAction] = {
-    "CALCULATED": ClientAction(
-        "Продолжить оформление",
-        "consent_open",
-        "Подтвердить согласие и выбрать формат юридической помощи",
-    ),
-    "M1_DOCUMENTS_PENDING": ClientAction(
-        "Загрузить документы",
-        "documents_open",
-        "Загрузить ДДУ и остальные материалы по делу",
-    ),
-    "M1_DOCS_REQUESTED": ClientAction(
-        "Добавить документы",
-        "documents_open",
-        "Добавить документы или исправить файлы по замечанию юриста",
-    ),
-    "M1_CONTRACT_READY": ClientAction(
-        "Открыть договор",
-        "contract_open",
-        "Ознакомиться с договором и подтвердить продолжение работы",
-    ),
-    "M1_WAITING_PAYMENT_30000": ClientAction(
-        "Продолжить оформление",
-        "pay_start_30000",
-        "Продолжить к этапу доверенности без онлайн-оплаты",
-    ),
-    "M1_POWER_OF_ATTORNEY": ClientAction(
-        "Оформить доверенность",
-        "poa_instruction",
-        "Открыть инструкцию по оформлению доверенности",
-    ),
-    "M1_WAITING_PAYMENT_70000": ClientAction(
-        "Продолжить исполнение",
-        "pay_court_70000",
-        "Продолжить к исполнению решения без онлайн-оплаты",
-    ),
-    "M1_MONEY_RECEIVED": ClientAction(
-        "Завершить финансовый этап",
-        "pay_success_fee",
-        "Подтвердить финальный этап сопровождения",
-    ),
-    "M1_WAITING_SUCCESS_FEE": ClientAction(
-        "Завершить финансовый этап",
-        "pay_success_fee",
-        "Завершить финансовый этап без онлайн-оплаты",
-    ),
-    "M2_DESCRIPTION_PENDING": ClientAction(
-        "Описать вопрос",
-        "consult_description_start",
-        "Кратко описать ситуацию для подготовки юриста",
-    ),
-    "M2_DOCUMENTS_OPTIONAL": ClientAction(
-        "Добавить документы",
-        "documents_open",
-        "Добавить материалы к консультации или продолжить без них",
-    ),
-    "M2_SLOT_PENDING": ClientAction(
-        "Выбрать время",
-        "consult_slot_open",
-        "Выбрать доступную дату и время консультации",
-    ),
-    "M2_PAYMENT_PENDING": ClientAction(
-        "Подтвердить запись",
-        "consult_pay",
-        "Подтвердить консультацию без онлайн-оплаты",
-    ),
-    "M2_CONSULTATION_BOOKED": ClientAction(
-        "Открыть запись",
-        "consultation_booked_open",
-        "Проверить дату, время и данные консультации",
-    ),
-}
-
-
-def money(value):
-    return "—" if value is None else f"{value:,.2f}".replace(",", " ") + " ₽"
-
-
-def route_label(route: str | None) -> str:
-    return {
-        "M1": "Ведение дела",
-        "M2": "Консультация",
-    }.get(str(route or ""), "Юридическое обращение")
-
-
-def client_action_for(case) -> ClientAction | None:
-    return CLIENT_ACTIONS.get(str(case.status))
-
-
-def next_action_text(case) -> str:
-    action = client_action_for(case)
-    if action:
-        return action.description
-    return case.next_action or "Ожидайте обновления от юридической команды"
-
-
-def format_consultation_time(consultation: Consultation | None) -> str | None:
-    if not consultation or not consultation.scheduled_at:
-        return None
-    value = consultation.scheduled_at
-    if value.tzinfo is not None:
-        value = value.astimezone(timezone.utc)
-    return value.strftime("%d.%m.%Y в %H:%M UTC")
+async def _safe_edit(
+    callback: CallbackQuery,
+    text: str,
+    *,
+    reply_markup,
+    unchanged_notice: str = "Статус дела пока не изменился.",
+) -> None:
+    try:
+        await callback.message.edit_text(text, reply_markup=reply_markup)
+    except TelegramBadRequest as error:
+        if "message is not modified" not in str(error).lower():
+            raise
+        await callback.answer(unchanged_notice)
 
 
 async def _active_case_context(callback: CallbackQuery, db):
@@ -142,13 +45,53 @@ async def _active_case_context(callback: CallbackQuery, db):
     return ctx, user, case
 
 
+def _document_detail(view) -> str:
+    text = view.documents.summary
+    if view.documents.archived_count:
+        text += f" · в истории {view.documents.archived_count}"
+    return text
+
+
+def _case_buttons(view) -> list[tuple[str, str]]:
+    buttons: list[tuple[str, str]] = []
+    if view.action:
+        buttons.append(
+            (
+                f"▶️ {view.action.label}",
+                f"next_action:v2:{view.case_id}:{view.action_key}",
+            )
+        )
+    else:
+        buttons.append(("🔄 Обновить статус", "my_case_open"))
+
+    if not view.action or view.action.callback not in {
+        "documents_open",
+        "doc_finish_upload",
+    }:
+        buttons.append(("📄 Документы", "documents_open"))
+    else:
+        buttons.append(("📋 Все документы", "documents_open"))
+
+    if not payments_disabled():
+        buttons.append(("💳 Оплаты", "payments_open"))
+    buttons.extend(
+        [
+            ("🕘 История дела", "case_history_open"),
+            ("💬 Связаться с юристом", "contact_lawyer"),
+            ("🏠 Главная", "nav_home"),
+        ]
+    )
+    return buttons
+
+
 async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None):
     _, _, case = await _active_case_context(callback, db)
     if not case:
         text = "📁 У вас пока нет активного дела.\n\nВыберите, с чего начать:"
         if notice:
             text = f"{notice}\n\n{text}"
-        await callback.message.edit_text(
+        await _safe_edit(
+            callback,
             text,
             reply_markup=one(
                 ("🧮 Рассчитать неустойку", "calc_start"),
@@ -158,92 +101,45 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
         )
         return
 
-    calc = (
-        await db.execute(
-            select(Calculation).where(Calculation.case_id == case.id)
-        )
-    ).scalars().first()
-    documents_count = (
-        await db.execute(
-            select(func.count(Document.id)).where(Document.case_id == case.id)
-        )
-    ).scalar_one()
-    consultation = (
-        await db.execute(
-            select(Consultation)
-            .where(Consultation.case_id == case.id)
-            .order_by(Consultation.created_at.desc())
-            .limit(1)
-        )
-    ).scalars().first()
-
-    payments_count = 0
-    if not payments_disabled():
-        payments_count = (
-            await db.execute(
-                select(func.count(Payment.id))
-                .where(Payment.case_id == case.id)
-                .where(Payment.status.in_(["PENDING", "WAITING_CONFIRMATION"]))
-            )
-        ).scalar_one()
-
-    lines = []
+    view = await load_client_case_view(db, case)
+    lines: list[str] = []
     if notice:
         lines.extend([notice, ""])
     lines.extend(
         [
             "📁 Моё дело",
+            f"№ {view.case_number} · {view.route_label}",
             "",
-            f"Номер: {case.case_number}",
-            f"Услуга: {route_label(case.route)}",
-            f"Статус: {get_client_visible_status(case.status)}",
-            f"Прогресс: {get_case_progress_percent(case.status)}%",
+            "Текущий этап",
+            view.status_label,
+            progress_bar(view.progress_percent),
             "",
-            "Что дальше:",
-            next_action_text(case),
+            "Ваш следующий шаг",
+            view.next_action,
         ]
     )
+    if view.documents.blocker:
+        lines.extend(["", f"⚠️ Что мешает продолжить: {view.documents.blocker}"])
 
-    if calc and str(case.route) == "M1":
-        lines.extend(
-            [
-                "",
-                f"📊 Расчёт неустойки: {money(calc.penalty_amount)}",
-                f"Просрочка: {calc.delay_days} дн.",
-            ]
-        )
-
-    consultation_time = format_consultation_time(consultation)
-    if consultation_time:
-        lines.extend(["", f"🗓 Консультация: {consultation_time}"])
-
-    lines.extend(["", f"📄 Документы: {documents_count}"])
-    if not payments_disabled() and payments_count:
-        lines.append(f"💳 Ожидают оплаты: {payments_count}")
-
-    action = client_action_for(case)
-    buttons: list[tuple[str, str]] = []
-    if action:
-        buttons.append(
-            (
-                f"▶️ {action.label}",
-                f"next_action:{case.id}:{case.status}",
-            )
-        )
-    else:
-        buttons.append(("🔄 Обновить статус", "my_case_open"))
-
-    buttons.append(("📄 Документы", "documents_open"))
-    if not payments_disabled():
-        buttons.append(("💳 Оплаты", "payments_open"))
-    buttons.extend(
+    lines.extend(
         [
-            ("🕘 История", "case_history_open"),
-            ("💬 Связаться с юристом", "contact_lawyer"),
-            ("🏠 Главная", "nav_home"),
+            "",
+            "Готовность",
+            f"🧮 Расчёт: {view.calculation_summary}",
+            f"📄 Документы: {_document_detail(view)}",
         ]
     )
-    await callback.message.edit_text("\n".join(lines), reply_markup=one(*buttons))
+    if view.route == "M2" or view.consultation_summary != "Не назначена":
+        lines.append(f"🗓 Консультация: {view.consultation_summary}")
+    if view.payments_summary:
+        lines.append(f"💳 Оплаты: {view.payments_summary}")
+    lines.extend(["", f"Обновлено: {format_updated_at(view.updated_at)}"])
+
+    await _safe_edit(
+        callback,
+        "\n".join(lines),
+        reply_markup=one(*_case_buttons(view)),
+    )
 
 
 @router.callback_query(lambda c: c.data == "my_case_open")
@@ -256,15 +152,23 @@ async def next_action(callback: CallbackQuery, db):
     parts = str(callback.data or "").split(":")
     requested_case_id: int | None = None
     requested_status: str | None = None
+    requested_action_key: str | None = None
 
-    if len(parts) >= 3:
+    if len(parts) >= 4 and parts[1] == "v2":
+        try:
+            requested_case_id = int(parts[2])
+        except ValueError:
+            requested_case_id = None
+        requested_action_key = parts[3]
+    elif len(parts) >= 3:
+        # Compatibility with messages that stored case id and raw case status.
         try:
             requested_case_id = int(parts[1])
         except ValueError:
             requested_case_id = None
         requested_status = parts[2]
     elif len(parts) == 2:
-        # Совместимость со старыми сообщениями, где callback содержал только статус.
+        # Compatibility with the oldest messages that stored only status.
         requested_status = parts[1]
 
     _, _, case = await _active_case_context(callback, db)
@@ -276,15 +180,25 @@ async def next_action(callback: CallbackQuery, db):
         )
         return
 
-    current_status = str(case.status)
+    view = await load_client_case_view(db, case)
     if requested_case_id is not None and requested_case_id != case.id:
         await _render_case(
             callback,
             db,
-            notice="Вы открыли кнопку от другого дела. Показан актуальный статус.",
+            notice="Вы открыли кнопку от другого дела. Показано актуальное состояние.",
         )
         return
-    if requested_status and requested_status != current_status:
+    if requested_action_key and requested_action_key != view.action_key:
+        await _render_case(
+            callback,
+            db,
+            notice=(
+                "Данные дела или документов уже изменились. "
+                "Показан актуальный следующий шаг."
+            ),
+        )
+        return
+    if requested_status and requested_status != view.case_status:
         await _render_case(
             callback,
             db,
@@ -292,7 +206,7 @@ async def next_action(callback: CallbackQuery, db):
         )
         return
 
-    action = client_action_for(case)
+    action = view.action
     if not action:
         await _render_case(
             callback,
@@ -301,11 +215,13 @@ async def next_action(callback: CallbackQuery, db):
         )
         return
 
-    await callback.message.edit_text(
+    await _safe_edit(
+        callback,
         f"▶️ {action.label}\n\n{action.description}",
         reply_markup=one(
             (action.label, action.callback),
             ("↩️ Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         ),
+        unchanged_notice="Это действие уже открыто.",
     )
