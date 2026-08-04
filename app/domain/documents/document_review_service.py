@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_history import add_case_history_event
+from app.domain.cases.case_service import CaseService
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.document_statuses import DocumentStatus
@@ -141,6 +142,36 @@ class DocumentReviewService:
             for document, case, user in rows
         ]
 
+    async def _request_new_version(
+        self,
+        *,
+        actor: DocumentActor,
+        case: Case,
+        document: Document,
+        comment: str,
+    ) -> None:
+        case_status = CaseStatus(str(case.status))
+        if case.route != "M1" or case_status not in {
+            CaseStatus.M1_DOCUMENTS_RECEIVED,
+            CaseStatus.M1_LAWYER_REVIEW,
+        }:
+            return
+        request_comment = f"{document.title}: {comment}"
+        if actor.role == "lawyer":
+            await LawyerDecisionService(self.db).request_more_documents(
+                case=case,
+                lawyer_id=actor.lawyer_id or 0,
+                comment=request_comment,
+            )
+            return
+        await CaseService(self.db).change_status(
+            case=case,
+            next_status=CaseStatus.M1_DOCS_REQUESTED,
+            actor_type="admin_user",
+            actor_id=actor.account_id,
+            comment=request_comment,
+        )
+
     async def review(
         self,
         *,
@@ -173,12 +204,6 @@ class DocumentReviewService:
         if not case:
             raise DocumentReviewError("Дело документа не найдено")
         self.ensure_actor_can_review(actor, case)
-        self.assert_snapshot(
-            document,
-            expected_status=expected_status,
-            expected_version=expected_version,
-            expected_updated_at=expected_updated_at,
-        )
 
         current_status = DocumentStatus(str(document.status))
         if current_status == target:
@@ -187,6 +212,13 @@ class DocumentReviewService:
             raise DocumentReviewError(
                 "Решение уже принято с другим комментарием. Обновите карточку"
             )
+
+        self.assert_snapshot(
+            document,
+            expected_status=expected_status,
+            expected_version=expected_version,
+            expected_updated_at=expected_updated_at,
+        )
         if current_status != DocumentStatus.ON_REVIEW:
             raise DocumentReviewError(
                 "Документ уже вышел из очереди проверки. Обновите список"
@@ -201,19 +233,13 @@ class DocumentReviewService:
         document.status = target
         document.lawyer_comment = clean_comment or None
 
-        if normalized in {"request_reupload", "reject"} and case.route == "M1":
-            case_status = CaseStatus(str(case.status))
-            if case_status in {
-                CaseStatus.M1_DOCUMENTS_RECEIVED,
-                CaseStatus.M1_LAWYER_REVIEW,
-            }:
-                await LawyerDecisionService(self.db).request_more_documents(
-                    case=case,
-                    lawyer_id=actor.lawyer_id or actor.account_id,
-                    comment=(
-                        f"{document.title}: {clean_comment}"
-                    ),
-                )
+        if normalized in {"request_reupload", "reject"}:
+            await self._request_new_version(
+                actor=actor,
+                case=case,
+                document=document,
+                comment=clean_comment,
+            )
 
         await add_case_history_event(
             self.db,
