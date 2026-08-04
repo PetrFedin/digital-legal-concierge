@@ -139,6 +139,7 @@ _TRANSITIONS: dict[CaseStatus, frozenset[CaseStatus]] = {
     ),
     CaseStatus.M2_CONSULTATION_BOOKED: frozenset(
         {
+            CaseStatus.M2_SLOT_PENDING,
             CaseStatus.M2_CONSULTATION_DONE,
             CaseStatus.M2_CLOSED,
             CaseStatus.M1_DOCUMENTS_PENDING,
@@ -212,9 +213,12 @@ def validate_transition(
             )
         return source, destination
     if destination not in allowed_next_statuses(source):
-        allowed = ", ".join(item.value for item in sorted(
-            allowed_next_statuses(source), key=lambda item: item.value
-        )) or "нет"
+        allowed = ", ".join(
+            item.value
+            for item in sorted(
+                allowed_next_statuses(source), key=lambda item: item.value
+            )
+        ) or "нет"
         raise CaseTransitionError(
             f"Недопустимый переход {source.value} -> {destination.value}. "
             f"Разрешено: {allowed}"

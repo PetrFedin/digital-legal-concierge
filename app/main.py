@@ -42,8 +42,8 @@ from app.api.payment_webhooks import router as payment_router
 from app.api.production_center import router as production_center_router
 from app.api.recovery_center import router as recovery_center_router
 from app.api.refund_center import router as refund_center_router
-from app.api.retention_center import router as retention_center_router
 from app.api.release_manager import router as release_manager_router
+from app.api.retention_center import router as retention_center_router
 from app.api.runtime import router as runtime_router
 from app.api.scenario_map import router as scenario_map_router
 from app.api.search_center import router as search_center_router
@@ -55,6 +55,12 @@ from app.api.task_center import router as task_center_router
 from app.api.template_builder import router as template_builder_router
 from app.api.web_admin import router as web_admin_router
 from app.config import settings
+from app.domain.payments.mode import (
+    payment_mode_valid,
+    payment_provider_name,
+    payments_disabled,
+    payments_enabled,
+)
 from app.security.backup_freshness import backup_freshness_status
 from app.security.client_address import (
     TrustedProxyClientAddressMiddleware,
@@ -67,7 +73,7 @@ from app.security.http_security import (
 from app.security.keyring import security_key_status
 from app.security.session_guard import AdminSessionGuardMiddleware
 
-VERSION = "1.0.0-v45"
+VERSION = "1.0.0-v46"
 
 
 def _namespace_duplicate_route_names(router_specs):
@@ -85,7 +91,6 @@ def _namespace_duplicate_route_names(router_specs):
             original_name = getattr(route, "name", None)
             if not original_name or counts[original_name] <= 1:
                 continue
-
             candidate = f"{namespace}_{original_name}"
             suffix = 2
             while candidate in used_names:
@@ -160,7 +165,7 @@ def create_app():
 
     @app.get("/")
     async def root():
-        return RedirectResponse(url="/maintenance-center/ui")
+        return RedirectResponse(url="/operator")
 
     @app.get("/health")
     async def health():
@@ -172,10 +177,15 @@ def create_app():
 
         key_status = security_key_status()
         backup_freshness = await asyncio.to_thread(backup_freshness_status)
-        payment_webhook_secret_ready = settings.app_env != "production" or (
-            len(str(settings.payment_webhook_secret or "")) >= 32
-            and settings.payment_webhook_secret
-            not in {"dev-payment-secret", "change-this-payment-secret"}
+        provider = payment_provider_name()
+        payment_disabled = payments_disabled()
+        payment_webhook_secret_ready = payment_disabled or (
+            settings.app_env != "production"
+            or (
+                len(str(settings.payment_webhook_secret or "")) >= 32
+                and settings.payment_webhook_secret
+                not in {"dev-payment-secret", "change-this-payment-secret"}
+            )
         )
         try:
             proxy_networks = trusted_proxy_networks()
@@ -183,6 +193,7 @@ def create_app():
         except RuntimeError:
             proxy_networks = ()
             trusted_proxy_config_valid = False
+
         checks = {
             "bot_token_configured": bool(
                 settings.bot_token and settings.bot_token != "CHANGE_ME"
@@ -193,39 +204,87 @@ def create_app():
                 and settings.admin_api_token != "dev-admin-token"
             ),
             "storage_dir_exists": Path(settings.storage_dir).exists(),
-            "document_upload_limit_valid": 1 <= int(settings.max_document_upload_mb) <= 100,
-            "quarantine_retention_valid": 1 <= int(settings.upload_quarantine_retention_days) <= 90,
-            "document_access_ttl_valid": 30 <= int(settings.document_access_grant_ttl_seconds) <= 300,
-            "document_access_limit_valid": 1 <= int(settings.document_access_max_active_grants) <= 20,
+            "document_upload_limit_valid": (
+                1 <= int(settings.max_document_upload_mb) <= 100
+            ),
+            "quarantine_retention_valid": (
+                1 <= int(settings.upload_quarantine_retention_days) <= 90
+            ),
+            "document_access_ttl_valid": (
+                30 <= int(settings.document_access_grant_ttl_seconds) <= 300
+            ),
+            "document_access_limit_valid": (
+                1 <= int(settings.document_access_max_active_grants) <= 20
+            ),
             "backup_size_limit_valid": 1 <= int(settings.max_backup_mb) <= 10240,
-            "backup_retention_valid": 1 <= int(settings.backup_retention_days) <= 3650,
-            "backup_max_age_valid": 1 <= int(settings.backup_max_age_hours) <= min(8760, int(settings.backup_retention_days) * 24),
-            "backup_freshness_cache_valid": 0 <= int(settings.backup_freshness_cache_seconds) <= 3600,
-            "backup_clock_skew_valid": 0 <= int(settings.backup_future_clock_skew_seconds) <= 3600,
+            "backup_retention_valid": (
+                1 <= int(settings.backup_retention_days) <= 3650
+            ),
+            "backup_max_age_valid": (
+                1
+                <= int(settings.backup_max_age_hours)
+                <= min(8760, int(settings.backup_retention_days) * 24)
+            ),
+            "backup_freshness_cache_valid": (
+                0 <= int(settings.backup_freshness_cache_seconds) <= 3600
+            ),
+            "backup_clock_skew_valid": (
+                0 <= int(settings.backup_future_clock_skew_seconds) <= 3600
+            ),
             "recent_verified_backup": bool(backup_freshness.ok),
-            "closed_case_retention_valid": 30 <= int(settings.closed_case_retention_days) <= 36500,
-            "case_retention_scan_batch_valid": 1 <= int(settings.case_retention_scan_batch_size) <= 1000,
-            "case_retention_execution_timeout_valid": 60 <= int(settings.case_retention_execution_timeout_seconds) <= 86400,
-            "payment_webhook_body_limit_valid": 1 <= int(settings.max_payment_webhook_kb) <= 1024,
-            "payment_webhook_timeout_valid": 30 <= int(settings.payment_webhook_processing_timeout_seconds) <= 3600,
-            "payment_webhook_attempt_limit_valid": 1 <= int(settings.payment_webhook_max_attempts) <= 50,
+            "closed_case_retention_valid": (
+                30 <= int(settings.closed_case_retention_days) <= 36500
+            ),
+            "case_retention_scan_batch_valid": (
+                1 <= int(settings.case_retention_scan_batch_size) <= 1000
+            ),
+            "case_retention_execution_timeout_valid": (
+                60
+                <= int(settings.case_retention_execution_timeout_seconds)
+                <= 86400
+            ),
+            "payment_webhook_body_limit_valid": (
+                1 <= int(settings.max_payment_webhook_kb) <= 1024
+            ),
+            "payment_webhook_timeout_valid": (
+                30
+                <= int(settings.payment_webhook_processing_timeout_seconds)
+                <= 3600
+            ),
+            "payment_webhook_attempt_limit_valid": (
+                1 <= int(settings.payment_webhook_max_attempts) <= 50
+            ),
             "payment_webhook_secret_ready": payment_webhook_secret_ready,
+            "payment_mode_valid": payment_mode_valid(),
+            # Kept for compatibility with deployment scripts and dashboards.
+            "payment_provider_configured": payment_mode_valid(),
             "trusted_proxy_config_valid": trusted_proxy_config_valid,
-            "trusted_proxy_hop_limit_valid": 1 <= int(settings.trusted_proxy_max_hops) <= 20,
+            "trusted_proxy_hop_limit_valid": (
+                1 <= int(settings.trusted_proxy_max_hops) <= 20
+            ),
             "database_url_configured": bool(settings.database_url),
             "scheduler_enabled": settings.run_scheduler,
             "bot_enabled": settings.run_bot,
-            "payment_provider_configured": settings.payment_provider == "fake"
-            or bool(settings.yookassa_shop_id and settings.yookassa_secret_key),
-            "legacy_admin_token_disabled_in_production": settings.app_env != "production"
-            or settings.admin_api_token != "dev-admin-token",
-            "public_base_url_is_https": settings.app_env != "production"
-            or settings.public_base_url.lower().startswith("https://"),
+            "legacy_admin_token_disabled_in_production": (
+                settings.app_env != "production"
+                or settings.admin_api_token != "dev-admin-token"
+            ),
+            "public_base_url_is_https": (
+                settings.app_env != "production"
+                or settings.public_base_url.lower().startswith("https://")
+            ),
             "security_keys_ready": bool(key_status["ok"]),
         }
         return {
             "ok": all(checks.values()),
             "checks": checks,
+            "payment_mode": {
+                "provider": provider,
+                "enabled": payments_enabled(),
+                "disabled_by_configuration": payment_disabled,
+                "payment_links_created": payments_enabled(),
+                "pilot_flows_continue_without_payment": payment_disabled,
+            },
             "security_keys": key_status,
             "trusted_proxy_security": {
                 "enabled": bool(proxy_networks),
@@ -238,10 +297,14 @@ def create_app():
             "document_upload_security": {
                 "max_upload_mb": settings.max_document_upload_mb,
                 "quarantine_enabled": settings.quarantine_rejected_uploads,
-                "quarantine_retention_days": settings.upload_quarantine_retention_days,
+                "quarantine_retention_days": (
+                    settings.upload_quarantine_retention_days
+                ),
                 "allowed_formats": ["pdf", "docx", "jpeg", "png"],
                 "encryption_at_rest": True,
-                "encryption_key_id": key_status["active_key_ids"].get("document_encryption"),
+                "encryption_key_id": key_status["active_key_ids"].get(
+                    "document_encryption"
+                ),
             },
             "document_delivery_security": {
                 "enabled": True,
@@ -256,7 +319,9 @@ def create_app():
                 "enabled": True,
                 "retention_days": settings.closed_case_retention_days,
                 "scheduler_dry_run": settings.case_retention_dry_run,
-                "execution_timeout_seconds": settings.case_retention_execution_timeout_seconds,
+                "execution_timeout_seconds": (
+                    settings.case_retention_execution_timeout_seconds
+                ),
                 "two_person_approval": True,
                 "personal_mfa_superadmin_required": True,
                 "legal_hold": True,
@@ -273,18 +338,22 @@ def create_app():
                 "restore_mode": "verified_staging_only",
                 "max_backup_mb": settings.max_backup_mb,
                 "retention_days": settings.backup_retention_days,
-                "readiness_required_in_production": settings.backup_readiness_required_in_production,
+                "readiness_required_in_production": (
+                    settings.backup_readiness_required_in_production
+                ),
                 "max_age_hours": settings.backup_max_age_hours,
                 "freshness": backup_freshness.as_dict(),
             },
             "payment_webhook_security": {
-                "enabled": True,
+                "enabled": not payment_disabled,
                 "max_body_kb": settings.max_payment_webhook_kb,
                 "idempotent_ledger": True,
                 "replay_payload_conflict_detection": True,
-                "processing_timeout_seconds": settings.payment_webhook_processing_timeout_seconds,
+                "processing_timeout_seconds": (
+                    settings.payment_webhook_processing_timeout_seconds
+                ),
                 "max_attempts": settings.payment_webhook_max_attempts,
-                "authoritative_provider_recheck": settings.payment_provider == "yookassa",
+                "authoritative_provider_recheck": provider == "yookassa",
                 "raw_provider_payload_persisted": False,
             },
             "security_event_monitoring": {
@@ -302,6 +371,7 @@ def create_app():
             "handover": "/handover",
             "security_check": "/security-check",
             "launch_assistant": "/launch-assistant",
+            "operator_workspace": "/operator",
             "admin_ui": "/admin-ui",
             "lawyer_ui": "/lawyer/ui",
             "access_management": "/access/ui",
@@ -331,7 +401,10 @@ def create_app():
             "ready": "/ready",
             "bot_enabled": settings.run_bot,
             "scheduler_enabled": settings.run_scheduler,
-            "payment_provider": settings.payment_provider,
+            "payment_provider": payment_provider_name(),
+            "payments_enabled": payments_enabled(),
+            "payments_disabled": payments_disabled(),
+            "pilot_flows_continue_without_payment": payments_disabled(),
             "storage_dir": settings.storage_dir,
             "trusted_proxy_client_resolution": True,
             "trusted_proxy_allowlist_required": True,
