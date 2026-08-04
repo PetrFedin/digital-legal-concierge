@@ -55,12 +55,22 @@ def _recipient_label(notification: Notification) -> str:
     return RECIPIENT_LABELS.get(recipient, recipient or "Получатель не определён")
 
 
+def _target_recoverable(notification: Notification) -> bool:
+    return bool(
+        notification.target_chat_id is not None
+        or notification.user_id is not None
+        or notification.case_id is not None
+    )
+
+
 def _recommended_action(notification: Notification, now: datetime) -> str:
     status = str(notification.status)
     if status == "SENT":
         return "Доставка завершена"
     if notification.target_chat_id is None:
-        return "Уточнить Telegram получателя"
+        if _target_recoverable(notification):
+            return "Повторно определить Telegram-адрес из дела или профиля"
+        return "Исправить источник уведомления: получатель не связан с системой"
     if status == "FAILED":
         return "Проверить причину и повторить отправку"
     if status == "RETRY" and notification.next_attempt_at:
@@ -87,6 +97,11 @@ def serialize_notification(
         str(notification.status) in {"PENDING", "RETRY"}
         and (next_attempt is None or next_attempt <= current)
     )
+    target_available = notification.target_chat_id is not None
+    target_recoverable = _target_recoverable(notification)
+    can_retry = bool(
+        str(notification.status) in RETRYABLE_STATUSES and target_recoverable
+    )
     return {
         "id": notification.id,
         "case_id": notification.case_id,
@@ -99,7 +114,8 @@ def serialize_notification(
             "Статус уточняется",
         ),
         "recipient": _recipient_label(notification),
-        "target_available": notification.target_chat_id is not None,
+        "target_available": target_available,
+        "target_recoverable": target_recoverable,
         "attempt_count": int(notification.attempt_count or 0),
         "last_error": _clean_text(notification.last_error, 500),
         "next_attempt_at": _iso(notification.next_attempt_at),
@@ -107,7 +123,12 @@ def serialize_notification(
         "created_at": _iso(notification.created_at),
         "updated_at": _iso(notification.updated_at),
         "due_now": due_now,
-        "can_retry": str(notification.status) in RETRYABLE_STATUSES,
+        "can_retry": can_retry,
+        "retry_label": (
+            "Повторить сейчас"
+            if target_available
+            else "Повторно определить адрес"
+        ),
         "recommended_action": _recommended_action(notification, current),
     }
 
@@ -219,6 +240,10 @@ class NotificationDeliveryService:
             raise NotificationDeliveryError(
                 "Текущее состояние уведомления не допускает повторную отправку"
             )
+        if not _target_recoverable(notification):
+            raise NotificationDeliveryError(
+                "Уведомление не связано с пользователем или делом; адрес получателя восстановить нельзя"
+            )
         if expected_status is not None and str(notification.status) != str(
             expected_status
         ):
@@ -241,6 +266,7 @@ class NotificationDeliveryService:
             "attempt_count": int(notification.attempt_count or 0),
             "last_error": notification.last_error,
             "next_attempt_at": _iso(notification.next_attempt_at),
+            "target_available": notification.target_chat_id is not None,
         }
         notification.status = "PENDING"
         notification.is_sent = False
@@ -258,6 +284,7 @@ class NotificationDeliveryService:
                     "status": "PENDING",
                     "case_id": notification.case_id,
                     "event_code": notification.event_code,
+                    "target_resolution_requested": notification.target_chat_id is None,
                 },
                 comment="Администратор запросил повторную Telegram-доставку",
             )
@@ -275,6 +302,13 @@ class NotificationDeliveryService:
                 or_(
                     Notification.next_attempt_at.is_(None),
                     Notification.next_attempt_at <= now,
+                )
+            )
+            .where(
+                or_(
+                    Notification.target_chat_id.is_not(None),
+                    Notification.user_id.is_not(None),
+                    Notification.case_id.is_not(None),
                 )
             )
             .order_by(Notification.created_at.asc(), Notification.id.asc())
