@@ -33,6 +33,13 @@ class DocumentSecurityPendingError(ValueError):
     pass
 
 
+class MissingRequiredDocumentsError(ValueError):
+    def __init__(self, missing_types: list[str]):
+        labels = [DOC_TITLES.get(item, item) for item in missing_types]
+        super().__init__("Не хватает обязательных документов: " + ", ".join(labels))
+        self.missing_types = tuple(missing_types)
+
+
 def has_usable_document_envelope(document: Document) -> bool:
     return bool(
         document.encryption_status == ENCRYPTION_STATUS
@@ -43,6 +50,19 @@ def has_usable_document_envelope(document: Document) -> bool:
         and document.encrypted_data_key_nonce
         and document.data_key_destroyed_at is None
         and document.encrypted_at
+    )
+
+
+def document_is_usable(document: Document) -> bool:
+    return bool(
+        document.security_status == "VERIFIED"
+        and has_usable_document_envelope(document)
+        and document.status
+        not in {
+            DocumentStatus.REJECTED,
+            DocumentStatus.NEEDS_REUPLOAD,
+            DocumentStatus.ARCHIVED,
+        }
     )
 
 
@@ -195,30 +215,45 @@ class DocumentService:
             },
         )
 
-    async def send_documents_to_review(self, *, case, actor_id: int):
+    async def send_documents_to_review(
+        self,
+        *,
+        case,
+        actor_id: int,
+        required_types: set[str] | None = None,
+    ) -> int:
         documents = await self.list_case_documents(case.id)
         pending = [
             document
             for document in documents
             if document.status == DocumentStatus.UPLOADED
-            and (
-                document.security_status != "VERIFIED"
-                or not has_usable_document_envelope(document)
-            )
+            and not document_is_usable(document)
         ]
         if pending:
             raise DocumentSecurityPendingError(
                 "Часть документов ещё не прошла проверку или envelope-шифрование. "
-                "Удалите их и загрузите заново либо дождитесь фоновой миграции."
+                "Загрузите исправленные версии."
             )
-        verified = [
+
+        usable_types = {
+            document.document_type
+            for document in documents
+            if document_is_usable(document)
+        }
+        missing = sorted(set(required_types or set()) - usable_types)
+        if missing:
+            raise MissingRequiredDocumentsError(missing)
+
+        verified_new = [
             document
             for document in documents
             if document.status == DocumentStatus.UPLOADED
-            and document.security_status == "VERIFIED"
-            and has_usable_document_envelope(document)
+            and document_is_usable(document)
         ]
-        for document in verified:
+        if not verified_new and not documents:
+            raise MissingRequiredDocumentsError(sorted(required_types or {"DOCUMENT"}))
+
+        for document in verified_new:
             document.status = DocumentStatus.ON_REVIEW
         await add_case_history_event(
             self.db,
@@ -226,6 +261,13 @@ class DocumentService:
             actor_id=actor_id,
             case_id=case.id,
             action="DOCUMENTS_SENT_TO_REVIEW",
-            new_value={"count": len(verified)},
+            new_value={
+                "new_count": len(verified_new),
+                "total_usable_count": sum(
+                    1 for document in documents if document_is_usable(document)
+                ),
+                "required_types": sorted(required_types or set()),
+            },
         )
         await self.db.flush()
+        return len(verified_new)
