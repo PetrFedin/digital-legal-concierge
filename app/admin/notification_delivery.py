@@ -167,6 +167,13 @@ class NotificationDeliveryService:
                     Notification.next_attempt_at <= current,
                 )
             )
+            .where(
+                or_(
+                    Notification.target_chat_id.is_not(None),
+                    Notification.user_id.is_not(None),
+                    Notification.case_id.is_not(None),
+                )
+            )
         )
         return {
             "attention": pending + retry + failed,
