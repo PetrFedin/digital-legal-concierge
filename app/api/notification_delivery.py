@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, Depends, Header, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,8 +13,10 @@ from app.admin.notification_delivery import (
     serialize_notification,
 )
 from app.api.admin import actor_id_from_token, require_admin
+from app.config import settings
 from app.db.session import get_db
 from app.domain.notifications.notification_sender import NotificationSender
+from app.models.audit_log import AuditLog
 from app.models.notification import Notification
 
 router = APIRouter(prefix="/admin/notification-delivery", tags=["notification-delivery"])
@@ -116,12 +118,33 @@ async def retry_due_notifications(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    require_admin(x_admin_token)
+    actor = require_admin(x_admin_token)
     requested_limit = (payload or {}).get("limit", 50)
     try:
         ids = await NotificationDeliveryService(db).due_ids(limit=requested_limit)
+        if ids:
+            db.add(
+                AuditLog(
+                    actor_type="admin",
+                    actor_id=actor_id_from_token(actor),
+                    action="TELEGRAM_NOTIFICATION_DUE_BATCH_REQUESTED",
+                    entity_type="notification_batch",
+                    entity_id=None,
+                    old_value=None,
+                    new_value={
+                        "notification_ids": list(ids),
+                        "count": len(ids),
+                    },
+                    comment="Администратор запустил доставку доступных Telegram-уведомлений",
+                )
+            )
+            await db.commit()
     except (TypeError, ValueError) as error:
+        await db.rollback()
         raise HTTPException(status_code=400, detail="Некорректный лимит отправки") from error
+    except Exception:
+        await db.rollback()
+        raise
     delivery = await _attempt_delivery(db, ids)
     return {
         "ok": True,
@@ -168,7 +191,15 @@ async def retry_notification(
 
 
 @router.get("/ui", response_class=HTMLResponse)
-async def notification_delivery_ui():
+async def notification_delivery_ui(
+    request: Request,
+    x_admin_token: str | None = Header(default=None),
+):
+    token = x_admin_token or request.cookies.get(settings.admin_session_cookie)
+    try:
+        require_admin(token)
+    except HTTPException:
+        return RedirectResponse(url="/login", status_code=303)
     return HTMLResponse(DELIVERY_HTML)
 
 
