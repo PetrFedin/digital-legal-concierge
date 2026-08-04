@@ -15,19 +15,23 @@ def read(path: str) -> str:
 def notification(
     status: str,
     *,
+    recipient_type: str | None = "client",
     target_chat_id: int | None = 123456789,
+    user_id: int | None = 5,
+    case_id: int | None = 17,
     last_error: str | None = None,
     next_attempt_at=None,
 ):
     now = datetime(2026, 8, 5, 10, tzinfo=timezone.utc)
     return SimpleNamespace(
         id=7,
-        case_id=17,
+        case_id=case_id,
+        user_id=user_id,
         event_code="DOCUMENT_REJECTED",
-        title="client",
+        title=recipient_type,
         text="Документ нужно заменить",
         status=status,
-        recipient_type="client",
+        recipient_type=recipient_type,
         target_chat_id=target_chat_id,
         attempt_count=2,
         last_error=last_error,
@@ -51,9 +55,53 @@ def test_delivery_serializer_is_human_and_does_not_expose_chat_id():
     assert item["status_label"] == "Не доставлено"
     assert item["recipient"] == "Клиент"
     assert item["target_available"] is False
-    assert item["recommended_action"] == "Уточнить Telegram получателя"
+    assert item["target_recoverable"] is True
+    assert item["recommended_action"] == (
+        "Повторно определить Telegram-адрес из дела или профиля"
+    )
+    assert item["retry_label"] == "Повторно определить адрес"
     assert item["can_retry"] is True
     assert "target_chat_id" not in item
+
+
+def test_sender_recipient_matrix_does_not_offer_false_retry():
+    admin = serialize_notification(
+        notification(
+            "FAILED",
+            recipient_type="admin",
+            target_chat_id=None,
+            user_id=None,
+            case_id=None,
+        )
+    )
+    lawyer_without_case = serialize_notification(
+        notification(
+            "FAILED",
+            recipient_type="lawyer",
+            target_chat_id=None,
+            user_id=8,
+            case_id=None,
+        )
+    )
+    unknown_with_case = serialize_notification(
+        notification(
+            "FAILED",
+            recipient_type="external",
+            target_chat_id=None,
+            user_id=None,
+            case_id=17,
+        )
+    )
+
+    assert admin["target_recoverable"] is True
+    assert admin["can_retry"] is True
+    assert lawyer_without_case["target_recoverable"] is False
+    assert lawyer_without_case["can_retry"] is False
+    assert unknown_with_case["target_recoverable"] is False
+    assert unknown_with_case["can_retry"] is False
+    assert unknown_with_case["recommended_action"] == (
+        "Исправить источник уведомления: получатель не связан с системой"
+    )
 
 
 def test_retry_due_and_sent_states_have_distinct_actions():
@@ -89,10 +137,16 @@ def test_delivery_service_has_filters_summary_lock_snapshot_and_audit():
     assert "expected_updated_at" in source
     assert 'str(notification.status) == "SENT"' in source
     assert "уже доставлено и не может быть отправлено повторно" in source
+    assert "Telegram sender может определить повторно" in source
     assert "TELEGRAM_NOTIFICATION_RETRY_REQUESTED" in source
     assert 'notification.status = "PENDING"' in source
     assert 'notification.status = "SENT"' not in source
-    assert 'Notification.status.in_(["PENDING", "RETRY"])' in source
+    assert source.count('Notification.status.in_(["PENDING", "RETRY"])') >= 2
+    assert "def _recoverable_target_clause" in source
+    assert source.count(".where(_recoverable_target_clause())") == 2
+    assert 'recipient == "client"' in source
+    assert 'recipient == "lawyer"' in source
+    assert 'recipient == "admin"' in source
     assert "safe_limit = min(max(int(limit or 50), 1), 50)" in source
 
 
@@ -122,22 +176,45 @@ def test_delivery_ui_is_protected_and_has_complete_recovery():
     source = read("app/api/notification_delivery.py")
 
     assert "request.cookies.get(settings.admin_session_cookie)" in source
-    assert "require_admin(token)" in source
+    assert "require_admin(_admin_token(request, x_admin_token))" in source
     assert 'RedirectResponse(url="/login", status_code=303)' in source
     assert "Требуют внимания" in source
     assert "Не доставлено" in source
     assert "На повторе" in source
     assert "доставлено за 24 часа" in source
     assert "Отправить доступные сейчас" in source
-    assert "Повторить сейчас" in source
+    assert "retry_label" in source
+    assert "${esc(x.retry_label||'Повторить сейчас')}" in source
+    assert "адрес будет найден из дела или профиля" in source
     assert "const pending=new Set()" in source
     assert "aria-busy" in source
     assert "Не удалось загрузить доставку" in source
     assert "Повторить</button>" in source
     assert "Отправка выполнена, но экран не обновился" in source
-    assert "target_available" in source
+    assert "target_recoverable" in source
+    assert "получатель не связан с системой" in source
     assert "target_chat_id" not in source[source.index("DELIVERY_HTML"):]
     assert "BOT_TOKEN" not in source[source.index("DELIVERY_HTML"):]
+
+
+def test_delivery_case_deep_link_is_exact_and_protected():
+    api = read("app/api/notification_delivery.py")
+    page = read("app/admin/case_detail_page.py")
+
+    assert '@router.get("/case/{case_id}/ui"' in api
+    assert "CASE_DETAIL_HTML.replace" in api
+    assert 'href="/admin/notification-delivery/case/${x.case_id}/ui"' in api
+    assert 'href="/admin-ui">Открыть дело' not in api
+    assert "require_admin(_admin_token(request, x_admin_token))" in api
+
+    assert "'/admin/case-workspace/'+caseId" in page
+    assert "Актуальных документов нет" in page
+    assert "История версий" in page
+    assert "Рекомендуемое действие" in page
+    assert "Не удалось открыть дело" in page
+    assert 'href="/admin/notification-delivery/ui"' in page
+    assert "target_chat_id" not in page
+    assert "BOT_TOKEN" not in page
 
 
 def test_operator_and_dashboard_make_delivery_center_discoverable():
