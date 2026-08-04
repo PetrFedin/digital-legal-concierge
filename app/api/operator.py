@@ -135,8 +135,9 @@ async def operator_page():
             </article>
             <article class="group">
               <h3>Контроль и безопасность</h3>
-              <p>Работоспособность, сроки, события и резервные копии.</p>
+              <p>Работоспособность, сроки, доставка и резервные копии.</p>
               <div class="links">
+                <a class="link" href="/admin/notification-delivery/ui"><b>Telegram-доставка</b><span>Ошибки, очередь, повторы и фактический результат отправки</span></a>
                 <a class="link" href="/monitoring-center/ui"><b>Мониторинг</b><span>Текущее состояние приложения</span></a>
                 <a class="link" href="/admin/sla/ui"><b>SLA и просрочки</b><span>Сроки реакции и эскалации</span></a>
                 <a class="link" href="/security-events/ui"><b>События безопасности</b><span>Проверка подозрительных действий</span></a>
@@ -173,7 +174,7 @@ async def operator_page():
             <li>Обращение попадает в очередь администратора с понятным следующим действием.</li>
             <li>Клиент передаёт документы, а юрист фиксирует решение по каждому файлу.</li>
             <li>Юрист работает с делом или консультацией и фиксирует результат.</li>
-            <li>Клиент получает уведомления о каждом значимом изменении.</li>
+            <li>Клиент получает уведомления, а недоставленные сообщения видны в центре доставки.</li>
           </ol>
         </section>
       </main>
@@ -187,7 +188,7 @@ async def operator_page():
 @router.get("/operator/status")
 async def operator_status():
     return {
-        "version": "1.0.0-v28",
+        "version": "1.0.0-v29",
         "bot_enabled": settings.run_bot,
         "scheduler_enabled": settings.run_scheduler,
         "payment_provider": settings.payment_provider,
@@ -199,6 +200,7 @@ async def operator_status():
             "lawyer": "/lawyer/workspace/ui",
             "lawyer_legacy": "/lawyer/ui",
             "document_review": "/document-access/review/ui",
+            "telegram_delivery": "/admin/notification-delivery/ui",
             "messages": "/message-center/ui",
             "monitoring": "/monitoring-center/ui",
         },
@@ -207,5 +209,9 @@ async def operator_status():
 
 # Mounted here because /operator is the role-workspace hub.
 from app.api.lawyer_workspace import router as lawyer_workspace_router  # noqa: E402
+from app.api.notification_delivery import (  # noqa: E402
+    router as notification_delivery_router,
+)
 
 router.include_router(lawyer_workspace_router)
+router.include_router(notification_delivery_router)
