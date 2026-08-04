@@ -1,0 +1,421 @@
+from __future__ import annotations
+
+import hashlib
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.domain.cases.case_timeline import (
+    get_case_progress_percent,
+    get_client_visible_status,
+)
+from app.domain.payments.mode import payments_disabled
+from app.domain.statuses.consultation_statuses import ConsultationStatus
+from app.models.calculation import Calculation
+from app.models.consultation import Consultation
+from app.models.document import Document
+from app.models.payment import Payment
+
+
+@dataclass(frozen=True)
+class ClientAction:
+    label: str
+    callback: str
+    description: str
+
+
+@dataclass(frozen=True)
+class DocumentOverview:
+    current_count: int
+    archived_count: int
+    uploaded_count: int
+    review_count: int
+    approved_count: int
+    replacement_count: int
+    summary: str
+    blocker: str | None
+    latest_updated_at: datetime | None
+
+
+@dataclass(frozen=True)
+class ClientCaseView:
+    case_id: int
+    case_number: str
+    case_status: str
+    route: str | None
+    route_label: str
+    status_label: str
+    progress_percent: int
+    next_action: str
+    action: ClientAction | None
+    action_key: str
+    documents: DocumentOverview
+    calculation_summary: str
+    consultation_summary: str
+    payments_summary: str | None
+    updated_at: datetime | None
+
+
+CLIENT_ACTIONS: dict[str, ClientAction] = {
+    "CALCULATED": ClientAction(
+        "Продолжить оформление",
+        "consent_open",
+        "Подтвердите согласие и выберите формат юридической помощи.",
+    ),
+    "M1_DOCUMENTS_PENDING": ClientAction(
+        "Загрузить документы",
+        "documents_open",
+        "Загрузите актуальный ДДУ и остальные материалы по делу.",
+    ),
+    "M1_DOCS_REQUESTED": ClientAction(
+        "Добавить документы",
+        "documents_open",
+        "Добавьте документы или исправьте файл по замечанию юриста.",
+    ),
+    "M1_CONTRACT_READY": ClientAction(
+        "Открыть договор",
+        "contract_open",
+        "Ознакомьтесь с договором и подтвердите продолжение работы.",
+    ),
+    "M1_WAITING_PAYMENT_30000": ClientAction(
+        "Продолжить оформление",
+        "pay_start_30000",
+        "Продолжите к этапу оформления доверенности.",
+    ),
+    "M1_POWER_OF_ATTORNEY": ClientAction(
+        "Оформить доверенность",
+        "poa_instruction",
+        "Откройте инструкцию по оформлению доверенности.",
+    ),
+    "M1_WAITING_PAYMENT_70000": ClientAction(
+        "Продолжить исполнение",
+        "pay_court_70000",
+        "Продолжите к этапу исполнения решения.",
+    ),
+    "M1_MONEY_RECEIVED": ClientAction(
+        "Завершить финансовый этап",
+        "pay_success_fee",
+        "Подтвердите финальный финансовый этап сопровождения.",
+    ),
+    "M1_WAITING_SUCCESS_FEE": ClientAction(
+        "Завершить финансовый этап",
+        "pay_success_fee",
+        "Завершите финальный финансовый этап сопровождения.",
+    ),
+    "M1_REJECTED": ClientAction(
+        "Уточнить решение",
+        "contact_lawyer",
+        "Свяжитесь с юристом, чтобы уточнить причину и возможный следующий шаг.",
+    ),
+    "M2_DESCRIPTION_PENDING": ClientAction(
+        "Описать вопрос",
+        "consult_description_start",
+        "Кратко опишите ситуацию, чтобы юрист смог подготовиться.",
+    ),
+    "M2_DOCUMENTS_OPTIONAL": ClientAction(
+        "Добавить документы",
+        "documents_open",
+        "Добавьте материалы к консультации или продолжите без них.",
+    ),
+    "M2_SLOT_PENDING": ClientAction(
+        "Выбрать время",
+        "consult_slot_open",
+        "Выберите доступную дату и время консультации.",
+    ),
+    "M2_PAYMENT_PENDING": ClientAction(
+        "Подтвердить запись",
+        "consult_pay",
+        "Подтвердите выбранное время консультации.",
+    ),
+    "M2_CONSULTATION_BOOKED": ClientAction(
+        "Открыть запись",
+        "consultation_booked_open",
+        "Проверьте дату, время и данные подтверждённой консультации.",
+    ),
+    "ERROR": ClientAction(
+        "Связаться с юристом",
+        "contact_lawyer",
+        "Не удалось определить следующий автоматический этап. Напишите юристу.",
+    ),
+}
+
+_DOCUMENT_REPLACEMENT = {"REJECTED", "NEEDS_REUPLOAD"}
+_DOCUMENT_REVIEW = {
+    "PENDING",
+    "PENDING_REVIEW",
+    "REVIEW_PENDING",
+    "REVIEW_REQUIRED",
+    "NEEDS_REVIEW",
+    "ON_REVIEW",
+}
+_DOCUMENT_APPROVED = {"APPROVED", "ACCEPTED", "VERIFIED"}
+_CONSULTATION_LABELS = {
+    ConsultationStatus.DESCRIPTION_PENDING: "Нужно описание вопроса",
+    ConsultationStatus.DOCUMENTS_OPTIONAL: "Можно добавить документы",
+    ConsultationStatus.SLOT_PENDING: "Нужно выбрать время",
+    ConsultationStatus.SLOT_RESERVED: "Время временно зарезервировано",
+    ConsultationStatus.PAYMENT_PENDING: "Нужно подтвердить запись",
+    ConsultationStatus.BOOKED: "Запись подтверждена",
+    ConsultationStatus.DONE: "Консультация проведена",
+    ConsultationStatus.CLIENT_NO_SHOW: "Клиент не подключился",
+    ConsultationStatus.LAWYER_NO_SHOW: "Юрист не подключился",
+    ConsultationStatus.CANCELLED: "Запись отменена",
+    ConsultationStatus.RESCHEDULED: "Запись перенесена",
+    ConsultationStatus.CLOSED: "Консультация закрыта",
+}
+
+
+def money(value) -> str:
+    return "—" if value is None else f"{value:,.2f}".replace(",", " ") + " ₽"
+
+
+def route_label(route: str | None) -> str:
+    return {
+        "M1": "Ведение дела",
+        "M2": "Консультация",
+    }.get(str(route or ""), "Юридическое обращение")
+
+
+def client_action_for(case) -> ClientAction | None:
+    return CLIENT_ACTIONS.get(str(case.status))
+
+
+def next_action_text(case) -> str:
+    action = client_action_for(case)
+    if action:
+        return action.description
+    return case.next_action or "Ожидайте обновления от юридической команды."
+
+
+def format_consultation_time(consultation: Consultation | None) -> str | None:
+    if not consultation or not consultation.scheduled_at:
+        return None
+    value = consultation.scheduled_at
+    if value.tzinfo is not None:
+        value = value.astimezone(timezone.utc)
+    return value.strftime("%d.%m.%Y в %H:%M UTC")
+
+
+def format_updated_at(value: datetime | None) -> str:
+    if value is None:
+        return "—"
+    if value.tzinfo is not None:
+        value = value.astimezone(timezone.utc)
+    return value.strftime("%d.%m.%Y %H:%M UTC")
+
+
+def progress_bar(percent: int) -> str:
+    bounded = min(max(int(percent), 0), 100)
+    completed = min(10, max(0, round(bounded / 10)))
+    return "●" * completed + "○" * (10 - completed) + f" {bounded}%"
+
+
+def _short_comment(value: str | None, limit: int = 180) -> str | None:
+    clean = " ".join(str(value or "").split())
+    if not clean:
+        return None
+    if len(clean) <= limit:
+        return clean
+    return clean[: limit - 1].rstrip() + "…"
+
+
+def _document_overview(documents: list[Document]) -> DocumentOverview:
+    current = [item for item in documents if str(item.status) != "ARCHIVED"]
+    archived = [item for item in documents if str(item.status) == "ARCHIVED"]
+    uploaded = [item for item in current if str(item.status) == "UPLOADED"]
+    review = [item for item in current if str(item.status) in _DOCUMENT_REVIEW]
+    approved = [item for item in current if str(item.status) in _DOCUMENT_APPROVED]
+    replacement = [
+        item for item in current if str(item.status) in _DOCUMENT_REPLACEMENT
+    ]
+
+    blocker = None
+    if replacement:
+        first = replacement[0]
+        reason = _short_comment(first.lawyer_comment)
+        blocker = f"{first.title}: {reason or 'нужно загрузить исправленную версию'}"
+        summary = (
+            f"{len(current)} актуальных · {len(replacement)} нужно заменить"
+        )
+    elif uploaded:
+        summary = f"{len(current)} актуальных · {len(uploaded)} готовы к передаче"
+    elif review:
+        summary = f"{len(current)} актуальных · {len(review)} проверяет юрист"
+    elif current and len(approved) == len(current):
+        summary = f"{len(current)} актуальных · все приняты"
+    elif current:
+        summary = f"{len(current)} актуальных"
+    else:
+        summary = "Пока документов нет"
+
+    latest_updated_at = max(
+        (item.updated_at for item in current if item.updated_at is not None),
+        default=None,
+    )
+    return DocumentOverview(
+        current_count=len(current),
+        archived_count=len(archived),
+        uploaded_count=len(uploaded),
+        review_count=len(review),
+        approved_count=len(approved),
+        replacement_count=len(replacement),
+        summary=summary,
+        blocker=blocker,
+        latest_updated_at=latest_updated_at,
+    )
+
+
+def _priority_action(case, documents: DocumentOverview) -> ClientAction | None:
+    if documents.replacement_count:
+        return ClientAction(
+            "Загрузить новую версию",
+            "documents_open",
+            "Загрузите исправленную версию файла по замечанию юриста.",
+        )
+    if documents.uploaded_count:
+        return ClientAction(
+            "Передать документы юристу",
+            "doc_finish_upload",
+            "Передайте безопасно загруженные файлы юристу на проверку.",
+        )
+
+    status = str(case.status)
+    if status in {"M1_DOCUMENTS_PENDING", "M1_DOCS_REQUESTED"}:
+        return CLIENT_ACTIONS[status]
+    if status in {"M1_DOCUMENTS_RECEIVED", "M1_LAWYER_REVIEW"} and documents.review_count:
+        return None
+    return client_action_for(case)
+
+
+def _consultation_summary(consultation: Consultation | None) -> str:
+    if not consultation:
+        return "Не назначена"
+    try:
+        status = ConsultationStatus(str(consultation.status))
+    except ValueError:
+        status_label = "Статус уточняется"
+    else:
+        status_label = _CONSULTATION_LABELS.get(status, "Статус уточняется")
+    scheduled = format_consultation_time(consultation)
+    return f"{status_label} · {scheduled}" if scheduled else status_label
+
+
+def _calculation_summary(case, calculation: Calculation | None) -> str:
+    if str(case.route) != "M1":
+        return "Не требуется для консультации"
+    if not calculation:
+        return "Расчёт ещё не завершён"
+    return f"{money(calculation.penalty_amount)} · просрочка {calculation.delay_days} дн."
+
+
+def _action_key(
+    *,
+    case,
+    action: ClientAction | None,
+    documents: DocumentOverview,
+    consultation: Consultation | None,
+) -> str:
+    parts = [
+        str(case.id),
+        str(case.status),
+        case.updated_at.isoformat() if case.updated_at else "",
+        action.callback if action else "wait",
+        str(documents.current_count),
+        str(documents.uploaded_count),
+        str(documents.review_count),
+        str(documents.replacement_count),
+        documents.latest_updated_at.isoformat() if documents.latest_updated_at else "",
+        str(consultation.status) if consultation else "",
+        consultation.updated_at.isoformat()
+        if consultation and consultation.updated_at
+        else "",
+    ]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:12]
+
+
+async def load_client_case_view(
+    db: AsyncSession,
+    case,
+) -> ClientCaseView:
+    calculation = (
+        await db.execute(
+            select(Calculation)
+            .where(Calculation.case_id == case.id)
+            .order_by(Calculation.created_at.desc(), Calculation.id.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+    documents = list(
+        (
+            await db.execute(
+                select(Document)
+                .where(Document.case_id == case.id)
+                .order_by(Document.created_at.desc(), Document.id.desc())
+            )
+        ).scalars().all()
+    )
+    consultation = (
+        await db.execute(
+            select(Consultation)
+            .where(Consultation.case_id == case.id)
+            .order_by(Consultation.created_at.desc(), Consultation.id.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+
+    pending_payments = 0
+    if not payments_disabled():
+        pending_payments = len(
+            list(
+                (
+                    await db.execute(
+                        select(Payment.id)
+                        .where(Payment.case_id == case.id)
+                        .where(
+                            Payment.status.in_(["PENDING", "WAITING_CONFIRMATION"])
+                        )
+                    )
+                ).scalars().all()
+            )
+        )
+
+    document_overview = _document_overview(documents)
+    action = _priority_action(case, document_overview)
+    next_action = (
+        action.description
+        if action
+        else case.next_action
+        or "От вас сейчас ничего не требуется. Ожидайте обновления от юридической команды."
+    )
+    payments_summary = None
+    if not payments_disabled():
+        payments_summary = (
+            f"Ожидают подтверждения: {pending_payments}"
+            if pending_payments
+            else "Нет ожидающих оплат"
+        )
+
+    return ClientCaseView(
+        case_id=case.id,
+        case_number=case.case_number,
+        case_status=str(case.status),
+        route=case.route,
+        route_label=route_label(case.route),
+        status_label=get_client_visible_status(case.status),
+        progress_percent=get_case_progress_percent(case.status),
+        next_action=next_action,
+        action=action,
+        action_key=_action_key(
+            case=case,
+            action=action,
+            documents=document_overview,
+            consultation=consultation,
+        ),
+        documents=document_overview,
+        calculation_summary=_calculation_summary(case, calculation),
+        consultation_summary=_consultation_summary(consultation),
+        payments_summary=payments_summary,
+        updated_at=case.updated_at,
+    )

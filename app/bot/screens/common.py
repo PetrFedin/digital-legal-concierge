@@ -1,15 +1,22 @@
 from aiogram import Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
+from app.bot.client_case_view import (
+    load_client_case_view,
+    next_action_text,
+    route_label,
+)
 from app.bot.context import BotContextService
 from app.bot.keyboards import main_menu, one, reply_main_menu
-from app.domain.cases.case_timeline import get_client_visible_status
 from app.domain.payments.mode import payments_disabled
 
 router = Router()
 
 
+# Retained as a public compatibility contract for integrations that inspect
+# no-payment pilot wording. Actual client screens use the shared case view.
 PILOT_NEXT_ACTIONS = {
     "M1_WAITING_PAYMENT_30000": "Продолжить оформление доверенности",
     "M1_WAITING_PAYMENT_70000": "Продолжить этап исполнения решения",
@@ -19,16 +26,28 @@ PILOT_NEXT_ACTIONS = {
 
 
 def _route_label(route: str | None) -> str:
-    return {
-        "M1": "Ведение дела",
-        "M2": "Консультация",
-    }.get(str(route or ""), "Юридическое обращение")
+    return route_label(route)
 
 
 def _next_action(case) -> str:
     if payments_disabled() and str(case.status) in PILOT_NEXT_ACTIONS:
         return PILOT_NEXT_ACTIONS[str(case.status)]
-    return case.next_action or "Откройте «Моё дело» для актуального шага"
+    return next_action_text(case)
+
+
+async def _safe_callback_edit(
+    callback: CallbackQuery,
+    text: str,
+    *,
+    reply_markup,
+    unchanged_notice: str = "Главный экран уже актуален.",
+) -> None:
+    try:
+        await callback.message.edit_text(text, reply_markup=reply_markup)
+    except TelegramBadRequest as error:
+        if "message is not modified" not in str(error).lower():
+            raise
+        await callback.answer(unchanged_notice)
 
 
 async def _home_text(db, message_or_callback) -> tuple[str, bool]:
@@ -42,13 +61,15 @@ async def _home_text(db, message_or_callback) -> tuple[str, bool]:
         user = await ctx.get_user_from_message(message_or_callback)
     case = await ctx.case_service.get_active_case_for_user(user.id)
     if case:
+        view = await load_client_case_view(db, case)
         text = (
             "🏠 Главная\n\n"
-            f"Активное дело: {case.case_number}\n"
-            f"Услуга: {_route_label(case.route)}\n"
-            f"Статус: {get_client_visible_status(case.status)}\n"
-            f"Ближайший шаг: {_next_action(case)}\n\n"
-            "Откройте «Моё дело» или выберите другое действие."
+            f"Активное дело: {view.case_number}\n"
+            f"Услуга: {view.route_label}\n"
+            f"Сейчас: {view.status_label}\n"
+            f"Документы: {view.documents.summary}\n\n"
+            f"Ваш следующий шаг:\n{view.next_action}\n\n"
+            "Откройте «Моё дело», чтобы увидеть готовность и выполнить действие."
         )
         return text, True
     text = (
@@ -85,7 +106,7 @@ async def menu_calc(message: Message, state: FSMContext):
 async def menu_my_case(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
-        "Откройте актуальный статус, документы и следующий шаг.",
+        "Откройте единый экран дела: текущий этап, готовность и одно следующее действие.",
         reply_markup=one(
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
@@ -97,7 +118,7 @@ async def menu_my_case(message: Message, state: FSMContext):
 async def menu_documents(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
-        "В разделе документов можно добавить файлы и проверить их статус.",
+        "В разделе документов видны актуальные файлы, замечания юриста и история версий.",
         reply_markup=one(
             ("📄 Открыть документы", "documents_open"),
             ("🏠 Главная", "nav_home"),
@@ -128,8 +149,8 @@ async def help_command(message: Message):
         "ℹ️ Помощь\n\n"
         "Основные разделы:\n"
         "🧮 Рассчитать неустойку — предварительный расчёт.\n"
-        "📁 Моё дело — статус, следующий шаг, документы и история.\n"
-        "📄 Документы — загрузка копий и сканов.\n"
+        "📁 Моё дело — текущий этап, готовность и следующее действие.\n"
+        "📄 Документы — актуальные версии, замечания и история.\n"
         "💬 Связаться с юристом — вопрос по делу или консультация.\n\n"
         f"{payment_line}\n\n"
         "Команды: /start, /menu, /status, /help, /cancel",
@@ -152,11 +173,13 @@ async def status_command(message: Message, db):
             ),
         )
         return
+    view = await load_client_case_view(db, case)
     await message.answer(
-        f"📁 {case.case_number}\n"
-        f"Услуга: {_route_label(case.route)}\n"
-        f"Статус: {get_client_visible_status(case.status)}\n"
-        f"Ближайший шаг: {_next_action(case)}",
+        f"📁 {view.case_number}\n"
+        f"Услуга: {view.route_label}\n"
+        f"Сейчас: {view.status_label}\n"
+        f"Документы: {view.documents.summary}\n\n"
+        f"Следующий шаг: {view.next_action}",
         reply_markup=one(
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
@@ -177,16 +200,22 @@ async def cancel_message(message: Message, state: FSMContext):
 async def home(callback: CallbackQuery, db, state: FSMContext):
     await state.clear()
     text, case_exists = await _home_text(db, callback)
-    await callback.message.edit_text(text, reply_markup=main_menu(case_exists))
+    await _safe_callback_edit(
+        callback,
+        text,
+        reply_markup=main_menu(case_exists),
+    )
 
 
 @router.callback_query(lambda c: c.data == "noop")
 async def noop(callback: CallbackQuery, db, state: FSMContext):
     await state.clear()
     text, case_exists = await _home_text(db, callback)
-    await callback.message.edit_text(
+    await _safe_callback_edit(
+        callback,
         "Эта кнопка больше не актуальна. Показано текущее состояние.\n\n" + text,
         reply_markup=main_menu(case_exists),
+        unchanged_notice="Показано текущее состояние.",
     )
 
 
@@ -194,9 +223,11 @@ async def noop(callback: CallbackQuery, db, state: FSMContext):
 async def cancel(callback: CallbackQuery, state: FSMContext, db):
     await state.clear()
     text, case_exists = await _home_text(db, callback)
-    await callback.message.edit_text(
+    await _safe_callback_edit(
+        callback,
         "Действие отменено. Уже сохранённые данные не удалены.\n\n" + text,
         reply_markup=main_menu(case_exists),
+        unchanged_notice="Действие уже отменено.",
     )
 
 
@@ -204,4 +235,8 @@ async def cancel(callback: CallbackQuery, state: FSMContext, db):
 async def back(callback: CallbackQuery, state: FSMContext, db):
     await state.clear()
     text, case_exists = await _home_text(db, callback)
-    await callback.message.edit_text(text, reply_markup=main_menu(case_exists))
+    await _safe_callback_edit(
+        callback,
+        text,
+        reply_markup=main_menu(case_exists),
+    )
