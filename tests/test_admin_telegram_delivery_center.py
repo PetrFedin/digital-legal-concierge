@@ -15,6 +15,7 @@ def read(path: str) -> str:
 def notification(
     status: str,
     *,
+    recipient_type: str | None = "client",
     target_chat_id: int | None = 123456789,
     user_id: int | None = 5,
     case_id: int | None = 17,
@@ -27,10 +28,10 @@ def notification(
         case_id=case_id,
         user_id=user_id,
         event_code="DOCUMENT_REJECTED",
-        title="client",
+        title=recipient_type,
         text="Документ нужно заменить",
         status=status,
-        recipient_type="client",
+        recipient_type=recipient_type,
         target_chat_id=target_chat_id,
         attempt_count=2,
         last_error=last_error,
@@ -63,21 +64,42 @@ def test_delivery_serializer_is_human_and_does_not_expose_chat_id():
     assert "target_chat_id" not in item
 
 
-def test_detached_notification_does_not_offer_false_retry():
-    item = serialize_notification(
+def test_sender_recipient_matrix_does_not_offer_false_retry():
+    admin = serialize_notification(
         notification(
             "FAILED",
+            recipient_type="admin",
             target_chat_id=None,
             user_id=None,
             case_id=None,
-        ),
-        now=datetime(2026, 8, 5, 11, tzinfo=timezone.utc),
+        )
+    )
+    lawyer_without_case = serialize_notification(
+        notification(
+            "FAILED",
+            recipient_type="lawyer",
+            target_chat_id=None,
+            user_id=8,
+            case_id=None,
+        )
+    )
+    unknown_with_case = serialize_notification(
+        notification(
+            "FAILED",
+            recipient_type="external",
+            target_chat_id=None,
+            user_id=None,
+            case_id=17,
+        )
     )
 
-    assert item["target_available"] is False
-    assert item["target_recoverable"] is False
-    assert item["can_retry"] is False
-    assert item["recommended_action"] == (
+    assert admin["target_recoverable"] is True
+    assert admin["can_retry"] is True
+    assert lawyer_without_case["target_recoverable"] is False
+    assert lawyer_without_case["can_retry"] is False
+    assert unknown_with_case["target_recoverable"] is False
+    assert unknown_with_case["can_retry"] is False
+    assert unknown_with_case["recommended_action"] == (
         "Исправить источник уведомления: получатель не связан с системой"
     )
 
@@ -115,14 +137,16 @@ def test_delivery_service_has_filters_summary_lock_snapshot_and_audit():
     assert "expected_updated_at" in source
     assert 'str(notification.status) == "SENT"' in source
     assert "уже доставлено и не может быть отправлено повторно" in source
-    assert "адрес получателя восстановить нельзя" in source
+    assert "Telegram sender может определить повторно" in source
     assert "TELEGRAM_NOTIFICATION_RETRY_REQUESTED" in source
     assert 'notification.status = "PENDING"' in source
     assert 'notification.status = "SENT"' not in source
     assert source.count('Notification.status.in_(["PENDING", "RETRY"])') >= 2
-    assert source.count("Notification.target_chat_id.is_not(None)") >= 2
-    assert source.count("Notification.user_id.is_not(None)") >= 2
-    assert source.count("Notification.case_id.is_not(None)") >= 2
+    assert "def _recoverable_target_clause" in source
+    assert source.count(".where(_recoverable_target_clause())") == 2
+    assert 'recipient == "client"' in source
+    assert 'recipient == "lawyer"' in source
+    assert 'recipient == "admin"' in source
     assert "safe_limit = min(max(int(limit or 50), 1), 50)" in source
 
 
@@ -167,6 +191,7 @@ def test_delivery_ui_is_protected_and_has_complete_recovery():
     assert "Повторить</button>" in source
     assert "Отправка выполнена, но экран не обновился" in source
     assert "target_recoverable" in source
+    assert "получатель не связан с системой" in source
     assert "target_chat_id" not in source[source.index("DELIVERY_HTML"):]
     assert "BOT_TOKEN" not in source[source.index("DELIVERY_HTML"):]
 
