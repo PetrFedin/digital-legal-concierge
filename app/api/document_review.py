@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +14,7 @@ from app.domain.documents.document_review_service import (
     DocumentReviewError,
     DocumentReviewService,
 )
+from app.domain.notifications.notification_sender import NotificationSender
 from app.security.document_access import (
     DocumentAccessError,
     resolve_document_actor,
@@ -22,6 +25,67 @@ router = APIRouter(prefix="/review", tags=["document-review"])
 
 def _token(request: Request, header_token: str | None) -> str | None:
     return header_token or request.cookies.get(settings.admin_session_cookie)
+
+
+async def _deliver_review_notifications(
+    db: AsyncSession,
+    notification_ids: tuple[int, ...],
+) -> dict[str, object]:
+    if not notification_ids:
+        return {
+            "status": "not_required",
+            "requested": 0,
+            "processed": 0,
+            "sent": 0,
+            "retry": 0,
+            "failed": 0,
+        }
+
+    try:
+        summary = await asyncio.wait_for(
+            NotificationSender(db).send_selected(notification_ids),
+            timeout=8,
+        )
+        await db.commit()
+    except TimeoutError:
+        await db.rollback()
+        return {
+            "status": "queued",
+            "requested": len(notification_ids),
+            "processed": 0,
+            "sent": 0,
+            "retry": len(notification_ids),
+            "failed": 0,
+            "reason": "telegram_timeout",
+        }
+    except Exception:
+        # The legal decision was committed before this helper was called.
+        # Only delivery state is rolled back; the scheduler can retry the
+        # still-pending outbox records on its next cycle.
+        await db.rollback()
+        return {
+            "status": "queued",
+            "requested": len(notification_ids),
+            "processed": 0,
+            "sent": 0,
+            "retry": len(notification_ids),
+            "failed": 0,
+            "reason": "delivery_error",
+        }
+
+    requested = int(summary.get("requested", len(notification_ids)))
+    sent = int(summary.get("sent", 0))
+    retry = int(summary.get("retry", 0))
+    failed = int(summary.get("failed", 0))
+    if requested and sent >= requested:
+        status = "delivered"
+    elif retry:
+        status = "queued"
+    elif failed:
+        status = "unavailable"
+    else:
+        status = "queued"
+    return {"status": status, **summary}
 
 
 @router.get("/queue")
@@ -76,9 +140,15 @@ async def review_document(
                     f"{DECISION_LABELS[result.decision]}"
                 ),
             )
+
+        # The legal operation and its outbox records become durable first.
+        # Telegram delivery is deliberately a second transaction, so a network
+        # failure can never reverse the lawyer's decision.
         await db.commit()
         await db.refresh(result.document)
         await db.refresh(result.case)
+        delivery = await _deliver_review_notifications(db, result.notification_ids)
+
         return {
             "ok": True,
             "changed": result.changed,
@@ -90,6 +160,7 @@ async def review_document(
             "status_label": DECISION_LABELS[result.decision],
             "version": result.document.version,
             "updated_at": result.document.updated_at.isoformat(),
+            "delivery": delivery,
         }
     except DocumentAccessError:
         await db.rollback()
@@ -122,7 +193,7 @@ REVIEW_HTML = r"""
 </style>
 </head>
 <body>
-<header><div class="inner"><div><h1>📄 Проверка документов</h1><p id="roleLabel">Защищённая очередь решений по файлам</p></div><div class="links"><a class="button secondary" href="/lawyer/ui">Кабинет юриста</a><a class="button secondary" href="/admin-ui">Админка</a><a class="button secondary" href="/operator">Все разделы</a></div></div></header>
+<header><div class="inner"><div><h1>📄 Проверка документов</h1><p id="roleLabel">Защищённая очередь решений по файлам</p></div><div class="links"><a class="button secondary" href="/lawyer/workspace/ui">Кабинет юриста</a><a class="button secondary" href="/admin-ui">Админка</a><a class="button secondary" href="/operator">Все разделы</a></div></div></header>
 <main><div class="summary"><div><h2>Ожидают решения</h2><p>Скачайте документ, проверьте содержимое и зафиксируйте один результат.</p></div><span id="counter" class="counter">0</span></div><div id="message" class="message" role="status" aria-live="polite"></div><div id="grid" class="grid"><div class="loading">Загрузка очереди…</div></div></main>
 <script>
 let token='',items=new Map();const pending=new Set();const grid=document.getElementById('grid'),message=document.getElementById('message'),counter=document.getElementById('counter'),roleLabel=document.getElementById('roleLabel');
@@ -130,6 +201,7 @@ function esc(v){return String(v??'').replace(/[&<>\x22\x27]/g,c=>c==='&'?'&amp;'
 function feedback(text,state=''){message.textContent=text;message.className='message '+state}
 function dt(v){return v?new Intl.DateTimeFormat('ru-RU',{dateStyle:'short',timeStyle:'short'}).format(new Date(v)):'—'}
 function size(v){if(v===null||v===undefined)return '—';if(v<1024)return v+' Б';if(v<1048576)return (v/1024).toFixed(1)+' КБ';return (v/1048576).toFixed(1)+' МБ'}
+function deliveryText(delivery){const status=delivery?.status||'queued';if(status==='delivered')return ['Клиент уведомлён в Telegram','ok'];if(status==='queued')return ['Уведомление поставлено в очередь повторной доставки','warn'];if(status==='unavailable')return ['Решение сохранено, но Telegram-доставка недоступна','warn'];return ['Решение сохранено. Повторное уведомление не требуется','ok']}
 async function api(path,opts={}){const r=await fetch(path,{...opts,credentials:'same-origin',cache:'no-store',headers:{'x-admin-token':token,'Content-Type':'application/json',...(opts.headers||{})}});if(r.status===401||r.status===403){location.href='/login';throw new Error('Сессия истекла или недостаточно прав')}const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||'Ошибка запроса');return d}
 async function boot(){try{const r=await fetch('/auth/session',{credentials:'same-origin',cache:'no-store'});if(!r.ok){location.href='/login';return}const s=await r.json();const roles=s.roles||[s.role];if(!roles.some(x=>['admin','superadmin','lawyer'].includes(x))){throw new Error('Требуется роль администратора или юриста')}token=s.api_token||'';roleLabel.textContent=roles.includes('lawyer')&&!roles.includes('admin')?'Документы назначенных вам дел':'Все документы, переданные на юридическую проверку';await load()}catch(e){showError(e)}}
 function showError(e){grid.innerHTML=`<div class="error"><b>Не удалось загрузить очередь</b><p>${esc(e.message||e)}</p><button onclick="load()">Повторить</button></div>`;feedback(e.message||String(e),'bad')}
@@ -140,7 +212,7 @@ async function withDocument(id,button,work,label='Выполняется…'){if
 function openForm(id,decision,title){document.querySelectorAll('.review-form').forEach(x=>x.classList.remove('open'));const form=document.getElementById('form_'+id);form.dataset.decision=decision;document.getElementById('form_title_'+id).textContent=title;document.getElementById('comment_'+id).value='';document.getElementById('hint_'+id).textContent=decision==='approve'?'Комментарий необязателен.':'Обязательно укажите понятную причину — минимум 10 символов.';form.classList.add('open');document.getElementById('comment_'+id).focus()}
 function closeForm(id){document.getElementById('form_'+id).classList.remove('open')}
 async function downloadDocument(id,button){return withDocument(id,button,async()=>{try{const d=await api('/document-access/documents/'+id+'/grant',{method:'POST',body:'{}'});feedback('Одноразовая ссылка подготовлена. Начинается скачивание.','ok');window.location.assign(d.download_url)}catch(e){feedback('Документ не скачан: '+e.message,'bad')}},'Подготовка…')}
-async function submitDecision(id,button){const x=items.get(id),form=document.getElementById('form_'+id),decision=form.dataset.decision||'',comment=document.getElementById('comment_'+id).value.trim();if(!x){feedback('Документ уже отсутствует в текущей очереди. Обновите список.','bad');return}if(['request_reupload','reject'].includes(decision)&&comment.length<10){feedback('Укажите причину — минимум 10 символов.','bad');return}const labels={approve:'принять документ',request_reupload:'запросить новую версию',reject:'отклонить документ'};if(!confirm(`Подтвердить решение: ${labels[decision]}? Клиент получит уведомление.`))return;return withDocument(id,button,async()=>{try{const d=await api('/document-access/review/documents/'+id+'/decision',{method:'POST',body:JSON.stringify({decision,comment,expected_status:x.status,expected_version:x.version,expected_updated_at:x.updated_at})});feedback(d.changed?`Решение сохранено: ${d.status_label}`:`Решение уже было сохранено: ${d.status_label}`,'ok');try{await load()}catch(e){feedback('Решение сохранено, но очередь не обновилась: '+e.message,'warn')}}catch(e){feedback('Решение не сохранено: '+e.message,'bad')}},'Сохранение…')}
+async function submitDecision(id,button){const x=items.get(id),form=document.getElementById('form_'+id),decision=form.dataset.decision||'',comment=document.getElementById('comment_'+id).value.trim();if(!x){feedback('Документ уже отсутствует в текущей очереди. Обновите список.','bad');return}if(['request_reupload','reject'].includes(decision)&&comment.length<10){feedback('Укажите причину — минимум 10 символов.','bad');return}const labels={approve:'принять документ',request_reupload:'запросить новую версию',reject:'отклонить документ'};if(!confirm(`Подтвердить решение: ${labels[decision]}? Клиент получит уведомление.`))return;return withDocument(id,button,async()=>{let d;try{d=await api('/document-access/review/documents/'+id+'/decision',{method:'POST',body:JSON.stringify({decision,comment,expected_status:x.status,expected_version:x.version,expected_updated_at:x.updated_at})})}catch(e){feedback('Решение не сохранено: '+e.message,'bad');return}const [deliveryMessage,deliveryState]=deliveryText(d.delivery);feedback((d.changed?`Решение сохранено: ${d.status_label}. `:`Решение уже было сохранено: ${d.status_label}. `)+deliveryMessage,deliveryState);try{await load()}catch(e){feedback('Решение сохранено, но очередь не обновилась: '+e.message,'warn')}},'Сохранение…')}
 boot();
 </script>
 </body>
