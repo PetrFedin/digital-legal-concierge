@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, time, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin import require_admin
+from app.api.case_action_ui import CASE_ACTION_HTML
 from app.api.workdesk_ui import WORKDESK_HTML
 from app.config import settings
 from app.db.session import get_db
@@ -16,6 +17,7 @@ from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.document import Document
 from app.models.lawyer import Lawyer
+from app.models.message import Message
 
 router = APIRouter(tags=["admin-workdesk"])
 
@@ -31,6 +33,7 @@ DOCUMENT_REVIEW_STATUSES = (
     "NEEDS_REVIEW",
 )
 ACTIVE_CONSULTATION_STATUSES = ("BOOKED", "CONFIRMED")
+CASE_ACTION_TASKS = {"documents", "consultation", "sla"}
 
 ROUTE_LABELS = {
     "M1": "Ведение дела",
@@ -48,12 +51,14 @@ SLA_LABELS = {
 
 _REASON_PRIORITY = {
     "overdue": 0,
-    "unassigned": 1,
-    "documents": 2,
-    "consultation": 3,
+    "messages": 1,
+    "unassigned": 2,
+    "documents": 3,
+    "consultation": 4,
 }
 _REASON_LABELS = {
     "overdue": "Нарушен SLA",
+    "messages": "Новое сообщение клиента",
     "unassigned": "Нет ответственного юриста",
     "documents": "Документы ждут решения",
     "consultation": "Консультация сегодня",
@@ -79,26 +84,35 @@ def _utc_sort_value(value: datetime | None) -> float:
 def _attention_reasons(
     case: Case,
     *,
+    unread_client_messages: int,
     has_documents: bool,
     consultation_at: datetime | None,
 ) -> list[dict[str, object]]:
     codes: list[str] = []
     if str(case.sla_status or "") in OVERDUE_SLA_STATUSES:
         codes.append("overdue")
+    if unread_client_messages > 0:
+        codes.append("messages")
     if case.assigned_lawyer_id is None:
         codes.append("unassigned")
     if has_documents:
         codes.append("documents")
     if consultation_at is not None:
         codes.append("consultation")
-    return [
-        {
-            "code": code,
-            "label": _REASON_LABELS[code],
-            "priority": _REASON_PRIORITY[code],
-        }
-        for code in sorted(codes, key=_REASON_PRIORITY.__getitem__)
-    ]
+
+    reasons: list[dict[str, object]] = []
+    for code in sorted(codes, key=_REASON_PRIORITY.__getitem__):
+        label = _REASON_LABELS[code]
+        if code == "messages":
+            label = f"Новые сообщения клиента: {unread_client_messages}"
+        reasons.append(
+            {
+                "code": code,
+                "label": label,
+                "priority": _REASON_PRIORITY[code],
+            }
+        )
+    return reasons
 
 
 def _primary_action(
@@ -106,7 +120,7 @@ def _primary_action(
     reasons: list[dict[str, object]],
 ) -> dict[str, object]:
     reason_codes = {str(item["code"]) for item in reasons}
-    # An overdue case without an owner cannot be recovered until someone owns it.
+    # An unassigned case must get an owner before responsibility can be tracked.
     if "unassigned" in reason_codes:
         return {
             "kind": "auto_assign",
@@ -117,46 +131,59 @@ def _primary_action(
                 "expected_status": str(case.status),
             },
         }
+    if "messages" in reason_codes:
+        return {
+            "kind": "link",
+            "label": "Прочитать сообщение клиента",
+            "href": f"/message-center/ui?case_id={case.id}",
+        }
     if "overdue" in reason_codes:
         return {
             "kind": "link",
-            "label": "Открыть контроль SLA",
-            "href": "/admin/sla/ui",
+            "label": "Устранить просрочку",
+            "href": f"/admin/workdesk/cases/{case.id}/action/sla",
         }
     if "documents" in reason_codes:
         return {
             "kind": "link",
-            "label": "Перейти к проверке документов",
-            "href": "/document-access/review/ui",
+            "label": "Проверить документы дела",
+            "href": f"/admin/workdesk/cases/{case.id}/action/documents",
         }
     return {
         "kind": "link",
-        "label": "Открыть результаты консультаций",
-        "href": "/admin/consultation-outcomes/ui",
+        "label": "Открыть консультацию дела",
+        "href": f"/admin/workdesk/cases/{case.id}/action/consultation",
     }
 
 
 def _attention_item(
     case: Case,
     *,
+    unread_client_messages: int,
+    latest_client_message_at: datetime | None,
     has_documents: bool,
     consultation_at: datetime | None,
     lawyer_name: str | None,
 ) -> dict[str, object] | None:
     reasons = _attention_reasons(
         case,
+        unread_client_messages=unread_client_messages,
         has_documents=has_documents,
         consultation_at=consultation_at,
     )
     if not reasons:
         return None
-    deadline = (
-        case.sla_due_at
-        if any(item["code"] == "overdue" for item in reasons)
-        else consultation_at
-        if consultation_at is not None
-        else case.created_at
-    )
+
+    primary_reason = str(reasons[0]["code"])
+    if primary_reason == "overdue":
+        deadline = case.sla_due_at
+    elif primary_reason == "messages":
+        deadline = latest_client_message_at
+    elif consultation_at is not None:
+        deadline = consultation_at
+    else:
+        deadline = case.created_at
+
     return {
         "id": case.id,
         "number": case.case_number,
@@ -172,6 +199,12 @@ def _attention_item(
         "sla_label": _sla_label(case.sla_status),
         "sla_due_at": case.sla_due_at.isoformat() if case.sla_due_at else None,
         "consultation_at": consultation_at.isoformat() if consultation_at else None,
+        "unread_client_messages": unread_client_messages,
+        "latest_client_message_at": (
+            latest_client_message_at.isoformat()
+            if latest_client_message_at
+            else None
+        ),
         "created_at": case.created_at.isoformat(),
         "updated_at": case.updated_at.isoformat(),
         "priority": int(reasons[0]["priority"]),
@@ -231,6 +264,25 @@ async def workdesk_attention(
             )
         ).scalars().all()
     )
+
+    message_rows = (
+        await db.execute(
+            select(
+                Message.case_id,
+                func.count(Message.id),
+                func.max(Message.created_at),
+            )
+            .where(Message.case_id.in_(case_ids))
+            .where(Message.sender_type == "client")
+            .where(Message.is_read.is_(False))
+            .group_by(Message.case_id)
+        )
+    ).all()
+    unread_messages: dict[int, tuple[int, datetime | None]] = {
+        int(case_id): (int(count or 0), latest_at)
+        for case_id, count, latest_at in message_rows
+    }
+
     consultation_rows = (
         await db.execute(
             select(Consultation.case_id, Consultation.scheduled_at)
@@ -267,8 +319,11 @@ async def workdesk_attention(
 
     items: list[dict[str, object]] = []
     for case in cases:
+        unread_count, latest_message_at = unread_messages.get(case.id, (0, None))
         item = _attention_item(
             case,
+            unread_client_messages=unread_count,
+            latest_client_message_at=latest_message_at,
             has_documents=case.id in document_case_ids,
             consultation_at=consultation_times.get(case.id),
             lawyer_name=lawyer_names.get(case.assigned_lawyer_id),
@@ -298,3 +353,23 @@ async def workdesk_ui(request: Request):
         return RedirectResponse(url="/login", status_code=303)
     require_admin(token)
     return HTMLResponse(WORKDESK_HTML)
+
+
+@router.get(
+    "/admin/workdesk/cases/{case_id}/action/{task}",
+    response_class=HTMLResponse,
+)
+async def workdesk_case_action(
+    case_id: int,
+    task: str,
+    request: Request,
+):
+    if task not in CASE_ACTION_TASKS:
+        raise HTTPException(status_code=404, detail="Неизвестное действие по делу")
+    token = request.headers.get("x-admin-token") or request.cookies.get(
+        settings.admin_session_cookie
+    )
+    if not token:
+        return RedirectResponse(url="/login", status_code=303)
+    require_admin(token)
+    return HTMLResponse(CASE_ACTION_HTML)
