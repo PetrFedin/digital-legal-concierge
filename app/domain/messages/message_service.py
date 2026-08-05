@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Collection
+
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -181,14 +183,23 @@ class MessageService:
         await self.db.flush()
         return len(messages)
 
-    async def mark_lawyer_messages_read(self, case_id: int) -> int:
-        result = await self.db.execute(
-            select(Message).where(
-                Message.case_id == case_id,
-                Message.sender_type == "lawyer",
-                Message.is_read.is_(False),
-            )
+    async def mark_lawyer_messages_read(
+        self,
+        case_id: int,
+        *,
+        message_ids: Collection[int] | None = None,
+    ) -> int:
+        query = select(Message).where(
+            Message.case_id == case_id,
+            Message.sender_type == "lawyer",
+            Message.is_read.is_(False),
         )
+        if message_ids is not None:
+            ids = sorted({int(item) for item in message_ids})
+            if not ids:
+                return 0
+            query = query.where(Message.id.in_(ids))
+        result = await self.db.execute(query)
         messages = list(result.scalars().all())
         for message in messages:
             message.is_read = True
