@@ -234,11 +234,17 @@ async def message_history(callback: CallbackQuery, db):
         )
         return
 
+    service = MessageService(db)
     try:
-        service = MessageService(db)
         messages = await service.list_case_messages(case.id, limit=100)
-        await service.mark_lawyer_messages_read(case.id)
-        await db.commit()
+        text, page, total_pages = _format_dialog(messages, requested_page)
+        page_messages, _, _ = _history_slice(messages, page)
+        visible_team_ids = tuple(
+            int(item.id)
+            for item in page_messages
+            if item.sender_type == "lawyer"
+        )
+        await db.rollback()
     except Exception:
         await db.rollback()
         await _safe_edit(
@@ -252,7 +258,6 @@ async def message_history(callback: CallbackQuery, db):
         )
         return
 
-    text, page, total_pages = _format_dialog(messages, requested_page)
     markup = _history_keyboard(page, total_pages)
     try:
         changed = await _safe_edit(callback, text, reply_markup=markup)
@@ -261,6 +266,16 @@ async def message_history(callback: CallbackQuery, db):
     except TelegramBadRequest:
         await callback.message.answer(text, reply_markup=markup)
         await callback.answer("Переписка открыта новым сообщением.")
+
+    if visible_team_ids:
+        try:
+            await service.mark_lawyer_messages_read(
+                case.id,
+                message_ids=visible_team_ids,
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
 
 
 @router.callback_query(lambda c: c.data == "message_create")
