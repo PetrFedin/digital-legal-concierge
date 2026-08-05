@@ -1,4 +1,9 @@
+from __future__ import annotations
+
+from math import ceil
+
 from aiogram import Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
@@ -6,10 +11,16 @@ from aiogram.types import CallbackQuery, Message
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.domain.messages.message_service import MessageService
+from app.domain.notifications.immediate_delivery import deliver_selected_notifications
+from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.payments.mode import payments_disabled
 
 router = Router()
 
+HISTORY_PAGE_SIZE = 5
+HISTORY_ITEM_TEXT_LIMIT = 560
+HISTORY_TEXT_LIMIT = 3800
+NOTIFICATION_TEXT_LIMIT = 3000
 
 MESSAGE_CATEGORIES = {
     "msg_cat_documents": "Документы",
@@ -30,6 +41,13 @@ class MessageStates(StatesGroup):
     choosing_category = State()
     choosing_urgency = State()
     waiting_message = State()
+
+
+def _truncate(value: str, limit: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(1, limit - 1)].rstrip() + "…"
 
 
 def _category_title(callback_data: str) -> str:
@@ -54,23 +72,105 @@ def _category_buttons() -> list[tuple[str, str]]:
     ]
 
 
-def _format_dialog(messages) -> str:
+def _history_page_from_callback(callback_data: str | None) -> int:
+    if not callback_data or ":" not in callback_data:
+        return 0
+    try:
+        return max(0, int(callback_data.rsplit(":", 1)[1]))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _history_slice(messages, requested_page: int):
+    total_pages = max(1, ceil(len(messages) / HISTORY_PAGE_SIZE))
+    page = min(max(0, requested_page), total_pages - 1)
     if not messages:
+        return [], page, total_pages
+    end = len(messages) - page * HISTORY_PAGE_SIZE
+    start = max(0, end - HISTORY_PAGE_SIZE)
+    return list(messages[start:end]), page, total_pages
+
+
+def _format_dialog(messages, requested_page: int = 0) -> tuple[str, int, int]:
+    page_messages, page, total_pages = _history_slice(messages, requested_page)
+    if not page_messages:
         return (
             "💬 Переписка по делу\n\n"
-            "Сообщений пока нет. Вы можете отправить первый вопрос юристу."
+            "Сообщений пока нет. Вы можете отправить первый вопрос команде.",
+            page,
+            total_pages,
         )
 
-    lines = ["💬 Переписка по делу\n"]
-    for item in messages[-20:]:
-        author = "Вы" if item.sender_type == "client" else "Юрист"
+    lines = [
+        "💬 Переписка по делу",
+        f"Страница {page + 1} из {total_pages}. Первая страница — самые новые сообщения.",
+    ]
+    for item in page_messages:
+        author = "Вы" if item.sender_type == "client" else "Команда"
         created_at = (
             item.created_at.strftime("%d.%m.%Y %H:%M")
             if item.created_at
-            else ""
+            else "время не указано"
         )
-        lines.append(f"{author} · {created_at}\n{item.text}")
-    return "\n\n".join(lines)
+        body = _truncate(item.text, HISTORY_ITEM_TEXT_LIMIT)
+        lines.append(f"{author} · {created_at}\n{body}")
+    return _truncate("\n\n".join(lines), HISTORY_TEXT_LIMIT), page, total_pages
+
+
+def _history_keyboard(page: int, total_pages: int):
+    buttons: list[tuple[str, str]] = []
+    if page < total_pages - 1:
+        buttons.append(("⬅️ Более ранние", f"message_history:{page + 1}"))
+    if page > 0:
+        buttons.append(("Более новые ➡️", f"message_history:{page - 1}"))
+    buttons.extend(
+        [
+            ("✉️ Написать сообщение", "message_create"),
+            ("🔄 Обновить", f"message_history:{page}"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ]
+    )
+    return one(*buttons)
+
+
+async def _safe_edit(callback: CallbackQuery, text: str, *, reply_markup) -> bool:
+    try:
+        await callback.message.edit_text(text, reply_markup=reply_markup)
+        return True
+    except TelegramBadRequest as error:
+        if "message is not modified" in str(error).lower():
+            await callback.answer("Переписка уже актуальна.")
+            return False
+        raise
+
+
+def _delivery_status_text(
+    delivery: dict[str, object],
+    *,
+    created: bool,
+) -> str:
+    if not created:
+        return (
+            "Статус: этот Telegram-вопрос уже был зарегистрирован; "
+            "повторная запись не создана."
+        )
+    status = str(delivery.get("status") or "queued")
+    if status == "delivered":
+        return "Статус: команда уведомлена в Telegram, вопрос виден в кабинете."
+    if status == "failed":
+        return (
+            "Статус: вопрос сохранён и виден в кабинете. Сбой внутреннего "
+            "Telegram-уведомления передан администратору."
+        )
+    if status == "already_processing":
+        return (
+            "Статус: вопрос сохранён; внутреннее уведомление уже обрабатывается."
+        )
+    return (
+        "Статус: вопрос сохранён и виден в кабинете; внутреннее уведомление "
+        "поставлено на повторную доставку."
+    )
 
 
 @router.callback_query(lambda c: c.data == "contact_lawyer")
@@ -87,8 +187,8 @@ async def contact_lawyer(callback: CallbackQuery, db, state: FSMContext):
     )
     if case:
         await callback.message.edit_text(
-            "💬 Связаться с юристом\n\n"
-            "Здесь можно написать сообщение по текущему делу, открыть переписку "
+            "💬 Связаться с юридической командой\n\n"
+            "Здесь можно написать по текущему делу, открыть переписку "
             f"или {consultation_note}.",
             reply_markup=one(
                 ("✉️ Написать по текущему делу", "message_create"),
@@ -113,13 +213,18 @@ async def contact_lawyer(callback: CallbackQuery, db, state: FSMContext):
     )
 
 
-@router.callback_query(lambda c: c.data == "message_history")
+@router.callback_query(
+    lambda c: bool(c.data)
+    and (c.data == "message_history" or c.data.startswith("message_history:"))
+)
 async def message_history(callback: CallbackQuery, db):
+    requested_page = _history_page_from_callback(callback.data)
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     case = await ctx.case_service.get_active_case_for_user(user.id)
     if not case:
-        await callback.message.edit_text(
+        await _safe_edit(
+            callback,
             "Переписки пока нет, потому что активное дело не создано.",
             reply_markup=one(
                 ("✉️ Задать вопрос", "message_create"),
@@ -131,30 +236,31 @@ async def message_history(callback: CallbackQuery, db):
 
     try:
         service = MessageService(db)
-        messages = await service.list_case_messages(case.id)
+        messages = await service.list_case_messages(case.id, limit=100)
         await service.mark_lawyer_messages_read(case.id)
         await db.commit()
     except Exception:
         await db.rollback()
-        await callback.message.edit_text(
+        await _safe_edit(
+            callback,
             "Не удалось загрузить переписку. Данные не изменены.",
             reply_markup=one(
-                ("🔄 Повторить", "message_history"),
+                ("🔄 Повторить", f"message_history:{requested_page}"),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
         )
         return
 
-    await callback.message.edit_text(
-        _format_dialog(messages),
-        reply_markup=one(
-            ("✉️ Написать сообщение", "message_create"),
-            ("🔄 Обновить", "message_history"),
-            ("📁 Моё дело", "my_case_open"),
-            ("🏠 Главная", "nav_home"),
-        ),
-    )
+    text, page, total_pages = _format_dialog(messages, requested_page)
+    markup = _history_keyboard(page, total_pages)
+    try:
+        changed = await _safe_edit(callback, text, reply_markup=markup)
+        if changed:
+            await callback.answer()
+    except TelegramBadRequest:
+        await callback.message.answer(text, reply_markup=markup)
+        await callback.answer("Переписка открыта новым сообщением.")
 
 
 @router.callback_query(lambda c: c.data == "message_create")
@@ -174,7 +280,7 @@ async def message_create(
         else "После отправки вопроса будет создано новое обращение."
     )
     await callback.message.edit_text(
-        "✉️ Новый вопрос юристу\n\n"
+        "✉️ Новый вопрос юридической команде\n\n"
         f"{case_note}\n\n"
         "Выберите тему обращения:",
         reply_markup=one(*_category_buttons()),
@@ -242,16 +348,43 @@ async def message_send(message: Message, state: FSMContext, db):
         if not case:
             case = await ctx.get_or_create_active_case_for_user(user)
 
-        created = await MessageService(db).create_client_message(
+        created, is_new = await MessageService(db).get_or_create_client_message(
             case=case,
             user_id=user.id,
             text=structured_text,
+            source_message_id=message.message_id,
         )
+        notifications = []
+        if is_new:
+            assignment = (
+                "Назначенный юрист и администратор"
+                if case.assigned_lawyer_id
+                else "Юрист ещё не назначен — требуется распределение"
+            )
+            notifications = await NotificationEngine(db).emit(
+                event_code="CLIENT_MESSAGE_RECEIVED",
+                case_id=case.id,
+                user_id=user.id,
+                payload={
+                    "case_number": case.case_number,
+                    "category": category,
+                    "urgency": urgency,
+                    "assignment": assignment,
+                    "text": _truncate(text, NOTIFICATION_TEXT_LIMIT),
+                },
+                dedupe_key=f"case:{case.id}:message:{created.id}:client-message",
+            )
+        notification_ids = tuple(
+            int(item.id) for item in notifications if item.id is not None
+        )
+        message_id = int(created.id)
+        case_number = str(case.case_number)
+        lawyer_assigned = bool(case.assigned_lawyer_id)
         await db.commit()
     except Exception:
         await db.rollback()
         await message.answer(
-            "Не удалось отправить вопрос. Текст не был зарегистрирован. "
+            "Не удалось зарегистрировать вопрос. Текст не сохранён. "
             "Скопируйте его и повторите отправку.",
             reply_markup=one(
                 ("🔄 Начать отправку заново", "message_create"),
@@ -261,19 +394,37 @@ async def message_send(message: Message, state: FSMContext, db):
         )
         return
 
-    await state.clear()
+    try:
+        await state.clear()
+    except Exception:
+        pass
+
+    delivery = (
+        await deliver_selected_notifications(db, notification_ids)
+        if is_new
+        else {"status": "not_required"}
+    )
     confirmation = (
         "✅ Вопрос зарегистрирован.\n\n"
-        f"Номер сообщения: #{created.id}\n"
-        f"Дело: {case.case_number}\n"
+        f"Номер сообщения: #{message_id}\n"
+        f"Дело: {case_number}\n"
         f"Тема: {category}\n"
         f"Срочность: {urgency}\n"
-        "Статус: ожидает ответа юриста.\n\n"
-        "Ответ появится в Telegram и в переписке по делу."
+        f"{_delivery_status_text(delivery, created=is_new)}\n\n"
+    )
+    if lawyer_assigned:
+        confirmation += "Ответственный юрист уже назначен."
+    else:
+        confirmation += (
+            "Юрист ещё не назначен. Вопрос направлен в административную "
+            "очередь на распределение."
+        )
+    confirmation += (
+        "\n\nОтвет появится в переписке по делу и будет продублирован в Telegram."
     )
     if urgency == "Критично: срок менее 24 часов":
         confirmation += (
-            "\n\n⚠️ Если срок процессуального действия истекает сегодня, "
+            "\n\n⚠️ Срочность зафиксирована. Если официальный срок истекает сегодня, "
             "не ждите только ответа в боте — используйте доступный "
             "официальный способ подачи документов."
         )
