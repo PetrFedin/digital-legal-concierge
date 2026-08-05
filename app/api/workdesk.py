@@ -4,7 +4,7 @@ from datetime import datetime, time, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin import require_admin
@@ -13,11 +13,15 @@ from app.api.workdesk_ui import WORKDESK_HTML
 from app.config import settings
 from app.db.session import get_db
 from app.domain.cases.case_timeline import get_client_visible_status
+from app.domain.statuses.consultation_statuses import ConsultationStatus
+from app.domain.statuses.document_statuses import DocumentStatus
 from app.models.case import Case
 from app.models.consultation import Consultation
+from app.models.consultation_slot import ConsultationSlot
 from app.models.document import Document
 from app.models.lawyer import Lawyer
 from app.models.message import Message
+from app.models.user import User
 
 router = APIRouter(tags=["admin-workdesk"])
 
@@ -223,6 +227,42 @@ def _attention_sort_key(item: dict[str, object]) -> tuple[object, ...]:
     )
 
 
+def _render_case_action_html(case_id: int) -> str:
+    """Bind the generic action screen to server-scoped read projections.
+
+    Mutating endpoints remain owned by their domain modules. Only list/read calls
+    are replaced, so a deep link cannot silently fall outside a paginated global
+    queue when the installation grows.
+    """
+
+    html = CASE_ACTION_HTML
+    replacements = (
+        (
+            "api('/document-access/review/queue')",
+            f"api('/admin/workdesk/cases/{case_id}/documents')",
+        ),
+        (
+            "api('/admin/consultation-outcomes'),",
+            f"api('/admin/workdesk/cases/{case_id}/consultation-outcomes'),",
+        ),
+        (
+            "api('/admin/work-queues/consultations')",
+            f"api('/admin/workdesk/cases/{case_id}/consultations-today')",
+        ),
+        (
+            "api('/admin/sla?overdue_only=false')",
+            f"api('/admin/workdesk/cases/{case_id}/sla')",
+        ),
+    )
+    for source, target in replacements:
+        if html.count(source) != 1:
+            raise RuntimeError(
+                f"Case action template contract changed for {source!r}"
+            )
+        html = html.replace(source, target, 1)
+    return html
+
+
 @router.get("/admin/workdesk/attention")
 async def workdesk_attention(
     limit: int = 12,
@@ -344,6 +384,176 @@ async def workdesk_attention(
     }
 
 
+@router.get("/admin/workdesk/cases/{case_id}/documents")
+async def workdesk_case_documents(
+    case_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    require_admin(x_admin_token)
+    rows = (
+        await db.execute(
+            select(Document, Case, User)
+            .join(Case, Case.id == Document.case_id)
+            .join(User, User.id == Case.client_id)
+            .where(Case.id == case_id)
+            .where(Document.status == DocumentStatus.ON_REVIEW)
+            .order_by(Document.created_at.asc(), Document.id.asc())
+        )
+    ).all()
+    items = [
+        {
+            "document_id": document.id,
+            "case_id": case.id,
+            "case_number": case.case_number,
+            "case_status": case.status,
+            "case_updated_at": case.updated_at.isoformat(),
+            "client_name": user.full_name,
+            "document_type": document.document_type,
+            "title": document.title,
+            "file_name": document.file_name,
+            "mime_type": document.mime_type,
+            "file_size": document.file_size,
+            "status": document.status,
+            "version": document.version,
+            "lawyer_comment": document.lawyer_comment,
+            "created_at": document.created_at.isoformat(),
+            "updated_at": document.updated_at.isoformat(),
+        }
+        for document, case, user in rows
+    ]
+    return {"role": "admin", "count": len(items), "items": items}
+
+
+@router.get("/admin/workdesk/cases/{case_id}/consultation-outcomes")
+async def workdesk_case_consultation_outcomes(
+    case_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    require_admin(x_admin_token)
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
+    statement = (
+        select(Consultation, Case, User, ConsultationSlot, Lawyer)
+        .join(Case, Case.id == Consultation.case_id)
+        .join(User, User.id == Case.client_id)
+        .join(ConsultationSlot, ConsultationSlot.id == Consultation.slot_id)
+        .join(Lawyer, Lawyer.id == Consultation.lawyer_id)
+        .where(Case.id == case_id)
+        .where(
+            or_(
+                and_(
+                    Consultation.status == ConsultationStatus.BOOKED,
+                    ConsultationSlot.starts_at <= cutoff,
+                ),
+                Consultation.status == ConsultationStatus.LAWYER_NO_SHOW,
+            )
+        )
+        .order_by(ConsultationSlot.starts_at.asc())
+    )
+    rows = (await db.execute(statement)).all()
+    return [
+        {
+            "consultation_id": consultation.id,
+            "case_id": case.id,
+            "case_number": case.case_number,
+            "client_name": user.full_name,
+            "client_telegram_id": user.telegram_id,
+            "lawyer_id": lawyer.id,
+            "lawyer_name": lawyer.full_name,
+            "status": consultation.status,
+            "slot_id": slot.id,
+            "slot_status": slot.status,
+            "starts_at": slot.starts_at.isoformat(),
+            "ends_at": slot.ends_at.isoformat(),
+            "next_action": case.next_action,
+        }
+        for consultation, case, user, slot, lawyer in rows
+    ]
+
+
+@router.get("/admin/workdesk/cases/{case_id}/consultations-today")
+async def workdesk_case_consultations_today(
+    case_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    require_admin(x_admin_token)
+    now = datetime.now(timezone.utc)
+    today_start = datetime.combine(now.date(), time.min, tzinfo=timezone.utc)
+    tomorrow_start = today_start + timedelta(days=1)
+    consultation_id = (
+        await db.execute(
+            select(Consultation.id)
+            .where(Consultation.case_id == case_id)
+            .where(Consultation.status.in_(ACTIVE_CONSULTATION_STATUSES))
+            .where(Consultation.scheduled_at >= today_start)
+            .where(Consultation.scheduled_at < tomorrow_start)
+            .order_by(Consultation.scheduled_at.asc(), Consultation.id.asc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return {
+        "count": 1 if consultation_id is not None else 0,
+        "items": ([{"id": case_id}] if consultation_id is not None else []),
+        "generated_at": now.isoformat(),
+    }
+
+
+@router.get("/admin/workdesk/cases/{case_id}/sla")
+async def workdesk_case_sla(
+    case_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    require_admin(x_admin_token)
+    row = (
+        await db.execute(
+            select(Case, Lawyer, User)
+            .join(Lawyer, Lawyer.id == Case.assigned_lawyer_id)
+            .join(User, User.id == Case.client_id)
+            .where(Case.id == case_id)
+            .where(Case.assigned_lawyer_id.is_not(None))
+            .where(Case.sla_status != "NOT_STARTED")
+        )
+    ).one_or_none()
+    if row is None:
+        return []
+    case, lawyer, user = row
+    return [
+        {
+            "case_id": case.id,
+            "case_number": case.case_number,
+            "route": case.route,
+            "case_status": case.status,
+            "next_action": case.next_action,
+            "client_id": user.id,
+            "client_name": user.full_name,
+            "client_telegram_id": user.telegram_id,
+            "lawyer_id": lawyer.id,
+            "lawyer_name": lawyer.full_name,
+            "sla_status": case.sla_status,
+            "sla_due_at": (
+                case.sla_due_at.isoformat() if case.sla_due_at else None
+            ),
+            "assigned_at": (
+                case.assigned_at.isoformat() if case.assigned_at else None
+            ),
+            "first_lawyer_response_at": (
+                case.first_lawyer_response_at.isoformat()
+                if case.first_lawyer_response_at
+                else None
+            ),
+            "last_lawyer_activity_at": (
+                case.last_lawyer_activity_at.isoformat()
+                if case.last_lawyer_activity_at
+                else None
+            ),
+            "escalation_level": int(case.escalation_level or 0),
+        }
+    ]
+
+
 @router.get("/admin/workdesk/ui", response_class=HTMLResponse)
 async def workdesk_ui(request: Request):
     token = request.headers.get("x-admin-token") or request.cookies.get(
@@ -372,4 +582,4 @@ async def workdesk_case_action(
     if not token:
         return RedirectResponse(url="/login", status_code=303)
     require_admin(token)
-    return HTMLResponse(CASE_ACTION_HTML)
+    return HTMLResponse(_render_case_action_html(case_id))
