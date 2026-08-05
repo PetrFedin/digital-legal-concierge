@@ -5,6 +5,7 @@ from aiogram import Router
 from aiogram.types import CallbackQuery, Message
 from aiogram.fsm.context import FSMContext
 
+from app.bot.client_case_view import load_client_case_view
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.states import CalculatorStates
@@ -17,14 +18,45 @@ router = Router()
 
 
 @router.callback_query(lambda c: c.data == "calc_start")
-async def calc_start(callback: CallbackQuery, state: FSMContext):
+async def calc_start(callback: CallbackQuery, state: FSMContext, db):
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    case = await ctx.case_service.get_active_case_for_user(user.id)
+    if case:
+        view = await load_client_case_view(db, case)
+        primary_action = (
+            (
+                f"▶️ {view.action.label}",
+                f"next_action:v2:{view.case_id}:{view.action_key}",
+            )
+            if view.action
+            else ("📁 Открыть текущее дело", "my_case_open")
+        )
+        await state.clear()
+        await callback.message.edit_text(
+            "📁 У вас уже есть активное дело.\n\n"
+            "Чтобы не смешивать расчёты, документы и статусы разных обращений, "
+            "сначала продолжите текущее дело. Новый расчёт станет доступен после "
+            "его завершения.",
+            reply_markup=one(
+                primary_action,
+                ("📁 Моё дело", "my_case_open"),
+                ("💬 Связаться с юристом", "contact_lawyer"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
     await state.set_state(CalculatorStates.waiting_contract_price)
     await callback.message.edit_text(
         "🧮 Расчет неустойки\n\n"
         "Ответьте на несколько вопросов. Расчет будет предварительным и не является юридическим заключением.\n\n"
         "💰 Введите стоимость объекта по ДДУ в рублях.\n"
         "Например: 8500000",
-        reply_markup=one(("Не знаю стоимость", "calc_unknown_price"), ("🏠 Главная", "nav_home")),
+        reply_markup=one(
+            ("Не знаю стоимость", "calc_unknown_price"),
+            ("🏠 Главная", "nav_home"),
+        ),
     )
 
 
@@ -39,7 +71,10 @@ async def price(message: Message, state: FSMContext):
     await state.set_state(CalculatorStates.waiting_planned_transfer_date)
     await message.answer(
         "📅 Укажите дату передачи объекта по ДДУ. Формат ДД.ММ.ГГГГ",
-        reply_markup=one(("Не знаю дату", "calc_unknown_date"), ("Отмена", "nav_home")),
+        reply_markup=one(
+            ("Не знаю дату", "calc_unknown_date"),
+            ("Отмена", "nav_home"),
+        ),
     )
 
 
@@ -53,7 +88,10 @@ async def planned(message: Message, state: FSMContext):
     if planned_date > date.today():
         await message.answer(
             "Дата передачи еще не наступила. Автоматический расчет сейчас невозможен. Лучше обсудить ситуацию с юристом.",
-            reply_markup=one(("💬 Перейти к юристу", "calc_unknown_date"), ("🏠 Главная", "nav_home")),
+            reply_markup=one(
+                ("💬 Перейти к юристу", "calc_unknown_date"),
+                ("🏠 Главная", "nav_home"),
+            ),
         )
         return
     await state.update_data(planned_transfer_date=planned_date.isoformat())
@@ -86,7 +124,9 @@ async def actual(message: Message, state: FSMContext, db):
     data = await state.get_data()
     planned_date = date.fromisoformat(data["planned_transfer_date"])
     if actual_date < planned_date:
-        await message.answer("⚠️ Фактическая дата передачи не может быть раньше даты по ДДУ.")
+        await message.answer(
+            "⚠️ Фактическая дата передачи не может быть раньше даты по ДДУ."
+        )
         return
     if actual_date > date.today():
         await message.answer("⚠️ Фактическая дата передачи не может быть в будущем.")
@@ -134,7 +174,10 @@ async def calculate_show_callback(callback: CallbackQuery, state: FSMContext, db
     result = await calc_result(state, db, case)
     await db.commit()
     await state.clear()
-    await callback.message.edit_text(format_calculation_result(result), reply_markup=result_kb())
+    await callback.message.edit_text(
+        format_calculation_result(result),
+        reply_markup=result_kb(),
+    )
 
 
 def result_kb():
@@ -152,13 +195,25 @@ async def unknown_calc_data(callback: CallbackQuery, state: FSMContext, db):
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     case = await ctx.get_or_create_active_case_for_user(user)
-    reason = "Клиент не знает стоимость" if callback.data == "calc_unknown_price" else "Клиент не знает дату передачи"
-    await ctx.case_service.transfer_to_m2(case=case, actor_type="client", actor_id=user.id, reason=reason)
+    reason = (
+        "Клиент не знает стоимость"
+        if callback.data == "calc_unknown_price"
+        else "Клиент не знает дату передачи"
+    )
+    await ctx.case_service.transfer_to_m2(
+        case=case,
+        actor_type="client",
+        actor_id=user.id,
+        reason=reason,
+    )
     await db.commit()
     await callback.message.edit_text(
         "Без этих данных расчет будет неточным. Переведем обращение в консультационный маршрут М2.\n\n"
         "Опишите ситуацию — юрист поможет разобраться по документам и срокам.",
-        reply_markup=one(("Описать ситуацию", "consult_description_start"), ("🏠 Главная", "nav_home")),
+        reply_markup=one(
+            ("Описать ситуацию", "consult_description_start"),
+            ("🏠 Главная", "nav_home"),
+        ),
     )
 
 
@@ -177,7 +232,11 @@ async def to_m1(callback: CallbackQuery, db):
     await db.commit()
     await callback.message.edit_text(
         "📄 Чтобы передать документы юристу, нужно подтвердить согласие на обработку персональных данных.",
-        reply_markup=one(("Перейти к согласию", "consent_open"), ("📁 Мое дело", "my_case_open"), ("🏠 Главная", "nav_home")),
+        reply_markup=one(
+            ("Перейти к согласию", "consent_open"),
+            ("📁 Мое дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ),
     )
 
 
@@ -195,7 +254,10 @@ async def to_m2(callback: CallbackQuery, db):
     await db.commit()
     await callback.message.edit_text(
         "💬 Опишите ситуацию своими словами. Юрист увидит описание перед консультацией.",
-        reply_markup=one(("Описать ситуацию", "consult_description_start"), ("🏠 Главная", "nav_home")),
+        reply_markup=one(
+            ("Описать ситуацию", "consult_description_start"),
+            ("🏠 Главная", "nav_home"),
+        ),
     )
 
 
@@ -203,5 +265,8 @@ async def to_m2(callback: CallbackQuery, db):
 async def postpone(callback: CallbackQuery):
     await callback.message.edit_text(
         "📌 Расчет сохранен. Вернуться можно через 📁 Мое дело.",
-        reply_markup=one(("📁 Мое дело", "my_case_open"), ("🏠 Главная", "nav_home")),
+        reply_markup=one(
+            ("📁 Мое дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ),
     )

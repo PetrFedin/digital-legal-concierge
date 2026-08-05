@@ -4,8 +4,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from app.bot.client_case_view import (
+    format_updated_at,
     load_client_case_view,
     next_action_text,
+    progress_bar,
     route_label,
 )
 from app.bot.context import BotContextService
@@ -35,6 +37,15 @@ def _next_action(case) -> str:
     return next_action_text(case)
 
 
+def _primary_action(view) -> tuple[str, str]:
+    if view.action:
+        return (
+            f"▶️ {view.action.label}",
+            f"next_action:v2:{view.case_id}:{view.action_key}",
+        )
+    return ("📁 Открыть текущее дело", "my_case_open")
+
+
 async def _safe_callback_edit(
     callback: CallbackQuery,
     text: str,
@@ -50,7 +61,10 @@ async def _safe_callback_edit(
         await callback.answer(unchanged_notice)
 
 
-async def _home_text(db, message_or_callback) -> tuple[str, bool]:
+async def _home_text(
+    db,
+    message_or_callback,
+) -> tuple[str, bool, tuple[str, str] | None]:
     ctx = BotContextService(db)
     if hasattr(message_or_callback, "from_user") and hasattr(
         message_or_callback,
@@ -62,37 +76,89 @@ async def _home_text(db, message_or_callback) -> tuple[str, bool]:
     case = await ctx.case_service.get_active_case_for_user(user.id)
     if case:
         view = await load_client_case_view(db, case)
-        text = (
-            "🏠 Главная\n\n"
-            f"Активное дело: {view.case_number}\n"
-            f"Услуга: {view.route_label}\n"
-            f"Сейчас: {view.status_label}\n"
-            f"Документы: {view.documents.summary}\n\n"
-            f"Ваш следующий шаг:\n{view.next_action}\n\n"
-            "Откройте «Моё дело», чтобы увидеть готовность и выполнить действие."
+        lines = [
+            "🏠 Главная",
+            "",
+            f"📁 Дело № {view.case_number}",
+            f"Услуга: {view.route_label}",
+            "",
+            "Текущий этап",
+            view.status_label,
+            progress_bar(view.progress_percent),
+            "",
+            "📌 Ваш следующий шаг",
+            view.next_action,
+        ]
+        if view.documents.blocker:
+            lines.extend(
+                [
+                    "",
+                    f"⚠️ Что мешает продолжить: {view.documents.blocker}",
+                ]
+            )
+        lines.extend(
+            [
+                "",
+                f"📄 Документы: {view.documents.summary}",
+            ]
         )
-        return text, True
+        if view.route == "M2" or view.consultation_summary != "Не назначена":
+            lines.append(f"🗓 Консультация: {view.consultation_summary}")
+        if view.payments_summary:
+            lines.append(f"💳 Оплаты: {view.payments_summary}")
+        lines.extend(
+            [
+                "",
+                f"Обновлено: {format_updated_at(view.updated_at)}",
+                "Главная кнопка ниже ведёт к актуальному действию без лишних экранов.",
+            ]
+        )
+        return "\n".join(lines), True, _primary_action(view)
     text = (
         "🏠 Добро пожаловать\n\n"
         "Я помогу предварительно рассчитать неустойку по ДДУ, передать документы юристу "
         "и отслеживать ход дела прямо в Telegram.\n\n"
         "Расчёт предварительный и не является юридическим заключением."
     )
-    return text, False
+    return text, False, None
 
 
 @router.message(lambda m: m.text in ["/start", "/menu", "🏠 Главная"])
 async def start(message: Message, db, state: FSMContext):
     await state.clear()
-    text, case_exists = await _home_text(db, message)
+    text, case_exists, primary_action = await _home_text(db, message)
     await db.commit()
     await message.answer(text, reply_markup=reply_main_menu())
-    await message.answer("Главное меню:", reply_markup=main_menu(case_exists))
+    await message.answer(
+        "Выберите действие:",
+        reply_markup=main_menu(
+            case_exists,
+            primary_action=primary_action,
+        ),
+    )
 
 
 @router.message(lambda m: m.text == "🧮 Рассчитать неустойку")
-async def menu_calc(message: Message, state: FSMContext):
+async def menu_calc(message: Message, state: FSMContext, db):
     await state.clear()
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_message(message)
+    case = await ctx.case_service.get_active_case_for_user(user.id)
+    if case:
+        view = await load_client_case_view(db, case)
+        await db.commit()
+        await message.answer(
+            "📁 У вас уже есть активное дело.\n\n"
+            "Чтобы не смешивать расчёты, документы и статусы разных обращений, "
+            "сначала продолжите текущее дело. Новый расчёт станет доступен после "
+            "его завершения.",
+            reply_markup=main_menu(
+                True,
+                primary_action=_primary_action(view),
+            ),
+        )
+        return
+    await db.commit()
     await message.answer(
         "Начните предварительный расчёт или вернитесь на главную.",
         reply_markup=one(
@@ -199,22 +265,28 @@ async def cancel_message(message: Message, state: FSMContext):
 @router.callback_query(lambda c: c.data == "nav_home")
 async def home(callback: CallbackQuery, db, state: FSMContext):
     await state.clear()
-    text, case_exists = await _home_text(db, callback)
+    text, case_exists, primary_action = await _home_text(db, callback)
     await _safe_callback_edit(
         callback,
         text,
-        reply_markup=main_menu(case_exists),
+        reply_markup=main_menu(
+            case_exists,
+            primary_action=primary_action,
+        ),
     )
 
 
 @router.callback_query(lambda c: c.data == "noop")
 async def noop(callback: CallbackQuery, db, state: FSMContext):
     await state.clear()
-    text, case_exists = await _home_text(db, callback)
+    text, case_exists, primary_action = await _home_text(db, callback)
     await _safe_callback_edit(
         callback,
         "Эта кнопка больше не актуальна. Показано текущее состояние.\n\n" + text,
-        reply_markup=main_menu(case_exists),
+        reply_markup=main_menu(
+            case_exists,
+            primary_action=primary_action,
+        ),
         unchanged_notice="Показано текущее состояние.",
     )
 
@@ -222,11 +294,14 @@ async def noop(callback: CallbackQuery, db, state: FSMContext):
 @router.callback_query(lambda c: c.data == "nav_cancel")
 async def cancel(callback: CallbackQuery, state: FSMContext, db):
     await state.clear()
-    text, case_exists = await _home_text(db, callback)
+    text, case_exists, primary_action = await _home_text(db, callback)
     await _safe_callback_edit(
         callback,
         "Действие отменено. Уже сохранённые данные не удалены.\n\n" + text,
-        reply_markup=main_menu(case_exists),
+        reply_markup=main_menu(
+            case_exists,
+            primary_action=primary_action,
+        ),
         unchanged_notice="Действие уже отменено.",
     )
 
@@ -234,9 +309,12 @@ async def cancel(callback: CallbackQuery, state: FSMContext, db):
 @router.callback_query(lambda c: c.data == "nav_back")
 async def back(callback: CallbackQuery, state: FSMContext, db):
     await state.clear()
-    text, case_exists = await _home_text(db, callback)
+    text, case_exists, primary_action = await _home_text(db, callback)
     await _safe_callback_edit(
         callback,
         text,
-        reply_markup=main_menu(case_exists),
+        reply_markup=main_menu(
+            case_exists,
+            primary_action=primary_action,
+        ),
     )

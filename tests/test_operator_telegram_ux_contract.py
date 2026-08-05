@@ -22,23 +22,24 @@ def test_reply_menu_prioritizes_calculation_and_keeps_stable_labels():
     )
 
 
-def test_inline_menu_hides_disabled_payments_without_breaking_other_callbacks():
+def test_inline_menu_hides_disabled_payments_and_parallel_calculation():
     markup = main_menu(case_exists=True, payments_enabled=False)
     assert "payments_open" not in _callbacks(markup)
+    assert "calc_start" not in _callbacks(markup)
     assert _callbacks(markup) == [
-        "calc_start",
         "my_case_open",
         "documents_open",
         "contact_lawyer",
     ]
-    assert [len(row) for row in markup.inline_keyboard] == [1, 2, 1]
+    assert [len(row) for row in markup.inline_keyboard] == [2, 1]
 
 
 def test_inline_menu_shows_payments_when_provider_is_enabled():
     markup = main_menu(case_exists=True, payments_enabled=True)
     assert "💳 Оплаты" in _texts(markup)
     assert "payments_open" in _callbacks(markup)
-    assert [len(row) for row in markup.inline_keyboard] == [1, 2, 1, 1]
+    assert "calc_start" not in _callbacks(markup)
+    assert [len(row) for row in markup.inline_keyboard] == [2, 1, 1]
 
 
 @pytest.mark.asyncio

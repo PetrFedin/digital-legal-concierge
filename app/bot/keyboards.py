@@ -28,25 +28,37 @@ def main_menu(
     case_exists: bool = False,
     *,
     payments_enabled: bool | None = None,
+    primary_action: tuple[str, str] | None = None,
 ):
     kb = InlineKeyboardBuilder()
-    kb.button(text="🧮 Рассчитать неустойку", callback_data="calc_start")
 
-    if case_exists:
-        kb.button(text="📁 Мое дело", callback_data="my_case_open")
-        kb.button(text="📄 Документы", callback_data="documents_open")
-        show_payments = _payments_enabled() if payments_enabled is None else payments_enabled
-        if show_payments:
-            kb.button(text="💳 Оплаты", callback_data="payments_open")
+    if not case_exists:
+        kb.button(text="🧮 Рассчитать неустойку", callback_data="calc_start")
+        kb.button(text="💬 Связаться с юристом", callback_data="contact_lawyer")
+        kb.adjust(1, 1)
+        return kb.as_markup()
+
+    if primary_action:
+        text, callback_data = primary_action
+        kb.button(text=text, callback_data=callback_data)
+
+    kb.button(text="📁 Моё дело", callback_data="my_case_open")
+    kb.button(text="📄 Документы", callback_data="documents_open")
+
+    show_payments = _payments_enabled() if payments_enabled is None else payments_enabled
+    if show_payments:
+        kb.button(text="💳 Оплаты", callback_data="payments_open")
 
     kb.button(text="💬 Связаться с юристом", callback_data="contact_lawyer")
 
-    if not case_exists:
-        kb.adjust(1, 1)
-    elif (_payments_enabled() if payments_enabled is None else payments_enabled):
-        kb.adjust(1, 2, 1, 1)
-    else:
-        kb.adjust(1, 2, 1)
+    row_sizes: list[int] = []
+    if primary_action:
+        row_sizes.append(1)
+    row_sizes.append(2)
+    if show_payments:
+        row_sizes.append(1)
+    row_sizes.append(1)
+    kb.adjust(*row_sizes)
     return kb.as_markup()
 
 
