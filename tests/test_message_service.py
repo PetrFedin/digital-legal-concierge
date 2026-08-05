@@ -113,3 +113,69 @@ async def test_read_marking_is_scoped_to_case(message_db):
         second_messages = await service.list_case_messages(second_case.id)
         assert second_messages[0].id == second_message.id
         assert second_messages[0].is_read is False
+
+
+@pytest.mark.asyncio
+async def test_repeated_telegram_update_creates_one_client_message(message_db):
+    async with message_db() as session:
+        user, case = await create_case(session)
+        service = MessageService(session)
+
+        first, first_created = await service.get_or_create_client_message(
+            case=case,
+            user_id=user.id,
+            text="Тема: Сроки\n\nКогда истекает срок подачи документов?",
+            source_message_id=501,
+        )
+        repeated, repeated_created = await service.get_or_create_client_message(
+            case=case,
+            user_id=user.id,
+            text="Этот повтор не должен создать новую запись.",
+            source_message_id=501,
+        )
+        await session.commit()
+
+        messages = await service.list_case_messages(case.id)
+        assert first_created is True
+        assert repeated_created is False
+        assert repeated.id == first.id
+        assert repeated.text == first.text
+        assert repeated.source_message_id == 501
+        assert [item.id for item in messages] == [first.id]
+
+
+@pytest.mark.asyncio
+async def test_only_visible_team_messages_are_marked_read(message_db):
+    async with message_db() as session:
+        _user, case = await create_case(session)
+        service = MessageService(session)
+
+        visible = await service.create_lawyer_message(
+            case=case,
+            lawyer_id=None,
+            text="Ответ на текущей странице.",
+        )
+        hidden = await service.create_lawyer_message(
+            case=case,
+            lawyer_id=None,
+            text="Ответ на более ранней странице.",
+        )
+        await session.commit()
+
+        count = await service.mark_lawyer_messages_read(
+            case.id,
+            message_ids=[visible.id],
+        )
+        await session.commit()
+
+        messages = await service.list_case_messages(case.id)
+        states = {item.id: item.is_read for item in messages}
+        assert count == 1
+        assert states[visible.id] is True
+        assert states[hidden.id] is False
+
+        empty_count = await service.mark_lawyer_messages_read(
+            case.id,
+            message_ids=[],
+        )
+        assert empty_count == 0

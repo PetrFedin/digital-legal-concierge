@@ -111,10 +111,11 @@ def test_telegram_message_failures_rollback_and_offer_recovery():
 
     assert source.count("await db.rollback()") >= 2
     assert "Не удалось загрузить переписку" in source
-    assert '("🔄 Повторить", "message_history")' in source
-    assert "Не удалось отправить вопрос" in source
+    assert '("🔄 Повторить", f"message_history:{requested_page}")' in source
+    assert 'c.data == "message_history"' in source
+    assert "Не удалось зарегистрировать вопрос" in source
     assert '("🔄 Начать отправку заново", "message_create")' in source
-    assert "Текст не был зарегистрирован" in source
+    assert "Текст не сохранён" in source
 
 
 def test_telegram_stale_buttons_return_to_current_state_without_demo_language():
