@@ -81,7 +81,7 @@ def test_message_writes_lock_the_case_before_creating_records():
     assert "await self.db.flush()" in lawyer_source
 
 
-def test_reply_checks_snapshot_after_lock_and_before_message_creation():
+def test_reply_checks_snapshot_and_commits_outbox_before_delivery():
     source = inspect.getsource(reply_to_client)
 
     case_lock = source.index("case = await service.lock_case(case_id)")
@@ -89,18 +89,34 @@ def test_reply_checks_snapshot_after_lock_and_before_message_creation():
     latest = source.index("latest_message_id = await service.latest_message_id(case_id)")
     stale_check = source.index("latest_message_id != payload.expected_last_message_id")
     create = source.index("created = await service.create_lawyer_message")
-    telegram = source.index("await bot.send_message")
-    commit = source.index("await db.commit()")
+    outbox = source.index("notifications = await NotificationEngine(db).emit")
+    durable_commit = source.index("await db.commit()", outbox)
+    delivery = source.index(
+        "delivery = await _deliver_message_notifications(db, notification_ids)",
+        durable_commit,
+    )
 
-    assert case_lock < access_check < latest < stale_check < create < telegram < commit
+    assert (
+        case_lock
+        < access_check
+        < latest
+        < stale_check
+        < create
+        < outbox
+        < durable_commit
+        < delivery
+    )
     assert "В диалоге появились новые сообщения" in source
     assert "Нельзя отправить ответ от имени другого юриста" in source
     assert "except HTTPException" in source
     assert "except LookupError" in source
     assert "except Exception" in source
     assert source.count("await db.rollback()") >= 3
-    assert '"telegram_delivered": True' in source
-    assert '"latest_message_id": created.id' in source
+    assert 'event_code="STAFF_MESSAGE_REPLIED"' in source
+    assert 'dedupe_key=f"case:{case.id}:message:{created.id}:staff-reply"' in source
+    assert '"latest_message_id": message_id' in source
+    assert '"delivery": delivery' in source
+    assert "bot.send_message" not in source
 
 
 def test_reply_ui_is_single_flight_and_preserves_draft_on_failures():
@@ -118,9 +134,11 @@ def test_reply_ui_is_single_flight_and_preserves_draft_on_failures():
     assert "finally" in function
     assert "sendReply(this)" in compact
     assert "expected_last_message_id:lastMessageId" in compact
-    assert function.index("await api(") < function.index("replyText.value=''", function.index("await api("))
-    assert "Ответ не отправлен" in function
-    assert "Текст ответа сохранён" in function
+    assert function.index("await api(") < function.index(
+        "replyText.value=''", function.index("await api(")
+    )
+    assert "Ответ не отправлен и не сохранён" in function
+    assert "Текст ответа сохранён в поле" in function
 
 
 def test_message_loads_abort_stale_requests_and_safe_interval_handles_failures():
@@ -146,6 +164,7 @@ def test_message_feedback_is_accessible_and_transport_is_not_cached():
     assert "credentials:'same-origin'" in MESSAGE_CENTER_HTML
     assert "cache:'no-store'" in MESSAGE_CENTER_HTML
     assert "if(!r.ok)" in compact
-    assert "Ответ доставлен в Telegram и сохранён в переписке" in MESSAGE_CENTER_HTML
-    assert "Ответ доставлен, но переписка не обновилась" in MESSAGE_CENTER_HTML
+    assert "Ответ отправлен и сохранён. Клиент получил его в Telegram." in MESSAGE_CENTER_HTML
+    assert "Ответ сохранён и поставлен в очередь повторной Telegram-доставки." in MESSAGE_CENTER_HTML
+    assert "Но экран не обновился" in MESSAGE_CENTER_HTML
     assert "alert(" not in MESSAGE_CENTER_HTML
