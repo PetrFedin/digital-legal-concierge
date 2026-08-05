@@ -7,6 +7,15 @@ TEMPLATES = {
         "{text}\n\n"
         "Ответ сохранён в переписке по делу."
     ),
+    "client_message_received": (
+        "💬 Новый вопрос клиента\n\n"
+        "Дело: {case_number}\n"
+        "Тема: {category}\n"
+        "Срочность: {urgency}\n"
+        "Назначение: {assignment}\n\n"
+        "{text}\n\n"
+        "Откройте центр сообщений и ответьте в контексте этого дела."
+    ),
     "m1_case_accepted": (
         "Дело {case_number} принято юристом в работу. "
         "Следующий шаг: {next_action}."
