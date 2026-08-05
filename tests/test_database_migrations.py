@@ -5,8 +5,9 @@ from pathlib import Path
 
 from app.db.migrations import run_database_migrations
 
-HEAD_REVISION = "20260730_0011"
+HEAD_REVISION = "20260805_0012"
 RETENTION_TRIGGER = "trg_retention_destroy_document_keys"
+MESSAGE_SOURCE_INDEX = "uq_messages_sender_source_message"
 
 
 def sqlite_url(path: Path) -> str:
@@ -61,6 +62,7 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "lawyers",
         "cases",
         "documents",
+        "messages",
         "payments",
         "payment_webhook_events",
         "consultations",
@@ -102,6 +104,8 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "encryption_error",
         "encrypted_at",
     }.issubset(column_names(database_path, "documents"))
+    assert "source_message_id" in column_names(database_path, "messages")
+    assert MESSAGE_SOURCE_INDEX in index_names(database_path, "messages")
     assert {
         "case_id",
         "policy_version",
@@ -393,6 +397,7 @@ def test_legacy_database_is_adopted_without_data_loss(tmp_path):
         "document_access_grants",
         "payment_webhook_events",
         "case_retention_records",
+        "messages",
     }.issubset(table_names(database_path))
     assert RETENTION_TRIGGER in trigger_names(database_path)
     assert {
@@ -402,6 +407,8 @@ def test_legacy_database_is_adopted_without_data_loss(tmp_path):
         "encrypted_data_key_nonce",
         "data_key_destroyed_at",
     }.issubset(column_names(database_path, "documents"))
+    assert "source_message_id" in column_names(database_path, "messages")
+    assert MESSAGE_SOURCE_INDEX in index_names(database_path, "messages")
     with sqlite3.connect(database_path) as connection:
         row = connection.execute(
             "SELECT case_number, title, internal_comment, sla_status, "
