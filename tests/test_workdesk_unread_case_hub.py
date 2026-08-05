@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from app.api.workdesk import _attention_item, _attention_sort_key
 from app.bot.client_case_view import ClientAction, _action_key, _document_overview
-from app.bot.keyboards import main_menu
+from app.bot.keyboards import main_menu, reply_main_menu
 from app.bot.screens.common import _primary_action
 from app.bot.screens.my_case import _case_buttons
 from app.domain.statuses.case_statuses import CaseStatus
@@ -39,25 +39,48 @@ def _case(
     )
 
 
+def _attention(
+    case,
+    *,
+    unread: int = 0,
+    latest_message_at: datetime | None = None,
+    has_documents: bool = False,
+    consultation_at: datetime | None = None,
+    lawyer_name: str | None = None,
+):
+    return _attention_item(
+        case,
+        unread_client_messages=unread,
+        latest_client_message_at=latest_message_at,
+        has_documents=has_documents,
+        consultation_at=consultation_at,
+        lawyer_name=lawyer_name,
+    )
+
+
 def test_attention_center_deduplicates_reasons_and_keeps_safe_first_action():
-    item = _attention_item(
+    item = _attention(
         _case(
             case_id=1,
             lawyer_id=None,
             sla_status="ACTION_OVERDUE",
         ),
+        unread=2,
+        latest_message_at=datetime(2026, 8, 5, 11, tzinfo=timezone.utc),
         has_documents=True,
         consultation_at=datetime(2026, 8, 5, 12, tzinfo=timezone.utc),
-        lawyer_name=None,
     )
 
     assert item is not None
     assert [reason["code"] for reason in item["reasons"]] == [
         "overdue",
+        "messages",
         "unassigned",
         "documents",
         "consultation",
     ]
+    assert item["reasons"][1]["label"] == "Новые сообщения клиента: 2"
+    assert item["unread_client_messages"] == 2
     assert item["priority"] == 0
     assert item["primary_action"] == {
         "kind": "auto_assign",
@@ -70,52 +93,80 @@ def test_attention_center_deduplicates_reasons_and_keeps_safe_first_action():
     }
 
 
-def test_attention_sort_places_overdue_before_other_work():
-    overdue = _attention_item(
+def test_unread_client_message_routes_owned_case_to_exact_dialog():
+    item = _attention(
+        _case(case_id=4, lawyer_id=7),
+        unread=1,
+        latest_message_at=datetime(2026, 8, 5, 11, tzinfo=timezone.utc),
+        lawyer_name="Юрист",
+    )
+
+    assert item is not None
+    assert item["priority"] == 1
+    assert item["primary_action"] == {
+        "kind": "link",
+        "label": "Прочитать сообщение клиента",
+        "href": "/message-center/ui?case_id=4",
+    }
+
+
+def test_attention_sort_places_overdue_then_message_before_other_work():
+    overdue = _attention(
         _case(
             case_id=1,
             lawyer_id=7,
             sla_status="FIRST_RESPONSE_OVERDUE",
         ),
-        has_documents=False,
-        consultation_at=None,
         lawyer_name="Юрист",
     )
-    unassigned = _attention_item(
-        _case(case_id=2, lawyer_id=None),
-        has_documents=False,
-        consultation_at=None,
-        lawyer_name=None,
+    message = _attention(
+        _case(case_id=2, lawyer_id=7),
+        unread=1,
+        latest_message_at=datetime(2026, 8, 5, 9, tzinfo=timezone.utc),
+        lawyer_name="Юрист",
     )
-    documents = _attention_item(
-        _case(case_id=3, lawyer_id=7),
+    unassigned = _attention(_case(case_id=3, lawyer_id=None))
+    documents = _attention(
+        _case(case_id=4, lawyer_id=7),
         has_documents=True,
-        consultation_at=None,
         lawyer_name="Юрист",
     )
 
-    items = [documents, unassigned, overdue]
+    items = [documents, unassigned, message, overdue]
     assert all(item is not None for item in items)
     ordered = sorted(items, key=_attention_sort_key)
-    assert [item["id"] for item in ordered] == [1, 2, 3]
+    assert [item["id"] for item in ordered] == [1, 2, 3, 4]
 
 
-def test_workdesk_routes_actions_to_domain_workspaces_without_generic_status_write():
+def test_workdesk_routes_actions_to_exact_case_workflows_without_generic_status_write():
     source = read("app/api/workdesk.py")
     ui = read("app/api/workdesk_ui.py")
+    action_ui = read("app/api/case_action_ui.py")
 
     assert '@router.get("/admin/workdesk/attention")' in source
+    assert '"/admin/workdesk/cases/{case_id}/action/{task}"' in source
+    assert "func.count(Message.id)" in source
+    assert 'Message.sender_type == "client"' in source
+    assert 'Message.is_read.is_(False)' in source
     assert "'/admin/cases/'+id+'/auto-assign'" in ui
-    assert "/document-access/review/ui" in ui
-    assert "/admin/consultation-outcomes/ui" in ui
-    assert "/admin/sla/ui" in ui
+    assert "/admin/workdesk/cases/${x.id}/action/documents" in ui
+    assert "/admin/workdesk/cases/${x.id}/action/consultation" in ui
+    assert "/admin/workdesk/cases/${x.id}/action/sla" in ui
     assert "/message-center/ui?case_id=${x.id}" in ui
     assert "Очередь пуста" in ui
     assert "Повторить" in ui
+    assert "/document-access/review/documents/" in action_ui
+    assert "expected_status:item.status" in action_ui
+    assert "expected_version:item.version" in action_ui
+    assert "expected_updated_at:item.updated_at" in action_ui
+    assert "/admin/consultation-outcomes/" in action_ui
+    assert "/admin/sla/" in action_ui
+    assert "Вернуться к приоритетам" in action_ui
     assert "CaseService(db).change_status" not in source
     assert "/advance" not in source
     assert "force=True" not in source
-    assert "тестовый платёж" not in (source + ui).lower()
+    assert "/admin/cases/" not in action_ui
+    assert "тестовый платёж" not in (source + ui + action_ui).lower()
 
 
 def test_operator_makes_guided_workdesk_primary_and_mounts_router():
@@ -210,3 +261,29 @@ def test_unread_reply_is_counted_and_direct_dialog_actions_are_available():
     assert "message_history" in callbacks
     assert "message_create" in callbacks
     assert "calc_start" not in callbacks
+
+
+def test_reply_keyboard_switches_from_acquisition_to_active_case_panel():
+    new_case_texts = [
+        button.text
+        for row in reply_main_menu(False).keyboard
+        for button in row
+    ]
+    active_case_texts = [
+        button.text
+        for row in reply_main_menu(True).keyboard
+        for button in row
+    ]
+
+    assert "🧮 Рассчитать неустойку" in new_case_texts
+    assert "💬 Связаться с юристом" in new_case_texts
+    assert "🧮 Рассчитать неустойку" not in active_case_texts
+    assert "📁 Моё дело" in active_case_texts
+    assert "💬 Переписка" in active_case_texts
+    assert "✉️ Новый вопрос" in active_case_texts
+
+    common = read("app/bot/screens/common.py")
+    assert "reply_main_menu(case_exists)" in common
+    assert 'm.text == "💬 Переписка"' in common
+    assert 'm.text == "✉️ Новый вопрос"' in common
+    assert "Нижнее меню уже обновлено" in common

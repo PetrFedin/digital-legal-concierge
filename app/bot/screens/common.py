@@ -66,6 +66,14 @@ async def _safe_callback_edit(
         await callback.answer(unchanged_notice)
 
 
+async def _active_case_exists(db, message: Message) -> bool:
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_message(message)
+    case = await ctx.case_service.get_active_case_for_user(user.id)
+    await db.commit()
+    return case is not None
+
+
 async def _home_text(
     db,
     message_or_callback,
@@ -141,7 +149,7 @@ async def start(message: Message, db, state: FSMContext):
     await state.clear()
     text, case_exists, primary_action = await _home_text(db, message)
     await db.commit()
-    await message.answer(text, reply_markup=reply_main_menu())
+    await message.answer(text, reply_markup=reply_main_menu(case_exists))
     await message.answer(
         "Выберите действие:",
         reply_markup=main_menu(
@@ -164,7 +172,11 @@ async def menu_calc(message: Message, state: FSMContext, db):
             "📁 У вас уже есть активное дело.\n\n"
             "Чтобы не смешивать расчёты, документы и статусы разных обращений, "
             "сначала продолжите текущее дело. Новый расчёт станет доступен после "
-            "его завершения.",
+            "его завершения. Нижнее меню уже обновлено.",
+            reply_markup=reply_main_menu(True),
+        )
+        await message.answer(
+            "Продолжите текущее дело:",
             reply_markup=main_menu(
                 True,
                 primary_action=_primary_action(view),
@@ -205,6 +217,31 @@ async def menu_documents(message: Message, state: FSMContext):
     )
 
 
+@router.message(lambda m: m.text == "💬 Переписка")
+async def menu_messages(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "Откройте историю сообщений по текущему делу.",
+        reply_markup=one(
+            ("💬 Открыть переписку", "message_history"),
+            ("🏠 Главная", "nav_home"),
+        ),
+    )
+
+
+@router.message(lambda m: m.text == "✉️ Новый вопрос")
+async def menu_new_question(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "Сформулируйте новый вопрос в переписке по текущему делу.",
+        reply_markup=one(
+            ("✉️ Задать вопрос", "message_create"),
+            ("💬 История сообщений", "message_history"),
+            ("🏠 Главная", "nav_home"),
+        ),
+    )
+
+
 @router.message(lambda m: m.text == "💬 Связаться с юристом")
 async def menu_lawyer(message: Message, state: FSMContext):
     await state.clear()
@@ -218,7 +255,8 @@ async def menu_lawyer(message: Message, state: FSMContext):
 
 
 @router.message(lambda m: m.text == "/help")
-async def help_command(message: Message):
+async def help_command(message: Message, db):
+    case_exists = await _active_case_exists(db, message)
     payment_line = (
         "Онлайн-оплата сейчас отключена; доступные этапы продолжаются без платёжной ссылки."
         if payments_disabled()
@@ -227,13 +265,14 @@ async def help_command(message: Message):
     await message.answer(
         "ℹ️ Помощь\n\n"
         "Основные разделы:\n"
-        "🧮 Рассчитать неустойку — предварительный расчёт.\n"
+        "🧮 Рассчитать неустойку — предварительный расчёт, когда активного дела нет.\n"
         "📁 Моё дело — текущий этап, готовность, ответы и следующее действие.\n"
         "📄 Документы — актуальные версии, замечания и история.\n"
-        "💬 Связаться с юристом — вопрос по делу или консультация.\n\n"
+        "💬 Переписка — сообщения по активному делу.\n"
+        "✉️ Новый вопрос — новый вопрос команде по делу.\n\n"
         f"{payment_line}\n\n"
         "Команды: /start, /menu, /status, /help, /cancel",
-        reply_markup=reply_main_menu(),
+        reply_markup=reply_main_menu(case_exists),
     )
 
 
@@ -243,16 +282,14 @@ async def status_command(message: Message, db):
     user = await ctx.get_user_from_message(message)
     case = await ctx.case_service.get_active_case_for_user(user.id)
     if not case:
+        await db.commit()
         await message.answer(
-            "Активного дела пока нет.",
-            reply_markup=one(
-                ("🧮 Рассчитать", "calc_start"),
-                ("💬 Консультация", "calc_to_m2"),
-                ("🏠 Главная", "nav_home"),
-            ),
+            "Активного дела пока нет. Нижнее меню показывает доступные варианты начала.",
+            reply_markup=reply_main_menu(False),
         )
         return
     view = await load_client_case_view(db, case)
+    await db.commit()
     lines = [
         f"📁 {view.case_number}",
         f"Услуга: {view.route_label}",
@@ -278,16 +315,21 @@ async def status_command(message: Message, db):
     )
     await message.answer(
         "\n".join(lines),
+        reply_markup=reply_main_menu(True),
+    )
+    await message.answer(
+        "Продолжить:",
         reply_markup=one(*buttons),
     )
 
 
 @router.message(lambda m: m.text in ["/cancel", "Отмена"])
-async def cancel_message(message: Message, state: FSMContext):
+async def cancel_message(message: Message, state: FSMContext, db):
     await state.clear()
+    case_exists = await _active_case_exists(db, message)
     await message.answer(
         "Действие отменено. Уже сохранённые данные не удалены.",
-        reply_markup=reply_main_menu(),
+        reply_markup=reply_main_menu(case_exists),
     )
 
 
