@@ -68,6 +68,15 @@ def test_message_center_opens_exact_case_from_url_and_preserves_context():
     assert "setInterval(()=>{void loadMessages(null,false)},60000)" in source
 
 
+def test_case_detail_opens_the_exact_conversation_instead_of_generic_inbox():
+    source = read("app/admin/case_detail_page.py")
+
+    assert 'href="/message-center/ui?case_id=${caseId}"' in source
+    assert "Открыть переписку по делу" in source
+    assert 'href="/message-center/ui">Открыть переписку' not in source
+    assert "Статус, документы, клиент, сроки и действия в одном контексте" in source
+
+
 def test_reply_ui_distinguishes_delivery_from_durable_storage():
     source = read("app/api/message_center.py")
 
