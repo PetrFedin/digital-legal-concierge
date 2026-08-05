@@ -64,7 +64,7 @@ def test_home_uses_shared_case_presenter_and_direct_next_action():
     assert "format_updated_at(view.updated_at)" in source
     assert "📌 Ваш следующий шаг" in source
     assert 'f"next_action:v2:{view.case_id}:{view.action_key}"' in source
-    assert "Главная кнопка ниже ведёт к актуальному действию" in source
+    assert "Главная кнопка ниже ведёт к самому актуальному действию" in source
     assert "primary_action=primary_action" in source
 
 
