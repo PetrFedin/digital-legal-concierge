@@ -173,7 +173,8 @@ def test_unassigned_case_has_honest_admin_fallback_and_no_dead_end():
     source = read("app/bot/screens/messages.py")
 
     assert "Юрист ещё не назначен — требуется распределение" in source
-    assert "Вопрос направлен в административную очередь на распределение" in source
+    assert "Вопрос направлен в административную " in source
+    assert "очередь на распределение." in source
     assert "Ответ появится в переписке по делу" in source
     assert "message_history" in source
     assert "message_create" in source
