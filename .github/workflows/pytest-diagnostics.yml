@@ -1,0 +1,68 @@
+name: Pytest Diagnostics
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pytest-diagnostics-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest-report:
+    name: Pytest diagnostic report
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      APP_ENV: test
+      DATABASE_URL: sqlite+aiosqlite:///./diagnostic_test.db
+      BOT_TOKEN: CHANGE_ME
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: admin-change-me
+      ADMIN_API_TOKEN: ci-admin-token-change-me
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[test]"
+
+      - name: Initialize database
+        run: |
+          rm -f diagnostic_test.db
+          python scripts/init_db.py
+          python scripts/migrate_db.py
+
+      - name: Run tests and capture report
+        id: pytest
+        shell: bash
+        run: |
+          set +e
+          pytest -q 2>&1 | tee pytest-output.txt
+          status=${PIPESTATUS[0]}
+          printf '%s\n' "$status" > pytest-exit-code.txt
+          exit "$status"
+
+      - name: Upload diagnostic report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-diagnostic-report
+          path: |
+            pytest-output.txt
+            pytest-exit-code.txt
+          if-no-files-found: error
+          retention-days: 3
