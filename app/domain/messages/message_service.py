@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Collection
+from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,6 +37,28 @@ class MessageService:
                 .limit(1)
             )
         ).scalar_one_or_none()
+
+    async def unread_lawyer_summary(
+        self,
+        case_id: int,
+    ) -> tuple[int, datetime | None]:
+        unread_result = await self.db.execute(
+            select(func.count(Message.id)).where(
+                Message.case_id == int(case_id),
+                Message.sender_type == "lawyer",
+                Message.is_read.is_(False),
+            )
+        )
+        latest_result = await self.db.execute(
+            select(func.max(Message.created_at)).where(
+                Message.case_id == int(case_id),
+                Message.sender_type == "lawyer",
+            )
+        )
+        return (
+            int(unread_result.scalar_one() or 0),
+            latest_result.scalar_one_or_none(),
+        )
 
     async def find_client_message_by_source(
         self,

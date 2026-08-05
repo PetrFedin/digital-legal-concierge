@@ -11,6 +11,7 @@ from app.domain.cases.case_timeline import (
     get_case_progress_percent,
     get_client_visible_status,
 )
+from app.domain.messages.message_service import MessageService
 from app.domain.payments.mode import payments_disabled
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.models.calculation import Calculation
@@ -56,6 +57,8 @@ class ClientCaseView:
     consultation_summary: str
     payments_summary: str | None
     updated_at: datetime | None
+    unread_team_messages: int = 0
+    latest_team_message_at: datetime | None = None
 
 
 CLIENT_ACTIONS: dict[str, ClientAction] = {
@@ -316,6 +319,8 @@ def _action_key(
     action: ClientAction | None,
     documents: DocumentOverview,
     consultation: Consultation | None,
+    unread_team_messages: int = 0,
+    latest_team_message_at: datetime | None = None,
 ) -> str:
     parts = [
         str(case.id),
@@ -331,8 +336,23 @@ def _action_key(
         consultation.updated_at.isoformat()
         if consultation and consultation.updated_at
         else "",
+        str(unread_team_messages),
+        latest_team_message_at.isoformat() if latest_team_message_at else "",
     ]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:12]
+
+
+def _latest_activity(*values: datetime | None) -> datetime | None:
+    present = [value for value in values if value is not None]
+    if not present:
+        return None
+
+    def sort_value(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    return max(present, key=sort_value)
 
 
 async def load_client_case_view(
@@ -364,6 +384,9 @@ async def load_client_case_view(
             .limit(1)
         )
     ).scalars().first()
+    unread_team_messages, latest_team_message_at = (
+        await MessageService(db).unread_lawyer_summary(case.id)
+    )
 
     pending_payments = 0
     if not payments_disabled():
@@ -397,6 +420,16 @@ async def load_client_case_view(
             else "Нет ожидающих оплат"
         )
 
+    consultation_updated_at = (
+        consultation.updated_at if consultation and consultation.updated_at else None
+    )
+    updated_at = _latest_activity(
+        case.updated_at,
+        document_overview.latest_updated_at,
+        consultation_updated_at,
+        latest_team_message_at,
+    )
+
     return ClientCaseView(
         case_id=case.id,
         case_number=case.case_number,
@@ -412,10 +445,14 @@ async def load_client_case_view(
             action=action,
             documents=document_overview,
             consultation=consultation,
+            unread_team_messages=unread_team_messages,
+            latest_team_message_at=latest_team_message_at,
         ),
         documents=document_overview,
         calculation_summary=_calculation_summary(case, calculation),
         consultation_summary=_consultation_summary(consultation),
         payments_summary=payments_summary,
-        updated_at=case.updated_at,
+        updated_at=updated_at,
+        unread_team_messages=unread_team_messages,
+        latest_team_message_at=latest_team_message_at,
     )

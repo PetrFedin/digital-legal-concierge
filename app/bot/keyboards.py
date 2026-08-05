@@ -44,17 +44,19 @@ def main_menu(
 
     kb.button(text="📁 Моё дело", callback_data="my_case_open")
     kb.button(text="📄 Документы", callback_data="documents_open")
+    kb.button(text="💬 Переписка", callback_data="message_history")
+    kb.button(text="✉️ Новый вопрос", callback_data="message_create")
 
     show_payments = _payments_enabled() if payments_enabled is None else payments_enabled
     if show_payments:
         kb.button(text="💳 Оплаты", callback_data="payments_open")
 
-    kb.button(text="💬 Связаться с юристом", callback_data="contact_lawyer")
+    kb.button(text="⚖️ Помощь и консультация", callback_data="contact_lawyer")
 
     row_sizes: list[int] = []
     if primary_action:
         row_sizes.append(1)
-    row_sizes.append(2)
+    row_sizes.extend([2, 2])
     if show_payments:
         row_sizes.append(1)
     row_sizes.append(1)

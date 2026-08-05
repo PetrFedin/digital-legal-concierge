@@ -126,7 +126,8 @@ async def operator_page():
               <h3>Ежедневная работа</h3>
               <p>Очередь, дела, документы, переписка и задачи.</p>
               <div class="links">
-                <a class="link primary" href="/admin-ui"><b>Административная панель</b><span>Дела, очереди, документы и команда</span></a>
+                <a class="link primary" href="/admin/workdesk/ui"><b>Единый рабочий стол</b><span>Приоритеты, карточка дела и безопасное следующее действие</span></a>
+                <a class="link" href="/admin-ui"><b>Расширенная административная панель</b><span>Полный набор справочников и редких корректирующих операций</span></a>
                 <a class="link" href="/lawyer/workspace/ui"><b>Рабочий кабинет юриста</b><span>Приоритеты, дела, документы, консультации и SLA</span></a>
                 <a class="link" href="/document-access/review/ui"><b>Проверка документов</b><span>Скачать файл, принять, отклонить или запросить новую версию</span></a>
                 <a class="link" href="/message-center/ui"><b>Сообщения</b><span>Диалоги клиентов и ответы команды</span></a>
@@ -172,9 +173,9 @@ async def operator_page():
           <ol>
             <li>Клиент запускает расчёт или открывает существующее дело в Telegram.</li>
             <li>Обращение попадает в очередь администратора с понятным следующим действием.</li>
-            <li>Клиент передаёт документы, а юрист фиксирует решение по каждому файлу.</li>
-            <li>Юрист работает с делом или консультацией и фиксирует результат.</li>
-            <li>Клиент получает уведомления, а недоставленные сообщения видны в центре доставки.</li>
+            <li>Администратор выполняет действие в профильном разделе; редкие исправления вынесены отдельно.</li>
+            <li>Юрист проверяет документы, ведёт дело или консультацию и фиксирует результат.</li>
+            <li>Новый ответ команды выделяется в Telegram до фактического прочтения клиентом.</li>
           </ol>
         </section>
       </main>
@@ -188,7 +189,7 @@ async def operator_page():
 @router.get("/operator/status")
 async def operator_status():
     return {
-        "version": "1.0.0-v29",
+        "version": "1.0.0-v46",
         "bot_enabled": settings.run_bot,
         "scheduler_enabled": settings.run_scheduler,
         "payment_provider": settings.payment_provider,
@@ -196,7 +197,8 @@ async def operator_status():
         "public_base_url": settings.public_base_url,
         "recommended_next_step": "Откройте /operator, затем рабочий кабинет своей роли",
         "workspaces": {
-            "admin": "/admin-ui",
+            "admin": "/admin/workdesk/ui",
+            "admin_legacy": "/admin-ui",
             "lawyer": "/lawyer/workspace/ui",
             "lawyer_legacy": "/lawyer/ui",
             "document_review": "/document-access/review/ui",
@@ -212,6 +214,8 @@ from app.api.lawyer_workspace import router as lawyer_workspace_router  # noqa: 
 from app.api.notification_delivery import (  # noqa: E402
     router as notification_delivery_router,
 )
+from app.api.workdesk import router as workdesk_router  # noqa: E402
 
 router.include_router(lawyer_workspace_router)
 router.include_router(notification_delivery_router)
+router.include_router(workdesk_router)

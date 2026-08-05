@@ -38,6 +38,11 @@ def _next_action(case) -> str:
 
 
 def _primary_action(view) -> tuple[str, str]:
+    if view.unread_team_messages:
+        return (
+            f"💬 Прочитать ответ команды ({view.unread_team_messages})",
+            "message_history",
+        )
     if view.action:
         return (
             f"▶️ {view.action.label}",
@@ -89,6 +94,14 @@ async def _home_text(
             "📌 Ваш следующий шаг",
             view.next_action,
         ]
+        if view.unread_team_messages:
+            lines.extend(
+                [
+                    "",
+                    f"💬 Новые ответы команды: {view.unread_team_messages}",
+                    "Сначала откройте переписку: ответ может уточнять документы, сроки или дальнейшие действия.",
+                ]
+            )
         if view.documents.blocker:
             lines.extend(
                 [
@@ -110,7 +123,7 @@ async def _home_text(
             [
                 "",
                 f"Обновлено: {format_updated_at(view.updated_at)}",
-                "Главная кнопка ниже ведёт к актуальному действию без лишних экранов.",
+                "Главная кнопка ниже ведёт к самому актуальному действию.",
             ]
         )
         return "\n".join(lines), True, _primary_action(view)
@@ -172,7 +185,7 @@ async def menu_calc(message: Message, state: FSMContext, db):
 async def menu_my_case(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
-        "Откройте единый экран дела: текущий этап, готовность и одно следующее действие.",
+        "Откройте единый экран дела: текущий этап, готовность, новые ответы и следующее действие.",
         reply_markup=one(
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
@@ -215,7 +228,7 @@ async def help_command(message: Message):
         "ℹ️ Помощь\n\n"
         "Основные разделы:\n"
         "🧮 Рассчитать неустойку — предварительный расчёт.\n"
-        "📁 Моё дело — текущий этап, готовность и следующее действие.\n"
+        "📁 Моё дело — текущий этап, готовность, ответы и следующее действие.\n"
         "📄 Документы — актуальные версии, замечания и история.\n"
         "💬 Связаться с юристом — вопрос по делу или консультация.\n\n"
         f"{payment_line}\n\n"
@@ -240,16 +253,32 @@ async def status_command(message: Message, db):
         )
         return
     view = await load_client_case_view(db, case)
-    await message.answer(
-        f"📁 {view.case_number}\n"
-        f"Услуга: {view.route_label}\n"
-        f"Сейчас: {view.status_label}\n"
-        f"Документы: {view.documents.summary}\n\n"
-        f"Следующий шаг: {view.next_action}",
-        reply_markup=one(
+    lines = [
+        f"📁 {view.case_number}",
+        f"Услуга: {view.route_label}",
+        f"Сейчас: {view.status_label}",
+        f"Документы: {view.documents.summary}",
+    ]
+    if view.unread_team_messages:
+        lines.append(f"💬 Новые ответы команды: {view.unread_team_messages}")
+    lines.extend(["", f"Следующий шаг: {view.next_action}"])
+    buttons: list[tuple[str, str]] = []
+    if view.unread_team_messages:
+        buttons.append(
+            (
+                f"💬 Прочитать ответы ({view.unread_team_messages})",
+                "message_history",
+            )
+        )
+    buttons.extend(
+        [
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
-        ),
+        ]
+    )
+    await message.answer(
+        "\n".join(lines),
+        reply_markup=one(*buttons),
     )
 
 

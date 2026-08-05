@@ -54,6 +54,14 @@ def _document_detail(view) -> str:
 
 def _case_buttons(view) -> list[tuple[str, str]]:
     buttons: list[tuple[str, str]] = []
+    if view.unread_team_messages:
+        buttons.append(
+            (
+                f"💬 Прочитать новые ответы ({view.unread_team_messages})",
+                "message_history",
+            )
+        )
+
     if view.action:
         buttons.append(
             (
@@ -118,6 +126,14 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
             view.next_action,
         ]
     )
+    if view.unread_team_messages:
+        lines.extend(
+            [
+                "",
+                f"💬 Новые ответы команды: {view.unread_team_messages}",
+                "Ответы ещё не отмечены прочитанными. Откройте переписку, чтобы увидеть их полностью.",
+            ]
+        )
     if view.documents.blocker:
         lines.extend(["", f"⚠️ Что мешает продолжить: {view.documents.blocker}"])
 
@@ -193,8 +209,8 @@ async def next_action(callback: CallbackQuery, db):
             callback,
             db,
             notice=(
-                "Данные дела или документов уже изменились. "
-                "Показан актуальный следующий шаг."
+                "Данные дела или документов уже изменились, либо в переписке "
+                "появился новый ответ. Показан актуальный следующий шаг."
             ),
         )
         return

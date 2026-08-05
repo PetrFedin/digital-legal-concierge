@@ -29,9 +29,11 @@ def test_inline_menu_hides_disabled_payments_and_parallel_calculation():
     assert _callbacks(markup) == [
         "my_case_open",
         "documents_open",
+        "message_history",
+        "message_create",
         "contact_lawyer",
     ]
-    assert [len(row) for row in markup.inline_keyboard] == [2, 1]
+    assert [len(row) for row in markup.inline_keyboard] == [2, 2, 1]
 
 
 def test_inline_menu_shows_payments_when_provider_is_enabled():
@@ -39,7 +41,7 @@ def test_inline_menu_shows_payments_when_provider_is_enabled():
     assert "💳 Оплаты" in _texts(markup)
     assert "payments_open" in _callbacks(markup)
     assert "calc_start" not in _callbacks(markup)
-    assert [len(row) for row in markup.inline_keyboard] == [2, 1, 1]
+    assert [len(row) for row in markup.inline_keyboard] == [2, 2, 1, 1]
 
 
 @pytest.mark.asyncio
@@ -51,6 +53,8 @@ async def test_operator_page_is_grouped_for_daily_work_and_does_not_show_secrets
     assert "Контроль и безопасность" in body
     assert "Настройка системы" in body
     assert "Техническое обслуживание" in body
+    assert 'href="/admin/workdesk/ui"' in body
+    assert "Единый рабочий стол" in body
     assert 'href="/admin-ui"' in body
     assert 'href="/lawyer/workspace/ui"' in body
     assert "BOT_TOKEN" not in body
@@ -58,8 +62,10 @@ async def test_operator_page_is_grouped_for_daily_work_and_does_not_show_secrets
 
 
 @pytest.mark.asyncio
-async def test_operator_status_keeps_legacy_lawyer_route_as_compatibility_only():
+async def test_operator_status_keeps_legacy_routes_as_compatibility_only():
     status = await operator_status()
 
+    assert status["workspaces"]["admin"] == "/admin/workdesk/ui"
+    assert status["workspaces"]["admin_legacy"] == "/admin-ui"
     assert status["workspaces"]["lawyer"] == "/lawyer/workspace/ui"
     assert status["workspaces"]["lawyer_legacy"] == "/lawyer/ui"
