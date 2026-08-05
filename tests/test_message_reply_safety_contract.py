@@ -71,13 +71,17 @@ def test_message_listing_and_thread_access_are_scoped_for_lawyers():
 
 def test_message_writes_lock_the_case_before_creating_records():
     lock_source = inspect.getsource(MessageService.lock_case)
-    client_source = inspect.getsource(MessageService.create_client_message)
+    client_wrapper = inspect.getsource(MessageService.create_client_message)
+    client_create = inspect.getsource(MessageService.get_or_create_client_message)
     lawyer_source = inspect.getsource(MessageService.create_lawyer_message)
 
     assert ".with_for_update()" in lock_source
-    assert "case = await self.lock_case(case.id)" in client_source
+    assert "case = await self.lock_case(case.id)" in client_create
+    assert "await self.get_or_create_client_message(" in client_wrapper
+    assert "source_message_id=source_message_id" in client_wrapper
+    assert "async with self.db.begin_nested()" in client_create
+    assert "await self.db.flush()" in client_create
     assert "case = await self.lock_case(case.id)" in lawyer_source
-    assert "await self.db.flush()" in client_source
     assert "await self.db.flush()" in lawyer_source
 
 
