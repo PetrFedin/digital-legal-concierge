@@ -22,6 +22,7 @@ def test_staff_reply_uses_client_outbox_event_and_safe_template():
 
 def test_reply_and_outbox_commit_before_any_telegram_delivery():
     source = read("app/api/message_center.py")
+    delivery_source = read("app/domain/notifications/immediate_delivery.py")
 
     create_message = source.index("created = await service.create_lawyer_message(")
     emit = source.index("notifications = await NotificationEngine(db).emit(")
@@ -34,10 +35,11 @@ def test_reply_and_outbox_commit_before_any_telegram_delivery():
     assert create_message < emit < durable_commit < delivery
     assert 'event_code="STAFF_MESSAGE_REPLIED"' in source
     assert 'dedupe_key=f"case:{case.id}:message:{created.id}:staff-reply"' in source
-    assert "NotificationSender(db).send_selected(notification_ids)" in source
-    assert "asyncio.wait_for" in source
-    assert "telegram_timeout" in source
-    assert "delivery_error" in source
+    assert "deliver_selected_notifications(db, notification_ids)" in source
+    assert "NotificationSender(db).send_selected(ids)" in delivery_source
+    assert "asyncio.wait_for" in delivery_source
+    assert "telegram_timeout" in delivery_source
+    assert "delivery_error" in delivery_source
     assert "Bot(" not in source
     assert "bot.send_message" not in source
     assert "TelegramNetworkError" not in source
