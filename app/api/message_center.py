@@ -1,8 +1,10 @@
+from __future__ import annotations
+
+import asyncio
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from aiogram import Bot
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
@@ -12,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db.session import get_db
 from app.domain.messages.message_service import MessageService
+from app.domain.notifications.notification_engine import NotificationEngine
+from app.domain.notifications.notification_sender import NotificationSender
 from app.models.case import Case
 from app.models.message import Message
 from app.models.user import User
@@ -28,6 +32,7 @@ from app.security.lawyer_access import require_lawyer_actor
 router = APIRouter(tags=["message-center"])
 ALLOWED_ROLES = {ROLE_SUPERADMIN, ROLE_ADMIN, ROLE_OPERATOR, ROLE_LAWYER}
 BROAD_ACCESS_ROLES = {ROLE_SUPERADMIN, ROLE_ADMIN, ROLE_OPERATOR}
+MAX_REPLY_LENGTH = 3800
 
 
 class ReplyPayload(BaseModel):
@@ -96,6 +101,66 @@ def _age_minutes(value) -> int | None:
     now = datetime.now(timezone.utc)
     created = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     return max(0, int((now - created).total_seconds() // 60))
+
+
+async def _deliver_message_notifications(
+    db: AsyncSession,
+    notification_ids: tuple[int, ...],
+) -> dict[str, object]:
+    if not notification_ids:
+        return {
+            "status": "not_required",
+            "requested": 0,
+            "processed": 0,
+            "sent": 0,
+            "retry": 0,
+            "failed": 0,
+        }
+    try:
+        summary = await asyncio.wait_for(
+            NotificationSender(db).send_selected(notification_ids),
+            timeout=8,
+        )
+        await db.commit()
+    except TimeoutError:
+        await db.rollback()
+        return {
+            "status": "queued",
+            "requested": len(notification_ids),
+            "processed": 0,
+            "sent": 0,
+            "retry": len(notification_ids),
+            "failed": 0,
+            "reason": "telegram_timeout",
+        }
+    except Exception:
+        await db.rollback()
+        return {
+            "status": "queued",
+            "requested": len(notification_ids),
+            "processed": 0,
+            "sent": 0,
+            "retry": len(notification_ids),
+            "failed": 0,
+            "reason": "delivery_error",
+        }
+
+    requested = int(summary.get("requested", len(notification_ids)))
+    sent = int(summary.get("sent", 0))
+    retry = int(summary.get("retry", 0))
+    failed = int(summary.get("failed", 0))
+    processed = int(summary.get("processed", 0))
+    if requested and sent >= requested:
+        status = "delivered"
+    elif retry:
+        status = "queued"
+    elif failed:
+        status = "failed"
+    elif processed == 0:
+        status = "already_processing"
+    else:
+        status = "queued"
+    return {"status": status, **summary}
 
 
 @router.get("/message-center/status")
@@ -269,8 +334,11 @@ async def reply_to_client(
     text = payload.text.strip()
     if len(text) < 2:
         raise HTTPException(400, "Введите текст ответа")
-    if len(text) > 4000:
-        raise HTTPException(400, "Ответ не должен превышать 4000 символов")
+    if len(text) > MAX_REPLY_LENGTH:
+        raise HTTPException(
+            400,
+            f"Ответ не должен превышать {MAX_REPLY_LENGTH} символов",
+        )
 
     service = MessageService(db)
     try:
@@ -282,11 +350,6 @@ async def reply_to_client(
                 409,
                 "В диалоге появились новые сообщения. Обновите переписку перед отправкой ответа.",
             )
-        client = (
-            await db.execute(select(User).where(User.id == case.client_id))
-        ).scalars().first()
-        if not client:
-            raise HTTPException(404, "Клиент не найден")
 
         if scope.lawyer_id is not None:
             lawyer_id = scope.lawyer_id
@@ -304,36 +367,33 @@ async def reply_to_client(
             text=text,
         )
         await service.mark_client_messages_read(case_id)
+        notifications = await NotificationEngine(db).emit(
+            event_code="STAFF_MESSAGE_REPLIED",
+            case_id=case.id,
+            user_id=case.client_id,
+            payload={
+                "case_number": case.case_number,
+                "text": text,
+            },
+            dedupe_key=f"case:{case.id}:message:{created.id}:staff-reply",
+        )
+        notification_ids = tuple(
+            int(item.id) for item in notifications if item.id is not None
+        )
+        message_id = int(created.id)
+        created_at = _iso(created.created_at)
 
-        bot = Bot(token=settings.bot_token)
-        try:
-            await bot.send_message(
-                chat_id=client.telegram_id,
-                text=(
-                    "💬 Ответ юриста\n\n"
-                    f"Дело: {case.case_number}\n\n"
-                    f"{text}\n\n"
-                    "Ответ сохранён в переписке по делу."
-                ),
-            )
-        except Exception as exc:
-            raise HTTPException(
-                502,
-                "Не удалось доставить ответ в Telegram. Ответ не сохранён; повторите отправку.",
-            ) from exc
-        finally:
-            try:
-                await bot.session.close()
-            except Exception:
-                pass
-
+        # The reply and its outbox record become durable before any Telegram
+        # network call. Delivery failures therefore cannot erase legal history.
         await db.commit()
+        delivery = await _deliver_message_notifications(db, notification_ids)
         return {
             "ok": True,
-            "message_id": created.id,
+            "message_id": message_id,
+            "created_at": created_at,
             "case_id": case.id,
-            "latest_message_id": created.id,
-            "telegram_delivered": True,
+            "latest_message_id": message_id,
+            "delivery": delivery,
         }
     except HTTPException:
         await db.rollback()
@@ -397,22 +457,24 @@ MESSAGE_CENTER_HTML = r"""
 </style></head><body>
 <header><div><h1>💬 Центр сообщений</h1><p id="staff">Защищённый доступ для сотрудников.</p></div><form method="post" action="/logout"><button type="submit">Выйти</button></form></header>
 <main><section class="card"><h2>Диалоги</h2><div class="toolbar"><button id="refreshButton" data-inbox-refresh onclick="loadMessages(this)">Обновить</button><select id="filter" onchange="renderInbox()"><option value="all">Все диалоги</option><option value="waiting">Ожидают ответа</option><option value="overdue">Просрочены 4+ часа</option><option value="unread">Непрочитанные</option><option value="answered">Ответ отправлен</option></select><a class="button" href="/operator">Оператор</a></div><div id="metrics" class="metrics"></div><div id="inbox" class="muted">Загрузка...</div></section>
-<section class="card"><h2 id="dialogTitle">Переписка</h2><div id="caseMeta" class="muted"></div><div id="dialog" class="empty">Выберите диалог слева.</div><div id="replyBox" class="hidden"><textarea id="replyText" maxlength="4000" placeholder="Ответ юриста клиенту"></textarea><div class="counter"><span id="charCount">0</span>/4000</div><button id="sendButton" onclick="sendReply(this)">Отправить клиенту</button> <span id="replyStatus" class="muted" role="status" aria-live="polite"></span></div></section></main>
+<section class="card"><h2 id="dialogTitle">Переписка</h2><div id="caseMeta" class="muted"></div><div id="dialog" class="empty">Выберите диалог слева.</div><div id="replyBox" class="hidden"><textarea id="replyText" maxlength="3800" placeholder="Ответ юридической команды клиенту"></textarea><div class="counter"><span id="charCount">0</span>/3800</div><button id="sendButton" onclick="sendReply(this)">Сохранить и отправить клиенту</button> <span id="replyStatus" class="muted" role="status" aria-live="polite"></span></div></section></main>
 <script>
 let currentCaseId=null,currentLatestMessageId=null,conversations=[],sendPending=false,inboxController=null,dialogController=null;
+const requestedCaseId=Number(new URLSearchParams(location.search).get('case_id')||0);
 const inbox=document.getElementById('inbox'),metrics=document.getElementById('metrics'),dialog=document.getElementById('dialog'),dialogTitle=document.getElementById('dialogTitle'),caseMeta=document.getElementById('caseMeta'),replyBox=document.getElementById('replyBox'),replyText=document.getElementById('replyText'),replyStatus=document.getElementById('replyStatus'),sendButton=document.getElementById('sendButton');
 replyText.addEventListener('input',()=>document.getElementById('charCount').textContent=replyText.value.length);
 function headers(){return {'Content-Type':'application/json'}}
 function esc(v){return String(v??'').replace(/[&<>"']/g,s=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]))}
 function feedback(text,state='muted'){replyStatus.textContent=text;replyStatus.className=state}
+function deliveryFeedback(delivery){const status=delivery?.status||'queued';if(status==='delivered')return ['Ответ отправлен и сохранён. Клиент получил его в Telegram.','ok'];if(status==='failed')return ['Ответ сохранён, но Telegram отклонил доставку. Ошибка видна в центре доставки.','warn'];if(status==='already_processing')return ['Ответ сохранён; уведомление уже обрабатывается другим процессом.','warn'];if(status==='not_required')return ['Ответ сохранён. Повторное уведомление не требуется.','ok'];return ['Ответ сохранён и поставлен в очередь повторной Telegram-доставки.','warn']}
 function ageLabel(m){if(m==null)return '';if(m<60)return m+' мин';const h=Math.floor(m/60),r=m%60;return h+' ч'+(r?' '+r+' мин':'')}
 function renderMetrics(d){metrics.innerHTML=`<div class="metric"><b>${d.conversation_count}</b><span class="muted">диалогов</span></div><div class="metric"><b>${d.unread_count}</b><span class="muted">непрочитано</span></div><div class="metric"><b>${d.waiting_count}</b><span class="muted">ждут ответа</span></div><div class="metric"><b>${d.overdue_count}</b><span class="muted">просрочено</span></div>`}
-function renderInbox(){const f=document.getElementById('filter').value,rows=conversations.filter(x=>f==='all'||(f==='waiting'&&x.waiting_for_reply)||(f==='overdue'&&x.overdue)||(f==='unread'&&x.unread_count>0)||(f==='answered'&&!x.waiting_for_reply));if(!rows.length){inbox.innerHTML='<div class="empty">По выбранному фильтру диалогов нет.</div>';return}inbox.innerHTML=rows.map(x=>{const cls=x.overdue?'overdue':(x.waiting_for_reply?'waiting':'answered'),status=x.overdue?'<span class="badge red">Просрочено</span>':(x.waiting_for_reply?'<span class="badge amber">Ждёт ответа</span>':'<span class="badge green">Ответ отправлен</span>'),unread=x.unread_count?`<span class="badge">Новых: ${x.unread_count}</span>`:'';return `<div class="item ${cls} ${currentCaseId===x.case_id?'active':''}" onclick="openCase(${x.case_id})"><b>${esc(x.case_number)}</b> · ${esc(x.client_name||'Клиент')}<div class="badges">${status}${unread}</div><div>${esc(x.latest_text)}</div><div class="muted">${x.latest_sender_type==='client'?'Клиент':'Юрист'} · ${ageLabel(x.age_minutes)} · сообщений: ${x.message_count}</div></div>`}).join('')}
+function renderInbox(){const f=document.getElementById('filter').value,rows=conversations.filter(x=>f==='all'||(f==='waiting'&&x.waiting_for_reply)||(f==='overdue'&&x.overdue)||(f==='unread'&&x.unread_count>0)||(f==='answered'&&!x.waiting_for_reply));if(!rows.length){inbox.innerHTML='<div class="empty">По выбранному фильтру диалогов нет.</div>';return}inbox.innerHTML=rows.map(x=>{const cls=x.overdue?'overdue':(x.waiting_for_reply?'waiting':'answered'),status=x.overdue?'<span class="badge red">Просрочено</span>':(x.waiting_for_reply?'<span class="badge amber">Ждёт ответа</span>':'<span class="badge green">Ответ сохранён</span>'),unread=x.unread_count?`<span class="badge">Новых: ${x.unread_count}</span>`:'';return `<div class="item ${cls} ${currentCaseId===x.case_id?'active':''}" onclick="openCase(${x.case_id})"><b>${esc(x.case_number)}</b> · ${esc(x.client_name||'Клиент')}<div class="badges">${status}${unread}</div><div>${esc(x.latest_text)}</div><div class="muted">${x.latest_sender_type==='client'?'Клиент':'Команда'} · ${ageLabel(x.age_minutes)} · сообщений: ${x.message_count}</div></div>`}).join('')}
 async function api(path,opts={}){const r=await fetch(path,{...opts,credentials:'same-origin',cache:'no-store',headers:{...headers(),...(opts.headers||{})}});if(r.status===401){location.href='/login';throw new Error('Сессия истекла')}const d=await r.json().catch(()=>({}));if(!r.ok){const e=new Error(d.detail||'Ошибка');e.status=r.status;throw e}return d}
-async function boot(){try{const s=await api('/auth/session');document.getElementById('staff').textContent=`${s.username} · ${(s.roles||[]).join(', ')}`;await loadMessages()}catch(e){inbox.innerHTML='<p class="error">'+esc(e.message)+'</p>'}}
+async function boot(){try{const s=await api('/auth/session');document.getElementById('staff').textContent=`${s.username} · ${(s.roles||[]).join(', ')}`;await loadMessages();if(requestedCaseId>0)await openCase(requestedCaseId)}catch(e){inbox.innerHTML='<p class="error">'+esc(e.message)+'</p>'}}
 async function loadMessages(button=null,reportError=true){if(inboxController)inboxController.abort();const controller=new AbortController();inboxController=controller;const label=button?button.textContent:'';if(button){button.disabled=true;button.setAttribute('aria-busy','true');button.textContent='Загрузка…'}if(!conversations.length)inbox.innerHTML='<div class="empty">Загрузка...</div>';try{const d=await api('/message-center/status',{signal:controller.signal});if(inboxController!==controller)return {ok:false,aborted:true};conversations=d.items;renderMetrics(d);renderInbox();return {ok:true}}catch(e){if(e.name==='AbortError')return {ok:false,aborted:true};if(reportError)inbox.innerHTML='<p class="error">'+esc(e.message)+'</p>';return {ok:false,error:e.message}}finally{if(inboxController===controller){inboxController=null;if(button){button.disabled=false;button.removeAttribute('aria-busy');button.textContent=label}}}}
-async function openCase(id,preserveStatus=false){if(sendPending&&id!==currentCaseId){feedback('Дождитесь завершения отправки текущего ответа.','warn');return {ok:false,busy:true}}if(dialogController)dialogController.abort();const controller=new AbortController();dialogController=controller;currentCaseId=id;currentLatestMessageId=null;renderInbox();dialog.innerHTML='<div class="empty">Загрузка переписки...</div>';replyBox.classList.add('hidden');if(!preserveStatus)feedback('');try{const d=await api('/message-center/cases/'+id+'/messages',{signal:controller.signal});if(dialogController!==controller||currentCaseId!==id)return {ok:false,aborted:true};currentLatestMessageId=d.latest_message_id;dialogTitle.textContent='Переписка по делу '+d.case.number;caseMeta.textContent=(d.case.client_name||'Клиент')+(d.case.client_username?' · @'+d.case.client_username:'')+' · статус '+d.case.status+' · юрист '+(d.case.lawyer_id||'не назначен');dialog.innerHTML=d.messages.length?d.messages.map(m=>`<div class="msg ${m.sender_type==='client'?'client':'lawyer'}"><b>${m.sender_type==='client'?'Клиент':'Юрист'}</b><br>${esc(m.text)}<br><span class="muted">${esc(m.created_at||'')}</span></div>`).join(''):'<div class="empty">Сообщений нет.</div>';dialog.scrollTop=dialog.scrollHeight;replyBox.classList.remove('hidden');await loadMessages(null,false);return {ok:true}}catch(e){if(e.name==='AbortError')return {ok:false,aborted:true};dialog.innerHTML='<p class="error">'+esc(e.message)+'</p>';return {ok:false,error:e.message}}finally{if(dialogController===controller)dialogController=null}}
-async function sendReply(button){if(sendPending||!currentCaseId)return;const caseId=currentCaseId,lastMessageId=currentLatestMessageId,text=replyText.value.trim();if(text.length<2){feedback('Введите ответ.','error');return}sendPending=true;const label=button.textContent;button.disabled=true;button.setAttribute('aria-busy','true');button.textContent='Отправка…';replyText.disabled=true;feedback('Ответ отправляется в Telegram…');try{const result=await api('/message-center/cases/'+caseId+'/reply',{method:'POST',body:JSON.stringify({text,expected_last_message_id:lastMessageId})});if(currentCaseId===caseId){replyText.value='';document.getElementById('charCount').textContent='0';currentLatestMessageId=result.latest_message_id;feedback('Ответ доставлен в Telegram и сохранён в переписке.','ok');const refreshed=await openCase(caseId,true);if(!refreshed.ok&&!refreshed.aborted)feedback(`Ответ доставлен, но переписка не обновилась: ${refreshed.error}`,'warn')}}catch(e){feedback(`Ответ не отправлен: ${e.message}`,'error');if(e.status===409&&currentCaseId===caseId){const refreshed=await openCase(caseId,true);if(refreshed.ok)feedback('В переписке появились новые сообщения. Текст ответа сохранён; проверьте диалог и отправьте повторно.','warn')}}finally{sendPending=false;if(currentCaseId===caseId){button.disabled=false;button.removeAttribute('aria-busy');button.textContent=label;replyText.disabled=false;replyText.focus()}}}
+async function openCase(id,preserveStatus=false){if(sendPending&&id!==currentCaseId){feedback('Дождитесь завершения отправки текущего ответа.','warn');return {ok:false,busy:true}}if(dialogController)dialogController.abort();const controller=new AbortController();dialogController=controller;currentCaseId=Number(id);currentLatestMessageId=null;renderInbox();dialog.innerHTML='<div class="empty">Загрузка переписки...</div>';replyBox.classList.add('hidden');if(!preserveStatus)feedback('');try{const d=await api('/message-center/cases/'+currentCaseId+'/messages',{signal:controller.signal});if(dialogController!==controller||currentCaseId!==Number(id))return {ok:false,aborted:true};currentLatestMessageId=d.latest_message_id;dialogTitle.textContent='Переписка по делу '+d.case.number;caseMeta.textContent=(d.case.client_name||'Клиент')+(d.case.client_username?' · @'+d.case.client_username:'')+' · статус '+d.case.status+' · юрист '+(d.case.lawyer_id||'не назначен');dialog.innerHTML=d.messages.length?d.messages.map(m=>`<div class="msg ${m.sender_type==='client'?'client':'lawyer'}"><b>${m.sender_type==='client'?'Клиент':'Команда'}</b><br>${esc(m.text)}<br><span class="muted">${esc(m.created_at||'')}</span></div>`).join(''):'<div class="empty">Сообщений нет.</div>';dialog.scrollTop=dialog.scrollHeight;replyBox.classList.remove('hidden');const url=new URL(location.href);url.searchParams.set('case_id',String(currentCaseId));history.replaceState(null,'',url);await loadMessages(null,false);return {ok:true}}catch(e){if(e.name==='AbortError')return {ok:false,aborted:true};dialog.innerHTML=`<div class="error"><b>Не удалось открыть диалог</b><p>${esc(e.message)}</p><button onclick="openCase(${Number(id)})">Повторить</button></div>`;return {ok:false,error:e.message}}finally{if(dialogController===controller)dialogController=null}}
+async function sendReply(button){if(sendPending||!currentCaseId)return;const caseId=currentCaseId,lastMessageId=currentLatestMessageId,text=replyText.value.trim();if(text.length<2){feedback('Введите ответ.','error');return}if(text.length>3800){feedback('Ответ не должен превышать 3800 символов.','error');return}sendPending=true;const label=button.textContent;button.disabled=true;button.setAttribute('aria-busy','true');button.textContent='Сохранение…';replyText.disabled=true;feedback('Ответ сохраняется в переписке…');try{const result=await api('/message-center/cases/'+caseId+'/reply',{method:'POST',body:JSON.stringify({text,expected_last_message_id:lastMessageId})});if(currentCaseId===caseId){replyText.value='';document.getElementById('charCount').textContent='0';currentLatestMessageId=result.latest_message_id;const [deliveryText,deliveryState]=deliveryFeedback(result.delivery);feedback(deliveryText,deliveryState);const refreshed=await openCase(caseId,true);if(!refreshed.ok&&!refreshed.aborted)feedback(`${deliveryText} Но экран не обновился: ${refreshed.error}`,'warn')}}catch(e){feedback(`Ответ не отправлен и не сохранён: ${e.message}`,'error');if(e.status===409&&currentCaseId===caseId){const refreshed=await openCase(caseId,true);if(refreshed.ok)feedback('В переписке появились новые сообщения. Текст ответа сохранён в поле; проверьте диалог и отправьте повторно.','warn')}}finally{sendPending=false;if(currentCaseId===caseId){button.disabled=false;button.removeAttribute('aria-busy');button.textContent=label;replyText.disabled=false;replyText.focus()}}}
 boot();setInterval(()=>{void loadMessages(null,false)},60000);
 </script></body></html>
 """

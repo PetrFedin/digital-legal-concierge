@@ -4,6 +4,10 @@ NOTIFICATION_RULES = {
         "recipients": ["lawyer"],
         "template": "lawyer_assigned",
     },
+    "STAFF_MESSAGE_REPLIED": {
+        "recipients": ["client"],
+        "template": "staff_message_reply",
+    },
     "M1_CASE_ACCEPTED": {
         "recipients": ["client"],
         "template": "m1_case_accepted",
