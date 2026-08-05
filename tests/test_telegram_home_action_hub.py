@@ -47,11 +47,13 @@ def test_active_case_home_starts_with_snapshot_safe_primary_action():
         "next_action:v2:17:abc123",
         "my_case_open",
         "documents_open",
+        "message_history",
+        "message_create",
         "contact_lawyer",
     ]
     assert texts(markup)[0] == "▶️ Передать документы юристу"
     assert "calc_start" not in callbacks(markup)
-    assert [len(row) for row in markup.inline_keyboard] == [1, 2, 1]
+    assert [len(row) for row in markup.inline_keyboard] == [1, 2, 2, 1]
 
 
 def test_home_uses_shared_case_presenter_and_direct_next_action():
