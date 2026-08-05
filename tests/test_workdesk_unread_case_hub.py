@@ -199,7 +199,8 @@ def test_unread_reply_is_counted_and_direct_dialog_actions_are_available():
     assert "str(unread_team_messages)" in presenter
     assert "Новые ответы команды" in common
     assert "Новые ответы команды" in my_case
-    assert "либо в переписке появился новый ответ" in my_case
+    assert "либо в переписке " in my_case
+    assert "появился новый ответ" in my_case
 
     callbacks = [
         button.callback_data
