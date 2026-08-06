@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,6 +43,10 @@ class DocumentSecurityPendingError(ValueError):
     pass
 
 
+class DocumentsAlreadySubmittedError(DocumentSecurityPendingError):
+    """A retry reached the server after another request submitted the same drafts."""
+
+
 class MissingRequiredDocumentsError(ValueError):
     def __init__(self, missing_types: list[str]):
         labels = [DOC_TITLES.get(item, item) for item in missing_types]
@@ -74,6 +78,10 @@ def document_is_usable(document: Document) -> bool:
             DocumentStatus.ARCHIVED,
         }
     )
+
+
+def document_submission_reference(document: Document) -> str:
+    return f"DOC-{int(document.id)}-V{int(document.version or 1)}"
 
 
 class DocumentService:
@@ -280,14 +288,31 @@ class DocumentService:
         actor_id: int,
         required_types: set[str] | None = None,
     ) -> int:
-        documents = await self.list_case_documents(case.id)
-        pending = [
+        locked_case = (
+            await self.db.execute(
+                select(Case).where(Case.id == case.id).with_for_update()
+            )
+        ).scalar_one_or_none()
+        if locked_case is None:
+            raise LookupError("Активное дело больше не найдено")
+
+        documents = list(
+            (
+                await self.db.execute(
+                    select(Document)
+                    .where(Document.case_id == locked_case.id)
+                    .order_by(Document.created_at.desc(), Document.id.desc())
+                    .with_for_update()
+                )
+            ).scalars().all()
+        )
+        pending_security = [
             document
             for document in documents
             if document.status == DocumentStatus.UPLOADED
             and not document_is_usable(document)
         ]
-        if pending:
+        if pending_security:
             raise DocumentSecurityPendingError(
                 "Часть документов ещё не прошла проверку или envelope-шифрование. "
                 "Загрузите исправленные версии."
@@ -308,19 +333,45 @@ class DocumentService:
             if document.status == DocumentStatus.UPLOADED
             and document_is_usable(document)
         ]
-        if not verified_new and not documents:
-            raise MissingRequiredDocumentsError(sorted(required_types or {"DOCUMENT"}))
+        if not verified_new:
+            if any(
+                document.status == DocumentStatus.ON_REVIEW
+                for document in documents
+            ):
+                raise DocumentsAlreadySubmittedError(
+                    "Все новые файлы уже переданы юристу. Обновите статусы документов."
+                )
+            if not documents:
+                raise MissingRequiredDocumentsError(
+                    sorted(required_types or {"DOCUMENT"})
+                )
+            raise DocumentsAlreadySubmittedError(
+                "Новых файлов для передачи нет. Сначала добавьте документ."
+            )
 
+        submitted_at = datetime.now(timezone.utc)
+        submitted_ids: list[int] = []
+        submission_references: list[str] = []
         for document in verified_new:
             document.status = DocumentStatus.ON_REVIEW
+            document.review_started_at = submitted_at
+            # Keep TimestampMixin aligned with the explicit domain timestamp so
+            # optimistic-write snapshots and audit views share one boundary.
+            document.updated_at = submitted_at
+            submitted_ids.append(int(document.id))
+            submission_references.append(document_submission_reference(document))
+
         await add_case_history_event(
             self.db,
             actor_type="client",
             actor_id=actor_id,
-            case_id=case.id,
+            case_id=locked_case.id,
             action="DOCUMENTS_SENT_TO_REVIEW",
             new_value={
                 "new_count": len(verified_new),
+                "document_ids": submitted_ids,
+                "submission_references": submission_references,
+                "submitted_at": submitted_at.isoformat(),
                 "total_usable_count": sum(
                     1 for document in documents if document_is_usable(document)
                 ),

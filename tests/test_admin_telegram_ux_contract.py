@@ -53,13 +53,18 @@ def test_admin_workspace_has_real_queue_endpoints_and_recovery_states():
 
 def test_document_review_queue_matches_domain_status():
     service = read("app/domain/documents/document_service.py")
+    workflow = read("app/domain/documents/document_workflow.py")
     dashboard = read("app/admin/admin_dashboard.py")
     workspace = read("app/api/web_admin.py")
 
     assert "document.status = DocumentStatus.ON_REVIEW" in service
-    assert '"ON_REVIEW"' in dashboard
-    assert '"ON_REVIEW"' in workspace
+    assert 'ACTIONABLE_REVIEW_STATUSES = frozenset({DocumentStatus.ON_REVIEW.value})' in workflow
+    assert "ACTIONABLE_REVIEW_STATUSES" in dashboard
+    assert "Document.status.in_(tuple(ACTIONABLE_REVIEW_STATUSES))" in dashboard
+    assert "DOCUMENT_REVIEW_STATUSES = ACTIONABLE_REVIEW_STATUSES" in workspace
+    assert "Document.status.in_(DOCUMENT_REVIEW_STATUSES)" in workspace
     assert '"ON_REVIEW": "На проверке у юриста"' in workspace
+    assert '"UPLOADED": "Ожидает передачи юристу"' in workspace
 
 
 def test_telegram_case_actions_are_current_state_driven():
@@ -135,7 +140,9 @@ def test_telegram_document_list_uses_client_statuses_not_security_codes():
 
     assert "def _client_document_status" in source
     assert '"UPLOADED": "Безопасно загружен"' in source
-    assert '"PENDING_REVIEW": "Проверяет юрист"' in source
+    assert '"PENDING_REVIEW": "Статус уточняется"' in source
+    assert '"ON_REVIEW": "Проверяет юрист"' in source
+    assert '_DOCUMENT_REVIEW_STATUSES = {"ON_REVIEW"}' in source
     assert '"APPROVED": "Принят юристом"' in source
     assert '"REJECTED": "Нужно заменить файл"' in source
     assert "Что исправить:" in source

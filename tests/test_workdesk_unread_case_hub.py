@@ -7,6 +7,7 @@ from app.bot.client_case_view import ClientAction, _action_key, _document_overvi
 from app.bot.keyboards import main_menu, reply_main_menu
 from app.bot.screens.common import _primary_action
 from app.bot.screens.my_case import _case_buttons
+from app.domain.documents.document_workflow import describe_document_attention
 from app.domain.statuses.case_statuses import CaseStatus
 
 
@@ -44,7 +45,7 @@ def _attention(
     *,
     unread: int = 0,
     latest_message_at: datetime | None = None,
-    has_documents: bool = False,
+    document_statuses: tuple[str, ...] = (),
     consultation_at: datetime | None = None,
     lawyer_name: str | None = None,
 ):
@@ -52,7 +53,7 @@ def _attention(
         case,
         unread_client_messages=unread,
         latest_client_message_at=latest_message_at,
-        has_documents=has_documents,
+        document_workflow=describe_document_attention(document_statuses),
         consultation_at=consultation_at,
         lawyer_name=lawyer_name,
     )
@@ -67,7 +68,7 @@ def test_attention_center_deduplicates_reasons_and_keeps_safe_first_action():
         ),
         unread=2,
         latest_message_at=datetime(2026, 8, 5, 11, tzinfo=timezone.utc),
-        has_documents=True,
+        document_statuses=("ON_REVIEW",),
         consultation_at=datetime(2026, 8, 5, 12, tzinfo=timezone.utc),
     )
 
@@ -128,7 +129,7 @@ def test_attention_sort_places_overdue_then_message_before_other_work():
     unassigned = _attention(_case(case_id=3, lawyer_id=None))
     documents = _attention(
         _case(case_id=4, lawyer_id=7),
-        has_documents=True,
+        document_statuses=("ON_REVIEW",),
         lawyer_name="Юрист",
     )
 
@@ -136,6 +137,53 @@ def test_attention_sort_places_overdue_then_message_before_other_work():
     assert all(item is not None for item in items)
     ordered = sorted(items, key=_attention_sort_key)
     assert [item["id"] for item in ordered] == [1, 2, 3, 4]
+
+
+def test_uploaded_draft_routes_to_dialog_not_review_decisions():
+    item = _attention(
+        _case(case_id=5, lawyer_id=7),
+        document_statuses=("UPLOADED",),
+        lawyer_name="Юрист",
+    )
+
+    assert item is not None
+    assert [reason["code"] for reason in item["reasons"]] == ["document_draft"]
+    assert item["document_workflow"]["actionable"] is False
+    assert item["primary_action"] == {
+        "kind": "link",
+        "label": "Уточнить передачу",
+        "href": "/message-center/ui?case_id=5",
+    }
+
+
+def test_mixed_document_states_prioritise_exact_review_action():
+    item = _attention(
+        _case(case_id=6, lawyer_id=7),
+        document_statuses=("UPLOADED", "ON_REVIEW"),
+        lawyer_name="Юрист",
+    )
+
+    assert item is not None
+    assert [reason["code"] for reason in item["reasons"]] == ["documents"]
+    assert item["document_workflow"]["actionable"] is True
+    assert item["primary_action"] == {
+        "kind": "link",
+        "label": "Проверить документы",
+        "href": "/admin/workdesk/cases/6/action/documents",
+    }
+
+
+def test_legacy_document_state_routes_to_safe_case_dialog():
+    item = _attention(
+        _case(case_id=8, lawyer_id=7),
+        document_statuses=("PENDING_REVIEW",),
+        lawyer_name="Юрист",
+    )
+
+    assert item is not None
+    assert [reason["code"] for reason in item["reasons"]] == ["document_legacy"]
+    assert item["document_workflow"]["actionable"] is False
+    assert item["primary_action"]["href"] == "/message-center/ui?case_id=8"
 
 
 def test_workdesk_routes_actions_to_exact_case_workflows_without_generic_status_write():
@@ -148,6 +196,9 @@ def test_workdesk_routes_actions_to_exact_case_workflows_without_generic_status_
     assert "func.count(Message.id)" in source
     assert 'Message.sender_type == "client"' in source
     assert 'Message.is_read.is_(False)' in source
+    assert "describe_document_attention" in source
+    assert "document_draft" in source
+    assert "document_legacy" in source
     assert "'/admin/cases/'+id+'/auto-assign'" in ui
     assert "/admin/workdesk/cases/${x.id}/action/documents" in ui
     assert "/admin/workdesk/cases/${x.id}/action/consultation" in ui
@@ -159,6 +210,8 @@ def test_workdesk_routes_actions_to_exact_case_workflows_without_generic_status_
     assert "expected_status:item.status" in action_ui
     assert "expected_version:item.version" in action_ui
     assert "expected_updated_at:item.updated_at" in action_ui
+    assert "CLIENT_DRAFT" in action_ui
+    assert "LEGACY_ATTENTION" in action_ui
     assert "/admin/consultation-outcomes/" in action_ui
     assert "/admin/sla/" in action_ui
     assert "Вернуться к приоритетам" in action_ui

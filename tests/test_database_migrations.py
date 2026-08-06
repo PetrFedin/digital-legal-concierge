@@ -5,9 +5,10 @@ from pathlib import Path
 
 from app.db.migrations import run_database_migrations
 
-HEAD_REVISION = "20260805_0012"
+HEAD_REVISION = "20260806_0013"
 RETENTION_TRIGGER = "trg_retention_destroy_document_keys"
 MESSAGE_SOURCE_INDEX = "uq_messages_sender_source_message"
+DOCUMENT_REVIEW_STARTED_INDEX = "ix_documents_review_started_at"
 
 
 def sqlite_url(path: Path) -> str:
@@ -103,6 +104,7 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "data_key_destroyed_at",
         "encryption_error",
         "encrypted_at",
+        "review_started_at",
     }.issubset(column_names(database_path, "documents"))
     assert "source_message_id" in column_names(database_path, "messages")
     assert MESSAGE_SOURCE_INDEX in index_names(database_path, "messages")
@@ -145,6 +147,9 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         database_path, "documents"
     )
     assert "ix_documents_data_key_destroyed_at" in index_names(
+        database_path, "documents"
+    )
+    assert DOCUMENT_REVIEW_STARTED_INDEX in index_names(
         database_path, "documents"
     )
     with sqlite3.connect(database_path) as connection:
@@ -406,7 +411,11 @@ def test_legacy_database_is_adopted_without_data_loss(tmp_path):
         "encrypted_data_key",
         "encrypted_data_key_nonce",
         "data_key_destroyed_at",
+        "review_started_at",
     }.issubset(column_names(database_path, "documents"))
+    assert DOCUMENT_REVIEW_STARTED_INDEX in index_names(
+        database_path, "documents"
+    )
     assert "source_message_id" in column_names(database_path, "messages")
     assert MESSAGE_SOURCE_INDEX in index_names(database_path, "messages")
     with sqlite3.connect(database_path) as connection:

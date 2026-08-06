@@ -13,6 +13,11 @@ from app.api.workdesk_ui import WORKDESK_HTML
 from app.config import settings
 from app.db.session import get_db
 from app.domain.cases.case_timeline import get_client_visible_status
+from app.domain.documents.document_workflow import (
+    DocumentAttentionState,
+    DocumentWorkflowDescriptor,
+    describe_document_attention,
+)
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.domain.statuses.document_statuses import DocumentStatus
 from app.models.case import Case
@@ -27,15 +32,6 @@ router = APIRouter(tags=["admin-workdesk"])
 
 CLOSED_STATUSES = ("M1_CLOSED", "M2_CLOSED", "ARCHIVED")
 OVERDUE_SLA_STATUSES = ("FIRST_RESPONSE_OVERDUE", "ACTION_OVERDUE")
-DOCUMENT_REVIEW_STATUSES = (
-    "UPLOADED",
-    "ON_REVIEW",
-    "PENDING",
-    "PENDING_REVIEW",
-    "REVIEW_PENDING",
-    "REVIEW_REQUIRED",
-    "NEEDS_REVIEW",
-)
 ACTIVE_CONSULTATION_STATUSES = ("BOOKED", "CONFIRMED")
 CASE_ACTION_TASKS = {"documents", "consultation", "sla"}
 
@@ -58,13 +54,17 @@ _REASON_PRIORITY = {
     "messages": 1,
     "unassigned": 2,
     "documents": 3,
-    "consultation": 4,
+    "document_draft": 4,
+    "document_legacy": 4,
+    "consultation": 5,
 }
 _REASON_LABELS = {
     "overdue": "Нарушен SLA",
     "messages": "Новое сообщение клиента",
     "unassigned": "Нет ответственного юриста",
     "documents": "Документы ждут решения",
+    "document_draft": "Файлы ещё не переданы юристу",
+    "document_legacy": "Статус документов требует уточнения",
     "consultation": "Консультация сегодня",
 }
 
@@ -89,7 +89,7 @@ def _attention_reasons(
     case: Case,
     *,
     unread_client_messages: int,
-    has_documents: bool,
+    document_workflow: DocumentWorkflowDescriptor,
     consultation_at: datetime | None,
 ) -> list[dict[str, object]]:
     codes: list[str] = []
@@ -99,8 +99,8 @@ def _attention_reasons(
         codes.append("messages")
     if case.assigned_lawyer_id is None:
         codes.append("unassigned")
-    if has_documents:
-        codes.append("documents")
+    if document_workflow.state != DocumentAttentionState.NONE:
+        codes.append(document_workflow.code)
     if consultation_at is not None:
         codes.append("consultation")
 
@@ -109,6 +109,8 @@ def _attention_reasons(
         label = _REASON_LABELS[code]
         if code == "messages":
             label = f"Новые сообщения клиента: {unread_client_messages}"
+        elif code == document_workflow.code:
+            label = document_workflow.label
         reasons.append(
             {
                 "code": code,
@@ -122,6 +124,7 @@ def _attention_reasons(
 def _primary_action(
     case: Case,
     reasons: list[dict[str, object]],
+    document_workflow: DocumentWorkflowDescriptor,
 ) -> dict[str, object]:
     reason_codes = {str(item["code"]) for item in reasons}
     # An unassigned case must get an owner before responsibility can be tracked.
@@ -150,8 +153,14 @@ def _primary_action(
     if "documents" in reason_codes:
         return {
             "kind": "link",
-            "label": "Проверить документы дела",
+            "label": document_workflow.primary_label,
             "href": f"/admin/workdesk/cases/{case.id}/action/documents",
+        }
+    if {"document_draft", "document_legacy"} & reason_codes:
+        return {
+            "kind": "link",
+            "label": document_workflow.primary_label,
+            "href": f"/message-center/ui?case_id={case.id}",
         }
     return {
         "kind": "link",
@@ -165,14 +174,14 @@ def _attention_item(
     *,
     unread_client_messages: int,
     latest_client_message_at: datetime | None,
-    has_documents: bool,
+    document_workflow: DocumentWorkflowDescriptor,
     consultation_at: datetime | None,
     lawyer_name: str | None,
 ) -> dict[str, object] | None:
     reasons = _attention_reasons(
         case,
         unread_client_messages=unread_client_messages,
-        has_documents=has_documents,
+        document_workflow=document_workflow,
         consultation_at=consultation_at,
     )
     if not reasons:
@@ -209,11 +218,12 @@ def _attention_item(
             if latest_client_message_at
             else None
         ),
+        "document_workflow": document_workflow.as_dict(),
         "created_at": case.created_at.isoformat(),
         "updated_at": case.updated_at.isoformat(),
         "priority": int(reasons[0]["priority"]),
         "reasons": reasons,
-        "primary_action": _primary_action(case, reasons),
+        "primary_action": _primary_action(case, reasons, document_workflow),
         "sort_deadline": _utc_sort_value(deadline),
     }
 
@@ -294,16 +304,20 @@ async def workdesk_attention(
         }
 
     case_ids = [case.id for case in cases]
-    document_case_ids = set(
-        (
-            await db.execute(
-                select(Document.case_id)
-                .where(Document.case_id.in_(case_ids))
-                .where(Document.status.in_(DOCUMENT_REVIEW_STATUSES))
-                .distinct()
-            )
-        ).scalars().all()
-    )
+    document_rows = (
+        await db.execute(
+            select(Document.case_id, Document.status)
+            .where(Document.case_id.in_(case_ids))
+        )
+    ).all()
+    document_statuses: dict[int, list[object]] = {}
+    for case_id, status in document_rows:
+        document_statuses.setdefault(int(case_id), []).append(status)
+    document_workflows = {
+        case_id: describe_document_attention(statuses)
+        for case_id, statuses in document_statuses.items()
+    }
+    no_document_workflow = describe_document_attention(())
 
     message_rows = (
         await db.execute(
@@ -364,7 +378,10 @@ async def workdesk_attention(
             case,
             unread_client_messages=unread_count,
             latest_client_message_at=latest_message_at,
-            has_documents=case.id in document_case_ids,
+            document_workflow=document_workflows.get(
+                case.id,
+                no_document_workflow,
+            ),
             consultation_at=consultation_times.get(case.id),
             lawyer_name=lawyer_names.get(case.assigned_lawyer_id),
         )
@@ -391,16 +408,31 @@ async def workdesk_case_documents(
     x_admin_token: str | None = Header(default=None),
 ):
     require_admin(x_admin_token)
-    rows = (
+    case_row = (
         await db.execute(
-            select(Document, Case, User)
-            .join(Case, Case.id == Document.case_id)
+            select(Case, User)
             .join(User, User.id == Case.client_id)
             .where(Case.id == case_id)
-            .where(Document.status == DocumentStatus.ON_REVIEW)
-            .order_by(Document.created_at.asc(), Document.id.asc())
         )
-    ).all()
+    ).one_or_none()
+    if case_row is None:
+        raise HTTPException(status_code=404, detail="Дело не найдено")
+    case, user = case_row
+    documents = list(
+        (
+            await db.execute(
+                select(Document)
+                .where(Document.case_id == case_id)
+                .order_by(Document.created_at.asc(), Document.id.asc())
+            )
+        ).scalars().all()
+    )
+    workflow = describe_document_attention(document.status for document in documents)
+    actionable_documents = [
+        document
+        for document in documents
+        if document.status == DocumentStatus.ON_REVIEW
+    ]
     items = [
         {
             "document_id": document.id,
@@ -417,12 +449,23 @@ async def workdesk_case_documents(
             "status": document.status,
             "version": document.version,
             "lawyer_comment": document.lawyer_comment,
+            "review_started_at": (
+                document.review_started_at.isoformat()
+                if document.review_started_at
+                else None
+            ),
             "created_at": document.created_at.isoformat(),
             "updated_at": document.updated_at.isoformat(),
         }
-        for document, case, user in rows
+        for document in actionable_documents
     ]
-    return {"role": "admin", "count": len(items), "items": items}
+    return {
+        "role": "admin",
+        "case_id": case_id,
+        "workflow": workflow.as_dict(),
+        "count": len(items),
+        "items": items,
+    }
 
 
 @router.get("/admin/workdesk/cases/{case_id}/consultation-outcomes")

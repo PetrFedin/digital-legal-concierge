@@ -27,7 +27,21 @@ def test_exact_case_action_screen_uses_server_scoped_read_models():
     assert "/admin/sla/'+caseId+'/acknowledge" in html
 
 
-def test_exact_read_projections_have_case_id_filters_and_no_global_limits():
+def test_exact_document_screen_handles_every_non_actionable_state_without_dead_end():
+    html = _render_case_action_html(42)
+
+    assert "workflow.state==='CLIENT_DRAFT'" in html
+    assert "Пакет ещё не передан юристу" in html
+    assert "workflow.state==='LEGACY_ATTENTION'" in html
+    assert "Статус документов требует уточнения" in html
+    assert "workflow.state==='REVIEW'" in html
+    assert "Очередь изменилась" in html
+    assert "Обновить" in html
+    assert "/message-center/ui?case_id=${caseId}" in html
+    assert "Вернуться к приоритетам" in html
+
+
+def test_exact_read_projections_have_case_id_filters_and_actionable_status_only():
     source = (ROOT / "app/api/workdesk.py").read_text(encoding="utf-8")
 
     assert '@router.get("/admin/workdesk/cases/{case_id}/documents")' in source
@@ -43,6 +57,10 @@ def test_exact_read_projections_have_case_id_filters_and_no_global_limits():
 
     assert ".where(Case.id == case_id)" in source
     assert ".where(Consultation.case_id == case_id)" in source
+    assert "describe_document_attention" in source
+    assert "document.status == DocumentStatus.ON_REVIEW" in source
+    assert '"workflow": workflow.as_dict()' in source
+    assert '"review_started_at"' in source
     scoped_section = source.split(
         '@router.get("/admin/workdesk/cases/{case_id}/documents")', 1
     )[1]
@@ -51,6 +69,15 @@ def test_exact_read_projections_have_case_id_filters_and_no_global_limits():
     )[0]
     assert ".limit(300)" not in scoped_section
     assert ".limit(500)" not in scoped_section
+
+
+def test_legacy_admin_document_queue_accepts_only_submitted_packages():
+    source = (ROOT / "app/api/web_admin.py").read_text(encoding="utf-8")
+
+    assert "DOCUMENT_REVIEW_STATUSES = ACTIONABLE_REVIEW_STATUSES" in source
+    assert "Document.status.in_(DOCUMENT_REVIEW_STATUSES)" in source
+    assert "Только пакеты, которые клиент передал юристу" in source
+    assert "Ожидает передачи юристу" in source
 
 
 def test_case_action_template_contract_fails_closed_on_drift(monkeypatch):

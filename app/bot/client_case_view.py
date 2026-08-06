@@ -11,6 +11,11 @@ from app.domain.cases.case_timeline import (
     get_case_progress_percent,
     get_client_visible_status,
 )
+from app.domain.documents.document_workflow import (
+    ACTIONABLE_REVIEW_STATUSES,
+    LEGACY_ATTENTION_STATUSES,
+    normalize_document_status,
+)
 from app.domain.messages.message_service import MessageService
 from app.domain.payments.mode import payments_disabled
 from app.domain.statuses.consultation_statuses import ConsultationStatus
@@ -38,6 +43,7 @@ class DocumentOverview:
     summary: str
     blocker: str | None
     latest_updated_at: datetime | None
+    legacy_attention_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -145,14 +151,6 @@ CLIENT_ACTIONS: dict[str, ClientAction] = {
 }
 
 _DOCUMENT_REPLACEMENT = {"REJECTED", "NEEDS_REUPLOAD"}
-_DOCUMENT_REVIEW = {
-    "PENDING",
-    "PENDING_REVIEW",
-    "REVIEW_PENDING",
-    "REVIEW_REQUIRED",
-    "NEEDS_REVIEW",
-    "ON_REVIEW",
-}
 _DOCUMENT_APPROVED = {"APPROVED", "ACCEPTED", "VERIFIED"}
 _CONSULTATION_LABELS = {
     ConsultationStatus.DESCRIPTION_PENDING: "Нужно описание вопроса",
@@ -225,13 +223,28 @@ def _short_comment(value: str | None, limit: int = 180) -> str | None:
 
 
 def _document_overview(documents: list[Document]) -> DocumentOverview:
-    current = [item for item in documents if str(item.status) != "ARCHIVED"]
-    archived = [item for item in documents if str(item.status) == "ARCHIVED"]
-    uploaded = [item for item in current if str(item.status) == "UPLOADED"]
-    review = [item for item in current if str(item.status) in _DOCUMENT_REVIEW]
-    approved = [item for item in current if str(item.status) in _DOCUMENT_APPROVED]
+    statuses = {
+        id(item): normalize_document_status(item.status)
+        for item in documents
+    }
+    current = [item for item in documents if statuses[id(item)] != "ARCHIVED"]
+    archived = [item for item in documents if statuses[id(item)] == "ARCHIVED"]
+    uploaded = [item for item in current if statuses[id(item)] == "UPLOADED"]
+    review = [
+        item
+        for item in current
+        if statuses[id(item)] in ACTIONABLE_REVIEW_STATUSES
+    ]
+    legacy_attention = [
+        item
+        for item in current
+        if statuses[id(item)] in LEGACY_ATTENTION_STATUSES
+    ]
+    approved = [
+        item for item in current if statuses[id(item)] in _DOCUMENT_APPROVED
+    ]
     replacement = [
-        item for item in current if str(item.status) in _DOCUMENT_REPLACEMENT
+        item for item in current if statuses[id(item)] in _DOCUMENT_REPLACEMENT
     ]
 
     blocker = None
@@ -246,6 +259,17 @@ def _document_overview(documents: list[Document]) -> DocumentOverview:
         summary = f"{len(current)} актуальных · {len(uploaded)} готовы к передаче"
     elif review:
         summary = f"{len(current)} актуальных · {len(review)} проверяет юрист"
+        if legacy_attention:
+            summary += f" · {len(legacy_attention)} статус уточняется"
+    elif legacy_attention:
+        blocker = (
+            f"Статус {len(legacy_attention)} документов требует уточнения "
+            "у юридической команды"
+        )
+        summary = (
+            f"{len(current)} актуальных · "
+            f"{len(legacy_attention)} статус уточняется"
+        )
     elif current and len(approved) == len(current):
         summary = f"{len(current)} актуальных · все приняты"
     elif current:
@@ -267,6 +291,7 @@ def _document_overview(documents: list[Document]) -> DocumentOverview:
         summary=summary,
         blocker=blocker,
         latest_updated_at=latest_updated_at,
+        legacy_attention_count=len(legacy_attention),
     )
 
 
@@ -282,6 +307,12 @@ def _priority_action(case, documents: DocumentOverview) -> ClientAction | None:
             "Передать документы юристу",
             "doc_finish_upload",
             "Передайте безопасно загруженные файлы юристу на проверку.",
+        )
+    if documents.legacy_attention_count and not documents.review_count:
+        return ClientAction(
+            "Уточнить статус документов",
+            "message_create",
+            "Статус части документов требует уточнения. Напишите команде по делу.",
         )
 
     status = str(case.status)
@@ -330,6 +361,7 @@ def _action_key(
         str(documents.current_count),
         str(documents.uploaded_count),
         str(documents.review_count),
+        str(documents.legacy_attention_count),
         str(documents.replacement_count),
         documents.latest_updated_at.isoformat() if documents.latest_updated_at else "",
         str(consultation.status) if consultation else "",

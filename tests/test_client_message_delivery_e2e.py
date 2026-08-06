@@ -81,6 +81,9 @@ def test_database_enforces_telegram_source_idempotency():
     migration = read(
         "migrations/versions/20260805_0012_message_source_idempotency.py"
     )
+    next_migration = read(
+        "migrations/versions/20260806_0013_document_review_started_at.py"
+    )
     migration_test = read("tests/test_database_migrations.py")
 
     assert '"uq_messages_sender_source_message"' in model
@@ -92,7 +95,9 @@ def test_database_enforces_telegram_source_idempotency():
     assert 'down_revision = "20260730_0011"' in migration
     assert "inspect(bind)" in migration
     assert "if INDEX_NAME not in indexes" in migration
-    assert "HEAD_REVISION = \"20260805_0012\"" in migration_test
+    assert 'revision = "20260806_0013"' in next_migration
+    assert 'down_revision = "20260805_0012"' in next_migration
+    assert 'HEAD_REVISION = "20260806_0013"' in migration_test
     assert "MESSAGE_SOURCE_INDEX" in migration_test
 
 
