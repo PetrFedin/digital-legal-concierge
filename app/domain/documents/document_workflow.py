@@ -68,7 +68,7 @@ def describe_document_attention(
     if state == DocumentAttentionState.REVIEW:
         return DocumentWorkflowDescriptor(
             state=state,
-            code="documents_review",
+            code="documents",
             label="Документы ждут решения юриста",
             detail=(
                 "Клиент завершил передачу пакета. Проверьте каждый файл и "
@@ -81,7 +81,7 @@ def describe_document_attention(
     if state == DocumentAttentionState.CLIENT_DRAFT:
         return DocumentWorkflowDescriptor(
             state=state,
-            code="documents_client_draft",
+            code="document_draft",
             label="Клиент загрузил файлы, но не передал пакет",
             detail=(
                 "Файлы остаются черновиками клиента. Решения юриста пока "
@@ -94,7 +94,7 @@ def describe_document_attention(
     if state == DocumentAttentionState.LEGACY_ATTENTION:
         return DocumentWorkflowDescriptor(
             state=state,
-            code="documents_legacy_attention",
+            code="document_legacy",
             label="Статус документов требует уточнения",
             detail=(
                 "Обнаружен исторический статус, который нельзя безопасно "
