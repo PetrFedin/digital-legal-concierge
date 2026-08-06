@@ -74,5 +74,10 @@ class Document(Base, TimestampMixin):
     version: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[str] = mapped_column(String(100), default="UPLOADED")
     is_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    review_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
     lawyer_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     case = relationship("Case", back_populates="documents")
