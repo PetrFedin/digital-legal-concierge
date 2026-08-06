@@ -128,7 +128,8 @@ async def operator_page():
               <div class="links">
                 <a class="link primary" href="/admin/workdesk/ui"><b>Единый рабочий стол</b><span>Приоритеты, карточка дела и безопасное следующее действие</span></a>
                 <a class="link" href="/admin-ui"><b>Расширенная административная панель</b><span>Полный набор справочников и редких корректирующих операций</span></a>
-                <a class="link" href="/lawyer/workspace/ui"><b>Рабочий кабинет юриста</b><span>Приоритеты, дела, документы, консультации и SLA</span></a>
+                <a class="link" href="/lawyer/workspace/ui"><b>Рабочий кабинет юриста</b><span>Приоритеты, дела, документы и SLA</span></a>
+                <a class="link" href="/lawyer/consultation-desk/ui"><b>Подготовка консультаций</b><span>Вопрос, материалы, время, связь и фиксация результата без лишних переходов</span></a>
                 <a class="link" href="/document-access/review/ui"><b>Проверка документов</b><span>Скачать файл, принять, отклонить или запросить новую версию</span></a>
                 <a class="link" href="/message-center/ui"><b>Сообщения</b><span>Диалоги клиентов и ответы команды</span></a>
                 <a class="link" href="/task-center/ui"><b>Задачи</b><span>Контроль текущих операционных действий</span></a>
@@ -200,6 +201,7 @@ async def operator_status():
             "admin": "/admin/workdesk/ui",
             "admin_legacy": "/admin-ui",
             "lawyer": "/lawyer/workspace/ui",
+            "lawyer_consultations": "/lawyer/consultation-desk/ui",
             "lawyer_legacy": "/lawyer/ui",
             "document_review": "/document-access/review/ui",
             "telegram_delivery": "/admin/notification-delivery/ui",
@@ -211,6 +213,9 @@ async def operator_status():
 
 # Mounted here because /operator is the role-workspace hub.
 from app.api.case_timeline import router as case_timeline_router  # noqa: E402
+from app.api.lawyer_consultation_desk import (  # noqa: E402
+    router as lawyer_consultation_desk_router,
+)
 from app.api.lawyer_workspace import router as lawyer_workspace_router  # noqa: E402
 from app.api.notification_delivery import (  # noqa: E402
     router as notification_delivery_router,
@@ -218,6 +223,7 @@ from app.api.notification_delivery import (  # noqa: E402
 from app.api.workdesk import router as workdesk_router  # noqa: E402
 
 router.include_router(case_timeline_router)
+router.include_router(lawyer_consultation_desk_router)
 router.include_router(lawyer_workspace_router)
 router.include_router(notification_delivery_router)
 router.include_router(workdesk_router)
