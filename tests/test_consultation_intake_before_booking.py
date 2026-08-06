@@ -280,10 +280,10 @@ async def test_payment_domain_rejects_legacy_slot_without_question(tmp_path):
                 )
 
 
-def test_slot_compare_and_set_disables_in_memory_datetime_evaluation():
+def test_slot_compare_and_set_uses_database_fetch_synchronization():
     source = read("app/domain/consultations/slot_service.py")
 
-    assert "synchronize_session=False" in source
+    assert 'synchronize_session="fetch"' in source
     assert "ConsultationSlot.hold_expires_at >= datetime.now(timezone.utc)" in source
     assert "self._bulk(" in source
 
