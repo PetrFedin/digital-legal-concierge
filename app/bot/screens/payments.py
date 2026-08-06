@@ -6,6 +6,9 @@ from sqlalchemy import select
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.config import settings
+from app.domain.consultations.consultation_intake import (
+    ConsultationDescriptionRequired,
+)
 from app.domain.consultations.slot_service import SlotUnavailableError
 from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
@@ -120,7 +123,7 @@ async def start_payment(callback: CallbackQuery, db, code):
     case = await ctx.case_service.get_active_case_for_user(user.id)
     if not case:
         await callback.answer(
-            "Сначала выберите дату и время консультации.",
+            "Сначала опишите вопрос и выберите дату и время консультации.",
             show_alert=True,
         )
         return
@@ -133,13 +136,25 @@ async def start_payment(callback: CallbackQuery, db, code):
         )
         payment = await service.create_payment_link(payment)
         await db.commit()
+    except ConsultationDescriptionRequired as error:
+        await db.rollback()
+        await callback.message.edit_text(
+            f"📝 {error}\n\nОписание и документы не изменены.",
+            reply_markup=one(
+                ("▶️ Описать вопрос", "consult_subject_start"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
     except (SlotUnavailableError, ValueError) as error:
         await db.rollback()
         if code == PaymentCode.M2_CONSULTATION_PAYMENT:
             await callback.message.edit_text(
-                f"⏳ {error}\n\nВыберите новое свободное время.",
+                f"⏳ {error}\n\nВопрос и документы сохранены. Выберите новое свободное время.",
                 reply_markup=one(
                     ("📅 Выбрать дату и время", "consult_booking_start"),
+                    ("📁 Моё дело", "my_case_open"),
                     ("🏠 Главная", "nav_home"),
                 ),
             )
@@ -148,16 +163,23 @@ async def start_payment(callback: CallbackQuery, db, code):
         return
     except RuntimeError:
         await db.rollback()
-        await callback.answer(
-            "Платёжный сервис временно недоступен.",
-            show_alert=True,
+        await callback.message.edit_text(
+            "Платёжный сервис временно недоступен. Выбранное время, вопрос и документы сохранены.",
+            reply_markup=one(
+                ("🔄 Повторить оплату", "consult_pay"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ) if code == PaymentCode.M2_CONSULTATION_PAYMENT else one(
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
         )
         return
 
     await callback.message.edit_text(
         f"💳 {payment.title}\n\nСумма: {money(payment.amount)}\n\n"
-        "После подтверждения оплаты слот станет окончательно вашим. "
-        "Не используйте эту ссылку после выбора другого времени.",
+        "Вопрос и документы сохранены. После подтверждения оплаты выбранный "
+        "слот станет окончательно вашим. Не используйте эту ссылку после выбора другого времени.",
         reply_markup=payment_keyboard(payment),
     )
 
@@ -211,6 +233,7 @@ async def fake(callback: CallbackQuery, db):
             "Администратор проверит платёж и свяжется с вами.",
             reply_markup=one(
                 ("📅 Выбрать новое время", "consult_booking_start"),
+                ("✉️ Написать команде", "message_create"),
                 ("📁 Мое дело", "my_case_open"),
             ),
         )
@@ -219,12 +242,12 @@ async def fake(callback: CallbackQuery, db):
     if payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT:
         await callback.message.edit_text(
             "✅ Оплата подтверждена, консультация забронирована.\n\n"
-            "Теперь выберите, к какому делу относится встреча, "
-            "и напишите конкретный вопрос для юриста.",
+            "Вопрос уже сохранён. Проверьте дату, документы и подготовку к встрече.",
             reply_markup=one(
-                ("📝 Указать дело и вопрос", "consult_subject_start"),
-                ("👨‍⚖ Открыть запись", "consultation_booked_open"),
-                ("🏠 Главная", "nav_home"),
+                ("👨‍⚖ Открыть запись и подготовку", "consultation_booked_open"),
+                ("📄 Документы", "documents_open"),
+                ("✉️ Задать вопрос команде", "message_create"),
+                ("📁 Моё дело", "my_case_open"),
             ),
         )
         return
