@@ -29,6 +29,7 @@ CLIENT_VISIBLE_ACTIONS = frozenset(
         "CONSULTATION_SLOT_HELD",
         "CONSULTATION_SLOT_RESERVED",
         "CONSULTATION_BOOKED_AFTER_PAYMENT",
+        "CONSULTATION_BOOKED_WITHOUT_PAYMENT",
         "CONSULTATION_RESCHEDULED",
         "CONSULTATION_CANCELLED",
         "CONSULTATION_DONE",
@@ -84,6 +85,7 @@ TITLE_BY_ACTION = {
     "CONSULTATION_SLOT_HELD": "Время консультации временно зарезервировано",
     "CONSULTATION_SLOT_RESERVED": "Время консультации выбрано",
     "CONSULTATION_BOOKED_AFTER_PAYMENT": "Консультация подтверждена",
+    "CONSULTATION_BOOKED_WITHOUT_PAYMENT": "Консультация подтверждена",
     "CONSULTATION_RESCHEDULED": "Консультация перенесена",
     "CONSULTATION_CANCELLED": "Консультация отменена",
     "CONSULTATION_DONE": "Консультация проведена",
@@ -123,6 +125,7 @@ CATEGORY_BY_ACTION = {
     "CONSULTATION_SLOT_HELD": "consultation",
     "CONSULTATION_SLOT_RESERVED": "consultation",
     "CONSULTATION_BOOKED_AFTER_PAYMENT": "consultation",
+    "CONSULTATION_BOOKED_WITHOUT_PAYMENT": "consultation",
     "CONSULTATION_RESCHEDULED": "consultation",
     "CONSULTATION_CANCELLED": "consultation",
     "CONSULTATION_DONE": "consultation",
@@ -239,7 +242,11 @@ def _safe_detail(log: AuditLog, audience: ActivityAudience) -> str | None:
     action = str(log.action)
     payload = _payload(log)
 
-    if action in {"CASE_STATUS_CHANGED", "CASE_TRANSFERRED_TO_M1", "CASE_TRANSFERRED_TO_M2"}:
+    if action in {
+        "CASE_STATUS_CHANGED",
+        "CASE_TRANSFERRED_TO_M1",
+        "CASE_TRANSFERRED_TO_M2",
+    }:
         label = _status_label(payload.get("status"))
         return f"Текущий этап: {label}." if label else None
 
@@ -272,6 +279,7 @@ def _safe_detail(log: AuditLog, audience: ActivityAudience) -> str | None:
         "CONSULTATION_SLOT_HELD",
         "CONSULTATION_SLOT_RESERVED",
         "CONSULTATION_BOOKED_AFTER_PAYMENT",
+        "CONSULTATION_BOOKED_WITHOUT_PAYMENT",
     }:
         scheduled = _format_datetime(
             payload.get("scheduled_at") or payload.get("starts_at")
@@ -305,7 +313,9 @@ def present_case_activity(
     audience: ActivityAudience,
 ) -> CaseActivityItem | None:
     action = str(log.action)
-    allowed = CLIENT_VISIBLE_ACTIONS | (STAFF_ONLY_ACTIONS if audience == "staff" else frozenset())
+    allowed = CLIENT_VISIBLE_ACTIONS | (
+        STAFF_ONLY_ACTIONS if audience == "staff" else frozenset()
+    )
     if action not in allowed:
         return None
     title = TITLE_BY_ACTION.get(action)
