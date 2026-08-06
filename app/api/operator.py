@@ -210,12 +210,14 @@ async def operator_status():
 
 
 # Mounted here because /operator is the role-workspace hub.
+from app.api.case_timeline import router as case_timeline_router  # noqa: E402
 from app.api.lawyer_workspace import router as lawyer_workspace_router  # noqa: E402
 from app.api.notification_delivery import (  # noqa: E402
     router as notification_delivery_router,
 )
 from app.api.workdesk import router as workdesk_router  # noqa: E402
 
+router.include_router(case_timeline_router)
 router.include_router(lawyer_workspace_router)
 router.include_router(notification_delivery_router)
 router.include_router(workdesk_router)
