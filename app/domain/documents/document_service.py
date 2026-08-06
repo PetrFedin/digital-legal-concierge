@@ -354,8 +354,9 @@ class DocumentService:
         submission_references: list[str] = []
         for document in verified_new:
             document.status = DocumentStatus.ON_REVIEW
-            # TimestampMixin will persist the same boundary in updated_at. An
-            # explicit assignment keeps all files in one package on one instant.
+            document.review_started_at = submitted_at
+            # Keep TimestampMixin aligned with the explicit domain timestamp so
+            # optimistic-write snapshots and audit views share one boundary.
             document.updated_at = submitted_at
             submitted_ids.append(int(document.id))
             submission_references.append(document_submission_reference(document))
