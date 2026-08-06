@@ -63,6 +63,10 @@ async def create_paid_consultation_context(
         case_id=case.id,
         lawyer_id=lawyer.id,
         status=ConsultationStatus.PAYMENT_PENDING,
+        client_description=(
+            "Нужно проверить договор и порядок дальнейших действий по спору."
+        ),
+        subject_type="new_or_other",
     )
     session.add(consultation)
     await session.flush()
