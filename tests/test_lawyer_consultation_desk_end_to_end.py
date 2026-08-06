@@ -154,10 +154,13 @@ def test_consultation_desk_is_role_scoped_and_has_complete_recovery_ui():
     assert "/document-access/review/ui" in source
     assert "Зафиксировать результат" in source
     assert "Клиент не подключился" in source
+    assert ".green{background:var(--green)}" in source
     assert "Загрузка консультаций" in source
     assert "Не удалось загрузить консультации" in source
     assert "Повторить" in source
     assert "Отмена" in source
+    assert "Результат сохранён, но список не обновился" in source
+    assert "Неявка сохранена, но список не обновился" in source
     assert "aria-live=\"polite\"" in source
     assert "const pending=new Set()" in source
     assert "setInterval" in source
