@@ -36,6 +36,11 @@ def test_client_document_groups_hide_archived_versions_from_current_flow():
     assert _client_document_status(archived) == "Предыдущая версия"
 
 
+def test_legacy_pending_status_is_not_presented_as_lawyer_review():
+    assert _client_document_status(document("PENDING_REVIEW")) == "Статус уточняется"
+    assert _client_document_status(document("ON_REVIEW")) == "Проверяет юрист"
+
+
 def test_reupload_reason_has_priority_over_other_document_actions():
     replacement = document(
         "NEEDS_REUPLOAD",
@@ -135,6 +140,24 @@ def test_source_keeps_legacy_callbacks_and_blocks_empty_submission():
     assert "Все новые файлы уже переданы юристу" in source
     assert "Эти файлы сохранены в истории, но больше не участвуют" in source
     assert "Следующий шаг:" in source
+
+
+def test_submission_has_exact_success_copy_idempotent_retry_and_direct_help():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "app/bot/screens/documents.py"
+    ).read_text(encoding="utf-8")
+
+    assert '_DOCUMENT_REVIEW_STATUSES = {"ON_REVIEW"}' in source
+    assert "DocumentsAlreadySubmittedError" in source
+    assert "Документы получены и переданы юристу на проверку" in source
+    assert "Повторная запись не создана" in source
+    assert "Загруженные файлы сохранены" in source
+    assert '"message_create"' in source
+    assert "Передаём документы юристу" in source
+    assert "Повторить передачу" in source
 
 
 def test_security_metadata_stays_internal_and_refresh_is_idempotent():
