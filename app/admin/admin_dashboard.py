@@ -2,6 +2,10 @@ from datetime import datetime, time, timedelta, timezone
 
 from sqlalchemy import func, or_, select
 
+from app.domain.documents.document_workflow import (
+    ACTIONABLE_REVIEW_STATUSES,
+    CLIENT_DRAFT_STATUSES,
+)
 from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.document import Document
@@ -11,12 +15,6 @@ from app.models.payment import Payment
 
 CLOSED_CASE_STATUSES = ("M1_CLOSED", "M2_CLOSED", "ARCHIVED")
 PAYMENT_WAITING_STATUSES = ("PENDING", "WAITING_CONFIRMATION")
-DOCUMENT_REVIEW_STATUSES = (
-    "UPLOADED",
-    "ON_REVIEW",
-    "PENDING_REVIEW",
-    "REVIEW_REQUIRED",
-)
 SLA_OVERDUE_STATUSES = ("FIRST_RESPONSE_OVERDUE", "ACTION_OVERDUE")
 ACTIVE_CONSULTATION_STATUSES = ("BOOKED", "CONFIRMED")
 
@@ -73,7 +71,12 @@ class AdminDashboardService:
         total_documents = await self._count(select(func.count(Document.id)))
         documents_review = await self._count(
             select(func.count(Document.id)).where(
-                Document.status.in_(DOCUMENT_REVIEW_STATUSES)
+                Document.status.in_(tuple(ACTIONABLE_REVIEW_STATUSES))
+            )
+        )
+        documents_draft = await self._count(
+            select(func.count(Document.id)).where(
+                Document.status.in_(tuple(CLIENT_DRAFT_STATUSES))
             )
         )
 
@@ -130,6 +133,7 @@ class AdminDashboardService:
             "queue": {
                 "unassigned": unassigned_cases,
                 "documents_review": documents_review,
+                "documents_draft": documents_draft,
                 "consultations_today": consultations_today,
                 "overdue": overdue_cases,
                 "telegram_delivery": notification_attention,
@@ -145,6 +149,7 @@ class AdminDashboardService:
             "documents": {
                 "total": total_documents,
                 "for_review": documents_review,
+                "client_drafts": documents_draft,
             },
             "consultations": {
                 "booked": consultations_booked,
