@@ -22,6 +22,15 @@ class SlotService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    @staticmethod
+    def _bulk(statement):
+        # SQLite returns timezone-naive datetime values even for timezone-aware
+        # columns. ORM synchronize-session evaluation may then compare them to
+        # aware UTC values from the WHERE clause and fail after the database has
+        # already accepted the operation. Database rowcount is the source of
+        # truth for these compare-and-set transitions on every supported DB.
+        return statement.execution_options(synchronize_session=False)
+
     async def release_expired_holds(self) -> int:
         now = datetime.now(timezone.utc)
         expired = (
@@ -45,32 +54,36 @@ class SlotService:
 
         if consultation_ids:
             await self.db.execute(
-                update(Consultation)
-                .where(
-                    Consultation.id.in_(consultation_ids),
-                    Consultation.status.in_(
-                        [
-                            ConsultationStatus.SLOT_RESERVED,
-                            ConsultationStatus.PAYMENT_PENDING,
-                        ]
-                    ),
-                )
-                .values(
-                    slot_id=None,
-                    lawyer_id=None,
-                    scheduled_at=None,
-                    status=ConsultationStatus.SLOT_PENDING,
+                self._bulk(
+                    update(Consultation)
+                    .where(
+                        Consultation.id.in_(consultation_ids),
+                        Consultation.status.in_(
+                            [
+                                ConsultationStatus.SLOT_RESERVED,
+                                ConsultationStatus.PAYMENT_PENDING,
+                            ]
+                        ),
+                    )
+                    .values(
+                        slot_id=None,
+                        lawyer_id=None,
+                        scheduled_at=None,
+                        status=ConsultationStatus.SLOT_PENDING,
+                    )
                 )
             )
 
         await self.db.execute(
-            update(ConsultationSlot)
-            .where(ConsultationSlot.id.in_(slot_ids))
-            .values(
-                status="available",
-                hold_expires_at=None,
-                held_by_user_id=None,
-                consultation_id=None,
+            self._bulk(
+                update(ConsultationSlot)
+                .where(ConsultationSlot.id.in_(slot_ids))
+                .values(
+                    status="available",
+                    hold_expires_at=None,
+                    held_by_user_id=None,
+                    consultation_id=None,
+                )
             )
         )
         await self.db.flush()
@@ -127,17 +140,19 @@ class SlotService:
         now = datetime.now(timezone.utc)
         hold_expires_at = now + timedelta(minutes=self.HOLD_MINUTES)
         result = await self.db.execute(
-            update(ConsultationSlot)
-            .where(
-                ConsultationSlot.id == slot_id,
-                ConsultationSlot.status == "available",
-                ConsultationSlot.starts_at > now,
-            )
-            .values(
-                status="held",
-                held_by_user_id=user_id,
-                consultation_id=consultation_id,
-                hold_expires_at=hold_expires_at,
+            self._bulk(
+                update(ConsultationSlot)
+                .where(
+                    ConsultationSlot.id == slot_id,
+                    ConsultationSlot.status == "available",
+                    ConsultationSlot.starts_at > now,
+                )
+                .values(
+                    status="held",
+                    held_by_user_id=user_id,
+                    consultation_id=consultation_id,
+                    hold_expires_at=hold_expires_at,
+                )
             )
         )
         if result.rowcount != 1:
@@ -159,17 +174,19 @@ class SlotService:
     ) -> ConsultationSlot:
         await self.release_expired_holds()
         result = await self.db.execute(
-            update(ConsultationSlot)
-            .where(
-                ConsultationSlot.id == slot_id,
-                ConsultationSlot.status == "available",
-                ConsultationSlot.starts_at > datetime.now(timezone.utc),
-            )
-            .values(
-                status="booked",
-                held_by_user_id=user_id,
-                consultation_id=consultation_id,
-                hold_expires_at=None,
+            self._bulk(
+                update(ConsultationSlot)
+                .where(
+                    ConsultationSlot.id == slot_id,
+                    ConsultationSlot.status == "available",
+                    ConsultationSlot.starts_at > datetime.now(timezone.utc),
+                )
+                .values(
+                    status="booked",
+                    held_by_user_id=user_id,
+                    consultation_id=consultation_id,
+                    hold_expires_at=None,
+                )
             )
         )
         if result.rowcount != 1:
@@ -188,14 +205,16 @@ class SlotService:
         consultation_id: int,
     ) -> ConsultationSlot:
         result = await self.db.execute(
-            update(ConsultationSlot)
-            .where(
-                ConsultationSlot.id == slot_id,
-                ConsultationSlot.consultation_id == consultation_id,
-                ConsultationSlot.status == "held",
-                ConsultationSlot.hold_expires_at >= datetime.now(timezone.utc),
+            self._bulk(
+                update(ConsultationSlot)
+                .where(
+                    ConsultationSlot.id == slot_id,
+                    ConsultationSlot.consultation_id == consultation_id,
+                    ConsultationSlot.status == "held",
+                    ConsultationSlot.hold_expires_at >= datetime.now(timezone.utc),
+                )
+                .values(status="booked", hold_expires_at=None)
             )
-            .values(status="booked", hold_expires_at=None)
         )
         if result.rowcount != 1:
             existing = await self.get_slot(slot_id)
@@ -220,13 +239,15 @@ class SlotService:
         if consultation_id is not None:
             conditions.append(ConsultationSlot.consultation_id == consultation_id)
         await self.db.execute(
-            update(ConsultationSlot)
-            .where(*conditions)
-            .values(
-                status="available",
-                hold_expires_at=None,
-                held_by_user_id=None,
-                consultation_id=None,
+            self._bulk(
+                update(ConsultationSlot)
+                .where(*conditions)
+                .values(
+                    status="available",
+                    hold_expires_at=None,
+                    held_by_user_id=None,
+                    consultation_id=None,
+                )
             )
         )
         await self.db.flush()
