@@ -4,6 +4,10 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_history import add_case_history_event
+from app.domain.consultations.consultation_intake import (
+    ConsultationDescriptionRequired,
+    consultation_description_ready,
+)
 from app.domain.consultations.consultation_service import ConsultationService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.payments.providers import get_payment_provider
@@ -58,6 +62,10 @@ class PaymentService:
         consultation = await consultation_service.get_current_for_case(case.id)
         if not consultation:
             raise ValueError("Активная консультация не найдена")
+        if not consultation_description_ready(consultation):
+            raise ConsultationDescriptionRequired(
+                "Сначала опишите ситуацию и конкретный вопрос для юриста."
+            )
         slot = await consultation_service.require_payable_slot(consultation)
         return self.consultation_reservation_key(consultation.id, slot.id)
 
