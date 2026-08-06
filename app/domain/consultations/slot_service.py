@@ -25,11 +25,11 @@ class SlotService:
     @staticmethod
     def _bulk(statement):
         # SQLite returns timezone-naive datetime values even for timezone-aware
-        # columns. ORM synchronize-session evaluation may then compare them to
-        # aware UTC values from the WHERE clause and fail after the database has
-        # already accepted the operation. Database rowcount is the source of
-        # truth for these compare-and-set transitions on every supported DB.
-        return statement.execution_options(synchronize_session=False)
+        # columns. The default ORM "evaluate" strategy may compare them to an
+        # aware UTC value in Python. "fetch" synchronizes through database row
+        # identity instead, avoiding that comparison while keeping already
+        # loaded slot and consultation objects current after compare-and-set.
+        return statement.execution_options(synchronize_session="fetch")
 
     async def release_expired_holds(self) -> int:
         now = datetime.now(timezone.utc)
