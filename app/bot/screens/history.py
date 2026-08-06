@@ -63,10 +63,13 @@ def _format_timeline(page: dict[str, object]) -> str:
         "Последние значимые изменения по вашему делу:",
     ]
     for item in items:
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
         icon = CATEGORY_ICONS.get(str(item.get("category") or "case"), "📁")
         lines = [
             f"{icon} {_format_datetime(item.get('occurred_at'))}",
-            f"{item.get('title') or 'Событие по делу'}",
+            title,
         ]
         detail = str(item.get("detail") or "").strip()
         if detail:
