@@ -1,13 +1,25 @@
 from __future__ import annotations
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
 from app.domain.consultations.consultation_intake import consultation_description_ready
 from app.domain.consultations.consultation_service import ConsultationService
+from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.consultation_statuses import ConsultationStatus
+from app.domain.statuses.payment_statuses import PaymentStatus
+from app.models.payment import Payment
+
+
+REFUND_RELEVANT_PAYMENT_STATUSES = (
+    PaymentStatus.PAID,
+    PaymentStatus.REFUND_PENDING,
+    PaymentStatus.REFUND_DECLINED,
+    PaymentStatus.REFUNDED,
+)
 
 
 class ConsultationChangeService:
@@ -24,6 +36,21 @@ class ConsultationChangeService:
         self.cases = CaseService(db)
         self.consultations = ConsultationService(db)
 
+    async def _has_refund_relevant_payment(self, case_id: int) -> bool:
+        payment_id = (
+            await self.db.execute(
+                select(Payment.id)
+                .where(
+                    Payment.case_id == case_id,
+                    Payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT,
+                    Payment.status.in_(REFUND_RELEVANT_PAYMENT_STATUSES),
+                )
+                .order_by(Payment.created_at.desc(), Payment.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        return payment_id is not None
+
     async def cancel_and_prepare_rebooking(
         self,
         *,
@@ -31,7 +58,7 @@ class ConsultationChangeService:
         case,
         client_id: int,
         comment: str,
-        payment_required: bool,
+        payments_currently_disabled: bool,
     ):
         if consultation.case_id != case.id:
             raise ValueError("Консультация не относится к текущему делу")
@@ -42,6 +69,8 @@ class ConsultationChangeService:
         description = consultation.client_description
         subject_type = consultation.subject_type or "new_or_other"
         related_case_id = consultation.related_case_id
+        has_paid_or_refund_payment = await self._has_refund_relevant_payment(case.id)
+        payment_required = has_paid_or_refund_payment or not payments_currently_disabled
 
         cancelled = await self.consultations.cancel(
             consultation=consultation,
@@ -100,9 +129,9 @@ class ConsultationChangeService:
                 ),
                 "subject_type": replacement.subject_type,
                 "related_case_id": replacement.related_case_id,
-                "payment_required": payment_required,
+                "refund_workflow_required": payment_required,
             },
             comment="После отмены клиент может выбрать новое время без потери контекста",
         )
         await self.db.flush()
-        return cancelled, replacement, case
+        return cancelled, replacement, case, payment_required
