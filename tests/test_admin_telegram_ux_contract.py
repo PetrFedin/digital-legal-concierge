@@ -165,28 +165,29 @@ def test_telegram_document_empty_and_failure_states_have_safe_exits():
 
 def test_consultation_related_case_is_verified_for_current_client():
     service = read("app/domain/consultations/consultation_service.py")
-    screen = read("app/bot/screens/consultations.py")
+    intake_screen = read("app/bot/screens/consultation_intake.py")
 
     assert "def _validate_related_case" in service
     assert "Case.id == related_case_id" in service
     assert "Case.client_id == client_id" in service
     assert "принадлежит другому клиенту" in service
     assert "verified_related_case_id" in service
-    assert "Case.id == case_id" in screen
-    assert "Case.client_id == user.id" in screen
-    assert "Выбранное дело больше недоступно" in screen
+    assert "Case.id == case_id" in intake_screen
+    assert "Case.client_id == user.id" in intake_screen
+    assert "Выбранное дело больше недоступно" in intake_screen
 
 
-def test_consultation_screen_uses_human_status_and_recovers_stale_buttons():
-    source = read("app/bot/screens/consultations.py")
+def test_consultation_screens_use_human_status_and_recover_stale_buttons():
+    intake_source = read("app/bot/screens/consultation_intake.py")
+    change_source = read("app/bot/screens/consultations.py")
 
-    assert "CONSULTATION_STATUS_LABELS" in source
-    assert 'ConsultationStatus.BOOKED: "Консультация подтверждена"' in source
-    assert "consultation_status_label(consultation.status)" in source
-    assert 'f"Статус: {consultation.status}' not in source
-    assert "booking_recovery_buttons()" in source
-    assert "Эта кнопка выбора времени больше не актуальна" in source
-    assert "Эта кнопка переноса больше не актуальна" in source
-    assert "Текущая запись сохранена" in source
-    assert '("🔄 Повторить отмену", "consult_cancel_confirm")' in source
-    assert '("📁 Моё дело", "my_case_open")' in source
+    assert "CONSULTATION_STATUS_LABELS" in intake_source
+    assert 'ConsultationStatus.BOOKED: "Консультация подтверждена"' in intake_source
+    assert "_consultation_status_label(consultation.status)" in intake_source
+    assert 'f"Статус: {consultation.status}' not in intake_source
+    assert "Эта кнопка выбора времени больше не актуальна" in intake_source
+    assert "booking_recovery_buttons()" in change_source
+    assert "Эта кнопка переноса больше не актуальна" in change_source
+    assert "Текущая запись сохранена" in change_source
+    assert '("🔄 Повторить отмену", "consult_cancel_confirm")' in change_source
+    assert '("📁 Моё дело", "my_case_open")' in change_source
