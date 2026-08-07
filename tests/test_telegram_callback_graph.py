@@ -33,11 +33,57 @@ def _contains_data_reference(node: ast.AST) -> bool:
     return False
 
 
-def _literal_strings(node: ast.AST) -> set[str]:
+def _assignment_names(node: ast.Assign | ast.AnnAssign) -> set[str]:
+    targets: list[ast.AST]
+    if isinstance(node, ast.Assign):
+        targets = list(node.targets)
+    else:
+        targets = [node.target]
+    names: set[str] = set()
+    for target in targets:
+        if isinstance(target, ast.Name):
+            names.add(target.id)
+    return names
+
+
+def _collection_strings(node: ast.AST) -> set[str]:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return {node.value}
+    if isinstance(node, ast.Dict):
+        return {
+            key.value
+            for key in node.keys
+            if isinstance(key, ast.Constant) and isinstance(key.value, str)
+        }
+    if isinstance(node, (ast.Set, ast.List, ast.Tuple)):
+        return {
+            item.value
+            for item in node.elts
+            if isinstance(item, ast.Constant) and isinstance(item.value, str)
+        }
+    return set()
+
+
+def _module_literal_symbols(tree: ast.Module) -> dict[str, set[str]]:
+    symbols: dict[str, set[str]] = {}
+    for node in tree.body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        values = _collection_strings(node.value)
+        if not values:
+            continue
+        for name in _assignment_names(node):
+            symbols[name] = values
+    return symbols
+
+
+def _resolved_strings(node: ast.AST, symbols: dict[str, set[str]]) -> set[str]:
     values: set[str] = set()
     for child in ast.walk(node):
         if isinstance(child, ast.Constant) and isinstance(child.value, str):
             values.add(child.value)
+        elif isinstance(child, ast.Name):
+            values.update(symbols.get(child.id, set()))
     return values
 
 
@@ -65,19 +111,6 @@ def _callback_pattern(node: ast.AST, source: str) -> CallbackPattern | None:
                 return CallbackPattern("prefix", prefix, source)
 
     return None
-
-
-def _assignment_names(node: ast.Assign | ast.AnnAssign) -> set[str]:
-    targets: list[ast.AST]
-    if isinstance(node, ast.Assign):
-        targets = list(node.targets)
-    else:
-        targets = [node.target]
-    names: set[str] = set()
-    for target in targets:
-        if isinstance(target, ast.Name):
-            names.add(target.id)
-    return names
 
 
 def _collect_emitted_callbacks(path: Path) -> set[CallbackPattern]:
@@ -126,6 +159,7 @@ def _collect_emitted_callbacks(path: Path) -> set[CallbackPattern]:
 
 def _collect_handler_patterns(path: Path) -> tuple[set[str], set[str]]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    symbols = _module_literal_symbols(tree)
     exact: set[str] = set()
     prefixes: set[str] = set()
 
@@ -143,19 +177,19 @@ def _collect_handler_patterns(path: Path) -> tuple[set[str], set[str]]:
         for decorator in callback_decorators:
             for child in ast.walk(decorator):
                 if isinstance(child, ast.Compare) and _contains_data_reference(child):
-                    for text in _literal_strings(child):
+                    for text in _resolved_strings(child, symbols):
                         if CALLBACK_VALUE.fullmatch(text):
                             exact.add(text)
 
                 if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute):
                     if child.func.attr == "startswith" and _contains_data_reference(child.func.value):
                         for arg in child.args:
-                            for text in _literal_strings(arg):
+                            for text in _resolved_strings(arg, symbols):
                                 if CALLBACK_VALUE.fullmatch(text):
                                     prefixes.add(text)
                     elif child.func.attr in {"in_", "in"} and _contains_data_reference(child.func.value):
                         for arg in child.args:
-                            for text in _literal_strings(arg):
+                            for text in _resolved_strings(arg, symbols):
                                 if CALLBACK_VALUE.fullmatch(text):
                                     exact.add(text)
 
@@ -165,7 +199,10 @@ def _collect_handler_patterns(path: Path) -> tuple[set[str], set[str]]:
 def _is_handled(pattern: CallbackPattern, exact: set[str], prefixes: set[str]) -> bool:
     if pattern.kind == "exact":
         return pattern.value in exact or any(pattern.value.startswith(prefix) for prefix in prefixes)
-    return any(pattern.value.startswith(prefix) or prefix.startswith(pattern.value) for prefix in prefixes)
+    return any(
+        pattern.value.startswith(prefix) or prefix.startswith(pattern.value)
+        for prefix in prefixes
+    )
 
 
 def test_every_user_visible_telegram_callback_has_a_registered_route():
