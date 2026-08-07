@@ -32,6 +32,7 @@ TYPES = [
     ("Переписка", "CORRESPONDENCE"),
     ("Другой документ", "OTHER"),
 ]
+_DOCUMENT_TYPE_CODES = {code for _, code in TYPES}
 
 DOC_UPLOAD_ALIASES = {
     "doc_upload_ddu": "DDU",
@@ -154,6 +155,42 @@ async def _safe_edit(
         if "message is not modified" not in str(error).lower():
             raise
         await callback.answer(unchanged_notice)
+
+
+async def _present_committed_result(
+    callback: CallbackQuery,
+    text: str,
+    *,
+    reply_markup,
+    saved_notice: str,
+) -> None:
+    """Render a durable result without ever turning a UI failure into a write retry."""
+    try:
+        await callback.message.edit_text(text, reply_markup=reply_markup)
+        return
+    except TelegramBadRequest as error:
+        if "message is not modified" in str(error).lower():
+            try:
+                await callback.answer(saved_notice)
+            except Exception:
+                logger.warning("Saved document result callback acknowledgement failed")
+            return
+        logger.warning("Saved document result edit failed: %s", error)
+    except Exception:
+        logger.exception("Saved document result edit failed")
+
+    try:
+        await callback.message.answer(text, reply_markup=reply_markup)
+        try:
+            await callback.answer("Изменение сохранено. Результат открыт новым сообщением.")
+        except Exception:
+            logger.warning("Saved document result fallback acknowledgement failed")
+    except Exception:
+        logger.exception("Saved document result fallback message failed")
+        try:
+            await callback.answer(saved_notice, show_alert=True)
+        except Exception:
+            logger.warning("Saved document result final acknowledgement failed")
 
 
 def _new_case_buttons() -> tuple[tuple[str, str], ...]:
@@ -326,10 +363,14 @@ async def docs(callback: CallbackQuery, db):
 
 
 @router.callback_query(lambda c: c.data == "documents_upload_open")
-async def upload_menu(callback: CallbackQuery, db):
+async def upload_menu(callback: CallbackQuery, state: FSMContext, db):
     case, _ = await _load_case_documents(callback, db)
     if not case:
+        await state.clear()
         return
+
+    await state.clear()
+    await state.set_state(DocumentUploadStates.choosing_type)
 
     items = [(f"Загрузить: {title}", f"doc_type:{code}") for title, code in TYPES]
     if case.route == "M2" and _case_status(case) in _M2_CAN_SKIP_STATUSES:
@@ -365,6 +406,18 @@ async def choose(callback: CallbackQuery, state: FSMContext):
         if callback.data.startswith("doc_type:")
         else DOC_UPLOAD_ALIASES[callback.data]
     )
+    if document_type not in _DOCUMENT_TYPE_CODES:
+        await state.clear()
+        await state.set_state(DocumentUploadStates.choosing_type)
+        await callback.message.edit_text(
+            "Этот тип документа больше недоступен. Откройте список типов и выберите актуальный вариант.",
+            reply_markup=one(
+                ("Выбрать тип документа", "documents_upload_open"),
+                ("📄 Обзор документов", "documents_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
     await state.update_data(document_type=document_type)
     await state.set_state(DocumentUploadStates.waiting_file)
     await callback.message.edit_text(
@@ -738,7 +791,10 @@ async def finish(callback: CallbackQuery, db):
         return
 
     required_types = {"DDU"} if case.route == "M1" else set()
-    await callback.answer("Передаём документы юристу…")
+    try:
+        await callback.answer("Передаём документы юристу…")
+    except Exception:
+        logger.warning("Document review submission callback acknowledgement failed")
     try:
         new_count = await document_service.send_documents_to_review(
             case=case,
@@ -845,9 +901,11 @@ async def finish(callback: CallbackQuery, db):
         )
         return
 
-    await callback.message.edit_text(
+    await _present_committed_result(
+        callback,
         response_text,
         reply_markup=one(*_after_documents_buttons(case)),
+        saved_notice="Документы уже переданы юристу.",
     )
 
 
@@ -894,7 +952,8 @@ async def skip(callback: CallbackQuery, db):
             ),
         )
         return
-    await callback.message.edit_text(
+    await _present_committed_result(
+        callback,
         "Хорошо. Документы можно добавить позже без потери выбранного этапа.",
         reply_markup=one(
             ("📅 Выбрать время", "consult_slot_open"),
@@ -903,4 +962,5 @@ async def skip(callback: CallbackQuery, db):
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         ),
+        saved_notice="Переход уже сохранён. Документы можно добавить позже.",
     )
