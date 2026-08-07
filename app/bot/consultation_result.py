@@ -137,9 +137,9 @@ def consultation_result_view(consultation: Consultation) -> ConsultationResultVi
     return ConsultationResultView(
         title="Консультация закрыта",
         status_text="Эта запись завершена и больше не требует действий по старому времени.",
-        next_step="Откройте актуальное дело или вернитесь на главную.",
-        primary_label="📁 Моё дело",
-        primary_callback="my_case_open",
+        next_step="Возвращайтесь на главную; итог остаётся доступен в разделе «Моё дело».",
+        primary_label="🏠 На главную",
+        primary_callback="nav_home",
     )
 
 
@@ -219,8 +219,8 @@ async def prepare_follow_up_consultation(
         case_id=case.id,
         related_case_id=outcome.related_case_id,
         status=ConsultationStatus.DOCUMENTS_OPTIONAL,
-        consultation_type=outcome.consultation_type,
-        subject_type=outcome.subject_type,
+        consultation_type=str(outcome.consultation_type or "online"),
+        subject_type=str(outcome.subject_type or "new_or_other"),
         client_description=description,
     )
     db.add(follow_up)
