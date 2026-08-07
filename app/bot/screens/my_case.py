@@ -63,6 +63,10 @@ def _document_detail(view) -> str:
     return text
 
 
+def _has_consultation_result(view) -> bool:
+    return view.consultation_summary.startswith(TERMINAL_CONSULTATION_PREFIXES)
+
+
 def _case_buttons(view) -> list[tuple[str, str]]:
     buttons: list[tuple[str, str]] = []
     if view.unread_team_messages:
@@ -73,9 +77,7 @@ def _case_buttons(view) -> list[tuple[str, str]]:
             )
         )
 
-    has_consultation_result = view.consultation_summary.startswith(
-        TERMINAL_CONSULTATION_PREFIXES
-    )
+    has_consultation_result = _has_consultation_result(view)
     if has_consultation_result:
         buttons.append(("👨‍⚖ Итог консультации", "consultation_result_open"))
 
@@ -146,6 +148,18 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
         return
 
     view = await load_client_case_view(db, case)
+    has_consultation_result = _has_consultation_result(view)
+    stale_booking_action = bool(
+        has_consultation_result
+        and view.action
+        and view.action.callback == "consultation_booked_open"
+    )
+    shown_next_action = (
+        "Откройте итог консультации — там показан актуальный следующий шаг."
+        if stale_booking_action
+        else view.next_action
+    )
+
     lines: list[str] = []
     if notice:
         lines.extend([notice, ""])
@@ -159,7 +173,7 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
             progress_bar(view.progress_percent),
             "",
             "Ваш следующий шаг",
-            view.next_action,
+            shown_next_action,
         ]
     )
     if view.unread_team_messages:
