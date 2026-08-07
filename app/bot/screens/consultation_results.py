@@ -53,6 +53,18 @@ def _case_is_closed(case) -> bool:
     return status in CLOSED_CASE_STATUSES
 
 
+async def _active_terminal_context(callback: CallbackQuery, db):
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    active_case = await ctx.case_service.get_active_case_for_user(user.id)
+    if not active_case:
+        return None
+    consultation = await latest_case_consultation(db, case_id=active_case.id)
+    if not is_terminal_consultation(consultation):
+        return None
+    return active_case, consultation
+
+
 class TerminalBookedOpenFilter(Filter):
     """Intercept old booking buttons only when the consultation has finished."""
 
@@ -60,16 +72,18 @@ class TerminalBookedOpenFilter(Filter):
         if callback.data != "consultation_booked_open":
             return False
 
+        active = await _active_terminal_context(callback, db)
+        if active:
+            case, consultation = active
+            return {
+                "result_case": case,
+                "result_consultation": consultation,
+            }
+
         ctx = BotContextService(db)
         user = await ctx.get_user_from_callback(callback)
         active_case = await ctx.case_service.get_active_case_for_user(user.id)
         if active_case:
-            consultation = await latest_case_consultation(db, case_id=active_case.id)
-            if is_terminal_consultation(consultation):
-                return {
-                    "result_case": active_case,
-                    "result_consultation": consultation,
-                }
             return False
 
         latest = await latest_terminal_client_consultation(db, client_id=user.id)
@@ -80,6 +94,22 @@ class TerminalBookedOpenFilter(Filter):
                 "result_consultation": consultation,
             }
         return False
+
+
+class TerminalContactLawyerFilter(Filter):
+    """Replace stale consultation continuation with messaging after an outcome."""
+
+    async def __call__(self, callback: CallbackQuery, db) -> bool | dict[str, object]:
+        if callback.data != "contact_lawyer":
+            return False
+        active = await _active_terminal_context(callback, db)
+        if not active:
+            return False
+        case, consultation = active
+        return {
+            "result_case": case,
+            "result_consultation": consultation,
+        }
 
 
 def _format_scheduled_at(consultation) -> str | None:
@@ -167,6 +197,29 @@ async def terminal_booked_open(
         callback,
         case=result_case,
         consultation=result_consultation,
+    )
+
+
+@router.callback_query(TerminalContactLawyerFilter())
+async def terminal_contact_lawyer(
+    callback: CallbackQuery,
+    result_case,
+    result_consultation,
+):
+    view = consultation_result_view(result_consultation)
+    title = view.title if view else "Консультация завершена"
+    await _safe_edit(
+        callback,
+        "💬 Связаться с юридической командой\n\n"
+        f"{title}. Для текущего дела используйте переписку — старая запись "
+        "на консультацию больше не является следующим шагом.",
+        reply_markup=one(
+            ("✉️ Написать по делу", "message_create"),
+            ("🗂 Открыть переписку", "message_history"),
+            ("👨‍⚖ Открыть итог консультации", "consultation_result_open"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ),
     )
 
 
