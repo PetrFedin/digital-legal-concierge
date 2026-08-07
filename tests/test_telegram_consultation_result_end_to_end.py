@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
@@ -106,6 +107,40 @@ def test_no_show_result_does_not_expose_internal_lawyer_comment():
     assert lawyer_view.primary_callback == "message_create"
     assert "Новую оплату" in lawyer_view.next_step
     assert "возврат" in lawyer_view.next_step.lower()
+
+
+def test_my_case_detects_terminal_consultation_even_with_scheduled_time():
+    view = SimpleNamespace(
+        unread_team_messages=0,
+        consultation_summary="Консультация проведена · 07.08.2026 в 12:00 UTC",
+        action=None,
+    )
+
+    buttons = my_case._case_buttons(view)
+
+    assert ("👨‍⚖ Итог консультации", "consultation_result_open") in buttons
+    assert ("🔄 Обновить статус", "my_case_open") not in buttons
+
+
+def test_closed_result_has_no_stale_message_or_case_action():
+    consultation = Consultation(
+        case_id=1,
+        status=ConsultationStatus.DONE,
+        decision="close",
+        lawyer_result="Обращение завершено.",
+    )
+    view = consultation_result_view(consultation)
+    case = Case(
+        case_number="M2-CLOSED-BUTTONS",
+        client_id=1,
+        route="M2",
+        status=CaseStatus.M2_CLOSED,
+        title="Закрытое дело",
+    )
+
+    assert view is not None
+    buttons = consultation_results._result_buttons(view, case=case)
+    assert buttons == [("🏠 На главную", "nav_home")]
 
 
 @pytest.mark.asyncio
@@ -277,10 +312,12 @@ def test_result_router_precedes_booking_router_and_has_recovery_actions():
         "consultation_intake.router"
     )
     assert "TerminalBookedOpenFilter" in result_source
+    assert "TerminalContactLawyerFilter" in result_source
     assert "consultation_result_open" in result_source
     assert "consult_follow_up_start" in result_source
     assert "Что дальше:" in result_source
     assert "message_create" in result_source
+    assert "message_history" in result_source
     assert "my_case_open" in result_source
     assert "nav_home" in result_source
     assert "Итог консультации" in case_source
