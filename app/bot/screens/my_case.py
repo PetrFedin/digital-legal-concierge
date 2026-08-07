@@ -64,7 +64,8 @@ def _document_detail(view) -> str:
 
 
 def _has_consultation_result(view) -> bool:
-    return view.consultation_summary.startswith(TERMINAL_CONSULTATION_PREFIXES)
+    summary = str(getattr(view, "consultation_summary", "") or "")
+    return summary.startswith(TERMINAL_CONSULTATION_PREFIXES)
 
 
 def _case_buttons(view) -> list[tuple[str, str]]:
