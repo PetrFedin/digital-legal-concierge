@@ -30,6 +30,7 @@ from app.bot.screens import (
     no_payment,
     no_payment_legal,
     payments,
+    post_calculation,
 )
 from app.bot.security import SlidingWindowRateLimiter
 from app.config import settings
@@ -130,6 +131,7 @@ def build_dispatcher() -> Dispatcher:
     for router in [
         common.router,
         calculator.router,
+        post_calculation.router,
         my_case.router,
         documents.router,
         no_payment_legal.router,
