@@ -50,7 +50,7 @@ def test_consultation_decisions_lock_the_entire_action_group():
     (
         ("markNoShow", "зафиксирована", "не сохранена"),
         ("rebook", "без повторной оплаты", "не сохранён"),
-        ("refund", "направлен в очередь возврата", "не сохранено"),
+        ("refund", "направлена в очередь возврата", "не сохранено"),
     ),
 )
 def test_consultation_decisions_confirm_before_request_and_report_outcomes(
