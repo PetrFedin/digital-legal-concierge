@@ -11,6 +11,7 @@ from app.bot.screens.messages import (
     _history_slice,
     message_history,
     message_send,
+    message_submit,
 )
 from app.domain.notifications.immediate_delivery import (
     deliver_selected_notifications,
@@ -43,8 +44,24 @@ def test_client_message_event_alerts_lawyer_and_admin_with_case_context():
     assert "Откройте центр сообщений" in templates
 
 
+def test_message_text_is_reviewed_before_any_database_write():
+    draft_source = inspect.getsource(message_send)
+    submit_source = inspect.getsource(message_submit)
+    bot = read("app/bot/screens/messages.py")
+
+    assert "draft_text=text" in draft_source
+    assert "source_message_id=int(message.message_id)" in draft_source
+    assert "MessageStates.confirming_message" in draft_source
+    assert "get_or_create_client_message(" not in draft_source
+    assert "NotificationEngine" not in draft_source
+    assert "✅ Проверьте вопрос перед отправкой" in bot
+    assert "✅ Отправить вопрос" in bot
+    assert 'c.data == "message_submit"' in submit_source
+    assert "Ничего не будет отправлено" in bot
+
+
 def test_inbound_message_and_outbox_commit_before_telegram_delivery():
-    source = inspect.getsource(message_send)
+    source = inspect.getsource(message_submit)
 
     create = source.index("get_or_create_client_message(")
     emit = source.index("notifications = await NotificationEngine(db).emit(")
@@ -52,7 +69,7 @@ def test_inbound_message_and_outbox_commit_before_telegram_delivery():
     delivery = source.index("await deliver_selected_notifications(", durable_commit)
 
     assert create < emit < durable_commit < delivery
-    assert "source_message_id=message.message_id" in source
+    assert "source_message_id=int(source_message_id)" in source
     assert 'event_code="CLIENT_MESSAGE_RECEIVED"' in source
     assert 'dedupe_key=f"case:{case.id}:message:{created.id}:client-message"' in source
     assert "if is_new:" in source
@@ -185,8 +202,9 @@ def test_unassigned_case_has_honest_admin_fallback_and_no_dead_end():
     assert "message_create" in source
     assert "my_case_open" in source
     assert "nav_home" in source
-    assert "Не удалось зарегистрировать вопрос. Текст не сохранён" in source
-    assert "Начать отправку заново" in source
+    assert "Не удалось зарегистрировать вопрос" in source
+    assert "черновик сохранён" in source
+    assert "Повторить отправку" in source
 
 
 def test_critical_urgency_is_visible_but_not_presented_as_a_guarantee():

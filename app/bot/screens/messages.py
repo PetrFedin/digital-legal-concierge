@@ -21,6 +21,7 @@ HISTORY_PAGE_SIZE = 5
 HISTORY_ITEM_TEXT_LIMIT = 560
 HISTORY_TEXT_LIMIT = 3800
 NOTIFICATION_TEXT_LIMIT = 3000
+DRAFT_PREVIEW_LIMIT = 2800
 
 MESSAGE_CATEGORIES = {
     "msg_cat_documents": "Документы",
@@ -41,6 +42,7 @@ class MessageStates(StatesGroup):
     choosing_category = State()
     choosing_urgency = State()
     waiting_message = State()
+    confirming_message = State()
 
 
 def _truncate(value: str, limit: int) -> str:
@@ -70,6 +72,77 @@ def _category_buttons() -> list[tuple[str, str]]:
         ("❓ Другой вопрос", "msg_cat_other"),
         ("Отменить действие", "nav_cancel"),
     ]
+
+
+def _category_prompt(data: dict[str, object]) -> str:
+    case_number = str(data.get("case_number") or "").strip()
+    case_note = (
+        f"Вопрос будет добавлен к делу {case_number}."
+        if case_number
+        else "После подтверждения вопроса будет создано новое обращение."
+    )
+    return (
+        "✉️ Новый вопрос юридической команде\n\n"
+        f"{case_note}\n\n"
+        "Выберите тему обращения:"
+    )
+
+
+def _urgency_prompt(data: dict[str, object]) -> str:
+    category = str(data.get("category") or "Не выбрана")
+    return (
+        "⏱ Срочность вопроса\n\n"
+        f"Тема: {category}\n\n"
+        "Насколько срочно нужен ответ?"
+    )
+
+
+def _message_prompt(data: dict[str, object], *, editing: bool = False) -> str:
+    category = str(data.get("category") or "Другой вопрос")
+    urgency = str(data.get("urgency") or "Обычный")
+    edit_note = (
+        "Текущий черновик сохранён до тех пор, пока вы не отправите новый текст.\n\n"
+        if editing and data.get("draft_text")
+        else ""
+    )
+    return (
+        "📝 Текст вопроса\n\n"
+        f"Тема: {category}\n"
+        f"Срочность: {urgency}\n\n"
+        f"{edit_note}"
+        "Опишите, что произошло, какой результат вы ожидаете, важные даты и документы. "
+        "Не отправляйте пароли, коды из SMS и банковские данные."
+    )
+
+
+def _draft_review_text(data: dict[str, object]) -> str:
+    category = str(data.get("category") or "Другой вопрос")
+    urgency = str(data.get("urgency") or "Обычный")
+    draft = str(data.get("draft_text") or "").strip()
+    preview = _truncate(draft, DRAFT_PREVIEW_LIMIT)
+    shortened_note = (
+        "\n\nПредпросмотр сокращён для экрана Telegram. При подтверждении будет отправлен весь сохранённый текст."
+        if preview != draft
+        else ""
+    )
+    return (
+        "✅ Проверьте вопрос перед отправкой\n\n"
+        f"Тема: {category}\n"
+        f"Срочность: {urgency}\n\n"
+        f"Текст:\n{preview}"
+        f"{shortened_note}\n\n"
+        "Ничего не будет отправлено, пока вы не нажмёте «Отправить вопрос»."
+    )
+
+
+def _review_markup():
+    return one(
+        ("✅ Отправить вопрос", "message_submit"),
+        ("✏️ Изменить текст", "message_edit_text"),
+        ("⏱ Изменить срочность", "message_back_urgency"),
+        ("🧭 Изменить тему", "message_back_category"),
+        ("✖️ Отменить черновик", "message_discard_confirm"),
+    )
 
 
 def _history_page_from_callback(callback_data: str | None) -> int:
@@ -143,6 +216,13 @@ async def _safe_edit(callback: CallbackQuery, text: str, *, reply_markup) -> boo
             await callback.answer("Переписка уже актуальна.")
             return False
         raise
+
+
+async def _replace_or_send(callback: CallbackQuery, text: str, *, reply_markup) -> None:
+    try:
+        await callback.message.edit_text(text, reply_markup=reply_markup)
+    except TelegramBadRequest:
+        await callback.message.answer(text, reply_markup=reply_markup)
 
 
 def _delivery_status_text(
@@ -288,18 +368,29 @@ async def message_create(
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     case = await ctx.case_service.get_active_case_for_user(user.id)
-    await state.set_state(MessageStates.choosing_category)
-    case_note = (
-        f"Вопрос будет добавлен к делу {case.case_number}."
-        if case
-        else "После отправки вопроса будет создано новое обращение."
+    await state.update_data(
+        case_number=str(case.case_number) if case else None,
     )
+    await state.set_state(MessageStates.choosing_category)
+    data = await state.get_data()
     await callback.message.edit_text(
-        "✉️ Новый вопрос юридической команде\n\n"
-        f"{case_note}\n\n"
-        "Выберите тему обращения:",
+        _category_prompt(data),
         reply_markup=one(*_category_buttons()),
     )
+
+
+@router.callback_query(lambda c: c.data == "message_back_category")
+async def message_back_category(callback: CallbackQuery, state: FSMContext, db):
+    data = await state.get_data()
+    if not data:
+        await message_create(callback, state, db)
+        return
+    await state.set_state(MessageStates.choosing_category)
+    await callback.message.edit_text(
+        _category_prompt(data),
+        reply_markup=one(*_category_buttons()),
+    )
+    await callback.answer()
 
 
 @router.callback_query(
@@ -308,16 +399,47 @@ async def message_create(
 )
 async def message_category(callback: CallbackQuery, state: FSMContext):
     await state.update_data(category=_category_title(callback.data))
+    data = await state.get_data()
+    if data.get("draft_text") and data.get("urgency"):
+        await state.set_state(MessageStates.confirming_message)
+        await callback.message.edit_text(
+            _draft_review_text(data),
+            reply_markup=_review_markup(),
+        )
+        await callback.answer("Тема обновлена.")
+        return
+
     await state.set_state(MessageStates.choosing_urgency)
     await callback.message.edit_text(
-        "Насколько срочно нужен ответ?",
+        _urgency_prompt(data),
         reply_markup=one(
             ("Обычный вопрос", "msg_urgency_normal"),
             ("Нужен ответ сегодня", "msg_urgency_soon"),
             ("Критично: срок менее 24 часов", "msg_urgency_critical"),
+            ("⬅️ Назад к теме", "message_back_category"),
             ("Отменить действие", "nav_cancel"),
         ),
     )
+
+
+@router.callback_query(lambda c: c.data == "message_back_urgency")
+async def message_back_urgency(callback: CallbackQuery, state: FSMContext, db):
+    data = await state.get_data()
+    if not data.get("category"):
+        await message_create(callback, state, db)
+        return
+    await state.set_state(MessageStates.choosing_urgency)
+    await callback.message.edit_text(
+        _urgency_prompt(data),
+        reply_markup=one(
+            ("Обычный вопрос", "msg_urgency_normal"),
+            ("Нужен ответ сегодня", "msg_urgency_soon"),
+            ("Критично: срок менее 24 часов", "msg_urgency_critical"),
+            ("⬅️ Назад к теме", "message_back_category"),
+            ("Отменить действие", "nav_cancel"),
+        ),
+    )
+    await callback.answer()
 
 
 @router.callback_query(
@@ -326,39 +448,179 @@ async def message_category(callback: CallbackQuery, state: FSMContext):
 )
 async def message_urgency(callback: CallbackQuery, state: FSMContext):
     await state.update_data(urgency=URGENCY_LEVELS[callback.data])
+    data = await state.get_data()
+    if data.get("draft_text"):
+        await state.set_state(MessageStates.confirming_message)
+        await callback.message.edit_text(
+            _draft_review_text(data),
+            reply_markup=_review_markup(),
+        )
+        await callback.answer("Срочность обновлена.")
+        return
+
     await state.set_state(MessageStates.waiting_message)
     await callback.message.edit_text(
-        "Теперь опишите вопрос.\n\n"
-        "Укажите, что произошло, какой результат вы ожидаете, важные даты и документы. "
-        "Не отправляйте пароли, коды из SMS и банковские данные.",
-        reply_markup=one(("Отменить действие", "nav_cancel")),
+        _message_prompt(data),
+        reply_markup=one(
+            ("⬅️ Назад к срочности", "message_back_urgency"),
+            ("Отменить действие", "nav_cancel"),
+        ),
     )
 
 
+@router.callback_query(lambda c: c.data == "message_edit_text")
+async def message_edit_text(callback: CallbackQuery, state: FSMContext, db):
+    data = await state.get_data()
+    if not data.get("category") or not data.get("urgency"):
+        await message_create(callback, state, db)
+        return
+    await state.set_state(MessageStates.waiting_message)
+    await callback.message.edit_text(
+        _message_prompt(data, editing=True),
+        reply_markup=one(
+            ("⬅️ Назад к срочности", "message_back_urgency"),
+            ("↩️ Вернуться к проверке", "message_review_return"),
+            ("✖️ Отменить черновик", "message_discard_confirm"),
+        ),
+    )
+    await callback.answer()
+
+
 @router.message(MessageStates.waiting_message)
-async def message_send(message: Message, state: FSMContext, db):
+async def message_send(message: Message, state: FSMContext):
     text = (message.text or "").strip()
     if len(text) < 20:
         await message.answer(
-            "Опишите вопрос подробнее — минимум 20 символов.",
-            reply_markup=one(("Отменить действие", "nav_cancel")),
+            "Опишите вопрос подробнее — минимум 20 символов. Черновик не отправлен.",
+            reply_markup=one(
+                ("⬅️ Назад к срочности", "message_back_urgency"),
+                ("Отменить действие", "nav_cancel"),
+            ),
         )
         return
     if len(text) > 4000:
         await message.answer(
-            "Сообщение слишком длинное. Сократите его до 4000 символов.",
-            reply_markup=one(("Отменить действие", "nav_cancel")),
+            "Сообщение слишком длинное. Сократите его до 4000 символов. Черновик не отправлен.",
+            reply_markup=one(
+                ("⬅️ Назад к срочности", "message_back_urgency"),
+                ("Отменить действие", "nav_cancel"),
+            ),
         )
         return
 
+    await state.update_data(
+        draft_text=text,
+        source_message_id=int(message.message_id),
+    )
+    await state.set_state(MessageStates.confirming_message)
     data = await state.get_data()
-    category = data.get("category", "Другой вопрос")
-    urgency = data.get("urgency", "Обычный")
+    await message.answer(
+        _draft_review_text(data),
+        reply_markup=_review_markup(),
+    )
+
+
+@router.callback_query(lambda c: c.data == "message_review_return")
+async def message_review_return(callback: CallbackQuery, state: FSMContext, db):
+    data = await state.get_data()
+    if not data.get("draft_text"):
+        if data.get("category") and data.get("urgency"):
+            await state.set_state(MessageStates.waiting_message)
+            await callback.message.edit_text(
+                "Черновик текста не найден. Отправьте текст вопроса заново.\n\n"
+                + _message_prompt(data),
+                reply_markup=one(
+                    ("⬅️ Назад к срочности", "message_back_urgency"),
+                    ("Отменить действие", "nav_cancel"),
+                ),
+            )
+            await callback.answer("Нужен текст вопроса.")
+            return
+        await message_create(callback, state, db)
+        return
+
+    await state.set_state(MessageStates.confirming_message)
+    await callback.message.edit_text(
+        _draft_review_text(data),
+        reply_markup=_review_markup(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data == "message_discard_confirm")
+async def message_discard_confirm(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if not data.get("draft_text"):
+        await state.clear()
+        await callback.message.edit_text(
+            "Активного черновика уже нет. Ничего не отправлено.",
+            reply_markup=one(
+                ("✉️ Новый вопрос", "message_create"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        await callback.answer()
+        return
+
+    await callback.message.edit_text(
+        "✖️ Отменить черновик?\n\n"
+        "Вопрос ещё не отправлен. После удаления восстановить этот черновик из бота не получится.",
+        reply_markup=one(
+            ("↩️ Вернуться к проверке", "message_review_return"),
+            ("🗑 Удалить черновик", "message_discard"),
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data == "message_discard")
+async def message_discard(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text(
+        "Черновик удалён. Ничего не отправлено.",
+        reply_markup=one(
+            ("✉️ Новый вопрос", "message_create"),
+            ("💬 Юридическая помощь", "contact_lawyer"),
+            ("🏠 Главная", "nav_home"),
+        ),
+    )
+    await callback.answer("Черновик удалён.")
+
+
+@router.callback_query(lambda c: c.data == "message_submit")
+async def message_submit(callback: CallbackQuery, state: FSMContext, db):
+    data = await state.get_data()
+    text = str(data.get("draft_text") or "").strip()
+    source_message_id = data.get("source_message_id")
+    if not text or source_message_id is None:
+        await state.clear()
+        await callback.message.edit_text(
+            "Этот черновик уже отправлен, удалён или больше не активен. "
+            "Повторная отправка не выполнена.",
+            reply_markup=one(
+                ("🗂 Открыть переписку", "message_history"),
+                ("✉️ Новый вопрос", "message_create"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        await callback.answer("Активного черновика нет.")
+        return
+
+    current_state = await state.get_state()
+    if current_state != MessageStates.confirming_message.state:
+        await callback.answer(
+            "Сначала завершите текущее изменение черновика.",
+            show_alert=True,
+        )
+        return
+
+    category = str(data.get("category") or "Другой вопрос")
+    urgency = str(data.get("urgency") or "Обычный")
     structured_text = f"Тема: {category}\nСрочность: {urgency}\n\n{text}"
 
     try:
         ctx = BotContextService(db)
-        user = await ctx.get_user_from_message(message)
+        user = await ctx.get_user_from_callback(callback)
         case = await ctx.case_service.get_active_case_for_user(user.id)
         if not case:
             case = await ctx.get_or_create_active_case_for_user(user)
@@ -367,7 +629,7 @@ async def message_send(message: Message, state: FSMContext, db):
             case=case,
             user_id=user.id,
             text=structured_text,
-            source_message_id=message.message_id,
+            source_message_id=int(source_message_id),
         )
         notifications = []
         if is_new:
@@ -398,15 +660,19 @@ async def message_send(message: Message, state: FSMContext, db):
         await db.commit()
     except Exception:
         await db.rollback()
-        await message.answer(
-            "Не удалось зарегистрировать вопрос. Текст не сохранён. "
-            "Скопируйте его и повторите отправку.",
+        await state.set_state(MessageStates.confirming_message)
+        await _replace_or_send(
+            callback,
+            "Не удалось зарегистрировать вопрос. Ничего не отправлено, а черновик сохранён. "
+            "Можно повторить попытку или изменить текст.",
             reply_markup=one(
-                ("🔄 Начать отправку заново", "message_create"),
-                ("Отменить действие", "nav_cancel"),
-                ("🏠 Главная", "nav_home"),
+                ("🔄 Повторить отправку", "message_submit"),
+                ("✏️ Изменить текст", "message_edit_text"),
+                ("↩️ Вернуться к проверке", "message_review_return"),
+                ("✖️ Отменить черновик", "message_discard_confirm"),
             ),
         )
+        await callback.answer("Отправка не выполнена.")
         return
 
     try:
@@ -444,7 +710,8 @@ async def message_send(message: Message, state: FSMContext, db):
             "официальный способ подачи документов."
         )
 
-    await message.answer(
+    await _replace_or_send(
+        callback,
         confirmation,
         reply_markup=one(
             ("🗂 Открыть переписку", "message_history"),
@@ -453,3 +720,4 @@ async def message_send(message: Message, state: FSMContext, db):
             ("🏠 Главная", "nav_home"),
         ),
     )
+    await callback.answer("Вопрос отправлен.")

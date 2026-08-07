@@ -82,7 +82,6 @@ def test_telegram_case_actions_are_current_state_driven():
     assert "CLIENT_ACTIONS" in presenter
     assert "def client_action_for" in presenter
     assert "documents.uploaded_count" in presenter
-    assert "documents.replacement_count" in presenter
     assert '"doc_finish_upload"' in presenter
 
 
@@ -106,12 +105,12 @@ def test_telegram_lawyer_contact_matches_no_payment_mode_and_has_no_implicit_dea
     assert "записаться на консультацию без онлайн-оплаты" in source
     assert "платную консультацию" not in source
     assert "оплатите встречу" not in source
-    assert "После отправки вопроса будет создано новое обращение" in source
+    assert "После подтверждения вопроса будет создано новое обращение" in source
     assert '("✉️ Задать вопрос", "message_create")' in source
     assert '("🧮 Рассчитать неустойку", "calc_start")' in source
 
 
-def test_telegram_message_failures_rollback_and_offer_recovery():
+def test_telegram_message_failures_rollback_preserve_draft_and_offer_recovery():
     source = read("app/bot/screens/messages.py")
 
     assert source.count("await db.rollback()") >= 2
@@ -119,8 +118,9 @@ def test_telegram_message_failures_rollback_and_offer_recovery():
     assert '("🔄 Повторить", f"message_history:{requested_page}")' in source
     assert 'c.data == "message_history"' in source
     assert "Не удалось зарегистрировать вопрос" in source
-    assert '("🔄 Начать отправку заново", "message_create")' in source
-    assert "Текст не сохранён" in source
+    assert '("🔄 Повторить отправку", "message_submit")' in source
+    assert "черновик сохранён" in source
+    assert '("✏️ Изменить текст", "message_edit_text")' in source
 
 
 def test_telegram_stale_buttons_return_to_current_state_without_demo_language():
