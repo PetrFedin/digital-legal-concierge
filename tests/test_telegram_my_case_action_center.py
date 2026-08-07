@@ -157,7 +157,8 @@ def test_home_status_and_my_case_share_the_same_presenter():
 
 
 def test_existing_case_status_actions_remain_available():
-    assert CLIENT_ACTIONS["CALCULATED"].callback == "consent_open"
+    assert CLIENT_ACTIONS["CALCULATED"].callback == "calc_decision_open"
+    assert CLIENT_ACTIONS["CLIENT_DECISION"].callback == "consent_open"
     assert CLIENT_ACTIONS["M1_CONTRACT_READY"].callback == "contract_open"
     assert CLIENT_ACTIONS["M2_SLOT_PENDING"].callback == "consult_slot_open"
     assert CLIENT_ACTIONS["M2_CONSULTATION_BOOKED"].callback == (
