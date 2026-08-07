@@ -105,6 +105,22 @@ button{border:0;border-radius:10px;padding:9px 12px;color:#fff;background:var(--
     <div class="section-title"><h2>Контроль и настройка</h2><div class="muted">Административные и технические разделы</div></div>
     <div id="systemLinks" class="workspace-grid"></div>
   </section>
+
+  <noscript>
+    <section>
+      <div class="section-title"><h2>Рабочие разделы без JavaScript</h2><div class="muted">Откройте только раздел, разрешённый вашей ролью.</div></div>
+      <article class="workspace">
+        <div class="links">
+          <a class="link" href="/admin/workdesk/ui"><b>Единый рабочий стол</b><span>Операционная очередь администратора</span></a>
+          <a class="link" href="/lawyer/workspace/ui"><b>Рабочий кабинет юриста</b><span>Дела, документы и сроки</span></a>
+          <a class="link" href="/lawyer/consultation-desk/ui"><b>Подготовка консультаций</b><span>Вопрос, материалы, встреча и результат</span></a>
+          <a class="link" href="/document-access/review/ui"><b>Проверка документов</b><span>Решение по документам</span></a>
+          <a class="link" href="/message-center/ui"><b>Сообщения</b><span>Переписка по делам</span></a>
+          <a class="link" href="/admin/notification-delivery/ui"><b>Telegram-доставка</b><span>Контроль очереди и повторов</span></a>
+        </div>
+      </article>
+    </section>
+  </noscript>
 </main>
 <script>
 const workspaces=document.getElementById('workspaces'),notice=document.getElementById('accessNotice'),roleName=document.getElementById('roleName'),systemSection=document.getElementById('systemSection'),systemLinks=document.getElementById('systemLinks');
@@ -203,15 +219,21 @@ async def operator_status():
     }
 
 
-# These are first-class staff workspaces. They are composed into the already
-# mounted operator router so the public application route table contains them
-# without duplicating their business APIs or changing their existing paths.
+# Mounted here because /operator is the role-workspace hub. Keep the complete
+# staff router composition together: the UI links and their supporting exact-case
+# endpoints must enter the application route table as one E2E surface.
+from app.api.case_timeline import router as case_timeline_router  # noqa: E402
 from app.api.lawyer_consultation_desk import (  # noqa: E402
     router as lawyer_consultation_desk_router,
 )
 from app.api.lawyer_workspace import router as lawyer_workspace_router  # noqa: E402
+from app.api.notification_delivery import (  # noqa: E402
+    router as notification_delivery_router,
+)
 from app.api.workdesk import router as workdesk_router  # noqa: E402
 
-router.include_router(workdesk_router)
-router.include_router(lawyer_workspace_router)
+router.include_router(case_timeline_router)
 router.include_router(lawyer_consultation_desk_router)
+router.include_router(lawyer_workspace_router)
+router.include_router(notification_delivery_router)
+router.include_router(workdesk_router)
