@@ -60,7 +60,7 @@ async def test_closed_case_result_is_primary_home_action(tmp_path):
             session.add(user)
             await session.flush()
             case = Case(
-                case_number="M2-HOME-CLOSED",
+                case_number="M2-HOME-FINAL",
                 client_id=user.id,
                 route="M2",
                 status=CaseStatus.M2_CLOSED,
@@ -86,7 +86,7 @@ async def test_closed_case_result_is_primary_home_action(tmp_path):
 
             assert case_exists is False
             assert primary_action == common.CONSULTATION_RESULT_ACTION
-            assert "M2-HOME-CLOSED" in text
+            assert "M2-HOME-FINAL" in text
             assert "Итог последней консультации сохранён" in text
             assert "Юрист завершил консультацию" in text
             assert "DONE" not in text

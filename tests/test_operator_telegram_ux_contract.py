@@ -12,14 +12,12 @@ def _texts(markup):
     return [button.text for row in markup.inline_keyboard for button in row]
 
 
-def test_reply_menu_prioritizes_calculation_and_keeps_stable_labels():
+def test_reply_menu_prioritizes_calculation_and_keeps_clear_labels():
     markup = reply_main_menu()
     assert markup.is_persistent is True
     assert markup.keyboard[0][0].text == "🧮 Рассчитать неустойку"
-    assert "📁 Мое дело" in [button.text for row in markup.keyboard for button in row]
-    assert markup.input_field_placeholder == (
-        "Выберите: расчет, дело, документы или помощь"
-    )
+    assert "📁 Моё дело" in [button.text for row in markup.keyboard for button in row]
+    assert markup.input_field_placeholder == "Выберите: расчёт, дело или помощь"
 
 
 def test_inline_menu_hides_disabled_payments_and_parallel_calculation():
