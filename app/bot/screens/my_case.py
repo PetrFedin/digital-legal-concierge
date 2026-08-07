@@ -16,11 +16,22 @@ from app.bot.client_case_view import (
     progress_bar,
     route_label,
 )
+from app.bot.consultation_result import latest_terminal_client_consultation
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.domain.payments.mode import payments_disabled
 
 router = Router()
+
+
+TERMINAL_CONSULTATION_PREFIXES = (
+    "Консультация проведена",
+    "Клиент не подключился",
+    "Юрист не подключился",
+    "Запись отменена",
+    "Консультация закрыта",
+    "Запись перенесена",
+)
 
 
 async def _safe_edit(
@@ -52,6 +63,11 @@ def _document_detail(view) -> str:
     return text
 
 
+def _has_consultation_result(view) -> bool:
+    summary = str(getattr(view, "consultation_summary", "") or "")
+    return summary.startswith(TERMINAL_CONSULTATION_PREFIXES)
+
+
 def _case_buttons(view) -> list[tuple[str, str]]:
     buttons: list[tuple[str, str]] = []
     if view.unread_team_messages:
@@ -62,14 +78,21 @@ def _case_buttons(view) -> list[tuple[str, str]]:
             )
         )
 
-    if view.action:
+    has_consultation_result = _has_consultation_result(view)
+    if has_consultation_result:
+        buttons.append(("👨‍⚖ Итог консультации", "consultation_result_open"))
+
+    if view.action and not (
+        has_consultation_result
+        and view.action.callback == "consultation_booked_open"
+    ):
         buttons.append(
             (
                 f"▶️ {view.action.label}",
                 f"next_action:v2:{view.case_id}:{view.action_key}",
             )
         )
-    else:
+    elif not has_consultation_result:
         buttons.append(("🔄 Обновить статус", "my_case_open"))
 
     if not view.action or view.action.callback not in {
@@ -93,23 +116,51 @@ def _case_buttons(view) -> list[tuple[str, str]]:
 
 
 async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None):
-    _, _, case = await _active_case_context(callback, db)
+    _, user, case = await _active_case_context(callback, db)
     if not case:
-        text = "📁 У вас пока нет активного дела.\n\nВыберите, с чего начать:"
+        latest_result = await latest_terminal_client_consultation(
+            db,
+            client_id=user.id,
+        )
+        text = "📁 Активных дел сейчас нет.\n\nВыберите, с чего начать:"
+        buttons: list[tuple[str, str]] = []
+        if latest_result:
+            text = (
+                "📁 Активных дел сейчас нет.\n\n"
+                "Итог последней консультации сохранён и доступен отдельно."
+            )
+            buttons.append(
+                ("👨‍⚖ Открыть итог консультации", "consultation_result_open")
+            )
+        buttons.extend(
+            [
+                ("🧮 Рассчитать неустойку", "calc_start"),
+                ("💬 Записаться на консультацию", "calc_to_m2"),
+                ("🏠 Главная", "nav_home"),
+            ]
+        )
         if notice:
             text = f"{notice}\n\n{text}"
         await _safe_edit(
             callback,
             text,
-            reply_markup=one(
-                ("🧮 Рассчитать неустойку", "calc_start"),
-                ("💬 Записаться на консультацию", "calc_to_m2"),
-                ("🏠 Главная", "nav_home"),
-            ),
+            reply_markup=one(*buttons),
         )
         return
 
     view = await load_client_case_view(db, case)
+    has_consultation_result = _has_consultation_result(view)
+    stale_booking_action = bool(
+        has_consultation_result
+        and view.action
+        and view.action.callback == "consultation_booked_open"
+    )
+    shown_next_action = (
+        "Откройте итог консультации — там показан актуальный следующий шаг."
+        if stale_booking_action
+        else view.next_action
+    )
+
     lines: list[str] = []
     if notice:
         lines.extend([notice, ""])
@@ -123,7 +174,7 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
             progress_bar(view.progress_percent),
             "",
             "Ваш следующий шаг",
-            view.next_action,
+            shown_next_action,
         ]
     )
     if view.unread_team_messages:

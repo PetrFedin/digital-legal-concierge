@@ -11,6 +11,16 @@ from app.models.case import Case
 from app.models.consultation import Consultation
 
 
+TERMINAL_CONSULTATION_STATUSES = (
+    ConsultationStatus.DONE,
+    ConsultationStatus.CLIENT_NO_SHOW,
+    ConsultationStatus.LAWYER_NO_SHOW,
+    ConsultationStatus.CANCELLED,
+    ConsultationStatus.CLOSED,
+    ConsultationStatus.RESCHEDULED,
+)
+
+
 def as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
@@ -27,16 +37,14 @@ class ConsultationService:
         result = await self.db.execute(
             select(Consultation)
             .where(Consultation.case_id == case_id)
-            .order_by(Consultation.created_at.desc())
+            .where(
+                Consultation.status.notin_(
+                    [status.value for status in TERMINAL_CONSULTATION_STATUSES]
+                )
+            )
+            .order_by(Consultation.created_at.desc(), Consultation.id.desc())
         )
-        consultation = result.scalars().first()
-        if consultation and consultation.status not in {
-            ConsultationStatus.DONE,
-            ConsultationStatus.CANCELLED,
-            ConsultationStatus.CLOSED,
-        }:
-            return consultation
-        return None
+        return result.scalars().first()
 
     async def get_or_create_for_case(self, case):
         consultation = await self.get_current_for_case(case.id)
