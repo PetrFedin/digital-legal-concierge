@@ -150,8 +150,8 @@ def test_consultation_desk_is_role_scoped_and_has_complete_recovery_ui():
     assert "Материалы" in source
     assert "Дата и время" in source
     assert "Связь с клиентом" in source
-    assert "/message-center/ui?case_id=" in source
-    assert "/document-access/review/ui" in source
+    assert '/message-center/ui?case_id={case.id}' in source
+    assert '/document-access/review/ui?case_id={case.id}' in source
     assert "Зафиксировать результат" in source
     assert "Клиент не подключился" in source
     assert ".green{background:var(--green)}" in source
