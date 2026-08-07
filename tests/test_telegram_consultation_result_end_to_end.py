@@ -17,6 +17,7 @@ from app.bot.consultation_result import (
 )
 from app.bot.screens import consultation_results, my_case
 from app.domain.consultations.consultation_intake import ConsultationIntakeService
+from app.domain.consultations.consultation_service import ConsultationService
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.models import Base
@@ -196,6 +197,48 @@ async def test_closed_case_keeps_completed_consultation_result_available(tmp_pat
             assert latest_case.id == case.id
             assert latest_consultation.id == result.id
             assert latest_consultation.lawyer_result.startswith("Юрист разъяснил")
+
+
+@pytest.mark.asyncio
+async def test_current_consultation_ignores_terminal_rows_with_same_timestamp(tmp_path):
+    async with database(tmp_path, "current-consultation.db") as factory:
+        async with factory() as session:
+            user = User(telegram_id=940004, full_name="Клиент текущей консультации")
+            session.add(user)
+            await session.flush()
+
+            case = Case(
+                case_number="M2-CURRENT-CONSULTATION",
+                client_id=user.id,
+                route="M2",
+                status=CaseStatus.M2_SLOT_PENDING,
+                title="Текущая консультация",
+            )
+            session.add(case)
+            await session.flush()
+
+            timestamp = datetime.now(timezone.utc)
+            terminal = Consultation(
+                case_id=case.id,
+                status=ConsultationStatus.DONE,
+                decision="follow_up",
+                client_description="Предыдущая завершённая консультация по тому же вопросу.",
+                created_at=timestamp,
+            )
+            current = Consultation(
+                case_id=case.id,
+                status=ConsultationStatus.DOCUMENTS_OPTIONAL,
+                client_description="Новый текущий вопрос для повторной консультации клиента.",
+                created_at=timestamp,
+            )
+            session.add_all([terminal, current])
+            await session.flush()
+
+            found = await ConsultationService(session).get_current_for_case(case.id)
+
+            assert found is not None
+            assert found.id == current.id
+            assert found.status == ConsultationStatus.DOCUMENTS_OPTIONAL
 
 
 @pytest.mark.asyncio
