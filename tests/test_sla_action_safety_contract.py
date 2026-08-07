@@ -29,8 +29,8 @@ def _function(name: str) -> str:
 def test_sla_writes_are_single_flight_for_run_and_case_actions():
     compact = _compact(SLA_CENTER_HTML)
 
-    assert "letrunPending=false" in compact
-    assert "constpendingCases=newSet()" in compact
+    assert "runPending=false" in compact
+    assert "pendingCases=newSet()" in compact
     assert "asyncfunctionwithRunAction(button,work)" in compact
     assert "asyncfunctionwithCaseAction(id,button,work)" in compact
     assert "if(runPending)return" in compact
@@ -42,17 +42,15 @@ def test_sla_writes_are_single_flight_for_run_and_case_actions():
     assert ".disabled=false" in compact
     assert "data-sla-run" in compact
     assert "data-case-id=" in compact
-    assert "data-sla-status=" in compact
-    assert "data-escalation-level=" in compact
     assert "runCheck(this)" in compact
-    assert "ack(${x.case_id},this)" in compact
+    assert "ack(${id},this)" in compact
 
 
 def test_sla_filter_loads_abort_stale_requests_and_restore_controls():
     compact = _compact(SLA_CENTER_HTML)
     function = _function("load")
 
-    assert "letloadController=null" in compact
+    assert "loadController=null" in compact
     assert "newAbortController()" in compact
     assert "loadController.abort()" in compact
     assert "signal:controller.signal" in compact
@@ -74,22 +72,24 @@ def test_manual_sla_run_confirms_and_reports_examined_and_escalated_counts():
     assert "refreshAfter(" in function
 
 
-def test_acknowledgement_validates_confirms_and_sends_displayed_snapshot():
+def test_acknowledgement_validates_confirms_and_sends_rendered_snapshot():
     function = _function("ack")
     compact = _compact(function)
 
-    assert "button.dataset.slaStatus" in function
-    assert "button.dataset.escalationLevel" in function
+    assert "rowsById.get(Number(id))" in function
+    assert "item.sla_status" in function
+    assert "item.escalation_level" in function
     assert "Number.isInteger(expectedLevel)" in function
-    assert "Snapshot SLA отсутствует или повреждён" in function
-    assert "comment.trim().length<5" in compact
+    assert "Контрольный снимок SLA устарел" in function
+    assert "comment.length<5" in compact
     assert function.index("confirm(") < function.index("withCaseAction(")
     assert function.index("withCaseAction(") < function.index("await api(")
     assert "expected_sla_status:expectedStatus" in compact
     assert "expected_escalation_level:expectedLevel" in compact
-    assert "Исходное нарушение останется в аудите" in function
-    assert "новый срок" in function
-    assert "не подтверждён" in function
+    assert "Исходная просрочка останется в аудите" in function
+    assert "новый контрольный срок" in function
+    assert "не сохранён" in function
+    assert "Черновик остаётся на экране" in function
     assert "refreshAfter(" in function
 
 
@@ -102,7 +102,7 @@ def test_sla_feedback_is_accessible_and_transport_is_not_cached():
     assert "cache:'no-store'" in SLA_CENTER_HTML
     assert "if(!r.ok)throw" in compact
     assert "alert(" not in SLA_CENTER_HTML
-    assert "SLA Center не загружен" in SLA_CENTER_HTML
+    assert "Список SLA не загружен" in SLA_CENTER_HTML
     assert "Изменение сохранено, но список не обновился" in SLA_CENTER_HTML
 
 
