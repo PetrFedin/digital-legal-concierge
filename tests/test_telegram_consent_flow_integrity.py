@@ -251,7 +251,10 @@ def test_mutating_consent_handlers_commit_before_result_presentation():
     assert accept_source.index("await db.commit()") < accept_source.index(
         "await _present_committed_accept(callback)"
     )
-    assert decline_source.index("await db.commit()") < decline_source.index(
+    # The decline handler has an earlier idempotent CALCULATED branch that presents
+    # without a write. The actual CLIENT_DECISION mutation must still commit before
+    # its final success presentation.
+    assert decline_source.index("await db.commit()") < decline_source.rindex(
         "await _present_committed_decline(callback)"
     )
     assert "await db.rollback()" in accept_source
