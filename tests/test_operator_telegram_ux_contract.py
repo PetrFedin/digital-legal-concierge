@@ -68,7 +68,7 @@ async def test_operator_page_is_role_aware_and_does_not_show_secrets():
 
 
 @pytest.mark.asyncio
-async def test_operator_status_publishes_primary_staff_workspaces_only():
+async def test_operator_status_publishes_primary_and_compatibility_workspaces():
     status = await operator_status()
     workspaces = status["workspaces"]
 
@@ -77,8 +77,9 @@ async def test_operator_status_publishes_primary_staff_workspaces_only():
     assert workspaces["lawyer_consultations"] == "/lawyer/consultation-desk/ui"
     assert workspaces["document_review"] == "/document-access/review/ui"
     assert workspaces["messages"] == "/message-center/ui"
-    assert "admin_legacy" not in workspaces
-    assert "lawyer_legacy" not in workspaces
+    assert workspaces["telegram_delivery"] == "/admin/notification-delivery/ui"
+    assert workspaces["admin_legacy"] == "/admin-ui"
+    assert workspaces["lawyer_legacy"] == "/lawyer/ui"
 
 
 def test_primary_staff_workspace_links_are_registered_once():
@@ -96,6 +97,7 @@ def test_primary_staff_workspace_links_are_registered_once():
         "/message-center/ui",
         "/admin/sla/ui",
         "/admin/consultation-outcomes/ui",
+        "/admin/notification-delivery/ui",
     }
 
     missing = sorted(path for path in required if counts[path] == 0)
