@@ -128,7 +128,7 @@ def test_workspace_prioritizes_documents_sla_and_canonical_consultation_desk():
     assert "Проверить документы" in source
     assert "Принять дело" in source
     assert "Устранить просрочку" in source
-    assert 'href="/document-access/review/ui"' in source
+    assert 'href="/document-access/review/ui?case_id=${x.case_id}"' in source
     assert 'href="/lawyer/consultation-desk/ui"' in source
     assert '/message-center/ui?case_id=${x.case_id}' in source
 
