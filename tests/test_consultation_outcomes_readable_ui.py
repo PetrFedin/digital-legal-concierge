@@ -88,9 +88,10 @@ def test_write_success_is_not_relabelled_as_failure_when_refresh_breaks():
     ):
         body = _function(name)
         write = body.index("await api(")
-        write_failure = body.index("catch(e)", write)
-        refresh = body.index("try{await load()}", write_failure)
-        assert write < write_failure < refresh, name
+        refresh = body.index("try{await load()}", write)
+        refresh_failure = body.index("catch(e)", refresh)
+        write_failure = body.index("catch(e)", refresh_failure + len("catch(e)"))
+        assert write < refresh < refresh_failure < write_failure, name
         assert saved_marker in body
         assert "Черновик остаётся на экране" in body
 
