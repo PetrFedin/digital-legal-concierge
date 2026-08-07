@@ -215,6 +215,9 @@ async def operator_status():
             "messages": "/message-center/ui",
             "sla": "/admin/sla/ui",
             "consultation_outcomes": "/admin/consultation-outcomes/ui",
+            "telegram_delivery": "/admin/notification-delivery/ui",
+            "admin_legacy": "/admin-ui",
+            "lawyer_legacy": "/lawyer/ui",
         },
     }
 
