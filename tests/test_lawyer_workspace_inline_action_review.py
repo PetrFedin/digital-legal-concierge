@@ -59,6 +59,7 @@ def test_lawyer_workspace_keeps_exact_case_links_and_write_refresh_separation():
     assert "Операция сохранена, но кабинет не обновился" in source
     assert "Дело принято, но кабинет не обновился" in source
     assert "Запрос сохранён, но кабинет не обновился" in source
-    assert source.index("await api(paths[type]") < source.index(
+    submit = source[source.index("async function submitCaseForm") :]
+    assert submit.index("await api(paths[type]") < submit.index(
         "caseDrafts.delete(draftKey(id,type))"
-    ) < source.index("await load(null,true)")
+    ) < submit.index("await load(null,true)")
