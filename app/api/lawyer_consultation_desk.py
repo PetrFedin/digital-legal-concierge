@@ -378,7 +378,7 @@ async def consultation_desk_data(
                 "ready_steps": sum(1 for item in checklist if item["state"] == "ready"),
                 "total_steps": len(checklist),
                 "message_url": f"/message-center/ui?case_id={case.id}",
-                "document_review_url": "/document-access/review/ui",
+                "document_review_url": f"/document-access/review/ui?case_id={case.id}",
                 **timing,
             }
         )
