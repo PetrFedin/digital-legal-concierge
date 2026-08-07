@@ -10,6 +10,12 @@ from app.bot.client_case_view import (
     progress_bar,
     route_label,
 )
+from app.bot.consultation_result import (
+    consultation_result_view,
+    is_terminal_consultation,
+    latest_case_consultation,
+    latest_terminal_client_consultation,
+)
 from app.bot.context import BotContextService
 from app.bot.keyboards import main_menu, one, reply_main_menu
 from app.domain.payments.mode import payments_disabled
@@ -25,6 +31,11 @@ PILOT_NEXT_ACTIONS = {
     "M1_WAITING_SUCCESS_FEE": "Завершить финансовый этап",
     "M2_PAYMENT_PENDING": "Подтвердить запись на консультацию",
 }
+
+CONSULTATION_RESULT_ACTION = (
+    "👨‍⚖ Открыть итог консультации",
+    "consultation_result_open",
+)
 
 
 def _route_label(route: str | None) -> str:
@@ -49,6 +60,13 @@ def _primary_action(view) -> tuple[str, str]:
             f"next_action:v2:{view.case_id}:{view.action_key}",
         )
     return ("📁 Открыть текущее дело", "my_case_open")
+
+
+async def _result_view_for_case(db, case):
+    consultation = await latest_case_consultation(db, case_id=case.id)
+    if not is_terminal_consultation(consultation):
+        return None
+    return consultation_result_view(consultation)
 
 
 async def _safe_callback_edit(
@@ -89,6 +107,11 @@ async def _home_text(
     case = await ctx.case_service.get_active_case_for_user(user.id)
     if case:
         view = await load_client_case_view(db, case)
+        result_view = await _result_view_for_case(db, case)
+        shown_next_action = result_view.next_step if result_view else view.next_action
+        primary_action = (
+            CONSULTATION_RESULT_ACTION if result_view else _primary_action(view)
+        )
         lines = [
             "🏠 Главная",
             "",
@@ -100,14 +123,26 @@ async def _home_text(
             progress_bar(view.progress_percent),
             "",
             "📌 Ваш следующий шаг",
-            view.next_action,
+            shown_next_action,
         ]
+        if result_view:
+            lines.extend(
+                [
+                    "",
+                    f"👨‍⚖ {result_view.status_text}",
+                    "Откройте итог консультации: там сохранён результат юриста и актуальное продолжение.",
+                ]
+            )
         if view.unread_team_messages:
             lines.extend(
                 [
                     "",
                     f"💬 Новые ответы команды: {view.unread_team_messages}",
-                    "Сначала откройте переписку: ответ может уточнять документы, сроки или дальнейшие действия.",
+                    (
+                        "Ответы доступны в переписке; итог консультации остаётся главным действием."
+                        if result_view
+                        else "Сначала откройте переписку: ответ может уточнять документы, сроки или дальнейшие действия."
+                    ),
                 ]
             )
         if view.documents.blocker:
@@ -134,7 +169,27 @@ async def _home_text(
                 "Главная кнопка ниже ведёт к самому актуальному действию.",
             ]
         )
-        return "\n".join(lines), True, _primary_action(view)
+        return "\n".join(lines), True, primary_action
+
+    latest_result = await latest_terminal_client_consultation(
+        db,
+        client_id=user.id,
+    )
+    if latest_result:
+        result_case, consultation = latest_result
+        result_view = consultation_result_view(consultation)
+        if result_view:
+            text = (
+                "🏠 Главная\n\n"
+                "👨‍⚖ Итог последней консультации сохранён.\n"
+                f"Дело № {result_case.case_number}\n"
+                f"{result_view.status_text}\n\n"
+                "Что дальше\n"
+                f"{result_view.next_step}\n\n"
+                "Полный результат юриста доступен по главной кнопке ниже."
+            )
+            return text, False, CONSULTATION_RESULT_ACTION
+
     text = (
         "🏠 Добро пожаловать\n\n"
         "Я помогу предварительно рассчитать неустойку по ДДУ, передать документы юристу "
@@ -167,6 +222,10 @@ async def menu_calc(message: Message, state: FSMContext, db):
     case = await ctx.case_service.get_active_case_for_user(user.id)
     if case:
         view = await load_client_case_view(db, case)
+        result_view = await _result_view_for_case(db, case)
+        primary_action = (
+            CONSULTATION_RESULT_ACTION if result_view else _primary_action(view)
+        )
         await db.commit()
         await message.answer(
             "📁 У вас уже есть активное дело.\n\n"
@@ -179,7 +238,7 @@ async def menu_calc(message: Message, state: FSMContext, db):
             "Продолжите текущее дело:",
             reply_markup=main_menu(
                 True,
-                primary_action=_primary_action(view),
+                primary_action=primary_action,
             ),
         )
         return
@@ -282,24 +341,55 @@ async def status_command(message: Message, db):
     user = await ctx.get_user_from_message(message)
     case = await ctx.case_service.get_active_case_for_user(user.id)
     if not case:
+        latest_result = await latest_terminal_client_consultation(
+            db,
+            client_id=user.id,
+        )
         await db.commit()
+        if latest_result:
+            result_case, consultation = latest_result
+            result_view = consultation_result_view(consultation)
+            if result_view:
+                await message.answer(
+                    "Активных дел сейчас нет.\n\n"
+                    "👨‍⚖ Итог последней консультации сохранён.\n"
+                    f"Дело № {result_case.case_number}\n"
+                    f"{result_view.status_text}\n\n"
+                    f"Следующий шаг: {result_view.next_step}",
+                    reply_markup=reply_main_menu(False),
+                )
+                await message.answer(
+                    "Продолжить:",
+                    reply_markup=one(
+                        CONSULTATION_RESULT_ACTION,
+                        ("🏠 Главная", "nav_home"),
+                    ),
+                )
+                return
         await message.answer(
             "Активного дела пока нет. Нижнее меню показывает доступные варианты начала.",
             reply_markup=reply_main_menu(False),
         )
         return
+
     view = await load_client_case_view(db, case)
+    result_view = await _result_view_for_case(db, case)
     await db.commit()
+    shown_next_action = result_view.next_step if result_view else view.next_action
     lines = [
         f"📁 {view.case_number}",
         f"Услуга: {view.route_label}",
         f"Сейчас: {view.status_label}",
         f"Документы: {view.documents.summary}",
     ]
+    if result_view:
+        lines.append(f"👨‍⚖ {result_view.status_text}")
     if view.unread_team_messages:
         lines.append(f"💬 Новые ответы команды: {view.unread_team_messages}")
-    lines.extend(["", f"Следующий шаг: {view.next_action}"])
+    lines.extend(["", f"Следующий шаг: {shown_next_action}"])
     buttons: list[tuple[str, str]] = []
+    if result_view:
+        buttons.append(CONSULTATION_RESULT_ACTION)
     if view.unread_team_messages:
         buttons.append(
             (

@@ -74,7 +74,9 @@ def test_reply_calculator_entry_recovers_to_active_case():
     handler = source[source.index("async def menu_calc"): source.index("async def menu_my_case")]
     assert "get_active_case_for_user" in handler
     assert "Чтобы не смешивать расчёты, документы и статусы" in handler
-    assert "primary_action=_primary_action(view)" in handler
+    assert "_result_view_for_case" in handler
+    assert "CONSULTATION_RESULT_ACTION if result_view else _primary_action(view)" in handler
+    assert "primary_action=primary_action" in handler
     assert "return" in handler
 
 
