@@ -1,4 +1,11 @@
+import logging
+
 from aiogram import Router
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramNetworkError,
+    TelegramServerError,
+)
 from aiogram.types import CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select
@@ -18,10 +25,72 @@ from app.models.case import Case
 from app.models.payment import Payment
 
 router = Router()
+logger = logging.getLogger(__name__)
+
+PAYMENT_STATUS_LABELS = {
+    PaymentStatus.PENDING: "Ожидает оплаты",
+    PaymentStatus.WAITING_CONFIRMATION: "Ожидает подтверждения",
+    PaymentStatus.PAID: "Оплачено",
+    PaymentStatus.PAID_REVIEW: "Получено, проверяется командой",
+    PaymentStatus.REFUND_PENDING: "Возврат обрабатывается",
+    PaymentStatus.REFUND_DECLINED: "Возврат отклонён",
+    PaymentStatus.FAILED: "Оплата не прошла",
+    PaymentStatus.CANCELLED: "Оплата отменена",
+    PaymentStatus.REFUNDED: "Средства возвращены",
+    PaymentStatus.EXPIRED: "Срок оплаты истёк",
+}
 
 
 def money(value):
-    return f"{value:,.2f}".replace(",", " ") + " ₽"
+    return f"{value:,.2f}".replace(",", " ").replace(".", ",") + " ₽"
+
+
+def payment_status_label(value) -> str:
+    try:
+        status = PaymentStatus(str(value))
+    except ValueError:
+        return "Статус уточняется"
+    return PAYMENT_STATUS_LABELS.get(status, "Статус уточняется")
+
+
+def payment_summary_line(payment: Payment) -> str:
+    return (
+        f"• {payment.title}\n"
+        f"  {money(payment.amount)} · {payment_status_label(payment.status)}"
+    )
+
+
+def payment_action_label(payment: Payment) -> str:
+    title = " ".join(str(payment.title or "Оплата").split())
+    if len(title) > 48:
+        title = title[:47].rstrip() + "…"
+    return f"Открыть: {title}"
+
+
+async def _present_committed_callback(
+    callback: CallbackQuery,
+    text: str,
+    *,
+    reply_markup,
+) -> None:
+    """Present a durable payment result without turning Telegram UI failure into write failure."""
+
+    try:
+        await callback.message.edit_text(text, reply_markup=reply_markup)
+        return
+    except TelegramBadRequest as error:
+        if "message is not modified" in str(error).lower():
+            return
+        logger.warning("Не удалось обновить сообщение после сохранения оплаты: %s", error)
+    except (TelegramNetworkError, TelegramServerError) as error:
+        logger.warning("Telegram недоступен после сохранения оплаты: %s", error)
+
+    try:
+        await callback.message.answer(text, reply_markup=reply_markup)
+    except (TelegramBadRequest, TelegramNetworkError, TelegramServerError) as error:
+        # The database transaction is already committed. A Telegram outage must
+        # not be reported to the user as a failed payment write or trigger retry.
+        logger.warning("Не удалось показать сохранённый результат оплаты: %s", error)
 
 
 def fake_payments_enabled() -> bool:
@@ -48,7 +117,7 @@ def payment_keyboard(payment: Payment):
             text="✅ DEV подтвердить оплату",
             callback_data=f"pay_fake_success:{payment.id}",
         )
-    keyboard.button(text="📁 Мое дело", callback_data="my_case_open")
+    keyboard.button(text="📁 Моё дело", callback_data="my_case_open")
     keyboard.adjust(1)
     return keyboard.as_markup()
 
@@ -89,21 +158,15 @@ async def payments(callback: CallbackQuery, db):
         else []
     )
     text = "💳 Оплаты\n\n" + (
-        "Пока нет выставленных платежей."
+        "Пока нет выставленных платежей. Когда появится платёж, здесь будут сумма и понятный статус."
         if not payments_list
-        else "\n".join(
-            [
-                f"#{payment.id} {payment.title}: "
-                f"{money(payment.amount)} — {payment.status}"
-                for payment in payments_list
-            ]
-        )
+        else "\n\n".join(payment_summary_line(payment) for payment in payments_list)
     )
     items = [
-        (f"Открыть оплату #{payment.id}", f"pay_open:{payment.id}")
+        (payment_action_label(payment), f"pay_open:{payment.id}")
         for payment in payments_list
     ]
-    items += [("📁 Мое дело", "my_case_open")]
+    items += [("📁 Моё дело", "my_case_open")]
     await callback.message.edit_text(text, reply_markup=one(*items))
 
 
@@ -176,7 +239,8 @@ async def start_payment(callback: CallbackQuery, db, code):
         )
         return
 
-    await callback.message.edit_text(
+    await _present_committed_callback(
+        callback,
         f"💳 {payment.title}\n\nСумма: {money(payment.amount)}\n\n"
         "Вопрос и документы сохранены. После подтверждения оплаты выбранный "
         "слот станет окончательно вашим. Не используйте эту ссылку после выбора другого времени.",
@@ -186,7 +250,18 @@ async def start_payment(callback: CallbackQuery, db, code):
 
 @router.callback_query(lambda c: c.data.startswith("pay_open:"))
 async def open_payment(callback: CallbackQuery, db):
-    payment_id = int(callback.data.split(":", 1)[1])
+    try:
+        payment_id = int(callback.data.split(":", 1)[1])
+    except (TypeError, ValueError):
+        await callback.message.edit_text(
+            "Эта кнопка оплаты больше не актуальна.",
+            reply_markup=one(
+                ("💳 Открыть оплаты", "payments_open"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
     payment, _case = await get_owned_payment(callback, db, payment_id)
     if not payment:
         return
@@ -198,7 +273,7 @@ async def open_payment(callback: CallbackQuery, db):
     await callback.message.edit_text(
         f"💳 {payment.title}\n"
         f"Сумма: {money(payment.amount)}\n"
-        f"Статус: {payment.status}{review_note}",
+        f"Статус: {payment_status_label(payment.status)}{review_note}",
         reply_markup=payment_keyboard(payment),
     )
 
@@ -209,7 +284,11 @@ async def fake(callback: CallbackQuery, db):
         await callback.answer("DEV-оплата отключена.", show_alert=True)
         return
 
-    payment_id = int(callback.data.split(":", 1)[1])
+    try:
+        payment_id = int(callback.data.split(":", 1)[1])
+    except (TypeError, ValueError):
+        await callback.answer("Эта кнопка оплаты больше не актуальна.", show_alert=True)
+        return
     payment, case = await get_owned_payment(callback, db, payment_id)
     if not payment or not case:
         return
@@ -220,27 +299,42 @@ async def fake(callback: CallbackQuery, db):
         )
         return
 
-    await PaymentWebhookService(db).process_successful_payment(
-        payment=payment,
-        case=case,
-        provider_payload={"dev": True},
-    )
-    await db.commit()
+    try:
+        await PaymentWebhookService(db).process_successful_payment(
+            payment=payment,
+            case=case,
+            provider_payload={"dev": True},
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        logger.exception("Не удалось подтвердить тестовую оплату")
+        await callback.message.edit_text(
+            "Оплата пока не подтверждена. Данные дела сохранены.",
+            reply_markup=one(
+                ("🔄 Проверить оплату", f"pay_open:{payment.id}"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
 
     if payment.status == PaymentStatus.PAID_REVIEW:
-        await callback.message.edit_text(
+        await _present_committed_callback(
+            callback,
             "⚠️ Оплата получена, но резерв времени уже изменился или истёк. "
             "Администратор проверит платёж и свяжется с вами.",
             reply_markup=one(
                 ("📅 Выбрать новое время", "consult_booking_start"),
                 ("✉️ Написать команде", "message_create"),
-                ("📁 Мое дело", "my_case_open"),
+                ("📁 Моё дело", "my_case_open"),
             ),
         )
         return
 
     if payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT:
-        await callback.message.edit_text(
+        await _present_committed_callback(
+            callback,
             "✅ Оплата подтверждена, консультация забронирована.\n\n"
             "Вопрос уже сохранён. Проверьте дату, документы и подготовку к встрече.",
             reply_markup=one(
@@ -252,10 +346,11 @@ async def fake(callback: CallbackQuery, db):
         )
         return
 
-    await callback.message.edit_text(
+    await _present_committed_callback(
+        callback,
         "✅ Оплата подтверждена. Следующий этап открыт автоматически.",
         reply_markup=one(
-            ("📁 Мое дело", "my_case_open"),
+            ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         ),
     )
