@@ -16,3 +16,4 @@ class DocumentUploadStates(StatesGroup):
 class ConsultationDescriptionStates(StatesGroup):
     waiting_subject_choice = State()
     waiting_description = State()
+    reviewing_description = State()
