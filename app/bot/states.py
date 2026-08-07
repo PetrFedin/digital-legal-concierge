@@ -9,6 +9,7 @@ class CalculatorStates(StatesGroup):
 
 
 class DocumentUploadStates(StatesGroup):
+    choosing_type = State()
     waiting_file = State()
 
 
