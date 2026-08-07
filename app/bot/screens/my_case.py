@@ -16,11 +16,24 @@ from app.bot.client_case_view import (
     progress_bar,
     route_label,
 )
+from app.bot.consultation_result import latest_terminal_client_consultation
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.domain.payments.mode import payments_disabled
 
 router = Router()
+
+
+TERMINAL_CONSULTATION_SUMMARIES = frozenset(
+    {
+        "Консультация проведена",
+        "Клиент не подключился",
+        "Юрист не подключился",
+        "Консультация отменена",
+        "Консультация закрыта",
+        "Консультация перенесена",
+    }
+)
 
 
 async def _safe_edit(
@@ -62,14 +75,23 @@ def _case_buttons(view) -> list[tuple[str, str]]:
             )
         )
 
-    if view.action:
+    has_consultation_result = (
+        view.consultation_summary in TERMINAL_CONSULTATION_SUMMARIES
+    )
+    if has_consultation_result:
+        buttons.append(("👨‍⚖ Итог консультации", "consultation_result_open"))
+
+    if view.action and not (
+        has_consultation_result
+        and view.action.callback == "consultation_booked_open"
+    ):
         buttons.append(
             (
                 f"▶️ {view.action.label}",
                 f"next_action:v2:{view.case_id}:{view.action_key}",
             )
         )
-    else:
+    elif not has_consultation_result:
         buttons.append(("🔄 Обновить статус", "my_case_open"))
 
     if not view.action or view.action.callback not in {
@@ -93,19 +115,35 @@ def _case_buttons(view) -> list[tuple[str, str]]:
 
 
 async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None):
-    _, _, case = await _active_case_context(callback, db)
+    _, user, case = await _active_case_context(callback, db)
     if not case:
-        text = "📁 У вас пока нет активного дела.\n\nВыберите, с чего начать:"
+        latest_result = await latest_terminal_client_consultation(
+            db,
+            client_id=user.id,
+        )
+        text = "📁 Активных дел сейчас нет.\n\nВыберите, с чего начать:"
+        buttons: list[tuple[str, str]] = []
+        if latest_result:
+            text = (
+                "📁 Активных дел сейчас нет.\n\n"
+                "Итог последней консультации сохранён и доступен отдельно."
+            )
+            buttons.append(
+                ("👨‍⚖ Открыть итог консультации", "consultation_result_open")
+            )
+        buttons.extend(
+            [
+                ("🧮 Рассчитать неустойку", "calc_start"),
+                ("💬 Записаться на консультацию", "calc_to_m2"),
+                ("🏠 Главная", "nav_home"),
+            ]
+        )
         if notice:
             text = f"{notice}\n\n{text}"
         await _safe_edit(
             callback,
             text,
-            reply_markup=one(
-                ("🧮 Рассчитать неустойку", "calc_start"),
-                ("💬 Записаться на консультацию", "calc_to_m2"),
-                ("🏠 Главная", "nav_home"),
-            ),
+            reply_markup=one(*buttons),
         )
         return
 
