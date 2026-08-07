@@ -31,6 +31,7 @@ class ConsultationChangeService:
         case,
         client_id: int,
         comment: str,
+        payment_required: bool,
     ):
         if consultation.case_id != case.id:
             raise ValueError("Консультация не относится к текущему делу")
@@ -48,6 +49,7 @@ class ConsultationChangeService:
             actor_type="client",
             actor_id=client_id,
             comment=comment,
+            payment_required=payment_required,
         )
 
         replacement = await self.consultations.get_or_create_for_case(case)
@@ -98,6 +100,7 @@ class ConsultationChangeService:
                 ),
                 "subject_type": replacement.subject_type,
                 "related_case_id": replacement.related_case_id,
+                "payment_required": payment_required,
             },
             comment="После отмены клиент может выбрать новое время без потери контекста",
         )
