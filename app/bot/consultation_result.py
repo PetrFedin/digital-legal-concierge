@@ -192,6 +192,17 @@ async def prepare_follow_up_consultation(
     outcome: Consultation,
     client_id: int,
 ) -> tuple[Consultation, bool]:
+    locked_case = (
+        await db.execute(
+            select(Case)
+            .where(Case.id == case.id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if not locked_case:
+        raise ValueError("Текущее дело больше не найдено")
+    case = locked_case
+
     if case.client_id != client_id or outcome.case_id != case.id:
         raise ValueError("Консультация не относится к текущему клиенту")
     if normalize_consultation_status(outcome.status) != ConsultationStatus.DONE:
