@@ -6,7 +6,7 @@ from app.config import settings
 NEW_CASE_REPLY_MENU_BUTTONS = [
     [KeyboardButton(text="🧮 Рассчитать неустойку")],
     [
-        KeyboardButton(text="📁 Мое дело"),
+        KeyboardButton(text="📁 Моё дело"),
         KeyboardButton(text="💬 Связаться с юристом"),
     ],
     [KeyboardButton(text="🏠 Главная")],
@@ -34,7 +34,7 @@ def reply_main_menu(case_exists: bool = False) -> ReplyKeyboardMarkup:
         input_field_placeholder=(
             "Выберите: дело, документы или переписка"
             if case_exists
-            else "Выберите: расчет, дело, документы или помощь"
+            else "Выберите: расчёт, дело или помощь"
         ),
     )
 
@@ -52,9 +52,12 @@ def main_menu(
     kb = InlineKeyboardBuilder()
 
     if not case_exists:
+        if primary_action:
+            text, callback_data = primary_action
+            kb.button(text=text, callback_data=callback_data)
         kb.button(text="🧮 Рассчитать неустойку", callback_data="calc_start")
         kb.button(text="💬 Связаться с юристом", callback_data="contact_lawyer")
-        kb.adjust(1, 1)
+        kb.adjust(*([1, 1, 1] if primary_action else [1, 1]))
         return kb.as_markup()
 
     if primary_action:
