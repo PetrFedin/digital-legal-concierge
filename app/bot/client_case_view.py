@@ -69,9 +69,14 @@ class ClientCaseView:
 
 CLIENT_ACTIONS: dict[str, ClientAction] = {
     "CALCULATED": ClientAction(
-        "Продолжить оформление",
+        "Выбрать дальнейший путь",
+        "calc_decision_open",
+        "Выберите: продолжить ведение дела, перейти к консультации или пока ничего не менять.",
+    ),
+    "CLIENT_DECISION": ClientAction(
+        "Подтвердить согласие",
         "consent_open",
-        "Подтвердите согласие и выберите формат юридической помощи.",
+        "Вы выбрали ведение дела. Подтвердите согласие, чтобы безопасно передать документы юристу.",
     ),
     "M1_DOCUMENTS_PENDING": ClientAction(
         "Загрузить документы",
@@ -177,6 +182,17 @@ def route_label(route: str | None) -> str:
         "M1": "Ведение дела",
         "M2": "Консультация",
     }.get(str(route or ""), "Юридическое обращение")
+
+
+def effective_client_route(case) -> str | None:
+    route = str(case.route or "").strip()
+    if route:
+        return route
+    # Historical CLIENT_DECISION records were created only after the client
+    # explicitly chose M1, before route persistence was introduced.
+    if str(case.status) == "CLIENT_DECISION":
+        return "M1"
+    return None
 
 
 def client_action_for(case) -> ClientAction | None:
@@ -337,7 +353,7 @@ def _consultation_summary(consultation: Consultation | None) -> str:
 
 
 def _calculation_summary(case, calculation: Calculation | None) -> str:
-    if str(case.route) != "M1":
+    if str(case.route or "") == "M2":
         return "Не требуется для консультации"
     if not calculation:
         return "Расчёт ещё не завершён"
@@ -461,13 +477,14 @@ async def load_client_case_view(
         consultation_updated_at,
         latest_team_message_at,
     )
+    effective_route = effective_client_route(case)
 
     return ClientCaseView(
         case_id=case.id,
         case_number=case.case_number,
         case_status=str(case.status),
-        route=case.route,
-        route_label=route_label(case.route),
+        route=effective_route,
+        route_label=route_label(effective_route),
         status_label=get_client_visible_status(case.status),
         progress_percent=get_case_progress_percent(case.status),
         next_action=next_action,
