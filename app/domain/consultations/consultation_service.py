@@ -324,7 +324,7 @@ class ConsultationService:
             action="CONSULTATION_RESCHEDULED",
             old_value=old_snapshot,
             new_value=new_snapshot,
-            comment="Клиент перенёс оплаченную консультацию без повторной оплаты",
+            comment="Клиент перенёс подтверждённую консультацию без повторной оплаты",
         )
         await self.notifications.emit(
             event_code="CONSULTATION_RESCHEDULED",
@@ -347,8 +347,9 @@ class ConsultationService:
         actor_type: str,
         actor_id: int | None,
         comment: str,
+        payment_required: bool = True,
     ):
-        if consultation.status == ConsultationStatus.BOOKED:
+        if consultation.status == ConsultationStatus.BOOKED and payment_required:
             from app.domain.payments.refund_service import (
                 ConsultationRefundService,
             )
@@ -376,7 +377,11 @@ class ConsultationService:
             actor_type=actor_type,
             actor_id=actor_id,
             case_id=case.id,
-            action="CONSULTATION_CANCELLED",
+            action=(
+                "CONSULTATION_CANCELLED_WITHOUT_PAYMENT"
+                if not payment_required
+                else "CONSULTATION_CANCELLED"
+            ),
             new_value={"consultation_id": consultation.id},
             comment=comment,
         )
