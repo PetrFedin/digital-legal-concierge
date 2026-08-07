@@ -24,15 +24,13 @@ from app.domain.payments.mode import payments_disabled
 router = Router()
 
 
-TERMINAL_CONSULTATION_SUMMARIES = frozenset(
-    {
-        "Консультация проведена",
-        "Клиент не подключился",
-        "Юрист не подключился",
-        "Консультация отменена",
-        "Консультация закрыта",
-        "Консультация перенесена",
-    }
+TERMINAL_CONSULTATION_PREFIXES = (
+    "Консультация проведена",
+    "Клиент не подключился",
+    "Юрист не подключился",
+    "Запись отменена",
+    "Консультация закрыта",
+    "Запись перенесена",
 )
 
 
@@ -75,8 +73,8 @@ def _case_buttons(view) -> list[tuple[str, str]]:
             )
         )
 
-    has_consultation_result = (
-        view.consultation_summary in TERMINAL_CONSULTATION_SUMMARIES
+    has_consultation_result = view.consultation_summary.startswith(
+        TERMINAL_CONSULTATION_PREFIXES
     )
     if has_consultation_result:
         buttons.append(("👨‍⚖ Итог консультации", "consultation_result_open"))
