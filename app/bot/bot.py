@@ -18,6 +18,7 @@ from app.bot.lease import TelegramPollingLease
 from app.bot.screens import (
     calculator,
     common,
+    consent_flow,
     consultation_description,
     consultation_intake,
     consultation_results,
@@ -141,6 +142,7 @@ def build_dispatcher() -> Dispatcher:
         no_payment.router,
         payments.router,
         consultations.router,
+        consent_flow.router,
         m1_stages.router,
         messages.router,
         history.router,
