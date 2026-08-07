@@ -3,7 +3,11 @@ from __future__ import annotations
 import logging
 
 from aiogram import Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramNetworkError,
+    TelegramServerError,
+)
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
@@ -88,12 +92,26 @@ def _date_buttons(slots, callback_prefix: str):
 
 
 async def _safe_edit(callback: CallbackQuery, text: str, *, reply_markup) -> None:
+    """Render the current consultation step without turning stale Telegram UI into a dead end."""
+
     try:
         await callback.message.edit_text(text, reply_markup=reply_markup)
+        return
     except TelegramBadRequest as error:
-        if "message is not modified" not in str(error).lower():
-            raise
-        await callback.answer("Экран уже актуален.")
+        if "message is not modified" in str(error).lower():
+            try:
+                await callback.answer("Экран уже актуален.")
+            except (TelegramBadRequest, TelegramNetworkError, TelegramServerError):
+                pass
+            return
+        logger.warning("Не удалось обновить экран консультации: %s", error)
+    except (TelegramNetworkError, TelegramServerError) as error:
+        logger.warning("Telegram недоступен при обновлении консультации: %s", error)
+
+    try:
+        await callback.message.answer(text, reply_markup=reply_markup)
+    except (TelegramBadRequest, TelegramNetworkError, TelegramServerError) as error:
+        logger.warning("Не удалось открыть экран консультации новым сообщением: %s", error)
 
 
 async def _active_context(callback: CallbackQuery, db):
@@ -240,7 +258,8 @@ async def subject_start(callback: CallbackQuery, db, state: FSMContext):
     ]
     buttons.append(("➕ Новая или другая ситуация", "consult_subject_new"))
     await state.set_state(ConsultationDescriptionStates.waiting_subject_choice)
-    await callback.message.edit_text(
+    await _safe_edit(
+        callback,
         "📝 Описание консультации\n\n"
         "Выберите существующее дело, к которому относится вопрос, либо "
         "опишите новую ситуацию.",
@@ -336,7 +355,8 @@ async def legacy_description_start(callback: CallbackQuery, db, state: FSMContex
         return
     await state.update_data(subject_type="new_or_other", related_case_id=None)
     await state.set_state(ConsultationDescriptionStates.waiting_description)
-    await callback.message.edit_text(
+    await _safe_edit(
+        callback,
         "📝 Опишите ситуацию и конкретный вопрос для юриста.\n\n"
         "После сохранения можно добавить документы и выбрать время.",
         reply_markup=one(
@@ -490,7 +510,8 @@ async def booking_start(callback: CallbackQuery, db):
         return
     _case, _consultation, slots = prepared
     if not slots:
-        await callback.message.edit_text(
+        await _safe_edit(
+            callback,
             "Сейчас свободных слотов нет. Вопрос и документы сохранены.\n\n"
             "Повторите позже или напишите юридической команде.",
             reply_markup=one(
@@ -501,7 +522,8 @@ async def booking_start(callback: CallbackQuery, db):
             ),
         )
         return
-    await callback.message.edit_text(
+    await _safe_edit(
+        callback,
         "📅 Выберите дату консультации.\n\n"
         "Вопрос уже сохранён. Выбор даты не изменяет документы и описание.",
         reply_markup=one(
@@ -534,7 +556,8 @@ async def choose_date(callback: CallbackQuery, db):
         )
         for slot in selected
     ]
-    await callback.message.edit_text(
+    await _safe_edit(
+        callback,
         f"🕐 Выберите время на {_format_date(selected[0].starts_at)}.",
         reply_markup=one(
             *buttons,
@@ -634,7 +657,8 @@ async def choose_slot(callback: CallbackQuery, db):
         if slot.hold_expires_at
         else "в течение 10 минут"
     )
-    await callback.message.edit_text(
+    await _safe_edit(
+        callback,
         "✅ Время временно удерживается за вами.\n\n"
         f"Дата: {_format_date(slot.starts_at)}\n"
         f"Время: {_format_time(slot.starts_at)}–{_format_time(slot.ends_at)}\n"
