@@ -109,7 +109,12 @@ class DocumentReviewService:
                 "Документ относится к делу, не назначенному текущему юристу"
             )
 
-    async def queue(self, *, actor: DocumentActor) -> list[dict[str, object]]:
+    async def queue(
+        self,
+        *,
+        actor: DocumentActor,
+        case_id: int | None = None,
+    ) -> list[dict[str, object]]:
         statement = (
             select(Document, Case, User)
             .join(Case, Case.id == Document.case_id)
@@ -118,6 +123,8 @@ class DocumentReviewService:
             .order_by(Document.created_at.asc(), Document.id.asc())
             .limit(300)
         )
+        if case_id is not None:
+            statement = statement.where(Case.id == int(case_id))
         if actor.role == "lawyer":
             statement = statement.where(Case.assigned_lawyer_id == actor.lawyer_id)
         rows = (await self.db.execute(statement)).all()
