@@ -17,9 +17,19 @@ from app.bot.consultation_result import (
 )
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
+from app.domain.statuses.case_statuses import CaseStatus
 
 router = Router()
 logger = logging.getLogger(__name__)
+
+
+CLOSED_CASE_STATUSES = frozenset(
+    {
+        CaseStatus.M1_CLOSED,
+        CaseStatus.M2_CLOSED,
+        CaseStatus.ARCHIVED,
+    }
+)
 
 
 async def _safe_edit(callback: CallbackQuery, text: str, *, reply_markup) -> None:
@@ -29,6 +39,18 @@ async def _safe_edit(callback: CallbackQuery, text: str, *, reply_markup) -> Non
         if "message is not modified" not in str(error).lower():
             raise
         await callback.answer("Экран уже актуален.")
+
+
+def _case_is_closed(case) -> bool:
+    try:
+        status = (
+            case.status
+            if isinstance(case.status, CaseStatus)
+            else CaseStatus(str(case.status))
+        )
+    except ValueError:
+        return False
+    return status in CLOSED_CASE_STATUSES
 
 
 class TerminalBookedOpenFilter(Filter):
@@ -66,7 +88,10 @@ def _format_scheduled_at(consultation) -> str | None:
     return consultation.scheduled_at.strftime("%d.%m.%Y %H:%M")
 
 
-def _result_buttons(view) -> list[tuple[str, str]]:
+def _result_buttons(view, *, case) -> list[tuple[str, str]]:
+    if _case_is_closed(case):
+        return [("🏠 На главную", "nav_home")]
+
     buttons: list[tuple[str, str]] = [
         (view.primary_label, view.primary_callback),
     ]
@@ -115,11 +140,20 @@ async def _render_result(callback: CallbackQuery, *, case, consultation) -> None
                 ]
             )
 
-    lines.extend(["", "Что дальше:", view.next_step])
+    if _case_is_closed(case) and view.primary_callback != "nav_home":
+        lines.extend(
+            [
+                "",
+                "Что дальше:",
+                "Это дело уже закрыто. Итог сохранён для просмотра; новых действий по старому делу нет.",
+            ]
+        )
+    else:
+        lines.extend(["", "Что дальше:", view.next_step])
     await _safe_edit(
         callback,
         "\n".join(lines),
-        reply_markup=one(*_result_buttons(view)),
+        reply_markup=one(*_result_buttons(view, case=case)),
     )
 
 
