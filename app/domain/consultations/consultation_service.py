@@ -97,10 +97,26 @@ class ConsultationService:
             subject_type=subject_type,
             related_case_id=related_case_id,
         )
+        current_status = (
+            consultation.status
+            if isinstance(consultation.status, ConsultationStatus)
+            else ConsultationStatus(str(consultation.status))
+        )
+        payload_changed = any(
+            (
+                str(consultation.client_description or "") != description,
+                str(consultation.subject_type or "") != subject_type,
+                consultation.related_case_id != verified_related_case_id,
+            )
+        )
+        needs_readiness_advance = current_status == ConsultationStatus.DESCRIPTION_PENDING
+        if not payload_changed and not needs_readiness_advance:
+            return consultation
+
         consultation.client_description = description
         consultation.subject_type = subject_type
         consultation.related_case_id = verified_related_case_id
-        if consultation.status != ConsultationStatus.BOOKED:
+        if needs_readiness_advance:
             consultation.status = ConsultationStatus.DOCUMENTS_OPTIONAL
         await add_case_history_event(
             self.db,
