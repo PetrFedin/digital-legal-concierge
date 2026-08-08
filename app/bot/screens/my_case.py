@@ -122,12 +122,15 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
             db,
             client_id=user.id,
         )
-        text = "📁 Активных дел сейчас нет.\n\nВыберите, с чего начать:"
+        text = (
+            "📁 Активного дела сейчас нет.\n\n"
+            "Начните с предварительного расчёта или обратитесь к юридической команде."
+        )
         buttons: list[tuple[str, str]] = []
         if latest_result:
             text = (
-                "📁 Активных дел сейчас нет.\n\n"
-                "Итог последней консультации сохранён и доступен отдельно."
+                "📁 Активного дела сейчас нет.\n\n"
+                "Итог последней консультации сохранён. Его можно открыть отдельно или начать новое обращение."
             )
             buttons.append(
                 ("👨‍⚖ Открыть итог консультации", "consultation_result_open")
@@ -135,7 +138,7 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
         buttons.extend(
             [
                 ("🧮 Рассчитать неустойку", "calc_start"),
-                ("💬 Записаться на консультацию", "calc_to_m2"),
+                ("💬 Связаться с юристом", "contact_lawyer"),
                 ("🏠 Главная", "nav_home"),
             ]
         )
@@ -163,17 +166,18 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
 
     lines: list[str] = []
     if notice:
-        lines.extend([notice, ""])
+        lines.extend([f"ℹ️ {notice}", ""])
     lines.extend(
         [
-            "📁 Моё дело",
-            f"№ {view.case_number} · {view.route_label}",
+            "📁 МОЁ ДЕЛО",
+            f"№ {view.case_number}",
+            f"{view.route_label}",
             "",
-            "Текущий этап",
-            view.status_label,
+            "СЕЙЧАС",
+            f"{view.status_label}",
             progress_bar(view.progress_percent),
             "",
-            "Ваш следующий шаг",
+            "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ",
             shown_next_action,
         ]
     )
@@ -182,16 +186,22 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
             [
                 "",
                 f"💬 Новые ответы команды: {view.unread_team_messages}",
-                "Ответы ещё не отмечены прочитанными. Откройте переписку, чтобы увидеть их полностью.",
+                "Сначала откройте переписку: ответ может уточнять документы, сроки или дальнейшие действия.",
             ]
         )
     if view.documents.blocker:
-        lines.extend(["", f"⚠️ Что мешает продолжить: {view.documents.blocker}"])
+        lines.extend(
+            [
+                "",
+                "⚠️ ЧТО МЕШАЕТ ПРОДОЛЖИТЬ",
+                view.documents.blocker,
+            ]
+        )
 
     lines.extend(
         [
             "",
-            "Готовность",
+            "ГОТОВНОСТЬ",
             f"🧮 Расчёт: {view.calculation_summary}",
             f"📄 Документы: {_document_detail(view)}",
         ]
@@ -200,7 +210,13 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
         lines.append(f"🗓 Консультация: {view.consultation_summary}")
     if view.payments_summary:
         lines.append(f"💳 Оплаты: {view.payments_summary}")
-    lines.extend(["", f"Обновлено: {format_updated_at(view.updated_at)}"])
+    lines.extend(
+        [
+            "",
+            f"Обновлено: {format_updated_at(view.updated_at)}",
+            "Первая кнопка ниже — самое актуальное безопасное действие.",
+        ]
+    )
 
     await _safe_edit(
         callback,
