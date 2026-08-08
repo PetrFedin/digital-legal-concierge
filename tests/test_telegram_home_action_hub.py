@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from app.bot.keyboards import main_menu
+from app.bot.keyboards import main_menu, reply_main_menu
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +22,10 @@ def texts(markup) -> list[str]:
     return [button.text for row in markup.inline_keyboard for button in row]
 
 
+def reply_texts(markup) -> list[str]:
+    return [button.text for row in markup.keyboard for button in row]
+
+
 def test_new_client_home_has_two_clear_entry_points():
     markup = main_menu(case_exists=False, payments_enabled=False)
 
@@ -31,6 +35,35 @@ def test_new_client_home_has_two_clear_entry_points():
         "💬 Связаться с юристом",
     ]
     assert [len(row) for row in markup.inline_keyboard] == [1, 1]
+
+
+def test_new_client_persistent_menu_has_no_dead_case_sections():
+    markup = reply_main_menu(False)
+
+    assert reply_texts(markup) == [
+        "🧮 Рассчитать неустойку",
+        "💬 Связаться с юристом",
+        "🏠 Главная",
+    ]
+    assert "📁 Моё дело" not in reply_texts(markup)
+    assert "📄 Документы" not in reply_texts(markup)
+    assert "💬 Переписка" not in reply_texts(markup)
+    assert "✉️ Новый вопрос" not in reply_texts(markup)
+    assert markup.input_field_placeholder == "Выберите: расчёт или консультация"
+
+
+def test_active_client_persistent_menu_exposes_only_case_work():
+    markup = reply_main_menu(True)
+
+    assert reply_texts(markup) == [
+        "📁 Моё дело",
+        "📄 Документы",
+        "💬 Переписка",
+        "✉️ Новый вопрос",
+        "🏠 Главная",
+    ]
+    assert "🧮 Рассчитать неустойку" not in reply_texts(markup)
+    assert markup.input_field_placeholder == "Выберите: дело, документы или переписка"
 
 
 def test_active_case_home_starts_with_snapshot_safe_primary_action():
@@ -52,6 +85,7 @@ def test_active_case_home_starts_with_snapshot_safe_primary_action():
         "contact_lawyer",
     ]
     assert texts(markup)[0] == "▶️ Передать документы юристу"
+    assert texts(markup)[1] == "📁 Моё дело"
     assert "calc_start" not in callbacks(markup)
     assert [len(row) for row in markup.inline_keyboard] == [1, 2, 2, 1]
 
@@ -66,6 +100,20 @@ def test_home_uses_shared_case_presenter_and_direct_next_action():
     assert 'f"next_action:v2:{view.case_id}:{view.action_key}"' in source
     assert "Главная кнопка ниже ведёт к самому актуальному действию" in source
     assert "primary_action=primary_action" in source
+
+
+def test_my_case_is_visual_action_hub_and_no_case_recovers_via_contact_router():
+    source = read("app/bot/screens/my_case.py")
+
+    assert "📁 МОЁ ДЕЛО" in source
+    assert "СЕЙЧАС" in source
+    assert "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ" in source
+    assert "⚠️ ЧТО МЕШАЕТ ПРОДОЛЖИТЬ" in source
+    assert "ГОТОВНОСТЬ" in source
+    assert "Первая кнопка ниже — самое актуальное безопасное действие." in source
+    assert '("💬 Связаться с юристом", "contact_lawyer")' in source
+    assert '("💬 Записаться на консультацию", "calc_to_m2")' not in source
+    assert 'f"next_action:v2:{view.case_id}:{view.action_key}"' in source
 
 
 def test_reply_calculator_entry_recovers_to_active_case():
