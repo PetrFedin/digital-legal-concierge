@@ -25,6 +25,7 @@ from app.bot.screens import (
     consultation_results,
     consultations,
     documents,
+    fallback,
     history,
     m1_stages,
     messages,
@@ -148,6 +149,7 @@ def build_dispatcher() -> Dispatcher:
         m1_stages.router,
         messages.router,
         history.router,
+        fallback.router,
     ]:
         dispatcher.include_router(router)
     return dispatcher
