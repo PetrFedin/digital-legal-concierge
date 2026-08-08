@@ -71,6 +71,18 @@ def test_no_case_documents_recover_through_same_legal_help_entry():
     assert '("📅 Записаться на консультацию", "calc_to_m2")' not in source
 
 
+def test_no_case_message_history_recovers_through_same_legal_help_entry():
+    source = read("app/bot/screens/messages.py")
+    handler = source[
+        source.index("async def message_history"): source.index("async def message_create")
+    ]
+
+    assert "История переписки появится после создания обращения" in handler
+    assert '("🧮 Рассчитать неустойку", "calc_start")' in handler
+    assert '("💬 Связаться с юристом", "contact_lawyer")' in handler
+    assert '("📅 Записаться на консультацию", "consult_booking_start")' not in handler
+
+
 def test_active_client_persistent_menu_exposes_only_case_work():
     markup = reply_main_menu(True)
 
