@@ -84,6 +84,48 @@ async def _safe_callback_edit(
         await callback.answer(unchanged_notice)
 
 
+async def _has_unsent_message_draft(state: FSMContext) -> bool:
+    data = await state.get_data()
+    return bool(str(data.get("draft_text") or "").strip())
+
+
+def _draft_guard_markup():
+    return one(
+        ("↩️ Вернуться к черновику", "message_review_return"),
+        ("✖️ Отменить черновик", "message_discard_confirm"),
+    )
+
+
+def _draft_guard_text() -> str:
+    return (
+        "📝 У вас есть неотправленный черновик вопроса.\n\n"
+        "Я не закрываю его автоматически, чтобы введённый текст не потерялся. "
+        "Вернитесь к черновику или отмените его явно — удаление потребует подтверждения."
+    )
+
+
+async def _guard_message_draft(message: Message, state: FSMContext) -> bool:
+    if not await _has_unsent_message_draft(state):
+        return False
+    await message.answer(
+        _draft_guard_text(),
+        reply_markup=_draft_guard_markup(),
+    )
+    return True
+
+
+async def _guard_callback_draft(callback: CallbackQuery, state: FSMContext) -> bool:
+    if not await _has_unsent_message_draft(state):
+        return False
+    await _safe_callback_edit(
+        callback,
+        _draft_guard_text(),
+        reply_markup=_draft_guard_markup(),
+        unchanged_notice="Черновик сохранён и ждёт вашего решения.",
+    )
+    return True
+
+
 async def _active_case_exists(db, message: Message) -> bool:
     ctx = BotContextService(db)
     user = await ctx.get_user_from_message(message)
@@ -201,6 +243,8 @@ async def _home_text(
 
 @router.message(lambda m: m.text in ["/start", "/menu", "🏠 Главная"])
 async def start(message: Message, db, state: FSMContext):
+    if await _guard_message_draft(message, state):
+        return
     await state.clear()
     text, case_exists, primary_action = await _home_text(db, message)
     await db.commit()
@@ -216,6 +260,8 @@ async def start(message: Message, db, state: FSMContext):
 
 @router.message(lambda m: m.text == "🧮 Рассчитать неустойку")
 async def menu_calc(message: Message, state: FSMContext, db):
+    if await _guard_message_draft(message, state):
+        return
     await state.clear()
     ctx = BotContextService(db)
     user = await ctx.get_user_from_message(message)
@@ -254,6 +300,8 @@ async def menu_calc(message: Message, state: FSMContext, db):
 
 @router.message(lambda m: m.text in ["📁 Мое дело", "📁 Моё дело"])
 async def menu_my_case(message: Message, state: FSMContext):
+    if await _guard_message_draft(message, state):
+        return
     await state.clear()
     await message.answer(
         "Откройте единый экран дела: текущий этап, готовность, новые ответы и следующее действие.",
@@ -266,6 +314,8 @@ async def menu_my_case(message: Message, state: FSMContext):
 
 @router.message(lambda m: m.text == "📄 Документы")
 async def menu_documents(message: Message, state: FSMContext):
+    if await _guard_message_draft(message, state):
+        return
     await state.clear()
     await message.answer(
         "В разделе документов видны актуальные файлы, замечания юриста и история версий.",
@@ -278,6 +328,8 @@ async def menu_documents(message: Message, state: FSMContext):
 
 @router.message(lambda m: m.text == "💬 Переписка")
 async def menu_messages(message: Message, state: FSMContext):
+    if await _guard_message_draft(message, state):
+        return
     await state.clear()
     await message.answer(
         "Откройте историю сообщений по текущему делу.",
@@ -290,6 +342,8 @@ async def menu_messages(message: Message, state: FSMContext):
 
 @router.message(lambda m: m.text == "✉️ Новый вопрос")
 async def menu_new_question(message: Message, state: FSMContext):
+    if await _guard_message_draft(message, state):
+        return
     await state.clear()
     await message.answer(
         "Сформулируйте новый вопрос в переписке по текущему делу.",
@@ -303,6 +357,8 @@ async def menu_new_question(message: Message, state: FSMContext):
 
 @router.message(lambda m: m.text == "💬 Связаться с юристом")
 async def menu_lawyer(message: Message, state: FSMContext):
+    if await _guard_message_draft(message, state):
+        return
     await state.clear()
     await message.answer(
         "Выберите способ связи или вернитесь на главную.",
@@ -415,6 +471,8 @@ async def status_command(message: Message, db):
 
 @router.message(lambda m: m.text in ["/cancel", "Отмена"])
 async def cancel_message(message: Message, state: FSMContext, db):
+    if await _guard_message_draft(message, state):
+        return
     await state.clear()
     case_exists = await _active_case_exists(db, message)
     await message.answer(
@@ -425,6 +483,8 @@ async def cancel_message(message: Message, state: FSMContext, db):
 
 @router.callback_query(lambda c: c.data == "nav_home")
 async def home(callback: CallbackQuery, db, state: FSMContext):
+    if await _guard_callback_draft(callback, state):
+        return
     await state.clear()
     text, case_exists, primary_action = await _home_text(db, callback)
     await _safe_callback_edit(
@@ -439,6 +499,8 @@ async def home(callback: CallbackQuery, db, state: FSMContext):
 
 @router.callback_query(lambda c: c.data == "noop")
 async def noop(callback: CallbackQuery, db, state: FSMContext):
+    if await _guard_callback_draft(callback, state):
+        return
     await state.clear()
     text, case_exists, primary_action = await _home_text(db, callback)
     await _safe_callback_edit(
@@ -454,6 +516,8 @@ async def noop(callback: CallbackQuery, db, state: FSMContext):
 
 @router.callback_query(lambda c: c.data == "nav_cancel")
 async def cancel(callback: CallbackQuery, state: FSMContext, db):
+    if await _guard_callback_draft(callback, state):
+        return
     await state.clear()
     text, case_exists, primary_action = await _home_text(db, callback)
     await _safe_callback_edit(
@@ -469,6 +533,8 @@ async def cancel(callback: CallbackQuery, state: FSMContext, db):
 
 @router.callback_query(lambda c: c.data == "nav_back")
 async def back(callback: CallbackQuery, state: FSMContext, db):
+    if await _guard_callback_draft(callback, state):
+        return
     await state.clear()
     text, case_exists, primary_action = await _home_text(db, callback)
     await _safe_callback_edit(
