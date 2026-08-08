@@ -1,6 +1,8 @@
+import asyncio
 from pathlib import Path
 
 from app.bot.keyboards import main_menu, reply_main_menu
+from app.bot.screens.common import _has_unsent_message_draft
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +26,14 @@ def texts(markup) -> list[str]:
 
 def reply_texts(markup) -> list[str]:
     return [button.text for row in markup.keyboard for button in row]
+
+
+class DraftState:
+    def __init__(self, data: dict[str, object]):
+        self.data = data
+
+    async def get_data(self) -> dict[str, object]:
+        return self.data
 
 
 def test_new_client_home_has_two_clear_entry_points():
@@ -100,6 +110,27 @@ def test_home_uses_shared_case_presenter_and_direct_next_action():
     assert 'f"next_action:v2:{view.case_id}:{view.action_key}"' in source
     assert "Главная кнопка ниже ведёт к самому актуальному действию" in source
     assert "primary_action=primary_action" in source
+
+
+def test_unsent_question_draft_is_detected_before_global_navigation():
+    assert asyncio.run(_has_unsent_message_draft(DraftState({"draft_text": "Важный вопрос"})))
+    assert not asyncio.run(_has_unsent_message_draft(DraftState({"draft_text": "  "})))
+    assert not asyncio.run(_has_unsent_message_draft(DraftState({})))
+
+    source = read("app/bot/screens/common.py")
+    start_handler = source[
+        source.index("async def start"): source.index("async def menu_calc")
+    ]
+    home_handler = source[
+        source.index("async def home("): source.index("async def noop")
+    ]
+    assert start_handler.index("_guard_message_draft") < start_handler.index("state.clear")
+    assert home_handler.index("_guard_callback_draft") < home_handler.index("state.clear")
+    assert source.count("if await _guard_message_draft(message, state):") >= 7
+    assert source.count("if await _guard_callback_draft(callback, state):") >= 4
+    assert "Я не закрываю его автоматически" in source
+    assert '("↩️ Вернуться к черновику", "message_review_return")' in source
+    assert '("✖️ Отменить черновик", "message_discard_confirm")' in source
 
 
 def test_my_case_is_visual_action_hub_and_no_case_recovers_via_contact_router():
