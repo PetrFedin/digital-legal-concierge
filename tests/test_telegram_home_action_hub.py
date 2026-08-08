@@ -62,6 +62,15 @@ def test_new_client_persistent_menu_has_no_dead_case_sections():
     assert markup.input_field_placeholder == "Выберите: расчёт или помощь юриста"
 
 
+def test_no_case_documents_recover_through_same_legal_help_entry():
+    source = read("app/bot/screens/documents.py")
+
+    assert '("🧮 Рассчитать неустойку", "calc_start")' in source
+    assert '("💬 Связаться с юристом", "contact_lawyer")' in source
+    assert "Начните с предварительного расчёта или свяжитесь с юридической командой." in source
+    assert '("📅 Записаться на консультацию", "calc_to_m2")' not in source
+
+
 def test_active_client_persistent_menu_exposes_only_case_work():
     markup = reply_main_menu(True)
 
