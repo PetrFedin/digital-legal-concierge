@@ -49,7 +49,7 @@ def test_new_client_persistent_menu_has_no_dead_case_sections():
     assert "📄 Документы" not in reply_texts(markup)
     assert "💬 Переписка" not in reply_texts(markup)
     assert "✉️ Новый вопрос" not in reply_texts(markup)
-    assert markup.input_field_placeholder == "Выберите: расчёт или консультация"
+    assert markup.input_field_placeholder == "Выберите: расчёт или помощь юриста"
 
 
 def test_active_client_persistent_menu_exposes_only_case_work():
