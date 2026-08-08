@@ -14,6 +14,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.types import BotCommand, BotCommandScopeDefault, CallbackQuery, Message
 
+from app.bot.draft_protection import DraftProtectionMiddleware
 from app.bot.lease import TelegramPollingLease
 from app.bot.screens import (
     calculator,
@@ -127,6 +128,7 @@ def build_dispatcher() -> Dispatcher:
     dispatcher.update.middleware(DbMiddleware())
     flood_control = FloodControlMiddleware()
     dispatcher.message.middleware(flood_control)
+    dispatcher.callback_query.middleware(DraftProtectionMiddleware())
     dispatcher.callback_query.middleware(flood_control)
     dispatcher.callback_query.middleware(CallbackAcknowledgeMiddleware())
     for router in [
