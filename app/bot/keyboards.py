@@ -31,7 +31,7 @@ def reply_main_menu(case_exists: bool = False) -> ReplyKeyboardMarkup:
         input_field_placeholder=(
             "Выберите: дело, документы или переписка"
             if case_exists
-            else "Выберите: расчёт или консультация"
+            else "Выберите: расчёт или помощь юриста"
         ),
     )
 
