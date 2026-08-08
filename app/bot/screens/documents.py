@@ -196,7 +196,7 @@ async def _present_committed_result(
 def _new_case_buttons() -> tuple[tuple[str, str], ...]:
     return (
         ("🧮 Рассчитать неустойку", "calc_start"),
-        ("📅 Записаться на консультацию", "calc_to_m2"),
+        ("💬 Связаться с юристом", "contact_lawyer"),
         ("🏠 Главная", "nav_home"),
     )
 
@@ -300,7 +300,7 @@ async def _load_case_documents(callback: CallbackQuery, db):
     if not case:
         await callback.message.edit_text(
             "📄 Документы можно добавить после создания обращения.\n\n"
-            "Начните с расчёта неустойки или записи на консультацию.",
+            "Начните с предварительного расчёта или свяжитесь с юридической командой.",
             reply_markup=one(*_new_case_buttons()),
         )
         return None, []
