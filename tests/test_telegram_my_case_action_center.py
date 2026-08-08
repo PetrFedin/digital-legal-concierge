@@ -137,9 +137,9 @@ def test_my_case_uses_one_primary_action_and_document_aware_snapshot():
     assert 'parts[1] == "v2"' in source
     assert "requested_action_key != view.action_key" in source
     assert "Данные дела или документов уже изменились" in source
-    assert "Ваш следующий шаг" in source
-    assert "Готовность" in source
-    assert "Что мешает продолжить" in source
+    assert "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ" in source
+    assert "ГОТОВНОСТЬ" in source
+    assert "ЧТО МЕШАЕТ ПРОДОЛЖИТЬ" in source
     assert "message is not modified" in source
     assert 'c.data.startswith("next_action:")' in source
 
@@ -152,6 +152,7 @@ def test_home_status_and_my_case_share_the_same_presenter():
     assert "load_client_case_view" in my_case
     assert "Документы: {view.documents.summary}" in common
     assert "Ваш следующий шаг" in common
+    assert "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ" in my_case
     assert "Главный экран уже актуален" in common
     assert "PILOT_NEXT_ACTIONS" in common
 
