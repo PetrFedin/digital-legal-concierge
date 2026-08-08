@@ -305,10 +305,11 @@ async def message_history(callback: CallbackQuery, db):
     if not case:
         await _safe_edit(
             callback,
-            "Переписки пока нет, потому что активное дело не создано.",
+            "💬 История переписки появится после создания обращения.\n\n"
+            "Начните с предварительного расчёта или откройте связь с юридической командой.",
             reply_markup=one(
-                ("✉️ Задать вопрос", "message_create"),
-                ("📅 Записаться на консультацию", "consult_booking_start"),
+                ("🧮 Рассчитать неустойку", "calc_start"),
+                ("💬 Связаться с юристом", "contact_lawyer"),
                 ("🏠 Главная", "nav_home"),
             ),
         )
