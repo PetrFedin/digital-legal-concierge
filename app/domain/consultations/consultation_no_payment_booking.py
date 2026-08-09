@@ -10,6 +10,7 @@ from app.domain.consultations.consultation_intake import (
     consultation_description_ready,
 )
 from app.domain.consultations.consultation_service import ConsultationService
+from app.domain.consultations.slot_service import SlotUnavailableError
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.payments.mode import payments_disabled
 from app.domain.statuses.case_statuses import CaseStatus, RouteCode
@@ -30,6 +31,22 @@ class ConsultationNoPaymentBookingService:
         self.cases = CaseService(db)
         self.consultations = ConsultationService(db)
         self.notifications = NotificationEngine(db)
+
+    async def _restore_slot_selection_after_hold_loss(self, *, case, error: Exception) -> None:
+        if (
+            str(case.route or "") == RouteCode.M2.value
+            and str(case.status) == CaseStatus.M2_PAYMENT_PENDING.value
+        ):
+            await self.cases.change_status(
+                case=case,
+                next_status=CaseStatus.M2_SLOT_PENDING,
+                actor_type="system",
+                actor_id=None,
+                comment=(
+                    "Резерв консультации больше недоступен. "
+                    f"Возвращён выбор времени: {error}"
+                ),
+            )
 
     async def confirm(
         self,
@@ -71,7 +88,11 @@ class ConsultationNoPaymentBookingService:
                 "Сначала опишите ситуацию и конкретный вопрос для юриста."
             )
 
-        await self.consultations.require_payable_slot(consultation)
+        try:
+            await self.consultations.require_payable_slot(consultation)
+        except SlotUnavailableError as error:
+            await self._restore_slot_selection_after_hold_loss(case=case, error=error)
+            raise
         slot = await self.consultations.slots.confirm_booking(
             consultation.slot_id,
             consultation.id,
