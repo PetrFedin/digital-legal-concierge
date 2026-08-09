@@ -40,11 +40,18 @@ def test_court_started_notification_opens_real_court_status():
     assert callbacks(markup) == ["court_status", "my_case_open", "message_create"]
 
 
+def test_court_payment_notification_opens_real_second_payment_entry():
+    markup = build_notification_reply_markup(notification("COURT_PAYMENT_OPENED"))
+    assert markup is not None
+    assert callbacks(markup) == ["court_status", "my_case_open", "message_create"]
+
+
 def test_claim_navigation_is_client_only_and_within_telegram_callback_limit():
     for event_code in {
         "M1_CLAIM_PREPARATION_STARTED",
         "M1_CLAIM_SENT",
         "COURT_STAGE_STARTED",
+        "COURT_PAYMENT_OPENED",
     }:
         assert build_notification_reply_markup(
             notification(event_code, "lawyer")
