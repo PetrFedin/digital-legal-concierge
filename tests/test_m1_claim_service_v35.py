@@ -181,6 +181,23 @@ async def test_court_stage_opens_after_audited_wait_period(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_court_stage_can_open_second_payment_only_as_named_lawyer_action(tmp_path):
+    async with database(tmp_path, "court-payment.db") as factory:
+        async with factory() as session:
+            case, lawyer = await _seed_case(session, CaseStatus.M1_COURT_STAGE)
+            service = M1ClaimService(session)
+
+            await service.open_court_payment(
+                case=case,
+                lawyer_id=lawyer.id,
+                comment="Получено определение суда, открыт второй договорный платёж",
+            )
+
+            assert case.status == CaseStatus.M1_WAITING_PAYMENT_70000
+            assert case.next_action == "Оплатить 70 000 ₽"
+
+
+@pytest.mark.asyncio
 async def test_foreign_lawyer_cannot_run_claim_transition(tmp_path):
     async with database(tmp_path, "claim-ownership.db") as factory:
         async with factory() as session:
