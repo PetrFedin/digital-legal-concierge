@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from decimal import Decimal
-from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
@@ -12,6 +11,7 @@ from app.domain.cases.m1_enforcement_service import M1EnforcementService
 from app.domain.cases.m1_recovery_amount import MONEY_RECEIVED_AUDIT_ACTION
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
+from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models import Base
 from app.models.audit_log import AuditLog
 from app.models.case import Case
@@ -107,11 +107,52 @@ async def test_duplicate_or_foreign_money_record_is_blocked(tmp_path):
             foreign = Lawyer(full_name="Другой юрист", is_active=True)
             session.add(foreign)
             await session.flush()
-            second_case, _ = await seed_case(session)
-            second_case.case_number = "M1-ENFORCEMENT-2"
             with pytest.raises(ValueError, match="не назначено текущему юристу"):
                 await service.record_money_received(
-                    case=second_case,
+                    case=case,
                     lawyer_id=foreign.id,
                     amount="100000",
                 )
+
+
+@pytest.mark.asyncio
+async def test_wrong_legacy_success_fee_payment_blocks_money_record_atomically(tmp_path):
+    async with database(tmp_path, "enforcement-legacy-fee.db") as factory:
+        async with factory() as session:
+            case, lawyer = await seed_case(session)
+            legacy = Payment(
+                case_id=case.id,
+                payment_code=PaymentCode.M1_SUCCESS_FEE,
+                title="Legacy success fee",
+                amount=Decimal("9999.00"),
+                currency="RUB",
+                status=PaymentStatus.PENDING,
+            )
+            session.add(legacy)
+            await session.commit()
+
+            with pytest.raises(ValueError, match="другую сумму"):
+                await M1EnforcementService(session).record_money_received(
+                    case=case,
+                    lawyer_id=lawyer.id,
+                    amount="250000.00",
+                    comment="Фактическое взыскание подтверждено",
+                )
+            await session.rollback()
+            await session.refresh(case)
+
+            assert case.status == CaseStatus.M1_ENFORCEMENT
+            recorded = (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.entity_type == "case",
+                        AuditLog.entity_id == case.id,
+                        AuditLog.action == MONEY_RECEIVED_AUDIT_ACTION,
+                    )
+                )
+            ).scalars().all()
+            assert recorded == []
+            persisted = await session.get(Payment, legacy.id)
+            assert persisted is not None
+            assert Decimal(str(persisted.amount)) == Decimal("9999.00")
+            assert persisted.status == PaymentStatus.PENDING
