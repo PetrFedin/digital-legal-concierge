@@ -42,6 +42,23 @@ _CONSULTATION_DRAFT_CALLBACK_PREFIXES = (
     "consult_subject_case:",
 )
 
+_PROTECTED_NAVIGATION_MESSAGES = frozenset(
+    {
+        "/start",
+        "/menu",
+        "🏠 Главная",
+        "🧮 Рассчитать неустойку",
+        "📁 Мое дело",
+        "📁 Моё дело",
+        "📄 Документы",
+        "💬 Переписка",
+        "✉️ Новый вопрос",
+        "💬 Связаться с юристом",
+        "/cancel",
+        "Отмена",
+    }
+)
+
 
 def protected_draft_kind(state_data: dict | None) -> str | None:
     data = state_data or {}
@@ -64,6 +81,10 @@ def is_draft_flow_callback(
     return value in _MESSAGE_DRAFT_CALLBACKS or value.startswith(
         _MESSAGE_DRAFT_CALLBACK_PREFIXES
     )
+
+
+def is_protected_navigation_message(text: str | None) -> bool:
+    return str(text or "").strip() in _PROTECTED_NAVIGATION_MESSAGES
 
 
 def draft_guard_text(draft_kind: str = MESSAGE_DRAFT) -> str:
@@ -102,7 +123,7 @@ async def _acknowledge(event, text: str, *, show_alert: bool = False) -> None:
         logger.warning("Не удалось подтвердить защиту черновика в Telegram.")
 
 
-async def _show_guard(event, draft_kind: str) -> None:
+async def _show_callback_guard(event, draft_kind: str) -> None:
     message = getattr(event, "message", None)
     if message is None:
         await _acknowledge(
@@ -134,6 +155,16 @@ async def _show_guard(event, draft_kind: str) -> None:
     await _acknowledge(event, "Черновик сохранён.")
 
 
+async def _show_message_guard(event, draft_kind: str) -> None:
+    try:
+        await event.answer(
+            draft_guard_text(draft_kind),
+            reply_markup=draft_guard_markup(draft_kind),
+        )
+    except (TelegramBadRequest, TelegramNetworkError, TelegramServerError):
+        logger.warning("Не удалось показать защиту черновика для нижнего меню.")
+
+
 class DraftProtectionMiddleware:
     """Block stale inline navigation from silently deleting an unsaved client draft."""
 
@@ -160,5 +191,36 @@ class DraftProtectionMiddleware:
         if is_draft_flow_callback(getattr(event, "data", None), draft_kind):
             return await handler(event, data)
 
-        await _show_guard(event, draft_kind)
+        await _show_callback_guard(event, draft_kind)
+        return None
+
+
+class DraftMessageNavigationProtectionMiddleware:
+    """Protect drafts when a persistent reply-menu navigation command is pressed."""
+
+    async def __call__(self, handler, event, data):
+        if not is_protected_navigation_message(getattr(event, "text", None)):
+            return await handler(event, data)
+
+        state = data.get("state")
+        if state is None or not hasattr(state, "get_data"):
+            return await handler(event, data)
+
+        try:
+            state_data = await state.get_data()
+        except Exception:
+            logger.exception("Не удалось проверить FSM перед reply-навигацией.")
+            try:
+                await event.answer(
+                    "Не удалось проверить сохранённый черновик. Повторите действие позже."
+                )
+            except (TelegramBadRequest, TelegramNetworkError, TelegramServerError):
+                logger.warning("Не удалось показать ошибку проверки FSM.")
+            return None
+
+        draft_kind = protected_draft_kind(state_data)
+        if draft_kind is None:
+            return await handler(event, data)
+
+        await _show_message_guard(event, draft_kind)
         return None
