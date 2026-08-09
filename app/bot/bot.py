@@ -14,12 +14,16 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.types import BotCommand, BotCommandScopeDefault, CallbackQuery, Message
 
-from app.bot.draft_protection import DraftProtectionMiddleware
+from app.bot.draft_protection import (
+    DraftMessageNavigationProtectionMiddleware,
+    DraftProtectionMiddleware,
+)
 from app.bot.lease import TelegramPollingLease
 from app.bot.screens import (
     calculator,
     common,
     consent_flow,
+    consultation_booking_ui,
     consultation_description,
     consultation_intake,
     consultation_results,
@@ -128,6 +132,7 @@ def build_dispatcher() -> Dispatcher:
     dispatcher = Dispatcher(storage=build_fsm_storage())
     dispatcher.update.middleware(DbMiddleware())
     flood_control = FloodControlMiddleware()
+    dispatcher.message.middleware(DraftMessageNavigationProtectionMiddleware())
     dispatcher.message.middleware(flood_control)
     dispatcher.callback_query.middleware(DraftProtectionMiddleware())
     dispatcher.callback_query.middleware(flood_control)
@@ -140,6 +145,7 @@ def build_dispatcher() -> Dispatcher:
         documents.router,
         no_payment_legal.router,
         consultation_results.router,
+        consultation_booking_ui.router,
         consultation_description.router,
         consultation_intake.router,
         no_payment.router,

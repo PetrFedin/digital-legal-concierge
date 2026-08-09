@@ -3,7 +3,11 @@ from __future__ import annotations
 import logging
 
 from aiogram import Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramNetworkError,
+    TelegramServerError,
+)
 from aiogram.filters import Filter
 from aiogram.types import CallbackQuery
 
@@ -32,13 +36,41 @@ CLOSED_CASE_STATUSES = frozenset(
 )
 
 
+async def _callback_notice(
+    callback: CallbackQuery,
+    text: str,
+    *,
+    show_alert: bool = False,
+) -> None:
+    try:
+        await callback.answer(text, show_alert=show_alert)
+    except (TelegramBadRequest, TelegramNetworkError, TelegramServerError):
+        logger.warning("Не удалось подтвердить callback итогов консультации.")
+
+
 async def _safe_edit(callback: CallbackQuery, text: str, *, reply_markup) -> None:
     try:
         await callback.message.edit_text(text, reply_markup=reply_markup)
+        return
     except TelegramBadRequest as error:
-        if "message is not modified" not in str(error).lower():
-            raise
-        await callback.answer("Экран уже актуален.")
+        if "message is not modified" in str(error).lower():
+            await _callback_notice(callback, "Экран уже актуален.")
+            return
+        logger.warning("Не удалось обновить итог консультации: %s", error)
+    except (TelegramNetworkError, TelegramServerError) as error:
+        logger.warning("Telegram временно не обновил итог консультации: %s", error)
+
+    try:
+        await callback.message.answer(text, reply_markup=reply_markup)
+    except (TelegramBadRequest, TelegramNetworkError, TelegramServerError):
+        logger.exception("Не удалось показать итог консультации новым сообщением")
+        await _callback_notice(
+            callback,
+            "Не удалось обновить экран. Итог сохранён; откройте «Моё дело» и повторите действие.",
+            show_alert=True,
+        )
+        return
+    await _callback_notice(callback, "Итог открыт новым сообщением.")
 
 
 def _case_is_closed(case) -> bool:
@@ -48,7 +80,7 @@ def _case_is_closed(case) -> bool:
             if isinstance(case.status, CaseStatus)
             else CaseStatus(str(case.status))
         )
-    except ValueError:
+    except (TypeError, ValueError):
         return False
     return status in CLOSED_CASE_STATUSES
 
@@ -115,7 +147,10 @@ class TerminalContactLawyerFilter(Filter):
 def _format_scheduled_at(consultation) -> str | None:
     if not consultation.scheduled_at:
         return None
-    return consultation.scheduled_at.strftime("%d.%m.%Y %H:%M")
+    try:
+        return consultation.scheduled_at.strftime("%d.%m.%Y %H:%M")
+    except (AttributeError, ValueError):
+        return None
 
 
 def _result_buttons(view, *, case) -> list[tuple[str, str]]:
@@ -139,7 +174,8 @@ async def _render_result(callback: CallbackQuery, *, case, consultation) -> None
     if view is None:
         await _safe_edit(
             callback,
-            "Консультация ещё не завершена. Откройте актуальную запись.",
+            "👨‍⚖ ИТОГ КОНСУЛЬТАЦИИ\n\n"
+            "Консультация ещё не завершена. Откройте актуальную запись — там показан текущий безопасный шаг.",
             reply_markup=one(
                 ("👨‍⚖ Открыть запись", "consultation_booked_open"),
                 ("📁 Моё дело", "my_case_open"),
@@ -149,24 +185,25 @@ async def _render_result(callback: CallbackQuery, *, case, consultation) -> None
         return
 
     lines = [
-        view.title,
+        "👨‍⚖ ИТОГ КОНСУЛЬТАЦИИ",
         "",
+        view.title,
         f"Дело: {case.case_number}",
     ]
     scheduled_at = _format_scheduled_at(consultation)
     if scheduled_at:
         lines.append(f"Время встречи: {scheduled_at}")
-    lines.extend(["", view.status_text])
+    lines.extend(["", "РЕЗУЛЬТАТ", view.status_text])
 
     if view.show_lawyer_result:
         result = clip_client_result(consultation.lawyer_result)
         if result:
-            lines.extend(["", "Результат юриста:", result])
+            lines.extend(["", "Заключение юриста:", result])
         else:
             lines.extend(
                 [
                     "",
-                    "Результат юриста сохранён без отдельного текста для клиента. Уточнить детали можно у команды.",
+                    "Заключение юриста сохранено без отдельного текста для клиента. Уточнить детали можно у команды.",
                 ]
             )
 
@@ -174,12 +211,12 @@ async def _render_result(callback: CallbackQuery, *, case, consultation) -> None
         lines.extend(
             [
                 "",
-                "Что дальше:",
+                "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ",
                 "Это дело уже закрыто. Итог сохранён для просмотра; новых действий по старому делу нет.",
             ]
         )
     else:
-        lines.extend(["", "Что дальше:", view.next_step])
+        lines.extend(["", "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ", view.next_step])
     await _safe_edit(
         callback,
         "\n".join(lines),
@@ -210,7 +247,7 @@ async def terminal_contact_lawyer(
     title = view.title if view else "Консультация завершена"
     await _safe_edit(
         callback,
-        "💬 Связаться с юридической командой\n\n"
+        "💬 СВЯЗАТЬСЯ С ЮРИДИЧЕСКОЙ КОМАНДОЙ\n\n"
         f"{title}. Для текущего дела используйте переписку — старая запись "
         "на консультацию больше не является следующим шагом.",
         reply_markup=one(
@@ -242,7 +279,8 @@ async def consultation_result_open(callback: CallbackQuery, db):
     if latest is None:
         await _safe_edit(
             callback,
-            "Завершённая консультация пока не найдена.",
+            "👨‍⚖ ИТОГ КОНСУЛЬТАЦИИ\n\n"
+            "Завершённая консультация пока не найдена. Откройте текущее дело или свяжитесь с юридической командой.",
             reply_markup=one(
                 ("📁 Моё дело", "my_case_open"),
                 ("💬 Юридическая консультация", "contact_lawyer"),
@@ -333,8 +371,8 @@ async def consult_follow_up_start(callback: CallbackQuery, db):
     await _safe_edit(
         callback,
         f"{notice}\n\n"
-        "Предыдущий вопрос сохранён как основа новой встречи. "
-        "Перед выбором времени его можно обновить.\n\n"
+        "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+        "Выберите новую дату и время. Предыдущий вопрос сохранён как основа новой встречи; перед записью его можно обновить.\n\n"
         f"Текущий вопрос:\n{description}",
         reply_markup=one(
             ("📅 Выбрать дату и время", "consult_booking_start"),

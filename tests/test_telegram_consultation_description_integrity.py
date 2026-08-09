@@ -12,6 +12,8 @@ from app.bot.screens.consultation_description import (
     _present_committed_description,
     capture_description,
     confirm_description,
+    discard_description,
+    discard_description_confirm,
     subject_start,
 )
 from app.bot.states import ConsultationDescriptionStates
@@ -119,6 +121,54 @@ async def test_typed_description_becomes_reviewable_draft_without_db_write():
     source = inspect.getsource(capture_description)
     assert "ConsultationIntakeService" not in source
     assert "db.commit" not in source
+
+
+@pytest.mark.asyncio
+async def test_discard_confirmation_keeps_consultation_draft_until_explicit_yes():
+    draft = "Застройщик нарушил срок передачи, нужен разбор дальнейших действий."
+    state = FakeState(
+        {"description_draft": draft, "subject_type": "new_or_other"},
+        current=ConsultationDescriptionStates.reviewing_description.state,
+    )
+    callback = FakeCallback("consult_description_discard_confirm")
+
+    await discard_description_confirm(callback, state)
+
+    assert state.clear_count == 0
+    assert state.data["description_draft"] == draft
+    text, markup = callback.message.edits[-1]
+    assert "Удалить черновик вопроса?" in text
+    assert draft in text
+    assert _callbacks(markup) == [
+        "consult_description_discard",
+        "consult_description_review",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_consultation_draft_is_removed_only_after_explicit_discard():
+    state = FakeState(
+        {
+            "description_draft": "Достаточно длинный черновик вопроса для консультации.",
+            "subject_type": "new_or_other",
+        },
+        current=ConsultationDescriptionStates.reviewing_description.state,
+    )
+    callback = FakeCallback("consult_description_discard")
+
+    await discard_description(callback, state)
+
+    assert state.clear_count == 1
+    assert state.data == {}
+    assert state.current is None
+    text, markup = callback.message.edits[-1]
+    assert "Черновик вопроса удалён" in text
+    assert "сохранённые данные дела и консультации не изменены" in text
+    assert _callbacks(markup) == [
+        "consult_subject_start",
+        "my_case_open",
+        "nav_home",
+    ]
 
 
 @pytest.mark.asyncio

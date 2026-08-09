@@ -3,7 +3,11 @@ from __future__ import annotations
 import logging
 
 from aiogram import Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramNetworkError,
+    TelegramServerError,
+)
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
@@ -77,13 +81,41 @@ def _entry_markup(*, has_draft: bool):
     return one(*buttons)
 
 
+async def _callback_notice(
+    callback: CallbackQuery,
+    text: str,
+    *,
+    show_alert: bool = False,
+) -> None:
+    try:
+        await callback.answer(text, show_alert=show_alert)
+    except (TelegramBadRequest, TelegramNetworkError, TelegramServerError):
+        logger.warning("Не удалось подтвердить callback экрана консультации.")
+
+
 async def _safe_edit(callback: CallbackQuery, text: str, *, reply_markup) -> None:
     try:
         await callback.message.edit_text(text, reply_markup=reply_markup)
+        return
     except TelegramBadRequest as error:
-        if "message is not modified" not in str(error).lower():
-            raise
-        await callback.answer("Экран уже актуален.")
+        if "message is not modified" in str(error).lower():
+            await _callback_notice(callback, "Экран уже актуален.")
+            return
+        logger.warning("Не удалось отредактировать экран консультации: %s", error)
+    except (TelegramNetworkError, TelegramServerError) as error:
+        logger.warning("Telegram временно не обновил экран консультации: %s", error)
+
+    try:
+        await callback.message.answer(text, reply_markup=reply_markup)
+    except (TelegramBadRequest, TelegramNetworkError, TelegramServerError):
+        logger.exception("Не удалось показать экран консультации новым сообщением")
+        await _callback_notice(
+            callback,
+            "Не удалось обновить экран. Черновик сохранён; повторите действие позже.",
+            show_alert=True,
+        )
+        return
+    await _callback_notice(callback, "Экран открыт новым сообщением.")
 
 
 async def _present_committed_description(
@@ -121,19 +153,33 @@ async def _present_committed_description(
         await callback.message.edit_text(text, reply_markup=reply_markup)
     except TelegramBadRequest as error:
         if "message is not modified" in str(error).lower():
-            await callback.answer("Вопрос уже сохранён.")
+            await _callback_notice(callback, "Вопрос уже сохранён.")
             return
         logger.warning("Не удалось обновить сообщение после сохранения вопроса: %s", error)
         try:
             await callback.message.answer(text, reply_markup=reply_markup)
-        except TelegramBadRequest:
+        except (TelegramBadRequest, TelegramNetworkError, TelegramServerError):
             logger.exception("Не удалось показать сохранённый вопрос новым сообщением")
-            await callback.answer(
+            await _callback_notice(
+                callback,
                 "Вопрос сохранён. Откройте «Моё дело» для продолжения.",
                 show_alert=True,
             )
             return
-        await callback.answer("Вопрос сохранён. Результат открыт новым сообщением.")
+        await _callback_notice(callback, "Вопрос сохранён. Результат открыт новым сообщением.")
+    except (TelegramNetworkError, TelegramServerError):
+        logger.warning("Telegram временно не обновил сообщение после сохранения вопроса")
+        try:
+            await callback.message.answer(text, reply_markup=reply_markup)
+        except (TelegramBadRequest, TelegramNetworkError, TelegramServerError):
+            logger.exception("Не удалось показать сохранённый вопрос новым сообщением")
+            await _callback_notice(
+                callback,
+                "Вопрос сохранён. Откройте «Моё дело» для продолжения.",
+                show_alert=True,
+            )
+            return
+        await _callback_notice(callback, "Вопрос сохранён. Результат открыт новым сообщением.")
 
 
 async def _reset_to_subject_choice(
@@ -431,6 +477,48 @@ async def edit_description(callback: CallbackQuery, state: FSMContext):
             ("✅ Вернуться к проверке", "consult_description_review"),
             ("← Изменить привязку", "consult_subject_start"),
             ("Отменить действие", "nav_cancel"),
+        ),
+    )
+
+
+@router.callback_query(lambda c: c.data == "consult_description_discard_confirm")
+async def discard_description_confirm(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    draft = _valid_draft(data)
+    if not draft:
+        await _safe_edit(
+            callback,
+            "Черновик уже отсутствует. Можно начать вопрос заново или вернуться на главную.",
+            reply_markup=one(
+                ("📝 Начать вопрос заново", "consult_subject_start"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    await _safe_edit(
+        callback,
+        "⚠️ Удалить черновик вопроса?\n\n"
+        "В дело он ещё не записан. После удаления восстановить его из формы будет нельзя.\n\n"
+        f"Черновик:\n{_description_preview(draft)}",
+        reply_markup=one(
+            ("✖️ Да, удалить черновик", "consult_description_discard"),
+            ("↩️ Нет, вернуться к проверке", "consult_description_review"),
+        ),
+    )
+
+
+@router.callback_query(lambda c: c.data == "consult_description_discard")
+async def discard_description(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await _safe_edit(
+        callback,
+        "Черновик вопроса удалён. Уже сохранённые данные дела и консультации не изменены.\n\n"
+        "Можно начать вопрос заново или вернуться к текущему делу.",
+        reply_markup=one(
+            ("📝 Начать вопрос заново", "consult_subject_start"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
         ),
     )
 
