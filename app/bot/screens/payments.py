@@ -19,6 +19,9 @@ from app.domain.cases.client_case_scope import (
 from app.domain.consultations.consultation_intake import (
     ConsultationDescriptionRequired,
 )
+from app.domain.consultations.consultation_no_payment_booking import (
+    ConsultationNoPaymentBookingService,
+)
 from app.domain.consultations.slot_service import SlotUnavailableError
 from app.domain.payments.mode import payments_disabled
 from app.domain.payments.payment_service import PaymentService
@@ -226,7 +229,127 @@ async def pay_30000(callback: CallbackQuery, db):
 
 @router.callback_query(lambda c: c.data == "consult_pay")
 async def consult_pay(callback: CallbackQuery, db):
-    await start_payment(callback, db, PaymentCode.M2_CONSULTATION_PAYMENT)
+    if not payments_disabled():
+        await start_payment(callback, db, PaymentCode.M2_CONSULTATION_PAYMENT)
+        return
+
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    case = await ctx.case_service.get_active_case_for_user(user.id)
+    if not case:
+        await callback.message.edit_text(
+            "Активная консультация не найдена. Новая запись не создавалась.",
+            reply_markup=one(
+                ("👨‍⚖ Консультация", "consult_start"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+    if str(case.route or "") != RouteCode.M2.value:
+        await callback.message.edit_text(
+            "Эта кнопка относится к консультации, но сейчас активно другое дело. "
+            "Новая запись и платёж не создавались.",
+            reply_markup=one(
+                ("📁 Моё дело", "my_case_open"),
+                ("✉️ Написать команде", "message_create"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+    if str(case.status) == CaseStatus.M2_CONSULTATION_BOOKED.value:
+        await callback.message.edit_text(
+            "✅ Консультация уже подтверждена. Повторное действие не требуется.",
+            reply_markup=one(
+                ("👨‍⚖ Открыть запись и подготовку", "consultation_booked_open"),
+                ("📄 Документы", "documents_open"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+    if str(case.status) != CaseStatus.M2_PAYMENT_PENDING.value:
+        await callback.message.edit_text(
+            "Эта кнопка подтверждения времени устарела. Никаких изменений не выполнено.",
+            reply_markup=one(
+                ("👨‍⚖ Открыть консультацию", "consult_start"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    try:
+        consultation = await ConsultationNoPaymentBookingService(db).confirm(
+            case=case,
+            client_id=user.id,
+        )
+        await db.commit()
+    except ConsultationDescriptionRequired as error:
+        await db.rollback()
+        await callback.message.edit_text(
+            f"📝 {error}\n\nВыбранное время не подтверждено. Сначала сохраните вопрос для юриста.",
+            reply_markup=one(
+                ("▶️ Описать вопрос", "consult_subject_start"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+    except SlotUnavailableError as error:
+        await db.rollback()
+        await callback.message.edit_text(
+            f"⏳ {error}\n\nВопрос и документы сохранены. Выберите новое свободное время.",
+            reply_markup=one(
+                ("📅 Выбрать дату и время", "consult_booking_start"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+    except ValueError as error:
+        await db.rollback()
+        await callback.message.edit_text(
+            f"Запись не подтверждена: {error}\n\nОткройте актуальное состояние консультации.",
+            reply_markup=one(
+                ("👨‍⚖ Открыть консультацию", "consult_start"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+    except Exception:
+        await db.rollback()
+        logger.exception("Не удалось подтвердить M2 без онлайн-оплаты")
+        await callback.message.edit_text(
+            "Запись временно не подтверждена. Резерв и данные дела не считаются завершёнными — "
+            "обновите консультацию перед повтором.",
+            reply_markup=one(
+                ("🔄 Открыть консультацию", "consult_start"),
+                ("✉️ Написать команде", "message_create"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    date_text = (
+        consultation.scheduled_at.strftime("%d.%m.%Y %H:%M")
+        if consultation.scheduled_at
+        else "время уточняется"
+    )
+    await _present_committed_callback(
+        callback,
+        "✅ Консультация подтверждена без онлайн-оплаты.\n\n"
+        f"Дата и время: {date_text}\n\n"
+        "Дополнительный платёж не создавался. Вопрос и документы сохранены; "
+        "откройте запись, чтобы проверить подготовку и при необходимости перенести или отменить встречу.",
+        reply_markup=one(
+            ("👨‍⚖ Открыть запись и подготовку", "consultation_booked_open"),
+            ("📄 Документы", "documents_open"),
+            ("✉️ Задать вопрос команде", "message_create"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ),
+    )
 
 
 async def _show_missing_m1_payment_case(callback: CallbackQuery, db, ctx, user) -> None:
