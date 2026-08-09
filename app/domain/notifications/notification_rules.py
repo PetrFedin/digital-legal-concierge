@@ -144,4 +144,8 @@ NOTIFICATION_RULES = {
         "recipients": ["client", "lawyer"],
         "template": "court_stage_started",
     },
+    "COURT_PAYMENT_OPENED": {
+        "recipients": ["client"],
+        "template": "court_payment_opened",
+    },
 }
