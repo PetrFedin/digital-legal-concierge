@@ -9,6 +9,10 @@ from aiogram.types import CallbackQuery, Message
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.states import DocumentUploadStates
+from app.domain.cases.client_case_scope import (
+    active_or_latest_completed_m1_case_for_user,
+    latest_completed_m1_case_for_user,
+)
 from app.domain.documents.document_service import (
     DocumentSecurityPendingError,
     DocumentService,
@@ -201,6 +205,21 @@ def _new_case_buttons() -> tuple[tuple[str, str], ...]:
     )
 
 
+def _completed_document_buttons(*, has_active: bool, archived_count: int):
+    buttons: list[tuple[str, str]] = []
+    if has_active:
+        buttons.append(("📋 Документы дела", "documents_list_open"))
+    if archived_count:
+        buttons.append((f"🕘 История версий ({archived_count})", "documents_history_open"))
+    buttons.extend(
+        [
+            ("📁 Итог дела", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ]
+    )
+    return buttons
+
+
 def _after_documents_buttons(case) -> tuple[tuple[str, str], ...]:
     status = _case_status(case)
     if status == CaseStatus.M2_CONSULTATION_BOOKED:
@@ -294,29 +313,60 @@ def _recommended_step(case, documents: list) -> tuple[str, list[tuple[str, str]]
 
 
 async def _load_case_documents(callback: CallbackQuery, db):
+    """Load an active mutation scope only; completed cases never reach writes."""
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     case = await ctx.case_service.get_active_case_for_user(user.id)
+    if not case:
+        completed = await latest_completed_m1_case_for_user(db, user_id=user.id)
+        if completed:
+            await callback.message.edit_text(
+                "📄 Дело уже завершено. Изменение документов недоступно.\n\n"
+                "Откройте архив документов: файлы и история версий сохранены только для просмотра.",
+                reply_markup=one(
+                    ("📄 Архив документов", "documents_open"),
+                    ("📁 Итог дела", "my_case_open"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+            )
+        else:
+            await callback.message.edit_text(
+                "📄 Документы можно добавить после создания обращения.\n\n"
+                "Начните с предварительного расчёта или свяжитесь с юридической командой.",
+                reply_markup=one(*_new_case_buttons()),
+            )
+        return None, []
+    documents = await DocumentService(db).list_case_documents(case.id)
+    return case, documents
+
+
+async def _load_readonly_case_documents(callback: CallbackQuery, db):
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    case, completed = await active_or_latest_completed_m1_case_for_user(
+        db,
+        case_service=ctx.case_service,
+        user_id=user.id,
+    )
     if not case:
         await callback.message.edit_text(
             "📄 Документы можно добавить после создания обращения.\n\n"
             "Начните с предварительного расчёта или свяжитесь с юридической командой.",
             reply_markup=one(*_new_case_buttons()),
         )
-        return None, []
+        return None, [], False
     documents = await DocumentService(db).list_case_documents(case.id)
-    return case, documents
+    return case, documents, completed
 
 
 async def _render_documents_home(callback: CallbackQuery, db):
-    case, documents = await _load_case_documents(callback, db)
+    case, documents, completed = await _load_readonly_case_documents(callback, db)
     if not case:
         return
 
     active = _active_documents(documents)
     archived = _archived_documents(documents)
     counts = _document_counts(active)
-    next_step, primary_buttons = _recommended_step(case, active)
 
     summary = (
         f"Актуальные: {len(active)} · готово к передаче: {counts['new']} · "
@@ -331,6 +381,25 @@ async def _render_documents_home(callback: CallbackQuery, db):
     if len(active) > len(preview_items):
         preview += f"\n\nЕщё актуальных документов: {len(active) - len(preview_items)}."
 
+    if completed:
+        await _safe_edit(
+            callback,
+            "📄 Архив документов завершённого дела\n\n"
+            f"{summary}\n\n"
+            f"{preview}\n\n"
+            "✅ Дело закрыто. Документы и версии сохранены только для просмотра; "
+            "загрузка, замена и повторная передача юристу недоступны.",
+            reply_markup=one(
+                *_completed_document_buttons(
+                    has_active=bool(active),
+                    archived_count=len(archived),
+                )
+            ),
+            unchanged_notice="Архив документов уже актуален.",
+        )
+        return
+
+    next_step, primary_buttons = _recommended_step(case, active)
     buttons = list(primary_buttons)
     primary_callbacks = {callback_data for _, callback_data in primary_buttons}
     if active:
@@ -621,12 +690,26 @@ async def upload(message: Message, state: FSMContext, db):
 
 
 async def _render_current_documents(callback: CallbackQuery, db, page: int = 0):
-    case, documents = await _load_case_documents(callback, db)
+    case, documents, completed = await _load_readonly_case_documents(callback, db)
     if not case:
         return
     active = _active_documents(documents)
     archived = _archived_documents(documents)
     if not active:
+        if completed:
+            buttons = _completed_document_buttons(
+                has_active=False,
+                archived_count=len(archived),
+            )
+            buttons.insert(0, ("⬅️ К архиву документов", "documents_open"))
+            await _safe_edit(
+                callback,
+                "📋 Документы завершённого дела\n\nАктуальных файлов в архиве нет.\n\n"
+                "Дело закрыто; раздел доступен только для просмотра.",
+                reply_markup=one(*buttons),
+                unchanged_notice="Архив документов не изменился.",
+            )
+            return
         next_step, buttons = _recommended_step(case, active)
         if archived:
             buttons.append((f"🕘 История версий ({len(archived)})", "documents_history_open"))
@@ -646,8 +729,29 @@ async def _render_current_documents(callback: CallbackQuery, db, page: int = 0):
         return
 
     page_items, current_page, total_pages = _paginate(active, page)
-    next_step, action_buttons = _recommended_step(case, active)
     buttons = _page_navigation("documents_current_page", current_page, total_pages)
+    if completed:
+        if archived:
+            buttons.append((f"🕘 История версий ({len(archived)})", "documents_history_open"))
+        buttons.extend(
+            [
+                ("⬅️ К архиву документов", "documents_open"),
+                ("📁 Итог дела", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ]
+        )
+        await _safe_edit(
+            callback,
+            "📋 Документы завершённого дела\n\n"
+            + "\n\n".join(_document_block(item) for item in page_items)
+            + f"\n\nСтраница {current_page + 1} из {total_pages}.\n\n"
+            + "✅ Дело закрыто. Файлы доступны только для просмотра.",
+            reply_markup=one(*buttons),
+            unchanged_notice="Эта страница архива не изменилась.",
+        )
+        return
+
+    next_step, action_buttons = _recommended_step(case, active)
     buttons.extend(action_buttons)
     if archived:
         buttons.append((f"🕘 История версий ({len(archived)})", "documents_history_open"))
@@ -685,19 +789,25 @@ async def list_docs_page(callback: CallbackQuery, db):
 
 
 async def _render_document_history(callback: CallbackQuery, db, page: int = 0):
-    case, documents = await _load_case_documents(callback, db)
+    case, documents, completed = await _load_readonly_case_documents(callback, db)
     if not case:
         return
     archived = _archived_documents(documents)
     if not archived:
+        buttons: list[tuple[str, str]] = [
+            ("⬅️ К обзору документов", "documents_open"),
+            ("📁 Итог дела" if completed else "📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ]
         await _safe_edit(
             callback,
-            "🕘 История версий\n\nПредыдущих версий пока нет.",
-            reply_markup=one(
-                ("⬅️ К обзору документов", "documents_open"),
-                ("📁 Моё дело", "my_case_open"),
-                ("🏠 Главная", "nav_home"),
+            "🕘 История версий\n\nПредыдущих версий пока нет."
+            + (
+                "\n\n✅ Дело завершено; раздел доступен только для просмотра."
+                if completed
+                else ""
             ),
+            reply_markup=one(*buttons),
             unchanged_notice="История версий пока пуста.",
         )
         return
@@ -706,10 +816,16 @@ async def _render_document_history(callback: CallbackQuery, db, page: int = 0):
     buttons = _page_navigation("documents_history_page", current_page, total_pages)
     buttons.extend(
         [
-            ("📋 Актуальные документы", "documents_list_open"),
+            ("📋 Документы дела", "documents_list_open"),
             ("⬅️ К обзору документов", "documents_open"),
+            ("📁 Итог дела" if completed else "📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         ]
+    )
+    terminal_note = (
+        "\n\n✅ Дело завершено; история доступна только для просмотра."
+        if completed
+        else ""
     )
     await _safe_edit(
         callback,
@@ -718,7 +834,8 @@ async def _render_document_history(callback: CallbackQuery, db, page: int = 0):
         + "\n\n".join(
             _document_block(item, history=True) for item in page_items
         )
-        + f"\n\nСтраница {current_page + 1} из {total_pages}.",
+        + f"\n\nСтраница {current_page + 1} из {total_pages}."
+        + terminal_note,
         reply_markup=one(*buttons),
         unchanged_notice="Эта страница истории не изменилась.",
     )
@@ -744,10 +861,21 @@ async def finish(callback: CallbackQuery, db):
     user = await ctx.get_user_from_callback(callback)
     case = await ctx.case_service.get_active_case_for_user(user.id)
     if not case:
-        await callback.message.edit_text(
-            "Активное дело не найдено. Документы не переданы.",
-            reply_markup=one(*_new_case_buttons()),
-        )
+        completed = await latest_completed_m1_case_for_user(db, user_id=user.id)
+        if completed:
+            await callback.message.edit_text(
+                "Дело уже завершено. Повторная передача документов недоступна; архив сохранён только для просмотра.",
+                reply_markup=one(
+                    ("📄 Архив документов", "documents_open"),
+                    ("📁 Итог дела", "my_case_open"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+            )
+        else:
+            await callback.message.edit_text(
+                "Активное дело не найдено. Документы не переданы.",
+                reply_markup=one(*_new_case_buttons()),
+            )
         return
 
     document_service = DocumentService(db)
