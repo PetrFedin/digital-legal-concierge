@@ -58,6 +58,10 @@ class PaymentService:
     def consultation_reservation_key(consultation_id: int, slot_id: int) -> str:
         return f"consultation:{consultation_id}:slot:{slot_id}"
 
+    @staticmethod
+    def _money(value: object) -> Decimal:
+        return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
     async def _prepare_consultation_payment_context(self, case: Case) -> str:
         consultation_service = ConsultationService(self.db)
         consultation = await consultation_service.get_current_for_case(case.id)
@@ -142,6 +146,15 @@ class PaymentService:
             query = query.where(Payment.reservation_key == reservation_key)
         payment = (await self.db.execute(query)).scalars().first()
         if payment:
+            if amount is not None:
+                requested_amount = self._money(amount)
+                existing_amount = self._money(payment.amount)
+                if existing_amount != requested_amount:
+                    raise ValueError(
+                        "Существующий активный платёж имеет другую сумму: "
+                        f"{existing_amount} ₽ вместо актуальных {requested_amount} ₽. "
+                        "Автоматическая оплата заблокирована; требуется проверка платежа."
+                    )
             return payment
 
         final_amount = amount
