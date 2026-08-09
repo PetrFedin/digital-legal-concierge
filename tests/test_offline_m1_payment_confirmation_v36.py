@@ -230,3 +230,18 @@ def test_case_detail_offline_confirmation_has_snapshot_reference_comment_and_can
     assert "Поступление не подтверждено" in source
     assert "Отмена" in source
     assert "статусы и суммы" in source.lower()
+
+
+def test_case_workspace_is_the_single_payment_control_source_for_detailed_card():
+    workspace_source = Path("app/api/web_admin.py").read_text(encoding="utf-8")
+    detail_source = Path("app/admin/case_detail_page.py").read_text(encoding="utf-8")
+
+    assert "payment_can_be_confirmed_offline" in workspace_source
+    assert '"offline_confirm_allowed": payment_can_be_confirmed_offline(payment)' in workspace_source
+    assert "mergePaymentControls" not in detail_source
+
+    load_start = detail_source.index("async function load(showLoaded=true)")
+    load_end = detail_source.index("async function boot()", load_start)
+    load_source = detail_source[load_start:load_end]
+    assert "'/admin/case-workspace/'+caseId" in load_source
+    assert "'/admin/payments'" not in load_source
