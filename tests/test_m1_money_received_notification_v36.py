@@ -8,12 +8,16 @@ from app.domain.notifications.notification_templates import TEMPLATES
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def notification(recipient_type: str = "client"):
+def notification(
+    recipient_type: str = "client",
+    *,
+    event_code: str = "M1_MONEY_RECEIVED",
+):
     return SimpleNamespace(
         recipient_type=recipient_type,
         title=recipient_type,
-        event_code="M1_MONEY_RECEIVED",
-        dedupe_key="case:17:money-received:v36",
+        event_code=event_code,
+        dedupe_key=f"case:17:{event_code.lower()}:v36",
     )
 
 
@@ -50,3 +54,27 @@ def test_money_received_callback_is_wired_to_real_bot_handler():
 
     assert 'c.data == "pay_success_fee"' in stages
     assert "PaymentCode.M1_SUCCESS_FEE" in stages
+
+
+def test_closed_notification_routes_only_to_read_only_terminal_views():
+    markup = build_notification_reply_markup(
+        notification(event_code="M1_CLOSED")
+    )
+
+    assert markup is not None
+    assert callbacks(markup) == [
+        "my_case_open",
+        "case_history_open",
+        "payments_open",
+    ]
+    assert "message_create" not in callbacks(markup)
+    assert "pay_success_fee" not in callbacks(markup)
+    assert all(len(value.encode("utf-8")) <= 64 for value in callbacks(markup))
+
+
+def test_closed_template_is_explicitly_terminal_and_read_only():
+    text = TEMPLATES["m1_closed"].format(case_number="M1-17")
+
+    assert "подтверждён" in text.lower()
+    assert "дело закрыто" in text.lower()
+    assert "только для просмотра" in text.lower()
