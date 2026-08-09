@@ -28,6 +28,15 @@ TEMPLATES = {
         "По делу {case_number} выбран консультационный маршрут. "
         "Следующий шаг: {next_action}."
     ),
+    "m1_claim_preparation_started": (
+        "По делу {case_number} юрист начал подготовку претензии. "
+        "Следующий шаг: {next_action}."
+    ),
+    "m1_claim_sent": (
+        "По делу {case_number} претензия отправлена. "
+        "Контрольный 30-дневный срок истекает {due_at}. "
+        "Следующий шаг: {next_action}."
+    ),
     "case_sla_first_response_overdue": (
         "Просрочена первая реакция по делу {case_number}. "
         "Юрист: {lawyer}. Срок был {due_at}. Уровень эскалации: {level}."
