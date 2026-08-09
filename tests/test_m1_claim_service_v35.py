@@ -2,17 +2,21 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.domain.cases.m1_claim_service import M1ClaimService
+from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
+from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models import Base
 from app.models.audit_log import AuditLog
 from app.models.case import Case
 from app.models.lawyer import Lawyer
+from app.models.payment import Payment
 from app.models.user import User
 
 
@@ -195,6 +199,18 @@ async def test_court_stage_can_open_second_payment_only_as_named_lawyer_action(t
 
             assert case.status == CaseStatus.M1_WAITING_PAYMENT_70000
             assert case.next_action == "Оплатить 70 000 ₽"
+
+            payment = (
+                await session.execute(
+                    select(Payment).where(
+                        Payment.case_id == case.id,
+                        Payment.payment_code == PaymentCode.M1_COURT_PAYMENT,
+                    )
+                )
+            ).scalar_one()
+            assert payment.status == PaymentStatus.PENDING
+            assert Decimal(str(payment.amount)) == Decimal("70000")
+            assert payment.payment_url is None
 
 
 @pytest.mark.asyncio
