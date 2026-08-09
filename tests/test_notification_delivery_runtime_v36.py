@@ -40,9 +40,14 @@ def test_process_supervises_notification_dispatcher_without_replacing_scheduler(
 
 def test_durable_dispatcher_commits_delivery_separately_from_business_mutations():
     source = read("app/scheduler/notification_dispatcher.py")
+    sender = read("app/domain/notifications/notification_sender.py")
 
     assert "async with AsyncSessionLocal() as db:" in source
     assert "NotificationSender(db).send_pending" in source
     assert "await db.commit()" in source
     assert "await db.rollback()" in source
     assert "timeout=self.interval_seconds" in source
+    assert "self.last_sent_count = int(sent_count)" in source
+    assert "async def send_pending(self, limit: int = 50) -> int:" in sender
+    assert 'return int(summary["sent"])' in sender
+    assert "dict(sent_count)" not in source
