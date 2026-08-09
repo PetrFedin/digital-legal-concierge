@@ -236,6 +236,7 @@ def test_legacy_consultation_router_no_longer_shadows_canonical_intake_handlers(
         "consult_reschedule",
         "choose_reschedule_date",
         "choose_reschedule_slot",
+        "confirm_reschedule_slot",
         "consult_cancel",
         "consult_cancel_confirm",
     }
@@ -249,13 +250,18 @@ def test_legacy_consultation_router_no_longer_shadows_canonical_intake_handlers(
 
 def test_reschedule_and_cancel_commit_before_recoverable_presentation():
     for handler in (
-        consultations.choose_reschedule_slot,
+        consultations.confirm_reschedule_slot,
         consultations.consult_cancel_confirm,
     ):
         source = inspect.getsource(handler)
-        commit = source.index("await db.commit()")
+        mutation_anchor = (
+            source.index(".reschedule_booked(")
+            if handler is consultations.confirm_reschedule_slot
+            else source.index("cancel_and_prepare_rebooking(")
+        )
+        commit = source.index("await db.commit()", mutation_anchor)
         safe_edit = source.index("await _safe_edit(", commit)
-        assert commit < safe_edit
+        assert mutation_anchor < commit < safe_edit
         assert "callback.message.edit_text" not in source
 
 
