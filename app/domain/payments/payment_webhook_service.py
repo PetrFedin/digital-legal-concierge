@@ -19,6 +19,11 @@ PROTECTED_RECEIVED_PAYMENT_STATUSES = {
     PaymentStatus.REFUND_DECLINED,
     PaymentStatus.REFUNDED,
 }
+INACTIVE_M2_PAYMENT_STATUSES = {
+    PaymentStatus.EXPIRED,
+    PaymentStatus.CANCELLED,
+    PaymentStatus.FAILED,
+}
 
 
 class PaymentWebhookService:
@@ -104,6 +109,19 @@ class PaymentWebhookService:
             return payment
 
         if payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT:
+            if payment.status in INACTIVE_M2_PAYMENT_STATUSES:
+                return await self._mark_consultation_payment_review(
+                    payment=payment,
+                    case=case,
+                    reason=(
+                        "Деньги поступили по уже закрытой, отменённой или ранее "
+                        "неуспешной ссылке. Автоматическое изменение консультации запрещено."
+                    ),
+                    provider_payload=provider_payload,
+                    actor_type=actor_type,
+                    actor_id=actor_id,
+                )
+
             consultation_service = ConsultationService(self.db)
             consultation = await consultation_service.get_current_for_case(case.id)
 
@@ -189,6 +207,7 @@ class PaymentWebhookService:
             await self.notifications.emit(
                 event_code="M2_CONSULTATION_BOOKED",
                 case_id=case.id,
+                user_id=case.client_id,
                 payload={
                     "case_number": case.case_number,
                     "date": (
@@ -197,6 +216,7 @@ class PaymentWebhookService:
                         else "уточняется"
                     ),
                 },
+                dedupe_key=f"{expected_reservation_key}:booked",
             )
         else:
             if payment.status == PaymentStatus.PAID:
