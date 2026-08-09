@@ -1,4 +1,5 @@
-from decimal import Decimal, ROUND_HALF_UP
+from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +17,13 @@ from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models.case import Case
 from app.models.payment import Payment
 from app.system.settings_service import SettingsService
+
+
+@dataclass(frozen=True)
+class M1SuccessFeeQuote:
+    recovered_amount: Decimal
+    percent: Decimal
+    amount: Decimal
 
 
 class PaymentService:
@@ -190,11 +198,21 @@ class PaymentService:
         )
         return payment
 
-    async def estimate_success_fee_for_case(self, case_id: int):
+    async def success_fee_quote_for_case(self, case_id: int) -> M1SuccessFeeQuote:
         settings = SettingsService(self.db)
-        percent = Decimal(
-            str(await settings.get_value("payments.m1_success_fee_percent"))
-        )
+        try:
+            percent = Decimal(
+                str(await settings.get_value("payments.m1_success_fee_percent"))
+            )
+        except (InvalidOperation, TypeError, ValueError) as error:
+            raise ValueError(
+                "Ставка success fee настроена некорректно. Оплата заблокирована до проверки настройки."
+            ) from error
+        if percent <= 0:
+            raise ValueError(
+                "Ставка success fee должна быть больше нуля. Оплата заблокирована до проверки настройки."
+            )
+
         recovered = await load_recovered_amount(self.db, case_id=case_id)
         if recovered is None:
             raise ValueError(
@@ -206,7 +224,14 @@ class PaymentService:
         ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         if amount <= 0:
             raise ValueError("Success fee должен быть больше нуля")
-        return amount
+        return M1SuccessFeeQuote(
+            recovered_amount=recovered,
+            percent=percent,
+            amount=amount,
+        )
+
+    async def estimate_success_fee_for_case(self, case_id: int):
+        return (await self.success_fee_quote_for_case(case_id)).amount
 
     async def create_payment_link(self, payment: Payment):
         if not payment.payment_url:
