@@ -18,6 +18,7 @@ from app.bot.consultation_result import (
 )
 from app.bot.context import BotContextService
 from app.bot.keyboards import main_menu, one, reply_main_menu
+from app.domain.cases.client_case_scope import latest_completed_m1_case_for_user
 from app.domain.payments.mode import payments_disabled
 
 router = Router()
@@ -35,6 +36,10 @@ PILOT_NEXT_ACTIONS = {
 CONSULTATION_RESULT_ACTION = (
     "👨‍⚖ Открыть итог консультации",
     "consultation_result_open",
+)
+COMPLETED_M1_ACTION = (
+    "📁 Итог завершённого дела",
+    "my_case_open",
 )
 
 
@@ -212,6 +217,32 @@ async def _home_text(
             ]
         )
         return "\n".join(lines), True, primary_action
+
+    completed_m1 = await latest_completed_m1_case_for_user(db, user_id=user.id)
+    if completed_m1:
+        view = await load_client_case_view(db, completed_m1)
+        lines = [
+            "🏠 Главная",
+            "",
+            "✅ Последнее дело завершено",
+            f"📁 Дело № {view.case_number}",
+            f"Услуга: {view.route_label}",
+            "",
+            "Итог",
+            "Финальный платёж подтверждён, финансовый этап завершён и дело закрыто.",
+            "",
+            f"📄 Документы: {view.documents.summary}",
+        ]
+        if view.payments_summary:
+            lines.append(f"💳 Оплаты: {view.payments_summary}")
+        lines.extend(
+            [
+                "",
+                f"Обновлено: {format_updated_at(view.updated_at)}",
+                "Итог, история и платежи сохранены в режиме просмотра. Новое обращение можно начать отдельно.",
+            ]
+        )
+        return "\n".join(lines), False, COMPLETED_M1_ACTION
 
     latest_result = await latest_terminal_client_consultation(
         db,
@@ -397,6 +428,30 @@ async def status_command(message: Message, db):
     user = await ctx.get_user_from_message(message)
     case = await ctx.case_service.get_active_case_for_user(user.id)
     if not case:
+        completed_m1 = await latest_completed_m1_case_for_user(db, user_id=user.id)
+        if completed_m1:
+            view = await load_client_case_view(db, completed_m1)
+            await db.commit()
+            buttons: list[tuple[str, str]] = [
+                COMPLETED_M1_ACTION,
+                ("🕘 История дела", "case_history_open"),
+            ]
+            if not payments_disabled():
+                buttons.append(("💳 Оплаты по делу", "payments_open"))
+            buttons.append(("🏠 Главная", "nav_home"))
+            await message.answer(
+                "✅ Последнее дело завершено.\n\n"
+                f"📁 Дело № {view.case_number}\n"
+                "Финальный платёж подтверждён, финансовый этап завершён и дело закрыто.\n\n"
+                "Действий по этому делу больше не требуется. Итог, история и платежи доступны только для просмотра.",
+                reply_markup=reply_main_menu(False),
+            )
+            await message.answer(
+                "Открыть архив дела:",
+                reply_markup=one(*buttons),
+            )
+            return
+
         latest_result = await latest_terminal_client_consultation(
             db,
             client_id=user.id,
