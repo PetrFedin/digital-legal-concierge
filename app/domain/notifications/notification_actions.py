@@ -94,6 +94,13 @@ def build_notification_reply_markup(
             ("✉️ Задать вопрос", "message_create"),
         )
 
+    if event_code == "M1_MONEY_RECEIVED":
+        return _markup(
+            ("💳 Оплатить success fee", "pay_success_fee"),
+            ("📁 Моё дело", "my_case_open"),
+            ("✉️ Задать вопрос", "message_create"),
+        )
+
     if event_code == "STAFF_MESSAGE_REPLIED":
         return _markup(
             ("💬 Читать ответ", "message_history"),
