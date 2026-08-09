@@ -1,5 +1,91 @@
 from app.domain.statuses.case_statuses import CaseStatus
-CLIENT_VISIBLE_STATUS_TITLES={CaseStatus.NEW:'Обращение создано',CaseStatus.CALCULATED:'Предварительный расчет готов',CaseStatus.M1_DOCUMENTS_PENDING:'Ожидаем документы',CaseStatus.M1_LAWYER_REVIEW:'Документы проверяет юрист',CaseStatus.M1_CONTRACT_READY:'Договор готов',CaseStatus.M1_WAITING_PAYMENT_30000:'Ожидаем оплату',CaseStatus.M1_POWER_OF_ATTORNEY:'Нужно оформить доверенность',CaseStatus.M1_CLAIM_SENT:'Претензия направлена',CaseStatus.M1_WAITING_30_DAYS:'Идет срок ожидания ответа',CaseStatus.M1_COURT_STAGE:'Судебный этап',CaseStatus.M1_ENFORCEMENT:'Исполнительное производство',CaseStatus.M1_CLOSED:'Дело закрыто',CaseStatus.M2_DESCRIPTION_PENDING:'Ожидаем описание ситуации',CaseStatus.M2_SLOT_PENDING:'Выберите время консультации',CaseStatus.M2_PAYMENT_PENDING:'Ожидаем оплату консультации',CaseStatus.M2_CONSULTATION_BOOKED:'Консультация назначена',CaseStatus.M2_CONSULTATION_DONE:'Консультация проведена',CaseStatus.M2_CLOSED:'Обращение закрыто'}
-def get_client_visible_status(status: str)->str: return CLIENT_VISIBLE_STATUS_TITLES.get(status,'Статус обновляется')
-def get_case_progress_percent(status: str)->int:
-    return {CaseStatus.NEW:0,CaseStatus.CALCULATED:10,CaseStatus.M1_DOCUMENTS_PENDING:20,CaseStatus.M1_LAWYER_REVIEW:30,CaseStatus.M1_CONTRACT_READY:40,CaseStatus.M1_POWER_OF_ATTORNEY:55,CaseStatus.M1_CLAIM_SENT:65,CaseStatus.M1_COURT_STAGE:75,CaseStatus.M1_ENFORCEMENT:90,CaseStatus.M1_CLOSED:100,CaseStatus.M2_DESCRIPTION_PENDING:20,CaseStatus.M2_SLOT_PENDING:45,CaseStatus.M2_PAYMENT_PENDING:60,CaseStatus.M2_CONSULTATION_BOOKED:80,CaseStatus.M2_CONSULTATION_DONE:95,CaseStatus.M2_CLOSED:100}.get(status,0)
+
+
+CLIENT_VISIBLE_STATUS_TITLES = {
+    CaseStatus.NEW: "Обращение создано",
+    CaseStatus.CALCULATOR_STARTED: "Идёт предварительный расчёт",
+    CaseStatus.CALCULATED: "Предварительный расчёт готов",
+    CaseStatus.CLIENT_DECISION: "Выберите формат юридической помощи",
+    CaseStatus.M1_DOCUMENTS_PENDING: "Нужно загрузить документы",
+    CaseStatus.M1_DOCUMENTS_RECEIVED: "Документы получены",
+    CaseStatus.M1_LAWYER_REVIEW: "Документы проверяет юрист",
+    CaseStatus.M1_DOCS_REQUESTED: "Нужна новая версия документа",
+    CaseStatus.M1_ACCEPTED: "Дело принято юристом",
+    CaseStatus.M1_REJECTED: "Ведение дела не принято",
+    CaseStatus.M1_CONTRACT_READY: "Договор готов",
+    CaseStatus.M1_WAITING_PAYMENT_30000: "Ожидается первый платёж",
+    CaseStatus.M1_PAYMENT_30000_RECEIVED: "Первый платёж получен",
+    CaseStatus.M1_POWER_OF_ATTORNEY: "Нужно оформить доверенность",
+    CaseStatus.M1_POA_RECEIVED: "Доверенность передана юристу",
+    CaseStatus.M1_CLAIM_PREPARATION: "Юрист готовит претензию",
+    CaseStatus.M1_CLAIM_SENT: "Претензия направлена",
+    CaseStatus.M1_WAITING_30_DAYS: "Идёт срок ожидания ответа",
+    CaseStatus.M1_COURT_STAGE: "Судебный этап",
+    CaseStatus.M1_WAITING_PAYMENT_70000: "Ожидается платёж за судебный этап",
+    CaseStatus.M1_PAYMENT_70000_RECEIVED: "Платёж за судебный этап получен",
+    CaseStatus.M1_ENFORCEMENT: "Исполнительное производство",
+    CaseStatus.M1_MONEY_RECEIVED: "Деньги по делу получены",
+    CaseStatus.M1_WAITING_SUCCESS_FEE: "Ожидается оплата success fee",
+    CaseStatus.M1_SUCCESS_FEE_RECEIVED: "Success fee оплачен",
+    CaseStatus.M1_CLOSED: "Дело закрыто",
+    CaseStatus.M2_CONSULTATION_ROUTE: "Выбран формат консультации",
+    CaseStatus.M2_DESCRIPTION_PENDING: "Опишите ситуацию для консультации",
+    CaseStatus.M2_DOCUMENTS_OPTIONAL: "Можно добавить документы к консультации",
+    CaseStatus.M2_SLOT_PENDING: "Выберите время консультации",
+    CaseStatus.M2_PAYMENT_PENDING: "Ожидается оплата консультации",
+    CaseStatus.M2_CONSULTATION_BOOKED: "Консультация назначена",
+    CaseStatus.M2_CONSULTATION_DONE: "Консультация проведена",
+    CaseStatus.M2_TO_M1: "Переход к ведению дела",
+    CaseStatus.M2_CLOSED: "Обращение закрыто",
+    CaseStatus.ERROR: "Требуется помощь юридической команды",
+    CaseStatus.ARCHIVED: "Дело в архиве",
+}
+
+
+CASE_PROGRESS_PERCENT = {
+    CaseStatus.NEW: 0,
+    CaseStatus.CALCULATOR_STARTED: 5,
+    CaseStatus.CALCULATED: 10,
+    CaseStatus.CLIENT_DECISION: 15,
+    CaseStatus.M1_DOCUMENTS_PENDING: 20,
+    CaseStatus.M1_DOCUMENTS_RECEIVED: 25,
+    CaseStatus.M1_LAWYER_REVIEW: 30,
+    CaseStatus.M1_DOCS_REQUESTED: 25,
+    CaseStatus.M1_ACCEPTED: 35,
+    CaseStatus.M1_REJECTED: 100,
+    CaseStatus.M1_CONTRACT_READY: 40,
+    CaseStatus.M1_WAITING_PAYMENT_30000: 45,
+    CaseStatus.M1_PAYMENT_30000_RECEIVED: 50,
+    CaseStatus.M1_POWER_OF_ATTORNEY: 55,
+    CaseStatus.M1_POA_RECEIVED: 60,
+    CaseStatus.M1_CLAIM_PREPARATION: 63,
+    CaseStatus.M1_CLAIM_SENT: 65,
+    CaseStatus.M1_WAITING_30_DAYS: 70,
+    CaseStatus.M1_COURT_STAGE: 75,
+    CaseStatus.M1_WAITING_PAYMENT_70000: 80,
+    CaseStatus.M1_PAYMENT_70000_RECEIVED: 85,
+    CaseStatus.M1_ENFORCEMENT: 90,
+    CaseStatus.M1_MONEY_RECEIVED: 94,
+    CaseStatus.M1_WAITING_SUCCESS_FEE: 97,
+    CaseStatus.M1_SUCCESS_FEE_RECEIVED: 99,
+    CaseStatus.M1_CLOSED: 100,
+    CaseStatus.M2_CONSULTATION_ROUTE: 10,
+    CaseStatus.M2_DESCRIPTION_PENDING: 20,
+    CaseStatus.M2_DOCUMENTS_OPTIONAL: 35,
+    CaseStatus.M2_SLOT_PENDING: 45,
+    CaseStatus.M2_PAYMENT_PENDING: 60,
+    CaseStatus.M2_CONSULTATION_BOOKED: 80,
+    CaseStatus.M2_CONSULTATION_DONE: 95,
+    CaseStatus.M2_TO_M1: 15,
+    CaseStatus.M2_CLOSED: 100,
+    CaseStatus.ERROR: 0,
+    CaseStatus.ARCHIVED: 100,
+}
+
+
+def get_client_visible_status(status: str) -> str:
+    return CLIENT_VISIBLE_STATUS_TITLES.get(status, "Статус обновляется")
+
+
+def get_case_progress_percent(status: str) -> int:
+    return CASE_PROGRESS_PERCENT.get(status, 0)

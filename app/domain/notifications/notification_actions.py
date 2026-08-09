@@ -66,6 +66,13 @@ def build_notification_reply_markup(
             ("📁 Следующий шаг по делу", "my_case_open"),
         )
 
+    if event_code == "M1_CASE_ACCEPTED":
+        return _markup(
+            ("📝 Открыть договор", "contract_open"),
+            ("📁 Моё дело", "my_case_open"),
+            ("✉️ Задать вопрос", "message_create"),
+        )
+
     if event_code == "STAFF_MESSAGE_REPLIED":
         return _markup(
             ("💬 Читать ответ", "message_history"),
