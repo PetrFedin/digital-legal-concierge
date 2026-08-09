@@ -157,6 +157,17 @@ async def build_document_review_case_context(
         primary_action = "accept_m1_case"
         primary_label = "Принять дело и открыть договор"
         primary_note = "Все актуальные документы приняты юристом."
+    elif (
+        case.route == "M1"
+        and case_status == CaseStatus.M1_LAWYER_REVIEW
+        and documents_ready
+    ):
+        primary_action = "open_case"
+        primary_label = "Комплект готов — открыть дело"
+        primary_note = (
+            "Все актуальные документы приняты. Финальное принятие M1 доступно "
+            "только назначенному юристу."
+        )
     elif case.route == "M1" and case_status == CaseStatus.M1_LAWYER_REVIEW:
         primary_action = "open_case"
         primary_label = "Проверить комплект в деле"
