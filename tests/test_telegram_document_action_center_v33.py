@@ -131,13 +131,35 @@ def test_all_approved_documents_return_to_case_next_action():
     assert buttons == [("📁 К следующему шагу дела", "my_case_open")]
 
 
-def test_unknown_future_case_status_does_not_crash_document_action_center():
+def test_unknown_future_m2_status_stays_on_consultation_route():
     case = SimpleNamespace(route="M2", status="FUTURE_CASE_STATUS")
 
     text, buttons = _next_action(case, [])
 
+    assert "Документы для консультации" in text
+    assert "Моё дело" in text
+    assert "ДДУ" not in text
+    assert buttons == [("📁 К следующему шагу дела", "my_case_open")]
+
+
+def test_m1_without_documents_still_requires_ddu():
+    case = SimpleNamespace(route="M1", status="M1_DOCUMENTS_PENDING")
+
+    text, buttons = _next_action(case, [])
+
     assert "Загрузить ДДУ" in text
+    assert "M1-дело" in text
     assert buttons == [("➕ Загрузить документ", "documents_upload_open")]
+
+
+def test_unknown_route_without_documents_recovers_to_case_instead_of_guessing():
+    case = SimpleNamespace(route="FUTURE_ROUTE", status="FUTURE_CASE_STATUS")
+
+    text, buttons = _next_action(case, [])
+
+    assert "актуальный обязательный шаг" in text
+    assert "ДДУ" not in text
+    assert buttons == [("📁 К следующему шагу дела", "my_case_open")]
 
 
 class _FakeDb:
