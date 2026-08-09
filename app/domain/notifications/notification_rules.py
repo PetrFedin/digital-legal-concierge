@@ -9,6 +9,7 @@ NOTIFICATION_RULES = {
     "M1_CLAIM_PREPARATION_STARTED": {"recipients": ["client"], "template": "m1_claim_preparation_started"},
     "M1_CLAIM_SENT": {"recipients": ["client"], "template": "m1_claim_sent"},
     "M1_MONEY_RECEIVED": {"recipients": ["client"], "template": "m1_money_received"},
+    "M1_CLOSED": {"recipients": ["client"], "template": "m1_closed"},
     "CASE_SLA_FIRST_RESPONSE_OVERDUE": {"recipients": ["lawyer", "admin"], "template": "case_sla_first_response_overdue"},
     "CASE_SLA_ACTION_OVERDUE": {"recipients": ["lawyer", "admin"], "template": "case_sla_action_overdue"},
     "CASE_SLA_ACKNOWLEDGED": {"recipients": ["lawyer", "admin"], "template": "case_sla_acknowledged"},
