@@ -5,14 +5,17 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_history import add_case_history_event
+from app.domain.cases.case_service import CaseService
 from app.domain.cases.m1_recovery_amount import load_recovered_amount
 from app.domain.consultations.consultation_intake import (
     ConsultationDescriptionRequired,
     consultation_description_ready,
 )
 from app.domain.consultations.consultation_service import ConsultationService
+from app.domain.consultations.slot_service import SlotUnavailableError
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.payments.providers import get_payment_provider
+from app.domain.statuses.case_statuses import CaseStatus, RouteCode
 from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models.case import Case
 from app.models.payment import Payment
@@ -70,6 +73,27 @@ class PaymentService:
     def _money(value: object) -> Decimal:
         return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
+    async def _restore_m2_slot_selection_after_hold_loss(
+        self,
+        *,
+        case: Case,
+        error: Exception,
+    ) -> None:
+        if (
+            str(case.route or "") == RouteCode.M2.value
+            and str(case.status) == CaseStatus.M2_PAYMENT_PENDING.value
+        ):
+            await CaseService(self.db).change_status(
+                case=case,
+                next_status=CaseStatus.M2_SLOT_PENDING,
+                actor_type="system",
+                actor_id=None,
+                comment=(
+                    "Резерв консультации больше недоступен. "
+                    f"Возвращён выбор времени: {error}"
+                ),
+            )
+
     async def _prepare_consultation_payment_context(self, case: Case) -> str:
         consultation_service = ConsultationService(self.db)
         consultation = await consultation_service.get_current_for_case(case.id)
@@ -79,7 +103,14 @@ class PaymentService:
             raise ConsultationDescriptionRequired(
                 "Сначала опишите ситуацию и конкретный вопрос для юриста."
             )
-        slot = await consultation_service.require_payable_slot(consultation)
+        try:
+            slot = await consultation_service.require_payable_slot(consultation)
+        except SlotUnavailableError as error:
+            await self._restore_m2_slot_selection_after_hold_loss(
+                case=case,
+                error=error,
+            )
+            raise
         return self.consultation_reservation_key(consultation.id, slot.id)
 
     async def _expire_stale_consultation_payments(
