@@ -64,6 +64,7 @@ def test_closed_notification_routes_only_to_read_only_terminal_views():
     assert markup is not None
     assert callbacks(markup) == [
         "my_case_open",
+        "documents_open",
         "case_history_open",
         "payments_open",
     ]
