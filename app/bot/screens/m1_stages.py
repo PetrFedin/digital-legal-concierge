@@ -7,7 +7,6 @@ from aiogram.exceptions import (
     TelegramServerError,
 )
 from aiogram.types import CallbackQuery
-from sqlalchemy import select
 
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
@@ -15,7 +14,6 @@ from app.domain.payments.mode import payments_disabled
 from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
-from app.models.payment import Payment
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -426,14 +424,6 @@ async def pay_success_fee(callback: CallbackQuery, db):
         )
         return
 
-    existing = (
-        await db.execute(
-            select(Payment)
-            .where(Payment.case_id == case.id)
-            .where(Payment.payment_code == PaymentCode.M1_SUCCESS_FEE)
-            .order_by(Payment.created_at.desc(), Payment.id.desc())
-        )
-    ).scalars().first()
     service = PaymentService(db)
     try:
         if status == CaseStatus.M1_MONEY_RECEIVED:
@@ -444,15 +434,12 @@ async def pay_success_fee(callback: CallbackQuery, db):
                 actor_id=None,
                 comment="Открыт финальный договорный платёж после получения денег",
             )
-        if existing:
-            payment = existing
-        else:
-            amount = await service.estimate_success_fee_for_case(case.id)
-            payment = await service.get_or_create_payment(
-                case=case,
-                payment_code=PaymentCode.M1_SUCCESS_FEE,
-                amount=amount,
-            )
+        amount = await service.estimate_success_fee_for_case(case.id)
+        payment = await service.get_or_create_payment(
+            case=case,
+            payment_code=PaymentCode.M1_SUCCESS_FEE,
+            amount=amount,
+        )
         if not payments_disabled():
             payment = await service.create_payment_link(payment)
         await db.commit()
@@ -461,7 +448,7 @@ async def pay_success_fee(callback: CallbackQuery, db):
         await _show_stale_stage(
             callback,
             f"Финальный платёж пока не открыт: {error}\n\n"
-            "Данные дела сохранены. Проверьте актуальный этап перед повтором.",
+            "Данные дела не изменены. Проверьте актуальный этап перед повтором.",
         )
         return
     except Exception:
