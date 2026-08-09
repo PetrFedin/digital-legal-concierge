@@ -14,6 +14,9 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.types import BotCommand, BotCommandScopeDefault, CallbackQuery, Message
 
+from app.bot.document_replacement_protection import (
+    DocumentReplacementUploadProtectionMiddleware,
+)
 from app.bot.draft_protection import (
     DraftMessageNavigationProtectionMiddleware,
     DraftProtectionMiddleware,
@@ -28,6 +31,7 @@ from app.bot.screens import (
     consultation_intake,
     consultation_results,
     consultations,
+    document_action_center,
     documents,
     fallback,
     history,
@@ -133,6 +137,7 @@ def build_dispatcher() -> Dispatcher:
     dispatcher.update.middleware(DbMiddleware())
     flood_control = FloodControlMiddleware()
     dispatcher.message.middleware(DraftMessageNavigationProtectionMiddleware())
+    dispatcher.message.middleware(DocumentReplacementUploadProtectionMiddleware())
     dispatcher.message.middleware(flood_control)
     dispatcher.callback_query.middleware(DraftProtectionMiddleware())
     dispatcher.callback_query.middleware(flood_control)
@@ -142,6 +147,7 @@ def build_dispatcher() -> Dispatcher:
         calculator.router,
         post_calculation.router,
         my_case.router,
+        document_action_center.router,
         documents.router,
         no_payment_legal.router,
         consultation_results.router,

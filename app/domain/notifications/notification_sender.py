@@ -14,6 +14,9 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.domain.notifications.notification_actions import (
+    build_notification_reply_markup,
+)
 from app.models.admin_user import AdminUser
 from app.models.case import Case
 from app.models.consultation import Consultation
@@ -192,10 +195,14 @@ class NotificationSender:
                     continue
 
                 try:
-                    await bot.send_message(
-                        chat_id=notification.target_chat_id,
-                        text=notification.text,
-                    )
+                    reply_markup = build_notification_reply_markup(notification)
+                    send_kwargs = {
+                        "chat_id": notification.target_chat_id,
+                        "text": notification.text,
+                    }
+                    if reply_markup is not None:
+                        send_kwargs["reply_markup"] = reply_markup
+                    await bot.send_message(**send_kwargs)
                 except TelegramRetryAfter as error:
                     self._mark_retry(
                         notification,
