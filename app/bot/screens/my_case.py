@@ -19,6 +19,7 @@ from app.bot.client_case_view import (
 from app.bot.consultation_result import latest_terminal_client_consultation
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
+from app.domain.cases.client_case_scope import latest_completed_m1_case_for_user
 from app.domain.payments.mode import payments_disabled
 
 router = Router()
@@ -115,9 +116,74 @@ def _case_buttons(view) -> list[tuple[str, str]]:
     return buttons
 
 
+async def _render_completed_m1_case(
+    callback: CallbackQuery,
+    db,
+    *,
+    case,
+    notice: str | None = None,
+) -> None:
+    view = await load_client_case_view(db, case)
+    lines: list[str] = []
+    if notice:
+        lines.extend([f"ℹ️ {notice}", ""])
+    lines.extend(
+        [
+            "📁 ИТОГ ДЕЛА",
+            f"№ {view.case_number}",
+            f"{view.route_label}",
+            "",
+            "СЕЙЧАС",
+            "✅ Дело завершено",
+            progress_bar(100),
+            "",
+            "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ",
+            "Действий по этому делу больше не требуется. Финальный платёж подтверждён, финансовый этап завершён и дело закрыто.",
+            "",
+            "АРХИВ ДЕЛА",
+            f"📄 Документы: {_document_detail(view)}",
+        ]
+    )
+    if view.payments_summary:
+        lines.append(f"💳 Оплаты: {view.payments_summary}")
+    lines.extend(
+        [
+            "",
+            f"Закрыто / обновлено: {format_updated_at(view.updated_at)}",
+            "История и платежи остаются доступны только для просмотра. Новое обращение создаётся отдельно.",
+        ]
+    )
+    buttons: list[tuple[str, str]] = []
+    if not payments_disabled():
+        buttons.append(("💳 Оплаты по делу", "payments_open"))
+    buttons.extend(
+        [
+            ("🕘 История дела", "case_history_open"),
+            ("🧮 Новое обращение", "calc_start"),
+            ("🏠 Главная", "nav_home"),
+        ]
+    )
+    await _safe_edit(
+        callback,
+        "\n".join(lines),
+        reply_markup=one(*buttons),
+        unchanged_notice="Итог дела уже актуален.",
+    )
+
+
 async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None):
     _, user, case = await _active_case_context(callback, db)
     if not case:
+        completed_m1 = await latest_completed_m1_case_for_user(db, user_id=user.id)
+        if completed_m1:
+            await _render_completed_m1_case(
+                callback,
+                db,
+                case=completed_m1,
+                notice=notice,
+            )
+            return
+
         latest_result = await latest_terminal_client_consultation(
             db,
             client_id=user.id,
