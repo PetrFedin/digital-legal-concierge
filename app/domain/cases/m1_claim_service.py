@@ -30,12 +30,11 @@ class CourtEligibility:
 
 
 class M1ClaimService:
-    """Explicit lawyer-owned M1 transitions after POA and before court.
+    """Explicit lawyer-owned M1 transitions from POA through court payment.
 
-    This service deliberately exposes named legal actions instead of a generic
-    status mutation. The 30-day clock is anchored to the immutable audit event
-    that entered M1_WAITING_30_DAYS, not to Case.updated_at, which may change for
-    unrelated case activity.
+    Named actions replace generic status mutation. The 30-day clock is anchored
+    to the immutable audit event that entered M1_WAITING_30_DAYS, not to
+    Case.updated_at, which may change for unrelated case activity.
     """
 
     def __init__(self, db: AsyncSession):
@@ -194,10 +193,40 @@ class M1ClaimService:
                 if eligibility.due_at
                 else "не определён"
             )
-            raise ValueError(f"Судебный этап пока недоступен: {eligibility.reason}. Срок: {due}")
+            raise ValueError(
+                f"Судебный этап пока недоступен: {eligibility.reason}. Срок: {due}"
+            )
         await self.cases.change_status(
             case=case,
             next_status=CaseStatus.M1_COURT_STAGE,
+            actor_type="lawyer",
+            actor_id=lawyer_id,
+            comment=clean_comment,
+        )
+        return case
+
+    async def open_court_payment(
+        self,
+        *,
+        case: Case,
+        lawyer_id: int,
+        comment: str,
+    ) -> Case:
+        """Record the court-stage decision that makes the second payment due."""
+
+        self._assert_assigned(case, lawyer_id)
+        if self._status(case) != CaseStatus.M1_COURT_STAGE:
+            raise ValueError(
+                "Второй платёж можно открыть только после начала судебного этапа"
+            )
+        clean_comment = str(comment or "").strip()
+        if len(clean_comment) < 5:
+            raise ValueError(
+                "Укажите судебное событие или основание открытия второго платежа"
+            )
+        await self.cases.change_status(
+            case=case,
+            next_status=CaseStatus.M1_WAITING_PAYMENT_70000,
             actor_type="lawyer",
             actor_id=lawyer_id,
             comment=clean_comment,
