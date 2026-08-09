@@ -16,6 +16,7 @@ from app.models import Base
 from app.models.audit_log import AuditLog
 from app.models.case import Case
 from app.models.lawyer import Lawyer
+from app.models.notification import Notification
 from app.models.user import User
 
 
@@ -101,3 +102,22 @@ async def test_actual_recovery_success_fee_webhook_closes_case_end_to_end(tmp_pa
             assert "M1_SUCCESS_FEE_RECEIVED" in encoded
             assert "M1_CLOSED" in encoded
             assert "PAYMENT_WEBHOOK_PROCESSED" in encoded
+
+            close_notifications = (
+                await session.execute(
+                    select(Notification).where(
+                        Notification.case_id == case.id,
+                        Notification.event_code == "M1_CLOSED",
+                        Notification.recipient_type == "client",
+                    )
+                )
+            ).scalars().all()
+            assert len(close_notifications) == 1
+            close_notification = close_notifications[0]
+            assert close_notification.status == "PENDING"
+            assert close_notification.target_chat_id == 983201
+            assert "Финальный платёж" in close_notification.text
+            assert "дело закрыто" in close_notification.text
+            assert close_notification.dedupe_key.startswith(
+                f"payment:{result.payment.id}:m1-closed:client:"
+            )
