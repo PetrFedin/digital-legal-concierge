@@ -73,6 +73,26 @@ def build_notification_reply_markup(
             ("✉️ Задать вопрос", "message_create"),
         )
 
+    if event_code == "M1_CLAIM_PREPARATION_STARTED":
+        return _markup(
+            ("📁 Текущий этап дела", "my_case_open"),
+            ("✉️ Задать вопрос", "message_create"),
+        )
+
+    if event_code == "M1_CLAIM_SENT":
+        return _markup(
+            ("⏳ Контрольный срок", "court_status"),
+            ("🕘 История дела", "case_history_open"),
+            ("📁 Моё дело", "my_case_open"),
+        )
+
+    if event_code == "COURT_STAGE_STARTED":
+        return _markup(
+            ("🏛 Судебный этап", "court_status"),
+            ("📁 Моё дело", "my_case_open"),
+            ("✉️ Задать вопрос", "message_create"),
+        )
+
     if event_code == "STAFF_MESSAGE_REPLIED":
         return _markup(
             ("💬 Читать ответ", "message_history"),
