@@ -296,7 +296,10 @@ async def consult_pay(callback: CallbackQuery, db):
         )
         return
     except SlotUnavailableError as error:
-        await db.rollback()
+        # require_payable_slot may release an expired hold and move the
+        # consultation back to slot selection. Persist that cleanup instead of
+        # rolling it back and trapping the client on the same dead reservation.
+        await db.commit()
         await callback.message.edit_text(
             f"⏳ {error}\n\nВопрос и документы сохранены. Выберите новое свободное время.",
             reply_markup=one(
@@ -452,7 +455,20 @@ async def start_payment(callback: CallbackQuery, db, code):
             ),
         )
         return
-    except (SlotUnavailableError, ValueError) as error:
+    except SlotUnavailableError as error:
+        # The service may have released an expired hold before raising. Commit
+        # that cleanup so the next click can actually choose a fresh slot.
+        await db.commit()
+        await callback.message.edit_text(
+            f"⏳ {error}\n\nВопрос и документы сохранены. Выберите новое свободное время.",
+            reply_markup=one(
+                ("📅 Выбрать дату и время", "consult_booking_start"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+    except ValueError as error:
         await db.rollback()
         if code == PaymentCode.M2_CONSULTATION_PAYMENT:
             await callback.message.edit_text(
