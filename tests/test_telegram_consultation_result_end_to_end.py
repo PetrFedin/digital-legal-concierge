@@ -358,7 +358,7 @@ def test_result_router_precedes_booking_router_and_has_recovery_actions():
     assert "TerminalContactLawyerFilter" in result_source
     assert "consultation_result_open" in result_source
     assert "consult_follow_up_start" in result_source
-    assert "Что дальше:" in result_source
+    assert "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ" in result_source
     assert "message_create" in result_source
     assert "message_history" in result_source
     assert "my_case_open" in result_source
