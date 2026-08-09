@@ -29,6 +29,14 @@ def test_lawyer_desk_has_guided_action_hierarchy_and_search_recovery():
     assert "Ко всем делам" in source
 
 
+def test_attention_queue_includes_consultations_with_documents_on_review():
+    source = _source()
+
+    assert "item.documents_on_review>0||" in source
+    assert "материалов на проверке" in source
+    assert "Проверить материалы" in source
+
+
 def test_no_show_is_an_explicit_exception_not_a_peer_primary_action():
     source = _source()
     card_start = source.index("function card(x)")
