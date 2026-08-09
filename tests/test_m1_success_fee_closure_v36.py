@@ -70,12 +70,32 @@ async def test_actual_recovery_success_fee_webhook_closes_case_end_to_end(tmp_pa
             assert Decimal(str(result.payment.amount)) == Decimal("25000.00")
             assert result.payment.status == PaymentStatus.PENDING
 
-            await PaymentWebhookService(session).process_successful_payment(
+            service = PaymentWebhookService(session)
+            await service.process_successful_payment(
                 payment=result.payment,
                 case=case,
                 provider_payload={
                     "event": "payment.succeeded",
                     "provider_payment_id": "success-fee-v36",
+                },
+            )
+            await session.commit()
+            await session.refresh(case)
+            await session.refresh(result.payment)
+
+            assert result.payment.status == PaymentStatus.PAID
+            assert case.status == CaseStatus.M1_CLOSED
+
+            # A provider may retry the same successful webhook. Once PAID, the
+            # handler must return without creating a second close transition,
+            # notification or PAYMENT_WEBHOOK_PROCESSED audit event.
+            await service.process_successful_payment(
+                payment=result.payment,
+                case=case,
+                provider_payload={
+                    "event": "payment.succeeded",
+                    "provider_payment_id": "success-fee-v36",
+                    "delivery": "duplicate",
                 },
             )
             await session.commit()
@@ -102,6 +122,21 @@ async def test_actual_recovery_success_fee_webhook_closes_case_end_to_end(tmp_pa
             assert "M1_SUCCESS_FEE_RECEIVED" in encoded
             assert "M1_CLOSED" in encoded
             assert "PAYMENT_WEBHOOK_PROCESSED" in encoded
+
+            close_transitions = [
+                event
+                for event in transitions
+                if event.action == "CASE_STATUS_CHANGED"
+                and (event.new_value or {}).get("status") == CaseStatus.M1_CLOSED
+            ]
+            webhook_events = [
+                event
+                for event in transitions
+                if event.action == "PAYMENT_WEBHOOK_PROCESSED"
+                and (event.new_value or {}).get("payment_id") == result.payment.id
+            ]
+            assert len(close_transitions) == 1
+            assert len(webhook_events) == 1
 
             close_notifications = (
                 await session.execute(
