@@ -7,6 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_service import CaseService
+from app.domain.payments.payment_service import PaymentService
+from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
 from app.models.audit_log import AuditLog
 from app.models.case import Case
@@ -211,7 +213,7 @@ class M1ClaimService:
         lawyer_id: int,
         comment: str,
     ) -> Case:
-        """Record the court-stage decision that makes the second payment due."""
+        """Record the court-stage decision and create the second payment due."""
 
         self._assert_assigned(case, lawyer_id)
         if self._status(case) != CaseStatus.M1_COURT_STAGE:
@@ -229,5 +231,12 @@ class M1ClaimService:
             actor_type="lawyer",
             actor_id=lawyer_id,
             comment=clean_comment,
+        )
+        # Create the financial obligation at the moment it becomes due. Online
+        # mode may later attach a provider URL to this same record; disabled mode
+        # can confirm the same pending record after verified bank/offline receipt.
+        await PaymentService(self.db).get_or_create_payment(
+            case=case,
+            payment_code=PaymentCode.M1_COURT_PAYMENT,
         )
         return case
