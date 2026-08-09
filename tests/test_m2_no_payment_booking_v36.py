@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -12,8 +13,12 @@ import app.domain.consultations.consultation_no_payment_booking as booking_modul
 from app.domain.consultations.consultation_no_payment_booking import (
     ConsultationNoPaymentBookingService,
 )
+from app.domain.payments.payment_service import PaymentService
+from app.domain.payments.payment_types import PaymentCode
+from app.domain.payments.payment_webhook_service import PaymentWebhookService
 from app.domain.statuses.case_statuses import CaseStatus, RouteCode
 from app.domain.statuses.consultation_statuses import ConsultationStatus
+from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models import Base
 from app.models.audit_log import AuditLog
 from app.models.case import Case
@@ -164,6 +169,120 @@ async def test_disabled_mode_books_reserved_m2_without_creating_fake_payment(
                 )
             ).scalars().all()
             assert len(notifications_after_retry) == 1
+
+
+@pytest.mark.asyncio
+async def test_disabled_mode_expires_existing_online_link_and_late_success_goes_to_review(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(booking_module, "payments_disabled", lambda: True)
+
+    async with database(tmp_path) as factory:
+        async with factory() as session:
+            user, _lawyer, case, consultation, slot = await seed_reserved_consultation(
+                session
+            )
+            reservation_key = PaymentService.consultation_reservation_key(
+                consultation.id,
+                slot.id,
+            )
+            old_online_payment = Payment(
+                case_id=case.id,
+                payment_code=PaymentCode.M2_CONSULTATION_PAYMENT,
+                title="Оплата консультации",
+                amount=Decimal("5000.00"),
+                currency="RUB",
+                status=PaymentStatus.WAITING_CONFIRMATION,
+                provider="external-provider",
+                provider_payment_id="provider-m2-old-link",
+                payment_url="https://payments.example/old-link",
+                reservation_key=reservation_key,
+            )
+            session.add(old_online_payment)
+            await session.flush()
+
+            booked = await ConsultationNoPaymentBookingService(session).confirm(
+                case=case,
+                client_id=user.id,
+            )
+            await session.commit()
+            await session.refresh(old_online_payment)
+            await session.refresh(case)
+            await session.refresh(booked)
+
+            assert old_online_payment.status == PaymentStatus.EXPIRED
+            assert case.status == CaseStatus.M2_CONSULTATION_BOOKED
+            assert booked.status == ConsultationStatus.BOOKED
+
+            expiration_audits = (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.entity_type == "case",
+                        AuditLog.entity_id == case.id,
+                        AuditLog.action
+                        == "CONSULTATION_ONLINE_PAYMENT_EXPIRED_AFTER_NO_PAYMENT_BOOKING",
+                    )
+                )
+            ).scalars().all()
+            assert len(expiration_audits) == 1
+            assert (expiration_audits[0].new_value or {})["status"] == PaymentStatus.EXPIRED
+
+            booked_notifications_before_late_webhook = (
+                await session.execute(
+                    select(Notification).where(
+                        Notification.case_id == case.id,
+                        Notification.event_code == "M2_CONSULTATION_BOOKED",
+                    )
+                )
+            ).scalars().all()
+            assert len(booked_notifications_before_late_webhook) == 1
+
+            await PaymentWebhookService(session).process_successful_payment(
+                payment=old_online_payment,
+                case=case,
+                provider_payload={"event": "payment.succeeded", "late": True},
+            )
+            await session.commit()
+            await session.refresh(old_online_payment)
+            await session.refresh(case)
+            await session.refresh(booked)
+
+            assert old_online_payment.status == PaymentStatus.PAID_REVIEW
+            assert case.status == CaseStatus.M2_CONSULTATION_BOOKED
+            assert booked.status == ConsultationStatus.BOOKED
+
+            review_audits = (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.entity_type == "case",
+                        AuditLog.entity_id == case.id,
+                        AuditLog.action == "CONSULTATION_PAYMENT_REVIEW_REQUIRED",
+                    )
+                )
+            ).scalars().all()
+            assert len(review_audits) == 1
+            assert (review_audits[0].old_value or {})["status"] == PaymentStatus.EXPIRED
+
+            review_notifications = (
+                await session.execute(
+                    select(Notification).where(
+                        Notification.case_id == case.id,
+                        Notification.event_code == "CONSULTATION_PAYMENT_REVIEW",
+                    )
+                )
+            ).scalars().all()
+            assert len(review_notifications) == 1
+
+            booked_notifications_after_late_webhook = (
+                await session.execute(
+                    select(Notification).where(
+                        Notification.case_id == case.id,
+                        Notification.event_code == "M2_CONSULTATION_BOOKED",
+                    )
+                )
+            ).scalars().all()
+            assert len(booked_notifications_after_late_webhook) == 1
 
 
 @pytest.mark.asyncio
