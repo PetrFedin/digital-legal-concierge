@@ -1,4 +1,5 @@
 import logging
+from decimal import Decimal
 
 from aiogram import Router
 from aiogram.exceptions import (
@@ -10,6 +11,7 @@ from aiogram.types import CallbackQuery
 
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
+from app.domain.cases.client_case_scope import latest_completed_m1_case_for_user
 from app.domain.payments.mode import payments_disabled
 from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
@@ -23,6 +25,10 @@ def _status(case) -> CaseStatus:
     if isinstance(case.status, CaseStatus):
         return case.status
     return CaseStatus(str(case.status))
+
+
+def _percent(value: Decimal) -> str:
+    return format(value.normalize(), "f")
 
 
 async def _case(callback: CallbackQuery, db):
@@ -81,8 +87,69 @@ async def _show_stale_stage(
     )
 
 
+async def _show_missing_or_completed_stage(
+    callback: CallbackQuery,
+    db,
+    user,
+    text: str,
+    *,
+    include_documents: bool = False,
+) -> None:
+    """Route an old M1 callback to the archive instead of silently starting a new case."""
+
+    completed = await latest_completed_m1_case_for_user(db, user_id=user.id)
+    if not completed:
+        await _show_stale_stage(
+            callback,
+            text,
+            include_documents=include_documents,
+        )
+        return
+
+    buttons: list[tuple[str, str]] = []
+    if include_documents:
+        buttons.append(("📄 Документы", "documents_open"))
+    buttons.extend(
+        [
+            ("📁 Итог дела", "my_case_open"),
+            ("💳 Оплаты", "payments_open"),
+            ("🕘 История", "case_history_open"),
+            ("🏠 Главная", "nav_home"),
+        ]
+    )
+    await _present_committed_result(
+        callback,
+        f"✅ Дело {completed.case_number} уже завершено.\n\n"
+        "Эта старая кнопка больше не выполняет действий. "
+        "Откройте итог, оплаты или историю завершённого дела.",
+        reply_markup=one(*buttons),
+    )
+
+
 @router.callback_query(lambda c: c.data == "contract_open")
-async def contract_open(callback: CallbackQuery):
+async def contract_open(callback: CallbackQuery, db):
+    _ctx, user, case = await _case(callback, db)
+    if not case:
+        await _show_missing_or_completed_stage(
+            callback,
+            db,
+            user,
+            "Активное дело не найдено. Откройте актуальную карточку.",
+            include_documents=True,
+        )
+        return
+    if _status(case) not in {
+        CaseStatus.M1_CONTRACT_READY,
+        CaseStatus.M1_WAITING_PAYMENT_30000,
+    }:
+        await _show_stale_stage(
+            callback,
+            "Договорный этап уже изменился. Повторное подтверждение не требуется — "
+            "откройте актуальное состояние дела.",
+            include_documents=True,
+        )
+        return
+
     await callback.message.edit_text(
         "📝 Договор\n\n"
         "Проверьте реквизиты, объём услуг, стоимость и порядок взаимодействия "
@@ -103,8 +170,10 @@ async def contract_open(callback: CallbackQuery):
 async def contract_sign(callback: CallbackQuery, db):
     ctx, user, case = await _case(callback, db)
     if not case:
-        await _show_stale_stage(
+        await _show_missing_or_completed_stage(
             callback,
+            db,
+            user,
             "Активное дело не найдено. Откройте актуальную карточку перед новым действием.",
         )
         return
@@ -160,10 +229,11 @@ async def contract_sign(callback: CallbackQuery, db):
         text = (
             "✅ Подтверждение договора сохранено.\n\n"
             f"Первый платёж: {money(payment.amount)}. Онлайн-оплата сейчас отключена, "
-            "поэтому этап подтвердит команда после фактической фиксации платежа. "
+            "поэтому этап подтвердит команда после проверки фактического поступления. "
             "До этого доверенность не откроется автоматически."
         )
         markup = one(
+            ("💳 Оплаты", "payments_open"),
             ("📁 Моё дело", "my_case_open"),
             ("✉️ Задать вопрос команде", "message_create"),
             ("🏠 Главная", "nav_home"),
@@ -175,6 +245,7 @@ async def contract_sign(callback: CallbackQuery, db):
         )
         markup = one(
             (f"💳 Оплатить {money(payment.amount)}", "pay_start_30000"),
+            ("💳 Оплаты", "payments_open"),
             ("📁 Моё дело", "my_case_open"),
             ("✉️ Задать вопрос команде", "message_create"),
             ("🏠 Главная", "nav_home"),
@@ -183,7 +254,25 @@ async def contract_sign(callback: CallbackQuery, db):
 
 
 @router.callback_query(lambda c: c.data == "poa_instruction")
-async def poa_instruction(callback: CallbackQuery):
+async def poa_instruction(callback: CallbackQuery, db):
+    _ctx, user, case = await _case(callback, db)
+    if not case:
+        await _show_missing_or_completed_stage(
+            callback,
+            db,
+            user,
+            "Активное дело не найдено. Откройте актуальную карточку.",
+            include_documents=True,
+        )
+        return
+    if _status(case) != CaseStatus.M1_POWER_OF_ATTORNEY:
+        await _show_stale_stage(
+            callback,
+            "Этап доверенности уже изменился. Откройте актуальное состояние дела.",
+            include_documents=True,
+        )
+        return
+
     await callback.message.edit_text(
         "📑 Доверенность\n\n"
         "Оформите доверенность и нотариальные копии по инструкции юриста. "
@@ -203,8 +292,10 @@ async def poa_instruction(callback: CallbackQuery):
 async def poa_done(callback: CallbackQuery, db):
     ctx, user, case = await _case(callback, db)
     if not case:
-        await _show_stale_stage(
+        await _show_missing_or_completed_stage(
             callback,
+            db,
+            user,
             "Активное дело не найдено. Подтверждение доверенности не выполнялось.",
             include_documents=True,
         )
@@ -285,10 +376,12 @@ async def poa_done(callback: CallbackQuery, db):
 
 @router.callback_query(lambda c: c.data == "court_status")
 async def court_status(callback: CallbackQuery, db):
-    _ctx, _user, case = await _case(callback, db)
+    _ctx, user, case = await _case(callback, db)
     if not case:
-        await _show_stale_stage(
+        await _show_missing_or_completed_stage(
             callback,
+            db,
+            user,
             "Активное дело не найдено. Откройте актуальную карточку.",
         )
         return
@@ -322,10 +415,11 @@ async def court_status(callback: CallbackQuery, db):
         if payments_disabled():
             text = (
                 "💳 Второй платёж открыт после судебного решения.\n\n"
-                "Онлайн-оплата сейчас отключена. Команда зафиксирует фактический "
-                "платёж и только после этого откроет исполнительный этап."
+                "Онлайн-оплата сейчас отключена. Команда подтвердит его только после "
+                "проверки фактического поступления; затем исполнительный этап откроется автоматически."
             )
             buttons = (
+                ("💳 Оплаты", "payments_open"),
                 ("✉️ Задать вопрос команде", "message_create"),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
@@ -337,6 +431,7 @@ async def court_status(callback: CallbackQuery, db):
             )
             buttons = (
                 ("💳 Перейти к оплате", "pay_court_70000"),
+                ("💳 Оплаты", "payments_open"),
                 ("🕘 История", "case_history_open"),
                 ("✉️ Задать вопрос команде", "message_create"),
                 ("📁 Моё дело", "my_case_open"),
@@ -353,6 +448,7 @@ async def court_status(callback: CallbackQuery, db):
         text = "Судебный платёжный этап уже пройден. Откройте текущее состояние дела."
         buttons = (
             ("📁 Моё дело", "my_case_open"),
+            ("💳 Оплаты", "payments_open"),
             ("🕘 История", "case_history_open"),
             ("🏠 Главная", "nav_home"),
         )
@@ -363,15 +459,17 @@ async def court_status(callback: CallbackQuery, db):
             ("✉️ Задать вопрос команде", "message_create"),
             ("🏠 Главная", "nav_home"),
         )
-    await callback.message.edit_text(text, reply_markup=one(*buttons))
+    await _present_committed_result(callback, text, reply_markup=one(*buttons))
 
 
 @router.callback_query(lambda c: c.data == "pay_court_70000")
 async def pay_court(callback: CallbackQuery, db):
-    _ctx, _user, case = await _case(callback, db)
+    _ctx, user, case = await _case(callback, db)
     if not case:
-        await _show_stale_stage(
+        await _show_missing_or_completed_stage(
             callback,
+            db,
+            user,
             "Активное дело не найдено. Платёж не создавался.",
         )
         return
@@ -385,8 +483,8 @@ async def pay_court(callback: CallbackQuery, db):
     if payments_disabled():
         await _show_stale_stage(
             callback,
-            "Онлайн-оплата сейчас отключена. Второй платёж фиксирует команда; "
-            "исполнительный этап откроется только после подтверждения.",
+            "Онлайн-оплата сейчас отключена. Второй платёж уже зафиксирован в системе; "
+            "команда подтвердит его только после проверки фактического поступления.",
         )
         return
 
@@ -397,10 +495,12 @@ async def pay_court(callback: CallbackQuery, db):
 
 @router.callback_query(lambda c: c.data == "pay_success_fee")
 async def pay_success_fee(callback: CallbackQuery, db):
-    ctx, _user, case = await _case(callback, db)
+    ctx, user, case = await _case(callback, db)
     if not case:
-        await _show_stale_stage(
+        await _show_missing_or_completed_stage(
             callback,
+            db,
+            user,
             "Активное дело не найдено. Финальный платёж не создавался.",
         )
         return
@@ -426,6 +526,7 @@ async def pay_success_fee(callback: CallbackQuery, db):
 
     service = PaymentService(db)
     try:
+        quote = await service.success_fee_quote_for_case(case.id)
         if status == CaseStatus.M1_MONEY_RECEIVED:
             await ctx.case_service.change_status(
                 case=case,
@@ -434,11 +535,10 @@ async def pay_success_fee(callback: CallbackQuery, db):
                 actor_id=None,
                 comment="Открыт финальный договорный платёж после получения денег",
             )
-        amount = await service.estimate_success_fee_for_case(case.id)
         payment = await service.get_or_create_payment(
             case=case,
             payment_code=PaymentCode.M1_SUCCESS_FEE,
-            amount=amount,
+            amount=quote.amount,
         )
         if not payments_disabled():
             payment = await service.create_payment_link(payment)
@@ -462,14 +562,19 @@ async def pay_success_fee(callback: CallbackQuery, db):
 
     from app.bot.screens.payments import money, payment_keyboard
 
+    formula = (
+        f"Фактически взыскано: {money(quote.recovered_amount)}\n"
+        f"Success fee: {_percent(quote.percent)}% = {money(quote.amount)}"
+    )
     if payments_disabled():
         text = (
             "💳 Финальный платёж открыт.\n\n"
-            f"Сумма: {money(payment.amount)}\n\n"
-            "Онлайн-оплата сейчас отключена. Команда подтвердит фактический платёж; "
-            "дело будет закрыто только после подтверждения финансового этапа."
+            f"{formula}\n\n"
+            "Онлайн-оплата сейчас отключена. Команда подтвердит платёж только после "
+            "проверки фактического поступления; дело закроется автоматически после этого подтверждения."
         )
         markup = one(
+            ("💳 Оплаты", "payments_open"),
             ("📁 Моё дело", "my_case_open"),
             ("✉️ Задать вопрос команде", "message_create"),
             ("🏠 Главная", "nav_home"),
@@ -477,7 +582,7 @@ async def pay_success_fee(callback: CallbackQuery, db):
     else:
         text = (
             "💳 Финальный платёж\n\n"
-            f"Сумма: {money(payment.amount)}\n\n"
+            f"{formula}\n\n"
             "После подтверждения оплаты система завершит финансовый этап и закроет дело."
         )
         markup = payment_keyboard(payment)
