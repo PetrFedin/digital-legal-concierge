@@ -152,6 +152,28 @@ async def test_m2_never_exposes_m1_accept_even_with_approved_document(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_admin_sees_ready_handoff_without_getting_lawyer_accept_right(tmp_path):
+    async with database(tmp_path, "admin-ready-context.db") as factory:
+        async with factory() as session:
+            case, _ = await _seed_case(session)
+            session.add(_document(case.id, status=DocumentStatus.APPROVED))
+            await session.commit()
+
+            context = await build_document_review_case_context(
+                session,
+                actor=SimpleNamespace(role="admin", lawyer_id=None),
+                case_id=case.id,
+            )
+
+            assert context is not None
+            assert context["documents_ready"] is True
+            assert context["can_accept"] is False
+            assert context["primary_action"] == "open_case"
+            assert context["primary_label"] == "Комплект готов — открыть дело"
+            assert "назначенному юристу" in context["primary_note"]
+
+
+@pytest.mark.asyncio
 async def test_foreign_lawyer_case_context_is_not_disclosed(tmp_path):
     async with database(tmp_path, "foreign-context.db") as factory:
         async with factory() as session:
