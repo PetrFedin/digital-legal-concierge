@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 
 import pytest
-from fastapi import HTTPException
 
 from app.api.admin import manual_status
 from app.domain.cases.admin_manual_status_policy import (
@@ -59,3 +59,17 @@ def test_manual_status_endpoint_checks_financial_guard_after_snapshot_and_before
     assert snapshot_index < guard_index < change_index <= force_index
     assert "status_code=409" in source
     assert "await db.rollback()" in source
+
+
+def test_admin_cabinet_uses_backend_allowed_status_options_and_explains_locked_financial_stage():
+    source = Path("app/api/web_admin.py").read_text(encoding="utf-8")
+
+    assert "manual_status_change_allowed(case.status, status.value)" in source
+    assert '"manual_status_options": manual_status_options' in source
+    assert '"manual_status_note": _manual_status_note(case)' in source
+    assert "const statusOptions=d.case.manual_status_options||[]" in source
+    assert "Показаны только серверно разрешённые административные переходы." in source
+    assert "Финальный финансовый этап защищён" in source
+    assert "Ручная смена статуса здесь недоступна" in source
+    assert "Открыть финансовую карточку" in source
+    assert "await api('/admin/statuses')" not in source
