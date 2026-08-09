@@ -42,10 +42,13 @@ def _status(document: Document) -> str:
     return str(document.status)
 
 
-def _case_status(case) -> CaseStatus:
+def _case_status(case) -> CaseStatus | None:
     if isinstance(case.status, CaseStatus):
         return case.status
-    return CaseStatus(str(case.status))
+    try:
+        return CaseStatus(str(case.status))
+    except (TypeError, ValueError):
+        return None
 
 
 def _short(value: object, limit: int = 220) -> str:
@@ -162,7 +165,11 @@ def _next_action(case, documents: list[Document]):
             [("✅ Передать новые файлы юристу", "doc_finish_upload")],
         )
 
-    if not documents and case.route == "M2" and _case_status(case) in _M2_CAN_SKIP_STATUSES:
+    if (
+        not documents
+        and case.route == "M2"
+        and _case_status(case) in _M2_CAN_SKIP_STATUSES
+    ):
         return (
             "Документы для консультации необязательны. Можно перейти к следующему шагу дела или добавить материал для подготовки юриста.",
             [("➡️ Продолжить без документов", "doc_skip_m2")],
