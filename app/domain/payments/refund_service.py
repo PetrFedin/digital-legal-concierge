@@ -14,6 +14,23 @@ from app.models.consultation import Consultation
 from app.models.payment import Payment
 
 
+REFUND_REQUEST_START_STATUSES = {
+    PaymentStatus.PAID,
+    PaymentStatus.PAID_REVIEW,
+}
+REFUND_WORKFLOW_STATUSES = {
+    PaymentStatus.REFUND_PENDING,
+    PaymentStatus.REFUND_DECLINED,
+    PaymentStatus.REFUNDED,
+}
+REFUND_RELEVANT_STATUSES = REFUND_REQUEST_START_STATUSES | REFUND_WORKFLOW_STATUSES
+
+
+class ConsultationRefundStateConflict(ValueError):
+    """Historical money state conflicts with an apparently active consultation."""
+
+
+
 def as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
@@ -56,15 +73,7 @@ class ConsultationRefundService:
                     Payment.case_id == case_id,
                     Payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT,
                     Payment.reservation_key.like(f"{prefix}%"),
-                    Payment.status.in_(
-                        [
-                            PaymentStatus.PAID,
-                            PaymentStatus.PAID_REVIEW,
-                            PaymentStatus.REFUND_PENDING,
-                            PaymentStatus.REFUND_DECLINED,
-                            PaymentStatus.REFUNDED,
-                        ]
-                    ),
+                    Payment.status.in_(list(REFUND_RELEVANT_STATUSES)),
                 )
                 .order_by(Payment.created_at.desc(), Payment.id.desc())
                 .with_for_update()
@@ -93,12 +102,7 @@ class ConsultationRefundService:
 
         if (
             consultation.status == ConsultationStatus.CANCELLED
-            and payment.status
-            in {
-                PaymentStatus.REFUND_PENDING,
-                PaymentStatus.REFUND_DECLINED,
-                PaymentStatus.REFUNDED,
-            }
+            and payment.status in REFUND_WORKFLOW_STATUSES
         ):
             return consultation, payment
 
@@ -109,6 +113,13 @@ class ConsultationRefundService:
             )
         if not consultation.slot_id:
             raise ValueError("У консультации отсутствует подтверждённый слот")
+
+        if payment.status not in REFUND_REQUEST_START_STATUSES:
+            raise ConsultationRefundStateConflict(
+                "Финансовое состояние возврата не согласовано с активной консультацией. "
+                "Повторный возврат заблокирован, чтобы не провести его дважды. "
+                "Требуется проверка команды."
+            )
 
         slot = await self.slots.get_slot_for_update(consultation.slot_id)
         if (
