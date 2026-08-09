@@ -104,6 +104,7 @@ def build_notification_reply_markup(
     if event_code == "M1_CLOSED":
         return _markup(
             ("📁 Открыть итог дела", "my_case_open"),
+            ("📄 Документы дела", "documents_open"),
             ("🕘 История дела", "case_history_open"),
             ("💳 Оплаты по делу", "payments_open"),
         )
