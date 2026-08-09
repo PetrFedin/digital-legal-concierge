@@ -163,7 +163,7 @@ class PaymentWebhookService:
                     next_status=CaseStatus.M2_CONSULTATION_BOOKED,
                     actor_type="system",
                     actor_id=None,
-                            comment="Консультация подтверждена после оплаты",
+                    comment="Консультация подтверждена после оплаты",
                 )
             await self.notifications.emit(
                 event_code="M2_CONSULTATION_BOOKED",
@@ -205,7 +205,17 @@ class PaymentWebhookService:
                     next_status=status,
                     actor_type="system",
                     actor_id=None,
-                            comment=f"Автопереход после оплаты {payment.payment_code}",
+                    comment=f"Автопереход после оплаты {payment.payment_code}",
+                )
+            if (
+                payment.payment_code == PaymentCode.M1_SUCCESS_FEE
+                and case.status == CaseStatus.M1_CLOSED
+            ):
+                await self.notifications.emit(
+                    event_code="M1_CLOSED",
+                    case_id=case.id,
+                    payload={"case_number": case.case_number},
+                    dedupe_key=f"payment:{payment.id}:m1-closed",
                 )
 
         await add_case_history_event(
