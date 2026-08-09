@@ -107,8 +107,8 @@ async def consult_reschedule(callback: CallbackQuery, db):
     await _safe_edit(
         callback,
         "🔄 Перенос консультации\n\n"
-        "Выберите новую дату. Текущая запись останется за вами до успешного "
-        "сохранения нового времени. Повторная оплата не потребуется.",
+        "Выберите новую дату. Текущая запись останется за вами до отдельного "
+        "подтверждения нового времени. Повторная оплата не потребуется.",
         reply_markup=one(
             *date_buttons(slots, "consult_reschedule_date"),
             ("← Оставить текущее время", "consultation_booked_open"),
@@ -159,7 +159,7 @@ async def choose_reschedule_date(callback: CallbackQuery, db):
     await _safe_edit(
         callback,
         f"🕐 Новое время на {format_date(selected[0].starts_at)}\n\n"
-        "Текущая запись ещё не изменена. Выберите один новый слот.",
+        "Текущая запись ещё не изменена. Выберите слот — следующим экраном я попрошу подтвердить перенос.",
         reply_markup=one(
             *buttons,
             ("← Другие даты", "consult_reschedule"),
@@ -185,13 +185,110 @@ async def choose_reschedule_slot(callback: CallbackQuery, db):
         )
         return
 
-    user, case, consultation = await _current_booked_context(callback, db)
+    _user, case, consultation = await _current_booked_context(callback, db)
     if not case or not consultation:
         await _safe_edit(
             callback,
             "Текущая подтверждённая консультация уже изменилась. "
             "Откройте актуальную запись перед новым переносом.",
             reply_markup=one(*booking_recovery_buttons()),
+        )
+        return
+
+    try:
+        new_slot = await SlotService(db).get_slot(new_slot_id)
+    except Exception:
+        logger.exception("Не удалось проверить выбранный слот перед переносом")
+        await db.rollback()
+        await _safe_edit(
+            callback,
+            "Не удалось проверить выбранное время. Текущая запись не изменена.",
+            reply_markup=one(
+                ("🔄 Выбрать время заново", "consult_reschedule"),
+                ("👨‍⚖ Открыть текущую запись", "consultation_booked_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    if not new_slot or str(new_slot.status) != "available":
+        await db.rollback()
+        try:
+            await callback.answer(
+                "Это время уже занято или недоступно. Выберите другой слот.",
+                show_alert=True,
+            )
+        except Exception:
+            logger.debug("Не удалось показать устаревший слот переноса", exc_info=True)
+        await consult_reschedule(callback, db)
+        return
+
+    await db.commit()
+    current_time = (
+        f"{format_date(consultation.scheduled_at)} · {format_time(consultation.scheduled_at)}"
+        if consultation.scheduled_at
+        else "уточняется"
+    )
+    old_slot_id = int(consultation.slot_id or 0)
+    await _safe_edit(
+        callback,
+        "⚠️ Подтвердить перенос консультации?\n\n"
+        f"Текущее время: {current_time}\n"
+        f"Новое время: {format_date(new_slot.starts_at)} · "
+        f"{format_time(new_slot.starts_at)}–{format_time(new_slot.ends_at)}\n\n"
+        "До подтверждения текущая запись остаётся без изменений. При подтверждении старый слот освободится, а вопрос и документы сохранятся.",
+        reply_markup=one(
+            (
+                "✅ Да, перенести консультацию",
+                f"consult_reschedule_confirm:{consultation.id}:{old_slot_id}:{new_slot.id}",
+            ),
+            ("← Выбрать другое время", "consult_reschedule"),
+            ("Нет, оставить текущее время", "consultation_booked_open"),
+        ),
+    )
+
+
+@router.callback_query(lambda c: c.data.startswith("consult_reschedule_confirm:"))
+async def confirm_reschedule_slot(callback: CallbackQuery, db):
+    try:
+        _, consultation_id_text, old_slot_id_text, new_slot_id_text = callback.data.split(":", 3)
+        expected_consultation_id = int(consultation_id_text)
+        expected_old_slot_id = int(old_slot_id_text)
+        new_slot_id = int(new_slot_id_text)
+    except (TypeError, ValueError):
+        await _safe_edit(
+            callback,
+            "Эта кнопка подтверждения переноса устарела. Никаких изменений не выполнено.",
+            reply_markup=one(
+                ("🔄 Выбрать время заново", "consult_reschedule"),
+                ("👨‍⚖ Открыть текущую запись", "consultation_booked_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    user, case, consultation = await _current_booked_context(callback, db)
+    if not case or not consultation:
+        await _safe_edit(
+            callback,
+            "Текущая подтверждённая консультация уже изменилась. Повторный перенос не выполнялся.",
+            reply_markup=one(*booking_recovery_buttons()),
+        )
+        return
+
+    if (
+        consultation.id != expected_consultation_id
+        or int(consultation.slot_id or 0) != expected_old_slot_id
+    ):
+        await _safe_edit(
+            callback,
+            "Запись изменилась после выбора нового времени. Старая кнопка подтверждения больше не действует.\n\n"
+            "Откройте текущую запись и при необходимости начните перенос заново.",
+            reply_markup=one(
+                ("👨‍⚖ Открыть текущую запись", "consultation_booked_open"),
+                ("🔄 Начать перенос заново", "consult_reschedule"),
+                ("🏠 Главная", "nav_home"),
+            ),
         )
         return
 
