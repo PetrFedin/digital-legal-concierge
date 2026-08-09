@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.admin import payment_can_be_manually_confirmed, require_admin
 from app.db.session import get_db
 from app.domain.cases.case_timeline import get_client_visible_status
+from app.domain.cases.m1_financial_summary import M1FinancialSummaryService
 from app.domain.documents.document_workflow import ACTIONABLE_REVIEW_STATUSES
 from app.models.case import Case
 from app.models.consultation import Consultation
@@ -198,6 +199,7 @@ async def case_workspace(
             .order_by(Payment.created_at.desc())
         )
     ).scalars().all()
+    financial_final = await M1FinancialSummaryService(db).build(case)
 
     return {
         "case": {
@@ -241,13 +243,23 @@ async def case_workspace(
             {
                 "id": payment.id,
                 "case_id": payment.case_id,
+                "payment_code": payment.payment_code,
                 "title": payment.title,
                 "amount": float(payment.amount),
+                "currency": payment.currency,
                 "status": payment.status,
+                "provider": payment.provider,
+                "created_at": (
+                    payment.created_at.isoformat() if payment.created_at else None
+                ),
+                "updated_at": (
+                    payment.updated_at.isoformat() if payment.updated_at else None
+                ),
                 "manual_confirm_allowed": payment_can_be_manually_confirmed(payment),
             }
             for payment in payments
         ],
+        "financial_final": financial_final,
     }
 
 
