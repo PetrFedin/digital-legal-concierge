@@ -119,7 +119,6 @@ class M1ClaimService:
                     .where(AuditLog.entity_id == case.id)
                     .where(AuditLog.action == "CASE_STATUS_CHANGED")
                     .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
-                    .limit(100)
                 )
             ).scalars().all()
         )
