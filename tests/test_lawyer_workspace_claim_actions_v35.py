@@ -16,6 +16,8 @@ def test_workspace_derives_claim_action_from_domain_deadline_not_case_updated_at
     assert 'm1_action = "start_claim"' in source
     assert 'm1_action = "mark_claim_sent"' in source
     assert 'm1_action = "open_court" if eligibility.eligible else "wait_claim_period"' in source
+    assert 'elif status == CaseStatus.M1_COURT_STAGE:' in source
+    assert 'm1_action = "open_court_payment"' in source
     assert "case.updated_at <=" not in source
 
 
@@ -32,13 +34,13 @@ def test_workspace_priority_keeps_client_work_ahead_of_claim_mutations():
 
 def test_waiting_claim_period_has_no_court_mutation_button():
     source = read("app/api/lawyer_workspace.py")
+    action_list = "['start_claim','mark_claim_sent','open_court','open_court_payment'].includes(x.m1_action)"
 
     assert "До доступности судебного этапа" in source
     assert "Проверить срок" in source
-    assert "['start_claim','mark_claim_sent','open_court'].includes(x.m1_action)" in source
+    assert action_list in source
     assert "wait_claim_period" not in source[
-        source.index("['start_claim','mark_claim_sent','open_court'].includes(x.m1_action)") :
-        source.index("if(x.m1_action==='wait_claim_period')")
+        source.index(action_list) : source.index("if(x.m1_action==='wait_claim_period')")
     ]
 
 
@@ -63,8 +65,18 @@ def test_workspace_uses_named_claim_endpoints_and_transfer_payload_contract():
     assert "`/lawyer/cases/${id}/claim/start`" in source
     assert "`/lawyer/cases/${id}/claim/sent`" in source
     assert "`/lawyer/cases/${id}/court/open`" in source
+    assert "`/lawyer/cases/${id}/court/payment/open`" in source
     assert "`/lawyer/cases/${id}/transfer-to-m2`" in source
     assert "reason:type==='transfer'?comment:undefined" in source
+
+
+def test_court_stage_has_explicit_second_payment_handoff_and_success_state():
+    source = read("app/api/lawyer_workspace.py")
+
+    assert "Открыть второй платёж 70 000 ₽" in source
+    assert "Зафиксируйте судебное событие или решение" in source
+    assert "open_court_payment:{title:'Открыть второй платёж 70 000 ₽'" in source
+    assert "Второй платёж открыт. Клиент получил следующий шаг оплаты." in source
 
 
 def test_workspace_keeps_local_case_scoped_navigation_and_recovery():
