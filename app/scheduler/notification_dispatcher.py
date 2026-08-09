@@ -77,6 +77,17 @@ class NotificationDispatcher:
             except asyncio.TimeoutError:
                 continue
 
+    async def run_forever(self) -> None:
+        """Supervisor entrypoint; cancellation stops the loop cleanly."""
+
+        if self._stop_event is not None:
+            raise RuntimeError("notification dispatcher is already running")
+        self._stop_event = asyncio.Event()
+        try:
+            await self._run_loop()
+        finally:
+            self._stop_event = None
+
     def start(self) -> asyncio.Task:
         if self.is_running:
             return self._task  # type: ignore[return-value]
