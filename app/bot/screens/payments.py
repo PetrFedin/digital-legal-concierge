@@ -13,6 +13,9 @@ from sqlalchemy import select
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.config import settings
+from app.domain.cases.client_case_scope import (
+    active_or_latest_completed_m1_case_for_user,
+)
 from app.domain.consultations.consultation_intake import (
     ConsultationDescriptionRequired,
 )
@@ -151,22 +154,47 @@ async def get_owned_payment(
 async def payments(callback: CallbackQuery, db):
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
-    case = await ctx.case_service.get_active_case_for_user(user.id)
-    payments_list = (
-        await PaymentService(db).list_case_payments(case.id)
-        if case
-        else []
+    case, completed = await active_or_latest_completed_m1_case_for_user(
+        db,
+        case_service=ctx.case_service,
+        user_id=user.id,
     )
-    text = "💳 Оплаты\n\n" + (
-        "Пока нет выставленных платежей. Когда появится платёж, здесь будут сумма и понятный статус."
+    if not case:
+        await callback.message.edit_text(
+            "💳 Оплаты\n\nАктивного или завершённого дела нет. Платёжная история появится после создания обращения.",
+            reply_markup=one(
+                ("🧮 Рассчитать неустойку", "calc_start"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    payments_list = await PaymentService(db).list_case_payments(case.id)
+    heading = "💳 Оплаты завершённого дела" if completed else "💳 Оплаты"
+    text = heading + "\n\n" + (
+        "По этому делу платежей нет."
         if not payments_list
         else "\n\n".join(payment_summary_line(payment) for payment in payments_list)
     )
+    if completed:
+        text += (
+            "\n\n✅ Дело завершено. Платежи доступны только для просмотра; "
+            "новые платежи из этого архива не создаются."
+        )
     items = [
         (payment_action_label(payment), f"pay_open:{payment.id}")
         for payment in payments_list
     ]
-    items += [("📁 Моё дело", "my_case_open")]
+    if completed:
+        items.extend(
+            [
+                ("🕘 История дела", "case_history_open"),
+                ("📁 Итог дела", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ]
+        )
+    else:
+        items.append(("📁 Моё дело", "my_case_open"))
     await callback.message.edit_text(text, reply_markup=one(*items))
 
 
