@@ -34,13 +34,7 @@ def _document_reupload_callback(notification: Notification) -> str | None:
 def build_notification_reply_markup(
     notification: Notification,
 ) -> InlineKeyboardMarkup | None:
-    """Attach only safe, client-facing navigation to durable notifications.
-
-    Notification rows stay transport-agnostic and keep their existing durable
-    retry/dedupe contract. Buttons are derived at delivery time from immutable
-    event metadata. Any document-specific action is snapshot-validated again by
-    the Telegram handler before an upload state is opened.
-    """
+    """Attach only safe, client-facing navigation to durable notifications."""
 
     recipient = str(notification.recipient_type or notification.title or "").strip()
     if recipient != "client":
@@ -89,6 +83,13 @@ def build_notification_reply_markup(
     if event_code == "COURT_STAGE_STARTED":
         return _markup(
             ("🏛 Судебный этап", "court_status"),
+            ("📁 Моё дело", "my_case_open"),
+            ("✉️ Задать вопрос", "message_create"),
+        )
+
+    if event_code == "COURT_PAYMENT_OPENED":
+        return _markup(
+            ("💳 Перейти к оплате 70 000 ₽", "court_status"),
             ("📁 Моё дело", "my_case_open"),
             ("✉️ Задать вопрос", "message_create"),
         )
