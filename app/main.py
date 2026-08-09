@@ -29,6 +29,9 @@ from app.api.install_wizard import router as install_wizard_router
 from app.api.integration_center import router as integration_center_router
 from app.api.launch_assistant import router as launch_assistant_router
 from app.api.lawyer import router as lawyer_router
+from app.api.lawyer_consultation_desk import router as lawyer_consultation_desk_router
+from app.api.lawyer_m1_claim import router as lawyer_m1_claim_router
+from app.api.lawyer_workspace import router as lawyer_workspace_router
 from app.api.maintenance_center import router as maintenance_center_router
 from app.api.message_center import router as message_center_router
 from app.api.mfa import router as mfa_router
@@ -149,6 +152,9 @@ def create_app():
         ("admin", admin_router),
         ("payment_webhooks", payment_router),
         ("lawyer", lawyer_router),
+        ("lawyer_m1_claim", lawyer_m1_claim_router),
+        ("lawyer_workspace", lawyer_workspace_router),
+        ("lawyer_consultation_desk", lawyer_consultation_desk_router),
         ("document_access", document_access_router),
         ("document_access_portal", document_access_portal_router),
         ("runtime", runtime_router),
