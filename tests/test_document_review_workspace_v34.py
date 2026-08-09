@@ -96,6 +96,18 @@ def test_m1_acceptance_notification_opens_real_contract_flow():
 
     assert markup is not None
     assert _callbacks(markup) == ["contract_open", "my_case_open", "message_create"]
+    assert all(len(value.encode("utf-8")) <= 64 for value in _callbacks(markup))
     stages = read("app/bot/screens/m1_stages.py")
     assert 'c.data == "contract_open"' in stages
     assert 'c.data == "contract_sign"' in stages
+
+
+def test_m1_acceptance_navigation_is_never_attached_to_staff_notifications():
+    notification = SimpleNamespace(
+        recipient_type="lawyer",
+        title="lawyer",
+        event_code="M1_CASE_ACCEPTED",
+        dedupe_key="case:41:lawyer-accept:staff-copy",
+    )
+
+    assert build_notification_reply_markup(notification) is None
