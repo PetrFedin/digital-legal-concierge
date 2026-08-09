@@ -34,7 +34,7 @@ def test_workspace_priority_keeps_client_work_ahead_of_claim_mutations():
 
 def test_waiting_claim_period_has_no_court_mutation_button():
     source = read("app/api/lawyer_workspace.py")
-    action_list = "['start_claim','mark_claim_sent','open_court','open_court_payment'].includes(x.m1_action)"
+    action_list = "['start_claim','mark_claim_sent','open_court','open_court_payment','record_money_received'].includes(x.m1_action)"
 
     assert "До доступности судебного этапа" in source
     assert "Проверить срок" in source
