@@ -20,9 +20,11 @@ from app.domain.consultations.consultation_intake import (
     ConsultationDescriptionRequired,
 )
 from app.domain.consultations.slot_service import SlotUnavailableError
+from app.domain.payments.mode import payments_disabled
 from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.payments.payment_webhook_service import PaymentWebhookService
+from app.domain.statuses.case_statuses import CaseStatus, RouteCode
 from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models.case import Case
 from app.models.payment import Payment
@@ -41,6 +43,11 @@ PAYMENT_STATUS_LABELS = {
     PaymentStatus.CANCELLED: "Оплата отменена",
     PaymentStatus.REFUNDED: "Средства возвращены",
     PaymentStatus.EXPIRED: "Срок оплаты истёк",
+}
+
+M1_PAYMENT_EXPECTED_STATUSES = {
+    PaymentCode.M1_INITIAL_PAYMENT: CaseStatus.M1_WAITING_PAYMENT_30000,
+    PaymentCode.M1_COURT_PAYMENT: CaseStatus.M1_WAITING_PAYMENT_70000,
 }
 
 
@@ -68,6 +75,13 @@ def payment_action_label(payment: Payment) -> str:
     if len(title) > 48:
         title = title[:47].rstrip() + "…"
     return f"Открыть: {title}"
+
+
+def _m1_payment_context_matches(case: Case, code: str) -> bool:
+    expected = M1_PAYMENT_EXPECTED_STATUSES.get(code)
+    if expected is None:
+        return True
+    return str(case.route or "") == RouteCode.M1.value and str(case.status) == str(expected)
 
 
 async def _present_committed_callback(
@@ -120,7 +134,9 @@ def payment_keyboard(payment: Payment):
             text="✅ DEV подтвердить оплату",
             callback_data=f"pay_fake_success:{payment.id}",
         )
+    keyboard.button(text="💳 Все оплаты", callback_data="payments_open")
     keyboard.button(text="📁 Моё дело", callback_data="my_case_open")
+    keyboard.button(text="🏠 Главная", callback_data="nav_home")
     keyboard.adjust(1)
     return keyboard.as_markup()
 
@@ -194,7 +210,12 @@ async def payments(callback: CallbackQuery, db):
             ]
         )
     else:
-        items.append(("📁 Моё дело", "my_case_open"))
+        items.extend(
+            [
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ]
+        )
     await callback.message.edit_text(text, reply_markup=one(*items))
 
 
@@ -208,14 +229,69 @@ async def consult_pay(callback: CallbackQuery, db):
     await start_payment(callback, db, PaymentCode.M2_CONSULTATION_PAYMENT)
 
 
+async def _show_missing_m1_payment_case(callback: CallbackQuery, db, ctx, user) -> None:
+    case, completed = await active_or_latest_completed_m1_case_for_user(
+        db,
+        case_service=ctx.case_service,
+        user_id=user.id,
+    )
+    if completed and case:
+        await callback.message.edit_text(
+            f"✅ Дело {case.case_number} уже завершено.\n\n"
+            "Эта старая кнопка оплаты больше не создаёт платежей. "
+            "Проверьте итог или платёжную историю завершённого дела.",
+            reply_markup=one(
+                ("💳 Оплаты", "payments_open"),
+                ("📁 Итог дела", "my_case_open"),
+                ("🕘 История", "case_history_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+    await callback.message.edit_text(
+        "Активное M1-дело для этой оплаты не найдено. Новый платёж не создавался.",
+        reply_markup=one(
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ),
+    )
+
+
 async def start_payment(callback: CallbackQuery, db, code):
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     case = await ctx.case_service.get_active_case_for_user(user.id)
+    is_m1_payment = code in M1_PAYMENT_EXPECTED_STATUSES
     if not case:
-        await callback.answer(
-            "Сначала опишите вопрос и выберите дату и время консультации.",
-            show_alert=True,
+        if is_m1_payment:
+            await _show_missing_m1_payment_case(callback, db, ctx, user)
+        else:
+            await callback.answer(
+                "Сначала опишите вопрос и выберите дату и время консультации.",
+                show_alert=True,
+            )
+        return
+
+    if is_m1_payment and not _m1_payment_context_matches(case, code):
+        await callback.message.edit_text(
+            "Эта кнопка оплаты относится к другому или уже завершённому этапу. "
+            "Новый платёж не создавался.",
+            reply_markup=one(
+                ("💳 Оплаты", "payments_open"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+    if code == PaymentCode.M2_CONSULTATION_PAYMENT and str(case.route or "") != RouteCode.M2.value:
+        await callback.message.edit_text(
+            "Эта кнопка консультации относится к другому обращению. "
+            "Платёж и новая консультация не создавались.",
+            reply_markup=one(
+                ("✉️ Написать команде", "message_create"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
         )
         return
 
@@ -225,6 +301,21 @@ async def start_payment(callback: CallbackQuery, db, code):
             case=case,
             payment_code=code,
         )
+        if is_m1_payment and payments_disabled():
+            await db.commit()
+            await _present_committed_callback(
+                callback,
+                f"💳 {payment.title}\n\n"
+                f"Сумма: {money(payment.amount)}\n\n"
+                "Онлайн-оплата сейчас отключена. Платёж уже зафиксирован в системе как ожидающий; "
+                "команда изменит этап только после проверки фактического поступления денег.",
+                reply_markup=one(
+                    ("💳 Оплаты", "payments_open"),
+                    ("📁 Моё дело", "my_case_open"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+            )
+            return
         payment = await service.create_payment_link(payment)
         await db.commit()
     except ConsultationDescriptionRequired as error:
@@ -250,28 +341,54 @@ async def start_payment(callback: CallbackQuery, db, code):
                 ),
             )
         else:
-            await callback.answer(str(error), show_alert=True)
+            await callback.message.edit_text(
+                f"Оплата не открыта: {error}\n\nДанные дела не изменены.",
+                reply_markup=one(
+                    ("💳 Оплаты", "payments_open"),
+                    ("📁 Моё дело", "my_case_open"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+            )
         return
     except RuntimeError:
         await db.rollback()
         await callback.message.edit_text(
-            "Платёжный сервис временно недоступен. Выбранное время, вопрос и документы сохранены.",
-            reply_markup=one(
-                ("🔄 Повторить оплату", "consult_pay"),
-                ("📁 Моё дело", "my_case_open"),
-                ("🏠 Главная", "nav_home"),
-            ) if code == PaymentCode.M2_CONSULTATION_PAYMENT else one(
-                ("📁 Моё дело", "my_case_open"),
-                ("🏠 Главная", "nav_home"),
+            "Платёжный сервис временно недоступен. Данные текущего этапа сохранены.",
+            reply_markup=(
+                one(
+                    ("🔄 Повторить оплату", "consult_pay"),
+                    ("📁 Моё дело", "my_case_open"),
+                    ("🏠 Главная", "nav_home"),
+                )
+                if code == PaymentCode.M2_CONSULTATION_PAYMENT
+                else one(
+                    ("💳 Оплаты", "payments_open"),
+                    ("📁 Моё дело", "my_case_open"),
+                    ("🏠 Главная", "nav_home"),
+                )
             ),
         )
         return
 
+    if code == PaymentCode.M2_CONSULTATION_PAYMENT:
+        text = (
+            f"💳 {payment.title}\n\nСумма: {money(payment.amount)}\n\n"
+            "Вопрос и документы сохранены. После подтверждения оплаты выбранный "
+            "слот станет окончательно вашим. Не используйте эту ссылку после выбора другого времени."
+        )
+    elif code == PaymentCode.M1_INITIAL_PAYMENT:
+        text = (
+            f"💳 {payment.title}\n\nСумма: {money(payment.amount)}\n\n"
+            "После подтверждения оплаты система откроет следующий этап — оформление доверенности."
+        )
+    else:
+        text = (
+            f"💳 {payment.title}\n\nСумма: {money(payment.amount)}\n\n"
+            "После подтверждения оплаты система откроет исполнительный этап."
+        )
     await _present_committed_callback(
         callback,
-        f"💳 {payment.title}\n\nСумма: {money(payment.amount)}\n\n"
-        "Вопрос и документы сохранены. После подтверждения оплаты выбранный "
-        "слот станет окончательно вашим. Не используйте эту ссылку после выбора другого времени.",
+        text,
         reply_markup=payment_keyboard(payment),
     )
 
@@ -341,6 +458,7 @@ async def fake(callback: CallbackQuery, db):
             "Оплата пока не подтверждена. Данные дела сохранены.",
             reply_markup=one(
                 ("🔄 Проверить оплату", f"pay_open:{payment.id}"),
+                ("💳 Все оплаты", "payments_open"),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
@@ -356,6 +474,7 @@ async def fake(callback: CallbackQuery, db):
                 ("📅 Выбрать новое время", "consult_booking_start"),
                 ("✉️ Написать команде", "message_create"),
                 ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
             ),
         )
         return
@@ -370,6 +489,21 @@ async def fake(callback: CallbackQuery, db):
                 ("📄 Документы", "documents_open"),
                 ("✉️ Задать вопрос команде", "message_create"),
                 ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    if payment.payment_code == PaymentCode.M1_SUCCESS_FEE:
+        await _present_committed_callback(
+            callback,
+            "✅ Финальный платёж подтверждён. Дело закрыто.\n\n"
+            "Итог, документы, платежи и история остаются доступны в архиве только для просмотра.",
+            reply_markup=one(
+                ("📁 Итог дела", "my_case_open"),
+                ("💳 Все оплаты", "payments_open"),
+                ("🕘 История", "case_history_open"),
+                ("🏠 Главная", "nav_home"),
             ),
         )
         return
@@ -378,6 +512,7 @@ async def fake(callback: CallbackQuery, db):
         callback,
         "✅ Оплата подтверждена. Следующий этап открыт автоматически.",
         reply_markup=one(
+            ("💳 Все оплаты", "payments_open"),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         ),
