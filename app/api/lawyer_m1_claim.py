@@ -19,6 +19,23 @@ def _snapshot(payload: dict | None) -> tuple[str | None, object | None, object |
     return comment, body.get("expected_status"), body.get("expected_updated_at")
 
 
+async def _assigned_snapshot_case(
+    db: AsyncSession,
+    *,
+    case_id: int,
+    lawyer_id: int,
+    expected_status: object | None,
+    expected_updated_at: object | None,
+):
+    case = await assigned_case(db, case_id, lawyer_id, for_update=True)
+    assert_case_snapshot(
+        case,
+        expected_status=expected_status,
+        expected_updated_at=expected_updated_at,
+    )
+    return case
+
+
 @router.post("/cases/{case_id}/claim/start")
 async def start_claim_preparation(
     case_id: int,
@@ -29,14 +46,10 @@ async def start_claim_preparation(
     actor = await require_lawyer_actor(db, x_admin_token)
     comment, expected_status, expected_updated_at = _snapshot(payload)
     try:
-        case = await assigned_case(
+        case = await _assigned_snapshot_case(
             db,
-            case_id,
-            actor.lawyer.id,
-            for_update=True,
-        )
-        assert_case_snapshot(
-            case,
+            case_id=case_id,
+            lawyer_id=actor.lawyer.id,
             expected_status=expected_status,
             expected_updated_at=expected_updated_at,
         )
@@ -96,14 +109,10 @@ async def mark_claim_sent(
             detail="Укажите способ отправки или реквизиты подтверждения — минимум 5 символов",
         )
     try:
-        case = await assigned_case(
+        case = await _assigned_snapshot_case(
             db,
-            case_id,
-            actor.lawyer.id,
-            for_update=True,
-        )
-        assert_case_snapshot(
-            case,
+            case_id=case_id,
+            lawyer_id=actor.lawyer.id,
             expected_status=expected_status,
             expected_updated_at=expected_updated_at,
         )
@@ -169,14 +178,10 @@ async def open_court_stage(
     if not comment or len(comment) < 5:
         raise HTTPException(status_code=400, detail="Укажите основание открытия судебного этапа")
     try:
-        case = await assigned_case(
+        case = await _assigned_snapshot_case(
             db,
-            case_id,
-            actor.lawyer.id,
-            for_update=True,
-        )
-        assert_case_snapshot(
-            case,
+            case_id=case_id,
+            lawyer_id=actor.lawyer.id,
             expected_status=expected_status,
             expected_updated_at=expected_updated_at,
         )
@@ -197,6 +202,66 @@ async def open_court_stage(
             case_id=case.id,
             payload={"case_number": case.case_number},
             dedupe_key=f"case:{case.id}:court-open:{source_version}",
+        )
+        await db.commit()
+        await db.refresh(case)
+    except HTTPException:
+        await db.rollback()
+        raise
+    except (ValueError, CaseSLAError) as error:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except Exception:
+        await db.rollback()
+        raise
+    return {
+        "ok": True,
+        "case_id": case.id,
+        "status": case.status,
+        "next_action": case.next_action,
+        "updated_at": case.updated_at.isoformat(),
+    }
+
+
+@router.post("/cases/{case_id}/court/payment/open")
+async def open_court_payment(
+    case_id: int,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    actor = await require_lawyer_actor(db, x_admin_token)
+    comment, expected_status, expected_updated_at = _snapshot(payload)
+    if not comment or len(comment) < 5:
+        raise HTTPException(
+            status_code=400,
+            detail="Укажите судебное событие или основание открытия второго платежа",
+        )
+    try:
+        case = await _assigned_snapshot_case(
+            db,
+            case_id=case_id,
+            lawyer_id=actor.lawyer.id,
+            expected_status=expected_status,
+            expected_updated_at=expected_updated_at,
+        )
+        source_version = case.updated_at.isoformat()
+        await M1ClaimService(db).open_court_payment(
+            case=case,
+            lawyer_id=actor.lawyer.id,
+            comment=comment,
+        )
+        await CaseSLAService(db).record_lawyer_activity(
+            case=case,
+            lawyer_id=actor.lawyer.id,
+            action="COURT_PAYMENT_OPENED",
+            comment=comment,
+        )
+        await NotificationEngine(db).emit(
+            event_code="COURT_PAYMENT_OPENED",
+            case_id=case.id,
+            payload={"case_number": case.case_number},
+            dedupe_key=f"case:{case.id}:court-payment:{source_version}",
         )
         await db.commit()
         await db.refresh(case)
