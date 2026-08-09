@@ -9,6 +9,9 @@ from aiogram.types import CallbackQuery
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.domain.cases.case_activity import CaseActivityService
+from app.domain.cases.client_case_scope import (
+    active_or_latest_completed_m1_case_for_user,
+)
 
 router = Router()
 
@@ -48,19 +51,24 @@ def _format_datetime(value: str | None) -> str:
     return parsed.strftime("%d.%m.%Y · %H:%M")
 
 
-def _format_timeline(page: dict[str, object]) -> str:
+def _format_timeline(page: dict[str, object], *, completed: bool = False) -> str:
     items = list(page.get("items") or [])
+    heading = "🕘 История завершённого дела" if completed else "🕘 История дела"
     if not items:
         return (
-            "🕘 История дела\n\n"
+            f"{heading}\n\n"
             "Пока нет клиентских событий. Технические операции и внутренние "
             "проверки здесь не показываются."
         )
 
     blocks = [
-        "🕘 История дела",
+        heading,
         "",
-        "Последние значимые изменения по вашему делу:",
+        (
+            "Дело завершено. Ниже сохранены значимые события в режиме просмотра:"
+            if completed
+            else "Последние значимые изменения по вашему делу:"
+        ),
     ]
     for item in items:
         title = str(item.get("title") or "").strip()
@@ -78,7 +86,12 @@ def _format_timeline(page: dict[str, object]) -> str:
     return "\n".join(blocks)
 
 
-def _history_buttons(page: dict[str, object], *, cursor: int | None):
+def _history_buttons(
+    page: dict[str, object],
+    *,
+    cursor: int | None,
+    completed: bool = False,
+):
     buttons: list[tuple[str, str]] = []
     next_before_id = page.get("next_before_id")
     if page.get("has_more") and next_before_id:
@@ -90,13 +103,22 @@ def _history_buttons(page: dict[str, object], *, cursor: int | None):
         )
     if cursor is not None:
         buttons.append(("⬆️ К последним событиям", "case_history_open"))
-    buttons.extend(
-        [
-            ("✉️ Задать вопрос по делу", "message_create"),
-            ("📁 Моё дело", "my_case_open"),
-            ("🏠 Главная", "nav_home"),
-        ]
-    )
+    if completed:
+        buttons.extend(
+            [
+                ("💳 Оплаты по делу", "payments_open"),
+                ("📁 Итог дела", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ]
+        )
+    else:
+        buttons.extend(
+            [
+                ("✉️ Задать вопрос по делу", "message_create"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ]
+        )
     return one(*buttons)
 
 
@@ -122,11 +144,15 @@ async def _render_history(
 ) -> None:
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
-    case = await ctx.case_service.get_active_case_for_user(user.id)
+    case, completed = await active_or_latest_completed_m1_case_for_user(
+        db,
+        case_service=ctx.case_service,
+        user_id=user.id,
+    )
     if not case:
         await _safe_edit(
             callback,
-            "🕘 История дела\n\nАктивного дела нет. Создайте обращение или вернитесь на главную.",
+            "🕘 История дела\n\nАктивного или завершённого дела нет. Создайте обращение или вернитесь на главную.",
             reply_markup=one(
                 ("🧮 Рассчитать неустойку", "calc_start"),
                 ("💬 Связаться с юристом", "contact_lawyer"),
@@ -149,23 +175,40 @@ async def _render_history(
             if cursor is not None
             else "case_history_open"
         )
+        error_buttons: list[tuple[str, str]] = [
+            ("🔄 Повторить", retry_callback),
+        ]
+        if completed:
+            error_buttons.extend(
+                [
+                    ("📁 Итог дела", "my_case_open"),
+                    ("🏠 Главная", "nav_home"),
+                ]
+            )
+        else:
+            error_buttons.extend(
+                [
+                    ("✉️ Задать вопрос по делу", "message_create"),
+                    ("📁 Моё дело", "my_case_open"),
+                    ("🏠 Главная", "nav_home"),
+                ]
+            )
         await _safe_edit(
             callback,
             "⚠️ Не удалось загрузить историю. Данные дела сохранены.\n\n"
-            "Повторите запрос или задайте вопрос юридической команде.",
-            reply_markup=one(
-                ("🔄 Повторить", retry_callback),
-                ("✉️ Задать вопрос по делу", "message_create"),
-                ("📁 Моё дело", "my_case_open"),
-                ("🏠 Главная", "nav_home"),
-            ),
+            "Повторите запрос или вернитесь к карточке дела.",
+            reply_markup=one(*error_buttons),
         )
         return
 
     await _safe_edit(
         callback,
-        _format_timeline(page),
-        reply_markup=_history_buttons(page, cursor=cursor),
+        _format_timeline(page, completed=completed),
+        reply_markup=_history_buttons(
+            page,
+            cursor=cursor,
+            completed=completed,
+        ),
     )
 
 
