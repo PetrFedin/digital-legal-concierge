@@ -45,6 +45,7 @@ TERMINAL_STATUSES = {
     ConsultationStatus.CLIENT_NO_SHOW,
     ConsultationStatus.LAWYER_NO_SHOW,
     ConsultationStatus.CANCELLED,
+    ConsultationStatus.RESCHEDULED,
     ConsultationStatus.CLOSED,
 }
 
