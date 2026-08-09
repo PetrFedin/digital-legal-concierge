@@ -150,10 +150,12 @@ async def _render_completed_m1_case(
         [
             "",
             f"Закрыто / обновлено: {format_updated_at(view.updated_at)}",
-            "История и платежи остаются доступны только для просмотра. Новое обращение создаётся отдельно.",
+            "Документы, история и платежи остаются доступны только для просмотра. Новое обращение создаётся отдельно.",
         ]
     )
-    buttons: list[tuple[str, str]] = []
+    buttons: list[tuple[str, str]] = [
+        ("📄 Документы дела", "documents_open"),
+    ]
     if not payments_disabled():
         buttons.append(("💳 Оплаты по делу", "payments_open"))
     buttons.extend(
