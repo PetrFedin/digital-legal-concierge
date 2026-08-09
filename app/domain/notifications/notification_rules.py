@@ -24,6 +24,14 @@ NOTIFICATION_RULES = {
         "recipients": ["client", "admin"],
         "template": "m1_case_transferred_to_m2",
     },
+    "M1_CLAIM_PREPARATION_STARTED": {
+        "recipients": ["client"],
+        "template": "m1_claim_preparation_started",
+    },
+    "M1_CLAIM_SENT": {
+        "recipients": ["client"],
+        "template": "m1_claim_sent",
+    },
     "CASE_SLA_FIRST_RESPONSE_OVERDUE": {
         "recipients": ["lawyer", "admin"],
         "template": "case_sla_first_response_overdue",
