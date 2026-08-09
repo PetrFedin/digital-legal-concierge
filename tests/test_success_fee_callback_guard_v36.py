@@ -18,12 +18,15 @@ def test_success_fee_callback_cannot_open_payment_before_actual_recovery():
     assert "зафиксировать фактическое получение денег" in source
 
 
-def test_success_fee_callback_recalculates_authoritative_fee_and_reuses_only_matching_active_payment():
+def test_success_fee_callback_uses_authoritative_quote_and_reuses_only_matching_active_payment():
     source = handler_source()
 
-    assert "amount = await service.estimate_success_fee_for_case(case.id)" in source
+    assert "quote = await service.success_fee_quote_for_case(case.id)" in source
     assert "payment_code=PaymentCode.M1_SUCCESS_FEE" in source
-    assert "amount=amount" in source
+    assert "amount=quote.amount" in source
+    assert "Фактически взыскано" in source
+    assert "quote.recovered_amount" in source
+    assert "quote.percent" in source
     assert "select(Payment)" not in source
 
 
