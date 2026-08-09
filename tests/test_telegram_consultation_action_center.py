@@ -64,6 +64,7 @@ def test_terminal_status_recovers_to_result_screen():
         ConsultationStatus.CLIENT_NO_SHOW,
         ConsultationStatus.LAWYER_NO_SHOW,
         ConsultationStatus.CANCELLED,
+        ConsultationStatus.RESCHEDULED,
         ConsultationStatus.CLOSED,
     ]:
         primary, next_step = consultation_primary_action(
