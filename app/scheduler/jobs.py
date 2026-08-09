@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.domain.cases.m1_claim_service import M1ClaimService
 from app.domain.cases.sla_service import CaseSLAService
 from app.domain.consultations.slot_service import SlotService
 from app.domain.notifications.notification_engine import NotificationEngine
@@ -238,21 +239,32 @@ class SchedulerJobs:
         }
 
     async def check_claim_waiting_30_days(self) -> int:
-        deadline = datetime.now(timezone.utc) - timedelta(days=30)
+        now = datetime.now(timezone.utc)
         cases = (
             await self.db.execute(
                 select(Case)
                 .where(Case.status == "M1_WAITING_30_DAYS")
-                .where(Case.updated_at < deadline)
+                .order_by(Case.id.asc())
             )
         ).scalars().all()
 
+        claim_service = M1ClaimService(self.db)
         count = 0
         for case in cases:
+            eligibility = await claim_service.court_eligibility(case=case, now=now)
+            if not eligibility.eligible:
+                continue
             created = await self.notifications.emit(
                 event_code="CLAIM_30_DAYS_EXPIRED",
                 case_id=case.id,
-                payload={"case_number": case.case_number},
+                payload={
+                    "case_number": case.case_number,
+                    "due_at": (
+                        eligibility.due_at.isoformat()
+                        if eligibility.due_at
+                        else None
+                    ),
+                },
                 dedupe_key=f"case:{case.id}:claim-30-days-expired",
             )
             if created:
