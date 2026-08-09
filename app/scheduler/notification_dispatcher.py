@@ -30,17 +30,17 @@ class NotificationDispatcher:
         self.batch_size = max(1, int(batch_size))
         self._task: asyncio.Task | None = None
         self._stop_event: asyncio.Event | None = None
-        self.last_result: dict[str, int] | None = None
+        self.last_sent_count: int | None = None
         self.last_error_type: str | None = None
 
     @property
     def is_running(self) -> bool:
         return self._task is not None and not self._task.done()
 
-    async def run_once(self) -> dict[str, int]:
+    async def run_once(self) -> int:
         async with AsyncSessionLocal() as db:
             try:
-                result = await NotificationSender(db).send_pending(
+                sent_count = await NotificationSender(db).send_pending(
                     limit=self.batch_size
                 )
                 await db.commit()
@@ -52,9 +52,9 @@ class NotificationDispatcher:
                 self.last_error_type = type(error).__name__
                 logger.exception("notification_dispatch_cycle_failed")
                 raise
-        self.last_result = dict(result)
+        self.last_sent_count = int(sent_count)
         self.last_error_type = None
-        return self.last_result
+        return self.last_sent_count
 
     async def _run_loop(self) -> None:
         stop_event = self._stop_event
