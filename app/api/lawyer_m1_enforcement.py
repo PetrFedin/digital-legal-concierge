@@ -10,7 +10,7 @@ from app.domain.cases.sla_service import CaseSLAError, CaseSLAService
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.security.lawyer_access import require_lawyer_actor
 
-router = APIRouter(prefix="/lawyer", tags=["lawyer-m1-enforcement"])
+router = APIRouter(tags=["lawyer-m1-enforcement"])
 
 
 @router.post("/cases/{case_id}/enforcement/money-received")
@@ -24,12 +24,7 @@ async def record_money_received(
     amount = payload.get("amount")
     comment = str(payload.get("comment") or "").strip()
     try:
-        case = await assigned_case(
-            db,
-            case_id,
-            actor.lawyer.id,
-            for_update=True,
-        )
+        case = await assigned_case(db, case_id, actor.lawyer.id, for_update=True)
         assert_case_snapshot(
             case,
             expected_status=payload.get("expected_status"),
