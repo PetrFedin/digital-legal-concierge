@@ -18,6 +18,15 @@ ACTIVE_PAYMENT_STATUSES = {
     PaymentStatus.PENDING,
     PaymentStatus.WAITING_CONFIRMATION,
 }
+VISIBLE_PAYMENT_STATUSES = {
+    PaymentStatus.PENDING,
+    PaymentStatus.WAITING_CONFIRMATION,
+    PaymentStatus.PAID,
+    PaymentStatus.PAID_REVIEW,
+    PaymentStatus.FAILED,
+    PaymentStatus.CANCELLED,
+    PaymentStatus.EXPIRED,
+}
 SUCCESS_FEE_PHASE_STATUSES = {
     CaseStatus.M1_MONEY_RECEIVED,
     CaseStatus.M1_WAITING_SUCCESS_FEE,
@@ -36,6 +45,7 @@ def _payment_payload(payment: Payment | None) -> dict[str, object] | None:
         return None
     return {
         "id": payment.id,
+        "payment_code": payment.payment_code,
         "amount": str(_money(payment.amount)),
         "currency": payment.currency,
         "status": payment.status,
@@ -247,19 +257,33 @@ class M1FinancialSummaryService:
 
         recovery_complete = recovered is not None
         fee_complete = expected_fee is not None
-        payment_complete = bool(paid_payments)
+        payment_created = bool(
+            latest_payment is not None and latest_payment.status in VISIBLE_PAYMENT_STATUSES
+        )
+        payment_confirmed = bool(paid_payments)
         closed_complete = status == CaseStatus.M1_CLOSED
+        payment_failed = bool(
+            latest_payment is not None
+            and latest_payment.status
+            in {
+                PaymentStatus.FAILED,
+                PaymentStatus.CANCELLED,
+                PaymentStatus.EXPIRED,
+            }
+        )
 
         steps = [
             _step(
                 "recovery",
                 "Фактически взыскано",
-                "complete" if recovery_complete else ("blocked" if health == "critical" and in_fee_phase else "current"),
+                "complete"
+                if recovery_complete
+                else ("blocked" if health == "critical" and in_fee_phase else "current"),
                 f"{recovered} ₽" if recovered is not None else "Сумма ещё не зафиксирована",
             ),
             _step(
                 "fee",
-                "Success fee рассчитан",
+                "Success fee",
                 "complete" if fee_complete else ("blocked" if recovery_complete else "pending"),
                 (
                     f"{expected_fee} ₽ · ставка {percent}%"
@@ -268,9 +292,17 @@ class M1FinancialSummaryService:
                 ),
             ),
             _step(
-                "payment",
-                "Финальный платёж",
-                "complete" if payment_complete else ("current" if payments else "pending"),
+                "payment_created",
+                "Платёж создан",
+                (
+                    "complete"
+                    if payment_created and not payment_failed
+                    else "blocked"
+                    if payment_failed
+                    else "current"
+                    if fee_complete
+                    else "pending"
+                ),
                 (
                     f"{_money(latest_payment.amount)} ₽ · {latest_payment.status}"
                     if latest_payment is not None
@@ -278,9 +310,25 @@ class M1FinancialSummaryService:
                 ),
             ),
             _step(
+                "payment_confirmed",
+                "Оплата подтверждена",
+                "complete"
+                if payment_confirmed
+                else "blocked"
+                if health == "critical" and payment_created
+                else "current"
+                if active_payments
+                else "pending",
+                (
+                    "Провайдер подтвердил финальный платёж"
+                    if payment_confirmed
+                    else "Ожидается подтверждение успешной оплаты"
+                ),
+            ),
+            _step(
                 "closed",
                 "Дело закрыто",
-                "complete" if closed_complete else ("current" if payment_complete else "pending"),
+                "complete" if closed_complete else ("current" if payment_confirmed else "pending"),
                 "M1 завершён" if closed_complete else "Закроется автоматически после подтверждённой оплаты",
             ),
         ]
