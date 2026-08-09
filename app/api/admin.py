@@ -5,6 +5,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.admin.admin_dashboard import AdminDashboardService
 from app.config import settings
 from app.db.session import get_db
+from app.domain.cases.admin_manual_status_policy import (
+    assert_manual_status_change_allowed,
+)
 from app.domain.cases.assignment_service import CaseAssignmentService
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
@@ -437,6 +440,10 @@ async def manual_status(
                 status_code=409,
                 detail="Статус дела изменился после загрузки экрана. Обновите карточку",
             )
+        try:
+            assert_manual_status_change_allowed(case.status, next_status)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
         await CaseService(db).change_status(
             case=case,
             next_status=next_status,
