@@ -131,6 +131,15 @@ def test_all_approved_documents_return_to_case_next_action():
     assert buttons == [("📁 К следующему шагу дела", "my_case_open")]
 
 
+def test_unknown_future_case_status_does_not_crash_document_action_center():
+    case = SimpleNamespace(route="M2", status="FUTURE_CASE_STATUS")
+
+    text, buttons = _next_action(case, [])
+
+    assert "Загрузить ДДУ" in text
+    assert buttons == [("➕ Загрузить документ", "documents_upload_open")]
+
+
 class _FakeDb:
     def __init__(self):
         self.flushed = False
