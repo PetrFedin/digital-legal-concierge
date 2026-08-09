@@ -18,16 +18,25 @@ from app.models.document import Document
 logger = logging.getLogger(__name__)
 router = Router()
 
+_REQUIRED_STATUS = "REQUIRED"
 _REPLACEMENT_STATUSES = {"REJECTED", "NEEDS_REUPLOAD"}
 _REVIEW_STATUSES = {"ON_REVIEW"}
 _APPROVED_STATUSES = {"APPROVED", "ACCEPTED", "VERIFIED"}
 _ARCHIVED_STATUS = "ARCHIVED"
+_KNOWN_ACTIVE_STATUSES = {
+    _REQUIRED_STATUS,
+    "UPLOADED",
+    *_REPLACEMENT_STATUSES,
+    *_REVIEW_STATUSES,
+    *_APPROVED_STATUSES,
+}
 _M2_CAN_SKIP_STATUSES = {
     CaseStatus.M2_DESCRIPTION_PENDING,
     CaseStatus.M2_DOCUMENTS_OPTIONAL,
     CaseStatus.M2_SLOT_PENDING,
 }
 _STATUS_LABELS = {
+    "REQUIRED": "требуется загрузить",
     "UPLOADED": "готов к передаче юристу",
     "ON_REVIEW": "проверяет юрист",
     "APPROVED": "принят юристом",
@@ -64,6 +73,7 @@ def _active(documents: list[Document]) -> list[Document]:
 
 def _counts(documents: list[Document]) -> dict[str, int]:
     return {
+        "required": sum(_status(item) == _REQUIRED_STATUS for item in documents),
         "new": sum(_status(item) == "UPLOADED" for item in documents),
         "review": sum(_status(item) in _REVIEW_STATUSES for item in documents),
         "approved": sum(_status(item) in _APPROVED_STATUSES for item in documents),
@@ -74,9 +84,13 @@ def _counts(documents: list[Document]) -> dict[str, int]:
 
 
 def _document_line(document: Document) -> str:
-    label = _STATUS_LABELS.get(_status(document), "статус уточняется")
-    line = f"• {document.title}, версия {document.version} — {label}"
-    if _status(document) in _REPLACEMENT_STATUSES and document.lawyer_comment:
+    status = _status(document)
+    label = _STATUS_LABELS.get(status, "статус уточняется")
+    if status == _REQUIRED_STATUS:
+        line = f"• {document.title} — {label}"
+    else:
+        line = f"• {document.title}, версия {document.version} — {label}"
+    if status in _REPLACEMENT_STATUSES and document.lawyer_comment:
         line += f"\n  Что исправить: {_short(document.lawyer_comment)}"
     return line
 
@@ -158,6 +172,24 @@ def _next_action(case, documents: list[Document]):
             ],
         )
 
+    unknown = [
+        item for item in documents if _status(item) not in _KNOWN_ACTIVE_STATUSES
+    ]
+    if unknown:
+        document = unknown[0]
+        return (
+            f"Статус «{document.title}» изменился и пока не поддерживается ботом. Не загружайте дубликат: откройте дело, чтобы увидеть актуальный обязательный шаг.",
+            [("📁 К актуальному шагу дела", "my_case_open")],
+        )
+
+    required = [item for item in documents if _status(item) == _REQUIRED_STATUS]
+    if required:
+        document = required[0]
+        return (
+            f"Загрузить обязательный документ «{document.title}».",
+            [("➕ Загрузить документ", "documents_upload_open")],
+        )
+
     if counts["new"]:
         suffix = "файл" if counts["new"] == 1 else "новых файла"
         return (
@@ -228,9 +260,9 @@ async def _render_home(callback: CallbackQuery, state: FSMContext, db) -> None:
     next_step, primary = _next_action(case, documents)
 
     summary = (
-        f"Актуальных: {len(documents)} · к передаче: {counts['new']} · "
-        f"на проверке: {counts['review']} · принято: {counts['approved']} · "
-        f"требуют замены: {counts['replacement']}"
+        f"Актуальных: {len(documents)} · требуется: {counts['required']} · "
+        f"к передаче: {counts['new']} · на проверке: {counts['review']} · "
+        f"принято: {counts['approved']} · требуют замены: {counts['replacement']}"
     )
     preview = "\n".join(_document_line(item) for item in documents[:5])
     if not preview:
