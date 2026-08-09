@@ -139,7 +139,7 @@ async def build_document_review_case_context(
         primary_action = "review_document"
         primary_label = "Проверить документ"
         primary_note = f"Ожидают решения: {on_review}"
-    elif replacement or case_status == CaseStatus.M1_DOCS_REQUESTED:
+    elif replacement:
         primary_action = "wait_client_reupload"
         primary_label = "Ожидать новую версию от клиента"
         primary_note = "Клиент уже получил замечание и действие на замену файла."
@@ -147,8 +147,12 @@ async def build_document_review_case_context(
         primary_action = "wait_client_submit"
         primary_label = "Ожидать передачу файла клиентом"
         primary_note = (
-            "Файл загружен, но ещё не передан в юридическую очередь проверки."
+            "Новая версия уже загружена, но ещё не передана в юридическую очередь проверки."
         )
+    elif case_status == CaseStatus.M1_DOCS_REQUESTED:
+        primary_action = "wait_client_reupload"
+        primary_label = "Ожидать новую версию от клиента"
+        primary_note = "Запрос документов уже отправлен клиенту."
     elif can_accept:
         primary_action = "accept_m1_case"
         primary_label = "Принять дело и открыть договор"
