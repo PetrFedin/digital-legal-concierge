@@ -13,6 +13,7 @@ def test_lawyer_workspaces_and_m1_claim_routes_are_registered_in_create_app():
     assert routes["/lawyer/cases/{case_id}/claim/start"] == {"POST"}
     assert routes["/lawyer/cases/{case_id}/claim/sent"] == {"POST"}
     assert routes["/lawyer/cases/{case_id}/court/open"] == {"POST"}
+    assert routes["/lawyer/cases/{case_id}/court/payment/open"] == {"POST"}
 
 
 def test_lawyer_routes_are_registered_once_without_parallel_demo_endpoints():
@@ -27,5 +28,6 @@ def test_lawyer_routes_are_registered_once_without_parallel_demo_endpoints():
         "/lawyer/cases/{case_id}/claim/start",
         "/lawyer/cases/{case_id}/claim/sent",
         "/lawyer/cases/{case_id}/court/open",
+        "/lawyer/cases/{case_id}/court/payment/open",
     }:
         assert paths.count(path) == 1
