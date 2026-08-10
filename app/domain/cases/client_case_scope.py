@@ -16,6 +16,16 @@ CLIENT_COMPLETED_CASE_STATUSES = frozenset(
 )
 
 
+def _completed_ordering():
+    """Use the real close time first; null close dates must never win on PostgreSQL."""
+
+    return (
+        Case.closed_at.desc().nullslast(),
+        Case.updated_at.desc().nullslast(),
+        Case.id.desc(),
+    )
+
+
 async def latest_completed_case_for_user(
     db: AsyncSession,
     *,
@@ -27,7 +37,7 @@ async def latest_completed_case_for_user(
         select(Case)
         .where(Case.client_id == user_id)
         .where(Case.status.in_(CLIENT_COMPLETED_CASE_STATUSES))
-        .order_by(Case.closed_at.desc(), Case.updated_at.desc(), Case.id.desc())
+        .order_by(*_completed_ordering())
         .limit(1)
     )
     return result.scalars().first()
@@ -59,7 +69,7 @@ async def latest_completed_strict_m1_case_for_user(
         select(Case)
         .where(Case.client_id == user_id)
         .where(Case.status == CaseStatus.M1_CLOSED)
-        .order_by(Case.closed_at.desc(), Case.updated_at.desc(), Case.id.desc())
+        .order_by(*_completed_ordering())
         .limit(1)
     )
     return result.scalars().first()
