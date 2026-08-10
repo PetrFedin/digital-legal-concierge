@@ -126,15 +126,19 @@ def test_admin_case_detail_has_exact_contextual_review_and_refund_navigation():
     assert "Получено — требуется сверка" in source
     assert "Возврат обрабатывается" in source
     assert "Открыть сверку этого платежа" in source
-    assert 'href="/admin/payment-reviews/ui?payment_id=${x.id}"' in source
+    assert (
+        'href="/admin/payment-reviews/ui?payment_id=${x.id}&case_id=${caseId}"'
+        in source
+    )
     assert "Открыть возврат этого платежа" in source
-    assert 'href="/admin/refunds/ui?payment_id=${x.id}"' in source
+    assert 'href="/admin/refunds/ui?payment_id=${x.id}&case_id=${caseId}"' in source
     assert ".item.payment-review" in source
     assert ".item.payment-refund" in source
 
 
 def test_workdesk_visually_prioritizes_and_preserves_financial_primary_action():
     source = Path("app/api/workdesk_ui.py").read_text(encoding="utf-8")
+    server_source = Path("app/api/workdesk.py").read_text(encoding="utf-8")
     assert "code==='overdue'||code==='payment_review'" in source
     assert "code==='unassigned'||code==='document_draft'||code==='document_legacy'||code==='refund'" in source
     assert "financial-review" in source
@@ -142,11 +146,36 @@ def test_workdesk_visually_prioritizes_and_preserves_financial_primary_action():
     assert "function attentionClass(x)" in source
     assert "function currentPrimary(id,d)" in source
     assert "function financialAttention(d)" in source
-    assert "/admin/payment-reviews/ui?payment_id=${review.id}" in source
-    assert "/admin/refunds/ui?payment_id=${refund.id}" in source
+    assert "/admin/payment-reviews/ui?payment_id=${review.id}&case_id=${id}" in source
+    assert "/admin/refunds/ui?payment_id=${refund.id}&case_id=${id}" in source
+    assert "/admin/payment-reviews/ui?payment_id=${x.id}&case_id=${caseContext}" in source
+    assert "/admin/refunds/ui?payment_id=${x.id}&case_id=${caseContext}" in source
+    assert 'f"/admin/payment-reviews/ui?payment_id={payment_id}&case_id={case.id}"' in server_source
+    assert 'f"/admin/refunds/ui?payment_id={payment_id}&case_id={case.id}"' in server_source
     assert "Финансы требуют действия" in source
     assert "Другие разделы дела" in source
     assert "primary(x)" in source
+
+
+def test_refund_center_honors_exact_payment_and_has_terminal_return_path():
+    source = Path("app/api/refund_center.py").read_text(encoding="utf-8")
+    assert "requestedPaymentId" in source
+    assert "requestedCaseId" in source
+    assert "function visibleRows(rows)" in source
+    assert "terminalCaseId" in source
+    assert "больше не требует обработки возврата" in source
+    assert "Вернуться в дело" in source
+    assert '"case_id": payment.case_id' in source
+
+
+def test_payment_review_center_has_terminal_return_to_source_case():
+    source = Path("app/api/payment_review_center.py").read_text(encoding="utf-8")
+    assert "requestedPaymentId" in source
+    assert "requestedCaseId" in source
+    assert "terminalCaseId" in source
+    assert "больше не требует сверки" in source
+    assert "Вернуться в дело" in source
+    assert '"case_id": payment.case_id' in source
 
 
 def test_payment_notifications_do_not_claim_booking_was_cancelled_by_refund():
