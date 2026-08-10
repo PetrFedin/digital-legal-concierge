@@ -7,6 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.domain.consultations.slot_service import SlotService, SlotUnavailableError
+from app.domain.payments.orphan_payment_review_service import (
+    OrphanPaymentReviewResolutionError,
+    OrphanPaymentReviewService,
+)
 from app.domain.payments.payment_review_service import (
     PaymentReviewResolutionError,
     PaymentReviewService,
@@ -114,7 +118,14 @@ def recommended_action(
     *,
     origin_status: str | None,
     requires_selection: bool,
+    orphan_refund_allowed: bool = False,
 ) -> str:
+    if orphan_refund_allowed:
+        return (
+            "Привязка платежа указывает на отсутствующую консультацию. "
+            "Не восстанавливайте её вручную: безопасно направьте только этот платёж на возврат. "
+            "Текущее дело и существующие записи не изменятся."
+        )
     if requires_selection:
         return (
             "Сначала сопоставьте старый платёж с нужной консультацией по истории дела. "
@@ -241,7 +252,15 @@ async def list_payment_reviews(
         requires_selection = bool(
             linked_consultation_id is None and len(candidates) > 1
         )
+        orphan_refund_allowed = bool(
+            case
+            and linked_consultation_id is not None
+            and candidate is None
+            and context_source == "broken_reservation_key"
+        )
         allowed_actions = candidate.get("allowed_actions", []) if candidate else []
+        if orphan_refund_allowed:
+            allowed_actions = ["refund_orphan"]
 
         result.append(
             {
@@ -262,6 +281,7 @@ async def list_payment_reviews(
                 "review_created_at": review["review_created_at"],
                 "context_source": context_source,
                 "requires_consultation_selection": requires_selection,
+                "orphan_refund_allowed": orphan_refund_allowed,
                 "consultation_id": candidate.get("id") if candidate else None,
                 "consultation_status": candidate.get("status") if candidate else None,
                 "current_slot_id": candidate.get("slot_id") if candidate else None,
@@ -275,6 +295,7 @@ async def list_payment_reviews(
                     candidate,
                     origin_status=review["origin_status"],
                     requires_selection=requires_selection,
+                    orphan_refund_allowed=orphan_refund_allowed,
                 ),
                 "case_detail_url": (
                     f"/admin/cases/{case.id}/ui" if case else None
@@ -329,20 +350,30 @@ async def resolve_payment_review(
     x_admin_token: str | None = Header(default=None),
 ):
     actor = require_admin(x_admin_token)
+    decision = str(payload.get("decision") or "").strip().lower()
+    consultation = None
     try:
-        payment, consultation = await PaymentReviewService(db).resolve(
-            payment_id=payment_id,
-            decision=payload.get("decision"),
-            slot_id=payload.get("slot_id"),
-            consultation_id=payload.get("consultation_id"),
-            actor_id=actor_id_from_token(actor),
-            comment=payload.get("comment") or "",
-        )
+        if decision == "refund_orphan":
+            payment = await OrphanPaymentReviewService(db).route_to_refund(
+                payment_id=payment_id,
+                actor_id=actor_id_from_token(actor),
+                comment=payload.get("comment") or "",
+            )
+        else:
+            payment, consultation = await PaymentReviewService(db).resolve(
+                payment_id=payment_id,
+                decision=decision,
+                slot_id=payload.get("slot_id"),
+                consultation_id=payload.get("consultation_id"),
+                actor_id=actor_id_from_token(actor),
+                comment=payload.get("comment") or "",
+            )
         await db.commit()
     except LookupError as error:
         await db.rollback()
         raise HTTPException(status_code=404, detail=str(error)) from error
     except (
+        OrphanPaymentReviewResolutionError,
         PaymentReviewResolutionError,
         SlotUnavailableError,
         ValueError,
@@ -357,9 +388,9 @@ async def resolve_payment_review(
         "ok": True,
         "payment_id": payment.id,
         "payment_status": payment.status,
-        "consultation_id": consultation.id,
-        "consultation_status": consultation.status,
-        "slot_id": consultation.slot_id,
+        "consultation_id": consultation.id if consultation else None,
+        "consultation_status": consultation.status if consultation else None,
+        "slot_id": consultation.slot_id if consultation else None,
     }
 
 
@@ -395,15 +426,15 @@ function formatDate(v){if(!v)return '—';return new Date(v).toLocaleString('ru-
 function slotOptions(){return '<option value="">Выберите свободный слот</option>'+slots.map(s=>`<option value="${s.id}">${esc(formatDate(s.starts_at))} — ${esc(s.lawyer_name)}</option>`).join('')}
 function contextOptions(x){return '<option value="">Выберите консультацию после сверки</option>'+(x.consultation_candidates||[]).map(c=>`<option value="${c.id}">#${c.id} · ${esc(c.status)} · ${esc(formatDate(c.scheduled_at))}</option>`).join('')}
 function selectedCandidate(x){if(!x.requires_consultation_selection)return (x.consultation_candidates||[]).find(c=>Number(c.id)===Number(x.consultation_id))||null;const el=document.getElementById('context_'+x.payment_id);const id=Number(el?.value||0);return (x.consultation_candidates||[]).find(c=>Number(c.id)===id)||null}
-function actionButtons(x,c){if(!c)return '<div class="muted">Выберите консультацию — до этого действия заблокированы.</div>';const actions=c.allowed_actions||[];let html='';if(actions.includes('confirm_existing'))html+=`<button class="green" data-payment-id="${x.payment_id}" onclick="resolveReview(${x.payment_id},'confirm_existing',this)">Подтвердить связь с текущей бронью</button>`;if(actions.includes('assign_slot'))html+=`<select data-payment-id="${x.payment_id}" id="slot_${x.payment_id}">${slotOptions()}</select><button data-payment-id="${x.payment_id}" onclick="resolveReview(${x.payment_id},'assign_slot',this)">Назначить выбранный слот без второй оплаты</button>`;if(actions.includes('refund_pending')){const label=c.existing_booking_valid?'Вернуть этот платёж, запись сохранить':'Направить платёж на возврат';html+=`<button class="red" data-payment-id="${x.payment_id}" onclick="resolveReview(${x.payment_id},'refund_pending',this)">${label}</button>`}return html||'<div class="muted">Для выбранного контекста автоматических действий нет. Откройте карточку дела и сверку истории.</div>'}
+function actionButtons(x,c){const rowActions=x.allowed_actions||[];if(!c){if(rowActions.includes('refund_orphan'))return `<button class="red" data-payment-id="${x.payment_id}" onclick="resolveReview(${x.payment_id},'refund_orphan',this)">Вернуть платёж без изменения дела</button>`;return '<div class="muted">Выберите консультацию — до этого действия заблокированы.</div>'}const actions=c.allowed_actions||[];let html='';if(actions.includes('confirm_existing'))html+=`<button class="green" data-payment-id="${x.payment_id}" onclick="resolveReview(${x.payment_id},'confirm_existing',this)">Подтвердить связь с текущей бронью</button>`;if(actions.includes('assign_slot'))html+=`<select data-payment-id="${x.payment_id}" id="slot_${x.payment_id}">${slotOptions()}</select><button data-payment-id="${x.payment_id}" onclick="resolveReview(${x.payment_id},'assign_slot',this)">Назначить выбранный слот без второй оплаты</button>`;if(actions.includes('refund_pending')){const label=c.existing_booking_valid?'Вернуть этот платёж, запись сохранить':'Направить платёж на возврат';html+=`<button class="red" data-payment-id="${x.payment_id}" onclick="resolveReview(${x.payment_id},'refund_pending',this)">${label}</button>`}return html||'<div class="muted">Для выбранного контекста автоматических действий нет. Откройте карточку дела и сверку истории.</div>'}
 function renderActions(id){const x=rowsById.get(Number(id));if(!x)return;const c=selectedCandidate(x);document.getElementById('actions_'+id).innerHTML=actionButtons(x,c)}
-function reviewCard(x){const selection=x.requires_consultation_selection?`<select id="context_${x.payment_id}" onchange="renderActions(${x.payment_id})">${contextOptions(x)}</select>`:`<div><b>Консультация #${esc(x.consultation_id||'—')}</b> · ${esc(x.consultation_status||'контекст не найден')}<div class="muted">Слот ${esc(x.current_slot_id||'—')} · ${esc(formatDate(x.scheduled_at))}</div></div>`;return `<article class="review"><div class="review-head"><div><h2>Платёж #${x.payment_id} · ${x.amount.toLocaleString('ru-RU')} ${esc(x.currency)}</h2><div class="muted">Дело ${esc(x.case_number||x.case_id)} · ${esc(x.client_name||'Клиент')} · TG ${esc(x.telegram_id||'—')}</div></div><span class="badge">Требуется сверка</span></div><div class="grid"><div class="cell"><span>Провайдер</span>${esc(x.provider||'—')}<div class="muted">${esc(x.provider_payment_id||'')}</div></div><div class="cell"><span>Исходный статус ссылки</span>${esc(x.origin_status||'не сохранён')}</div><div class="cell"><span>Контекст</span>${esc(x.context_source)}</div></div><div class="reason"><b>Почему автоматика остановилась</b><br>${esc(x.reason||'Причина не сохранена; требуется сверка истории.')}<div class="muted">reservation: ${esc(x.reservation_key||'нет')}</div></div><div class="next"><b>Что делать</b><br>${esc(x.recommended_action)}</div><div>${selection}</div><div class="actions" id="actions_${x.payment_id}"></div><div style="margin-top:10px">${x.case_detail_url?`<a class="button gray" href="${esc(x.case_detail_url)}">Открыть карточку дела</a>`:''}</div></article>`}
+function reviewCard(x){const selection=x.requires_consultation_selection?`<select id="context_${x.payment_id}" onchange="renderActions(${x.payment_id})">${contextOptions(x)}</select>`:(x.orphan_refund_allowed?'<div class="bad"><b>Связанная консультация отсутствует.</b> Восстановление или подмена другой консультацией заблокированы.</div>':`<div><b>Консультация #${esc(x.consultation_id||'—')}</b> · ${esc(x.consultation_status||'контекст не найден')}<div class="muted">Слот ${esc(x.current_slot_id||'—')} · ${esc(formatDate(x.scheduled_at))}</div></div>`);return `<article class="review"><div class="review-head"><div><h2>Платёж #${x.payment_id} · ${x.amount.toLocaleString('ru-RU')} ${esc(x.currency)}</h2><div class="muted">Дело ${esc(x.case_number||x.case_id)} · ${esc(x.client_name||'Клиент')} · TG ${esc(x.telegram_id||'—')}</div></div><span class="badge">Требуется сверка</span></div><div class="grid"><div class="cell"><span>Провайдер</span>${esc(x.provider||'—')}<div class="muted">${esc(x.provider_payment_id||'')}</div></div><div class="cell"><span>Исходный статус ссылки</span>${esc(x.origin_status||'не сохранён')}</div><div class="cell"><span>Контекст</span>${esc(x.context_source)}</div></div><div class="reason"><b>Почему автоматика остановилась</b><br>${esc(x.reason||'Причина не сохранена; требуется сверка истории.')}<div class="muted">reservation: ${esc(x.reservation_key||'нет')}</div></div><div class="next"><b>Что делать</b><br>${esc(x.recommended_action)}</div><div>${selection}</div><div class="actions" id="actions_${x.payment_id}"></div><div style="margin-top:10px">${x.case_detail_url?`<a class="button gray" href="${esc(x.case_detail_url)}">Открыть карточку дела</a>`:''}</div></article>`}
 async function boot(){const r=await fetch('/auth/session',{credentials:'same-origin',cache:'no-store'});if(!r.ok){location.href='/login';return}const s=await r.json();token=s.api_token;try{await load()}catch(e){feedback(e.message,'bad')}}
 async function load(){const data=await Promise.all([api('/admin/payment-reviews'),api('/admin/payment-reviews/slots')]);const rows=data[0];slots=data[1];rowsById=new Map(rows.map(x=>[Number(x.payment_id),x]));content.innerHTML=rows.length?rows.map(reviewCard).join(''):'<div class="empty">Платежей, требующих сверки, нет.</div>';rows.forEach(x=>renderActions(x.payment_id))}
 function paymentControls(id){return Array.from(document.querySelectorAll(`[data-payment-id="${id}"]`))}
 async function withPaymentAction(id,button,work){if(pendingPayments.has(id))return;pendingPayments.add(id);const controls=paymentControls(id),labels=new Map(controls.filter(x=>x.tagName==='BUTTON').map(x=>[x,x.textContent]));controls.forEach(x=>{x.disabled=true;x.setAttribute('aria-busy','true')});if(button)button.textContent='Выполняется…';try{return await work()}finally{pendingPayments.delete(id);controls.forEach(x=>{x.disabled=false;x.removeAttribute('aria-busy')});labels.forEach((label,x)=>x.textContent=label)}}
-function decisionLabel(decision){return decision==='confirm_existing'?'подтвердить связь с бронью':decision==='assign_slot'?'назначить новый слот без второй оплаты':'направить платёж на возврат'}
-async function resolveReview(id,decision,button){const x=rowsById.get(Number(id)),candidate=selectedCandidate(x);if(!candidate){feedback('Сначала выберите консультацию после сверки истории','bad');return}let slotId=null;if(decision==='assign_slot'){slotId=Number(document.getElementById('slot_'+id)?.value||0);if(!slotId){feedback('Выберите свободный слот','bad');return}}const question=decision==='refund_pending'?'Укажите основание возврата:':'Укажите результат сверки:';const comment=prompt(question);if(!comment)return;if(comment.trim().length<5){feedback('Комментарий должен содержать не менее 5 символов','bad');return}let warning=`Подтвердите: ${decisionLabel(decision)} по платежу #${id}.`;if(decision==='refund_pending'&&candidate.existing_booking_valid)warning+=' Подтверждённая консультация останется без изменений.';if(!confirm(warning+' Действие будет записано в историю.'))return;return withPaymentAction(id,button,async()=>{try{const result=await api('/admin/payment-reviews/'+id+'/resolve',{method:'POST',body:JSON.stringify({decision,slot_id:slotId,consultation_id:candidate.id,comment})});feedback(`Решение по платежу #${result.payment_id} сохранено. Новый статус оплаты: ${result.payment_status}`,'ok');try{await load()}catch(e){feedback(`Решение сохранено, но список не обновился: ${e.message}`,'warn')}}catch(e){feedback(`Решение не сохранено: ${e.message}`,'bad')}})}
+function decisionLabel(decision){return decision==='confirm_existing'?'подтвердить связь с бронью':decision==='assign_slot'?'назначить новый слот без второй оплаты':decision==='refund_orphan'?'вернуть orphan-платёж без изменения дела':'направить платёж на возврат'}
+async function resolveReview(id,decision,button){const x=rowsById.get(Number(id)),candidate=selectedCandidate(x),orphan=decision==='refund_orphan';if(!candidate&&!orphan){feedback('Сначала выберите консультацию после сверки истории','bad');return}let slotId=null;if(decision==='assign_slot'){slotId=Number(document.getElementById('slot_'+id)?.value||0);if(!slotId){feedback('Выберите свободный слот','bad');return}}const question=decision==='refund_pending'||orphan?'Укажите основание возврата:':'Укажите результат сверки:';const comment=prompt(question);if(!comment)return;if(comment.trim().length<5){feedback('Комментарий должен содержать не менее 5 символов','bad');return}let warning=`Подтвердите: ${decisionLabel(decision)} по платежу #${id}.`;if(decision==='refund_pending'&&candidate?.existing_booking_valid)warning+=' Подтверждённая консультация останется без изменений.';if(orphan)warning+=' Дело, текущая консультация и слот останутся без изменений.';if(!confirm(warning+' Действие будет записано в историю.'))return;return withPaymentAction(id,button,async()=>{try{const result=await api('/admin/payment-reviews/'+id+'/resolve',{method:'POST',body:JSON.stringify({decision,slot_id:slotId,consultation_id:candidate?candidate.id:null,comment})});feedback(`Решение по платежу #${result.payment_id} сохранено. Новый статус оплаты: ${result.payment_status}`,'ok');try{await load()}catch(e){feedback(`Решение сохранено, но список не обновился: ${e.message}`,'warn')}}catch(e){feedback(`Решение не сохранено: ${e.message}`,'bad')}})}
 boot();
 </script>
 </body>
