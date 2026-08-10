@@ -5,22 +5,15 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery
 
 from app.bot.client_case_view import (
-    CLIENT_ACTIONS,
-    ClientAction,
     client_action_for,
-    format_consultation_time,
     format_updated_at,
     load_client_case_view,
-    money,
-    next_action_text,
     progress_bar,
-    route_label,
 )
 from app.bot.consultation_result import latest_terminal_client_consultation
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.domain.cases.client_case_scope import latest_completed_m1_case_for_user
-from app.domain.payments.mode import payments_disabled
 
 router = Router()
 
@@ -104,8 +97,9 @@ def _case_buttons(view) -> list[tuple[str, str]]:
     else:
         buttons.append(("📋 Все документы", "documents_open"))
 
-    if not payments_disabled():
-        buttons.append(("💳 Оплаты", "payments_open"))
+    # Payment provider availability controls creation, not access to financial
+    # history. Keep the Payments cabinet visible even in disabled/offline mode.
+    buttons.append(("💳 Оплаты", "payments_open"))
     buttons.extend(
         [
             ("🕘 История дела", "case_history_open"),
@@ -116,7 +110,7 @@ def _case_buttons(view) -> list[tuple[str, str]]:
     return buttons
 
 
-async def _render_completed_m1_case(
+async def _render_completed_case(
     callback: CallbackQuery,
     db,
     *,
@@ -124,26 +118,51 @@ async def _render_completed_m1_case(
     notice: str | None = None,
 ) -> None:
     view = await load_client_case_view(db, case)
+    is_m2 = str(view.route or "") == "M2"
+    has_consultation_result = _has_consultation_result(view)
+
     lines: list[str] = []
     if notice:
         lines.extend([f"ℹ️ {notice}", ""])
-    lines.extend(
-        [
-            "📁 ИТОГ ДЕЛА",
-            f"№ {view.case_number}",
-            f"{view.route_label}",
-            "",
-            "СЕЙЧАС",
-            "✅ Дело завершено",
-            progress_bar(100),
-            "",
-            "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ",
-            "Действий по этому делу больше не требуется. Финальный платёж подтверждён, финансовый этап завершён и дело закрыто.",
-            "",
-            "АРХИВ ДЕЛА",
-            f"📄 Документы: {_document_detail(view)}",
-        ]
-    )
+
+    if is_m2:
+        lines.extend(
+            [
+                "📁 ИТОГ КОНСУЛЬТАЦИИ",
+                f"№ {view.case_number}",
+                view.route_label,
+                "",
+                "СЕЙЧАС",
+                "✅ Консультационный маршрут завершён",
+                progress_bar(100),
+                "",
+                "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ",
+                "Действий по этому обращению больше не требуется. Итог консультации и материалы сохранены в архиве.",
+                "",
+                "АРХИВ ОБРАЩЕНИЯ",
+                f"🗓 Консультация: {view.consultation_summary}",
+                f"📄 Документы: {_document_detail(view)}",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "📁 ИТОГ ДЕЛА",
+                f"№ {view.case_number}",
+                view.route_label,
+                "",
+                "СЕЙЧАС",
+                "✅ Дело завершено",
+                progress_bar(100),
+                "",
+                "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ",
+                "Действий по этому делу больше не требуется. Финальный платёж подтверждён, финансовый этап завершён и дело закрыто.",
+                "",
+                "АРХИВ ДЕЛА",
+                f"📄 Документы: {_document_detail(view)}",
+            ]
+        )
+
     if view.payments_summary:
         lines.append(f"💳 Оплаты: {view.payments_summary}")
     lines.extend(
@@ -153,14 +172,15 @@ async def _render_completed_m1_case(
             "Документы, история и платежи остаются доступны только для просмотра. Новое обращение создаётся отдельно.",
         ]
     )
-    buttons: list[tuple[str, str]] = [
-        ("📄 Документы дела", "documents_open"),
-    ]
-    if not payments_disabled():
-        buttons.append(("💳 Оплаты по делу", "payments_open"))
+
+    buttons: list[tuple[str, str]] = []
+    if is_m2 and has_consultation_result:
+        buttons.append(("👨‍⚖ Итог консультации", "consultation_result_open"))
     buttons.extend(
         [
-            ("🕘 История дела", "case_history_open"),
+            ("📄 Документы обращения", "documents_open"),
+            ("💳 Оплаты по обращению", "payments_open"),
+            ("🕘 История обращения", "case_history_open"),
             ("🧮 Новое обращение", "calc_start"),
             ("🏠 Главная", "nav_home"),
         ]
@@ -169,19 +189,19 @@ async def _render_completed_m1_case(
         callback,
         "\n".join(lines),
         reply_markup=one(*buttons),
-        unchanged_notice="Итог дела уже актуален.",
+        unchanged_notice="Итог обращения уже актуален.",
     )
 
 
 async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None):
     _, user, case = await _active_case_context(callback, db)
     if not case:
-        completed_m1 = await latest_completed_m1_case_for_user(db, user_id=user.id)
-        if completed_m1:
-            await _render_completed_m1_case(
+        completed = await latest_completed_m1_case_for_user(db, user_id=user.id)
+        if completed:
+            await _render_completed_case(
                 callback,
                 db,
-                case=completed_m1,
+                case=completed,
                 notice=notice,
             )
             return
