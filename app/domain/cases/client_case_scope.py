@@ -48,6 +48,23 @@ async def active_or_latest_completed_case_for_user(
     return completed, completed is not None
 
 
+async def latest_completed_strict_m1_case_for_user(
+    db: AsyncSession,
+    *,
+    user_id: int,
+) -> Case | None:
+    """Return only a completed M1 case for M1-specific stale-action guards."""
+
+    result = await db.execute(
+        select(Case)
+        .where(Case.client_id == user_id)
+        .where(Case.status == CaseStatus.M1_CLOSED)
+        .order_by(Case.closed_at.desc(), Case.updated_at.desc(), Case.id.desc())
+        .limit(1)
+    )
+    return result.scalars().first()
+
+
 async def latest_completed_m1_case_for_user(
     db: AsyncSession,
     *,
@@ -83,4 +100,5 @@ __all__ = [
     "active_or_latest_completed_m1_case_for_user",
     "latest_completed_case_for_user",
     "latest_completed_m1_case_for_user",
+    "latest_completed_strict_m1_case_for_user",
 ]
