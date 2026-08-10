@@ -15,24 +15,34 @@ ACTIVE_CASE_REPLY_MENU_BUTTONS = [
     [KeyboardButton(text="🏠 Главная")],
 ]
 
+COMPLETED_CASE_REPLY_MENU_BUTTONS = [
+    [KeyboardButton(text="📁 Моё дело"), KeyboardButton(text="🧮 Рассчитать неустойку")],
+    [KeyboardButton(text="🏠 Главная")],
+]
+
 # Compatibility alias for integrations importing the historical constant.
 MAIN_MENU_BUTTONS = NEW_CASE_REPLY_MENU_BUTTONS
 
 
-def reply_main_menu(case_exists: bool = False) -> ReplyKeyboardMarkup:
+def reply_main_menu(
+    case_exists: bool = False,
+    *,
+    completed_case: bool = False,
+) -> ReplyKeyboardMarkup:
+    if case_exists:
+        keyboard = ACTIVE_CASE_REPLY_MENU_BUTTONS
+        placeholder = "Выберите: дело, документы или переписка"
+    elif completed_case:
+        keyboard = COMPLETED_CASE_REPLY_MENU_BUTTONS
+        placeholder = "Выберите: архив дела или новое обращение"
+    else:
+        keyboard = NEW_CASE_REPLY_MENU_BUTTONS
+        placeholder = "Выберите: расчёт или помощь юриста"
     return ReplyKeyboardMarkup(
-        keyboard=(
-            ACTIVE_CASE_REPLY_MENU_BUTTONS
-            if case_exists
-            else NEW_CASE_REPLY_MENU_BUTTONS
-        ),
+        keyboard=keyboard,
         resize_keyboard=True,
         is_persistent=True,
-        input_field_placeholder=(
-            "Выберите: дело, документы или переписка"
-            if case_exists
-            else "Выберите: расчёт или помощь юриста"
-        ),
+        input_field_placeholder=placeholder,
     )
 
 
@@ -43,10 +53,21 @@ def _payments_enabled() -> bool:
 def main_menu(
     case_exists: bool = False,
     *,
+    completed_case: bool = False,
     payments_enabled: bool | None = None,
     primary_action: tuple[str, str] | None = None,
 ):
     kb = InlineKeyboardBuilder()
+
+    if completed_case and not case_exists:
+        if primary_action:
+            text, callback_data = primary_action
+            kb.button(text=text, callback_data=callback_data)
+        if not primary_action or primary_action[1] != "my_case_open":
+            kb.button(text="📁 Моё дело", callback_data="my_case_open")
+        kb.button(text="🧮 Новое обращение", callback_data="calc_start")
+        kb.adjust(*([1, 1, 1] if primary_action and primary_action[1] != "my_case_open" else [1, 1]))
+        return kb.as_markup()
 
     if not case_exists:
         if primary_action:
