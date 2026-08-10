@@ -161,11 +161,50 @@ async def test_latest_completed_case_can_be_m1_or_m2_by_close_time(tmp_path):
     await engine.dispose()
 
 
+@pytest.mark.asyncio
+async def test_null_closed_at_archive_never_outranks_real_closed_case(tmp_path):
+    engine, factory = await create_database(tmp_path, "null-safe-completed-route.db")
+    async with factory() as session:
+        user = await create_user(session, suffix=4)
+        closed = Case(
+            case_number="M2-CLOSED-REAL-TIME",
+            client_id=user.id,
+            route="M2",
+            status=CaseStatus.M2_CLOSED,
+            title="Реально закрытая консультация",
+            closed_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        )
+        archived_without_close_time = Case(
+            case_number="LEGACY-ARCHIVED-NULL-CLOSE",
+            client_id=user.id,
+            route="M1",
+            status=CaseStatus.ARCHIVED,
+            title="Legacy archive без closed_at",
+            closed_at=None,
+        )
+        session.add_all([closed, archived_without_close_time])
+        await session.commit()
+
+        completed = await latest_completed_case_for_user(
+            session,
+            user_id=user.id,
+        )
+        assert completed is not None
+        assert completed.id == closed.id
+        assert completed.case_number == "M2-CLOSED-REAL-TIME"
+
+    await engine.dispose()
+
+
 def test_m2_archive_source_contract_keeps_read_only_navigation_visible():
     source = Path("app/bot/screens/my_case.py").read_text(encoding="utf-8")
+    scope_source = Path("app/domain/cases/client_case_scope.py").read_text(
+        encoding="utf-8"
+    )
     assert "📁 ИТОГ КОНСУЛЬТАЦИИ" in source
     assert "Консультационный маршрут завершён" in source
     assert '("💳 Оплаты", "payments_open")' in source
     assert "payments_disabled" not in source
     assert '("📄 Документы обращения", "documents_open")' in source
     assert '("🕘 История обращения", "case_history_open")' in source
+    assert ".nullslast()" in scope_source
