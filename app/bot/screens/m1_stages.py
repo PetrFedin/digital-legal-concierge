@@ -99,10 +99,19 @@ async def _show_missing_or_completed_stage(
 
     completed = await latest_completed_strict_m1_case_for_user(db, user_id=user.id)
     if not completed:
-        await _show_stale_stage(
+        buttons: list[tuple[str, str]] = []
+        if include_documents:
+            buttons.append(("📄 Документы", "documents_open"))
+        buttons.extend(
+            [
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ]
+        )
+        await _present_committed_result(
             callback,
             text,
-            include_documents=include_documents,
+            reply_markup=one(*buttons),
         )
         return
 
