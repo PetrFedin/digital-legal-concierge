@@ -14,6 +14,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.types import BotCommand, BotCommandScopeDefault, CallbackQuery, Message
 
+from app.bot.consultation_route_guard import ConsultationRouteIsolationMiddleware
 from app.bot.document_replacement_protection import (
     DocumentReplacementUploadProtectionMiddleware,
 )
@@ -140,6 +141,7 @@ def build_dispatcher() -> Dispatcher:
     dispatcher.message.middleware(DocumentReplacementUploadProtectionMiddleware())
     dispatcher.message.middleware(flood_control)
     dispatcher.callback_query.middleware(DraftProtectionMiddleware())
+    dispatcher.callback_query.middleware(ConsultationRouteIsolationMiddleware())
     dispatcher.callback_query.middleware(flood_control)
     dispatcher.callback_query.middleware(CallbackAcknowledgeMiddleware())
     for router in [
