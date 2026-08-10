@@ -18,6 +18,7 @@ from app.bot.consultation_result import (
 )
 from app.bot.context import BotContextService
 from app.bot.keyboards import main_menu, one, reply_main_menu
+from app.bot.payment_presentation import offline_m1_payment_presentation
 from app.domain.cases.client_case_scope import latest_completed_case_for_user
 from app.domain.payments.mode import payments_disabled
 
@@ -25,11 +26,12 @@ router = Router()
 
 
 # Retained as a public compatibility contract for integrations that inspect
-# no-payment pilot wording. Actual client screens use the shared case view.
+# no-payment pilot wording. Actual client screens use the shared case view plus
+# the provider-aware payment presentation below.
 PILOT_NEXT_ACTIONS = {
-    "M1_WAITING_PAYMENT_30000": "Продолжить оформление доверенности",
-    "M1_WAITING_PAYMENT_70000": "Продолжить этап исполнения решения",
-    "M1_WAITING_SUCCESS_FEE": "Завершить финансовый этап",
+    "M1_WAITING_PAYMENT_30000": "Первый платёж ожидает подтверждения командой",
+    "M1_WAITING_PAYMENT_70000": "Второй платёж ожидает подтверждения командой",
+    "M1_WAITING_SUCCESS_FEE": "Финальный платёж ожидает подтверждения командой",
     "M2_PAYMENT_PENDING": "Подтвердить запись на консультацию",
 }
 
@@ -53,12 +55,20 @@ def _next_action(case) -> str:
     return next_action_text(case)
 
 
+def _shown_next_action(view) -> str:
+    offline_payment = offline_m1_payment_presentation(view)
+    return offline_payment.next_action if offline_payment else view.next_action
+
+
 def _primary_action(view) -> tuple[str, str]:
     if view.unread_team_messages:
         return (
             f"💬 Прочитать ответ команды ({view.unread_team_messages})",
             "message_history",
         )
+    offline_payment = offline_m1_payment_presentation(view)
+    if offline_payment:
+        return (offline_payment.button_label, offline_payment.callback)
     if view.action:
         return (
             f"▶️ {view.action.label}",
@@ -161,7 +171,9 @@ async def _home_text(
     if case:
         view = await load_client_case_view(db, case)
         result_view = await _result_view_for_case(db, case)
-        shown_next_action = result_view.next_step if result_view else view.next_action
+        shown_next_action = (
+            result_view.next_step if result_view else _shown_next_action(view)
+        )
         primary_action = (
             CONSULTATION_RESULT_ACTION if result_view else _primary_action(view)
         )
@@ -443,7 +455,7 @@ async def menu_lawyer(message: Message, state: FSMContext):
 async def help_command(message: Message, db):
     case_exists, completed_case = await _client_case_menu_state(db, message)
     payment_line = (
-        "Онлайн-оплата сейчас отключена; доступные этапы продолжаются без платёжной ссылки."
+        "Онлайн-оплата сейчас отключена; обязательства и их статус доступны в разделе «Оплаты», а финансовый этап подтверждает команда после проверки фактического поступления."
         if payments_disabled()
         else "Оплата доступна на соответствующих этапах дела."
     )
@@ -549,7 +561,9 @@ async def status_command(message: Message, db):
     view = await load_client_case_view(db, case)
     result_view = await _result_view_for_case(db, case)
     await db.commit()
-    shown_next_action = result_view.next_step if result_view else view.next_action
+    shown_next_action = (
+        result_view.next_step if result_view else _shown_next_action(view)
+    )
     lines = [
         f"📁 {view.case_number}",
         f"Услуга: {view.route_label}",
@@ -571,6 +585,10 @@ async def status_command(message: Message, db):
                 "message_history",
             )
         )
+    if not result_view and not view.unread_team_messages:
+        primary_action = _primary_action(view)
+        if primary_action[1] != "my_case_open":
+            buttons.append(primary_action)
     buttons.extend(
         [
             ("📁 Моё дело", "my_case_open"),
