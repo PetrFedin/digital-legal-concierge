@@ -12,6 +12,7 @@ from app.domain.payments.orphan_payment_review_service import (
 )
 from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
+from app.domain.payments.refund_service import ConsultationRefundService
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
@@ -140,6 +141,39 @@ async def test_orphan_review_refund_preserves_current_case_and_booking(tmp_path)
         assert audit.new_value["consultation_id"] is None
         assert audit.new_value["orphan_consultation_id"] == missing_consultation_id
         assert audit.new_value["case_context_preserved"] is True
+
+        result = await ConsultationRefundService(session).resolve_refund(
+            payment_id=payment.id,
+            decision="refunded",
+            actor_id=None,
+            comment="Фактический возврат подтверждён по операции refund-orphan-1",
+        )
+        await session.commit()
+        await session.refresh(case)
+        await session.refresh(consultation)
+        await session.refresh(slot)
+
+        assert result.status == PaymentStatus.REFUNDED
+        assert case.status == CaseStatus.M2_CONSULTATION_BOOKED
+        assert case.next_action == "Подготовиться к консультации"
+        assert consultation.status == ConsultationStatus.BOOKED
+        assert consultation.slot_id == slot.id
+        assert slot.status == "booked"
+        assert slot.consultation_id == consultation.id
+
+        refund_audit = (
+            await session.execute(
+                select(AuditLog)
+                .where(
+                    AuditLog.entity_id == case.id,
+                    AuditLog.action == "CONSULTATION_REFUND_COMPLETED",
+                )
+                .order_by(AuditLog.id.desc())
+            )
+        ).scalars().first()
+        assert refund_audit is not None
+        assert refund_audit.new_value["payment_id"] == payment.id
+        assert refund_audit.new_value["status"] == PaymentStatus.REFUNDED
 
     await engine.dispose()
 
