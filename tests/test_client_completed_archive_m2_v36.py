@@ -9,6 +9,7 @@ from app.domain.cases.client_case_scope import (
     active_or_latest_completed_case_for_user,
     active_or_latest_completed_m1_case_for_user,
     latest_completed_case_for_user,
+    latest_completed_strict_m1_case_for_user,
 )
 from app.domain.statuses.case_statuses import CaseStatus
 from app.models import Base
@@ -82,6 +83,14 @@ async def test_closed_m2_is_available_in_shared_read_only_archive(tmp_path):
         assert legacy_resolved is not None
         assert legacy_resolved.id == case.id
         assert legacy_completed is True
+
+        # M1-specific stale callbacks must not reuse the generalized archive:
+        # otherwise an old M1 payment/stage button could label closed M2 as M1.
+        strict_m1 = await latest_completed_strict_m1_case_for_user(
+            session,
+            user_id=user.id,
+        )
+        assert strict_m1 is None
 
     await engine.dispose()
 
@@ -157,6 +166,14 @@ async def test_latest_completed_case_can_be_m1_or_m2_by_close_time(tmp_path):
         assert completed is not None
         assert completed.id == newer_m2.id
         assert completed.case_number == "M2-CLOSED-NEWER"
+
+        strict_m1 = await latest_completed_strict_m1_case_for_user(
+            session,
+            user_id=user.id,
+        )
+        assert strict_m1 is not None
+        assert strict_m1.id == older_m1.id
+        assert strict_m1.case_number == "M1-CLOSED-OLDER"
 
     await engine.dispose()
 
