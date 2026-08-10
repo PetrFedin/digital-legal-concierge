@@ -478,7 +478,7 @@ async def message_history(callback: CallbackQuery, db, state: FSMContext):
         await callback.message.answer(text, reply_markup=markup)
         await callback.answer("Переписка открыта новым сообщением.")
 
-    if visible_team_ids:
+    if visible_team_ids and not read_only:
         try:
             await service.mark_lawyer_messages_read(
                 case.id,
