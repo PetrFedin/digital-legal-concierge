@@ -189,14 +189,14 @@ def _primary_action(
         return {
             "kind": "link",
             "label": "Сверить полученный платёж",
-            "href": f"/admin/payment-reviews/ui?payment_id={payment_id}",
+            "href": f"/admin/payment-reviews/ui?payment_id={payment_id}&case_id={case.id}",
         }
     if "refund" in reason_codes and refund_ids:
         payment_id = int(refund_ids[0])
         return {
             "kind": "link",
             "label": "Обработать возврат",
-            "href": f"/admin/refunds/ui?payment_id={payment_id}",
+            "href": f"/admin/refunds/ui?payment_id={payment_id}&case_id={case.id}",
         }
     # An unassigned case must get an owner before responsibility can be tracked.
     if "unassigned" in reason_codes:
