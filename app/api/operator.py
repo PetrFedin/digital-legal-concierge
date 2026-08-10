@@ -116,6 +116,8 @@ button{border:0;border-radius:10px;padding:9px 12px;color:#fff;background:var(--
           <a class="link" href="/lawyer/consultation-desk/ui"><b>Подготовка консультаций</b><span>Вопрос, материалы, встреча и результат</span></a>
           <a class="link" href="/document-access/review/ui"><b>Проверка документов</b><span>Решение по документам</span></a>
           <a class="link" href="/message-center/ui"><b>Сообщения</b><span>Переписка по делам</span></a>
+          <a class="link" href="/admin/payment-reviews/ui"><b>Сверка платежей</b><span>Полученные платежи, остановленные автоматической защитой</span></a>
+          <a class="link" href="/admin/refunds/ui"><b>Возвраты</b><span>Очередь фактических возвратов и фиксация результата</span></a>
           <a class="link" href="/admin/notification-delivery/ui"><b>Telegram-доставка</b><span>Контроль очереди и повторов</span></a>
         </div>
       </article>
@@ -138,11 +140,13 @@ function renderRoles(roles){
     link('/document-access/review/ui','Проверка документов','Скачать файл и зафиксировать решение'),
     link('/message-center/ui','Переписка','Диалоги клиентов по конкретным делам')
   ]))}
-  if(isAdmin){groups.push(group('Операционная работа','Очередь обращений и действия администратора по конкретным делам',[
+  if(isAdmin){groups.push(group('Операционная работа','Очередь обращений, денег и действий администратора по конкретным делам',[
     link('/admin/workdesk/ui','Единый рабочий стол','Что требует внимания сейчас и какое действие выполнить','primary'),
     link('/message-center/ui','Сообщения','Непрочитанные обращения и ответы команды'),
     link('/document-access/review/ui','Документы','Проверка и контроль версий'),
-    link('/admin/consultation-outcomes/ui','Исходы консультаций','Результаты, переносы и неявки')
+    link('/admin/consultation-outcomes/ui','Исходы консультаций','Результаты, переносы и неявки'),
+    link('/admin/payment-reviews/ui','Сверка платежей','Деньги получены, но автоматика безопасно остановила действие','warn'),
+    link('/admin/refunds/ui','Возвраты','Фиксация фактически выполненных возвратов')
   ]))}
   workspaces.innerHTML=groups.join('')||'<div class="empty">Для текущей роли рабочий кабинет не настроен. Обратитесь к администратору доступа.</div>';
   if(isAdmin){
@@ -213,6 +217,8 @@ async def operator_status():
             "lawyer_consultations": "/lawyer/consultation-desk/ui",
             "document_review": "/document-access/review/ui",
             "messages": "/message-center/ui",
+            "payment_reviews": "/admin/payment-reviews/ui",
+            "refunds": "/admin/refunds/ui",
             "sla": "/admin/sla/ui",
             "consultation_outcomes": "/admin/consultation-outcomes/ui",
             "telegram_delivery": "/admin/notification-delivery/ui",
