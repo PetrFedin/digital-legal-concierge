@@ -20,12 +20,14 @@ from app.domain.documents.document_workflow import (
 )
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.domain.statuses.document_statuses import DocumentStatus
+from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
 from app.models.document import Document
 from app.models.lawyer import Lawyer
 from app.models.message import Message
+from app.models.payment import Payment
 from app.models.user import User
 
 router = APIRouter(tags=["admin-workdesk"])
@@ -34,6 +36,10 @@ CLOSED_STATUSES = ("M1_CLOSED", "M2_CLOSED", "ARCHIVED")
 OVERDUE_SLA_STATUSES = ("FIRST_RESPONSE_OVERDUE", "ACTION_OVERDUE")
 ACTIVE_CONSULTATION_STATUSES = ("BOOKED", "CONFIRMED")
 CASE_ACTION_TASKS = {"documents", "consultation", "sla"}
+FINANCIAL_ATTENTION_STATUSES = (
+    PaymentStatus.PAID_REVIEW,
+    PaymentStatus.REFUND_PENDING,
+)
 
 ROUTE_LABELS = {
     "M1": "Ведение дела",
@@ -50,15 +56,19 @@ SLA_LABELS = {
 }
 
 _REASON_PRIORITY = {
-    "overdue": 0,
-    "messages": 1,
-    "unassigned": 2,
-    "documents": 3,
-    "document_draft": 4,
-    "document_legacy": 4,
-    "consultation": 5,
+    "payment_review": 0,
+    "refund": 1,
+    "overdue": 2,
+    "messages": 3,
+    "unassigned": 4,
+    "documents": 5,
+    "document_draft": 6,
+    "document_legacy": 6,
+    "consultation": 7,
 }
 _REASON_LABELS = {
+    "payment_review": "Полученный платёж требует сверки",
+    "refund": "Возврат ждёт обработки",
     "overdue": "Нарушен SLA",
     "messages": "Новое сообщение клиента",
     "unassigned": "Нет ответственного юриста",
@@ -85,14 +95,54 @@ def _utc_sort_value(value: datetime | None) -> float:
     return value.astimezone(timezone.utc).timestamp()
 
 
+def _empty_payment_attention() -> dict[str, object]:
+    return {
+        "review_ids": [],
+        "refund_ids": [],
+        "review_oldest_at": None,
+        "refund_oldest_at": None,
+    }
+
+
+def _append_payment_attention(
+    attention: dict[str, object],
+    *,
+    payment_id: int,
+    status: object,
+    activity_at: datetime | None,
+) -> None:
+    status_value = str(status)
+    if status_value == str(PaymentStatus.PAID_REVIEW):
+        ids = attention["review_ids"]
+        assert isinstance(ids, list)
+        ids.append(int(payment_id))
+        current = attention.get("review_oldest_at")
+        if current is None or _utc_sort_value(activity_at) < _utc_sort_value(current):
+            attention["review_oldest_at"] = activity_at
+    elif status_value == str(PaymentStatus.REFUND_PENDING):
+        ids = attention["refund_ids"]
+        assert isinstance(ids, list)
+        ids.append(int(payment_id))
+        current = attention.get("refund_oldest_at")
+        if current is None or _utc_sort_value(activity_at) < _utc_sort_value(current):
+            attention["refund_oldest_at"] = activity_at
+
+
 def _attention_reasons(
     case: Case,
     *,
     unread_client_messages: int,
     document_workflow: DocumentWorkflowDescriptor,
     consultation_at: datetime | None,
+    payment_attention: dict[str, object],
 ) -> list[dict[str, object]]:
     codes: list[str] = []
+    review_ids = payment_attention.get("review_ids") or []
+    refund_ids = payment_attention.get("refund_ids") or []
+    if review_ids:
+        codes.append("payment_review")
+    if refund_ids:
+        codes.append("refund")
     if str(case.sla_status or "") in OVERDUE_SLA_STATUSES:
         codes.append("overdue")
     if unread_client_messages > 0:
@@ -107,7 +157,11 @@ def _attention_reasons(
     reasons: list[dict[str, object]] = []
     for code in sorted(codes, key=_REASON_PRIORITY.__getitem__):
         label = _REASON_LABELS[code]
-        if code == "messages":
+        if code == "payment_review":
+            label = f"Платежи требуют сверки: {len(review_ids)}"
+        elif code == "refund":
+            label = f"Возвраты ждут обработки: {len(refund_ids)}"
+        elif code == "messages":
             label = f"Новые сообщения клиента: {unread_client_messages}"
         elif code == document_workflow.code:
             label = document_workflow.label
@@ -125,8 +179,25 @@ def _primary_action(
     case: Case,
     reasons: list[dict[str, object]],
     document_workflow: DocumentWorkflowDescriptor,
+    payment_attention: dict[str, object],
 ) -> dict[str, object]:
     reason_codes = {str(item["code"]) for item in reasons}
+    review_ids = payment_attention.get("review_ids") or []
+    refund_ids = payment_attention.get("refund_ids") or []
+    if "payment_review" in reason_codes and review_ids:
+        payment_id = int(review_ids[0])
+        return {
+            "kind": "link",
+            "label": "Сверить полученный платёж",
+            "href": f"/admin/payment-reviews/ui?payment_id={payment_id}",
+        }
+    if "refund" in reason_codes and refund_ids:
+        payment_id = int(refund_ids[0])
+        return {
+            "kind": "link",
+            "label": "Обработать возврат",
+            "href": f"/admin/refunds/ui?payment_id={payment_id}",
+        }
     # An unassigned case must get an owner before responsibility can be tracked.
     if "unassigned" in reason_codes:
         return {
@@ -177,18 +248,24 @@ def _attention_item(
     document_workflow: DocumentWorkflowDescriptor,
     consultation_at: datetime | None,
     lawyer_name: str | None,
+    payment_attention: dict[str, object],
 ) -> dict[str, object] | None:
     reasons = _attention_reasons(
         case,
         unread_client_messages=unread_client_messages,
         document_workflow=document_workflow,
         consultation_at=consultation_at,
+        payment_attention=payment_attention,
     )
     if not reasons:
         return None
 
     primary_reason = str(reasons[0]["code"])
-    if primary_reason == "overdue":
+    if primary_reason == "payment_review":
+        deadline = payment_attention.get("review_oldest_at")
+    elif primary_reason == "refund":
+        deadline = payment_attention.get("refund_oldest_at")
+    elif primary_reason == "overdue":
         deadline = case.sla_due_at
     elif primary_reason == "messages":
         deadline = latest_client_message_at
@@ -197,6 +274,8 @@ def _attention_item(
     else:
         deadline = case.created_at
 
+    review_ids = [int(value) for value in payment_attention.get("review_ids") or []]
+    refund_ids = [int(value) for value in payment_attention.get("refund_ids") or []]
     return {
         "id": case.id,
         "number": case.case_number,
@@ -219,11 +298,20 @@ def _attention_item(
             else None
         ),
         "document_workflow": document_workflow.as_dict(),
+        "financial_attention": {
+            "payment_review_ids": review_ids,
+            "refund_pending_ids": refund_ids,
+        },
         "created_at": case.created_at.isoformat(),
         "updated_at": case.updated_at.isoformat(),
         "priority": int(reasons[0]["priority"]),
         "reasons": reasons,
-        "primary_action": _primary_action(case, reasons, document_workflow),
+        "primary_action": _primary_action(
+            case,
+            reasons,
+            document_workflow,
+            payment_attention,
+        ),
         "sort_deadline": _utc_sort_value(deadline),
     }
 
@@ -319,6 +407,30 @@ async def workdesk_attention(
     }
     no_document_workflow = describe_document_attention(())
 
+    payment_rows = (
+        await db.execute(
+            select(
+                Payment.case_id,
+                Payment.id,
+                Payment.status,
+                Payment.updated_at,
+                Payment.created_at,
+            )
+            .where(Payment.case_id.in_(case_ids))
+            .where(Payment.status.in_(FINANCIAL_ATTENTION_STATUSES))
+            .order_by(Payment.created_at.asc(), Payment.id.asc())
+        )
+    ).all()
+    financial_attention: dict[int, dict[str, object]] = {}
+    for case_id, payment_id, payment_status, updated_at, created_at in payment_rows:
+        item = financial_attention.setdefault(int(case_id), _empty_payment_attention())
+        _append_payment_attention(
+            item,
+            payment_id=int(payment_id),
+            status=payment_status,
+            activity_at=updated_at or created_at,
+        )
+
     message_rows = (
         await db.execute(
             select(
@@ -384,6 +496,10 @@ async def workdesk_attention(
             ),
             consultation_at=consultation_times.get(case.id),
             lawyer_name=lawyer_names.get(case.assigned_lawyer_id),
+            payment_attention=financial_attention.get(
+                case.id,
+                _empty_payment_attention(),
+            ),
         )
         if item is not None:
             items.append(item)
