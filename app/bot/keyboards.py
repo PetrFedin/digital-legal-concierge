@@ -1,7 +1,6 @@
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from app.config import settings
 
 NEW_CASE_REPLY_MENU_BUTTONS = [
     [KeyboardButton(text="🧮 Рассчитать неустойку")],
@@ -46,10 +45,6 @@ def reply_main_menu(
     )
 
 
-def _payments_enabled() -> bool:
-    return settings.payment_provider.strip().lower() != "disabled"
-
-
 def main_menu(
     case_exists: bool = False,
     *,
@@ -87,7 +82,10 @@ def main_menu(
     kb.button(text="💬 Переписка", callback_data="message_history")
     kb.button(text="✉️ Задать вопрос по делу", callback_data="message_create")
 
-    show_payments = _payments_enabled() if payments_enabled is None else payments_enabled
+    # Payment provider mode controls whether a new online payment link can be
+    # created; it must never hide persisted payment status/history from a client.
+    # Explicit callers may still suppress the shortcut for a specialized screen.
+    show_payments = True if payments_enabled is None else bool(payments_enabled)
     if show_payments:
         kb.button(text="💳 Оплаты", callback_data="payments_open")
 
