@@ -14,6 +14,8 @@ from app.bot.consultation_result import latest_terminal_client_consultation
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.domain.cases.client_case_scope import latest_completed_m1_case_for_user
+from app.domain.payments.payment_service import PaymentService
+from app.domain.statuses.payment_statuses import PaymentStatus
 
 router = Router()
 
@@ -60,6 +62,36 @@ def _document_detail(view) -> str:
 def _has_consultation_result(view) -> bool:
     summary = str(getattr(view, "consultation_summary", "") or "")
     return summary.startswith(TERMINAL_CONSULTATION_PREFIXES)
+
+
+async def _payment_summary(db, case_id: int) -> str:
+    """Describe real payment history without exposing technical status codes."""
+
+    payments = await PaymentService(db).list_case_payments(case_id)
+    if not payments:
+        return "Платежей по обращению нет"
+
+    statuses = {str(payment.status) for payment in payments}
+    if str(PaymentStatus.PAID_REVIEW) in statuses:
+        return "Есть платёж, который проверяет команда"
+    if str(PaymentStatus.REFUND_PENDING) in statuses:
+        return "Возврат денежных средств обрабатывается"
+    if str(PaymentStatus.REFUND_DECLINED) in statuses:
+        return "По возврату требуется уточнение команды"
+
+    pending_count = sum(
+        1
+        for payment in payments
+        if str(payment.status)
+        in {
+            str(PaymentStatus.PENDING),
+            str(PaymentStatus.WAITING_CONFIRMATION),
+        }
+    )
+    if pending_count:
+        return f"Ожидают подтверждения: {pending_count}"
+
+    return f"Платежей в истории: {len(payments)} · активных действий по оплате нет"
 
 
 def _case_buttons(view) -> list[tuple[str, str]]:
@@ -118,6 +150,7 @@ async def _render_completed_case(
     notice: str | None = None,
 ) -> None:
     view = await load_client_case_view(db, case)
+    payment_summary = await _payment_summary(db, case.id)
     is_m2 = str(view.route or "") == "M2"
     has_consultation_result = _has_consultation_result(view)
 
@@ -163,10 +196,9 @@ async def _render_completed_case(
             ]
         )
 
-    if view.payments_summary:
-        lines.append(f"💳 Оплаты: {view.payments_summary}")
     lines.extend(
         [
+            f"💳 Оплаты: {payment_summary}",
             "",
             f"Закрыто / обновлено: {format_updated_at(view.updated_at)}",
             "Документы, история и платежи остаются доступны только для просмотра. Новое обращение создаётся отдельно.",
@@ -240,6 +272,7 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
         return
 
     view = await load_client_case_view(db, case)
+    payment_summary = await _payment_summary(db, case.id)
     has_consultation_result = _has_consultation_result(view)
     stale_booking_action = bool(
         has_consultation_result
@@ -296,10 +329,9 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
     )
     if view.route == "M2" or view.consultation_summary != "Не назначена":
         lines.append(f"🗓 Консультация: {view.consultation_summary}")
-    if view.payments_summary:
-        lines.append(f"💳 Оплаты: {view.payments_summary}")
     lines.extend(
         [
+            f"💳 Оплаты: {payment_summary}",
             "",
             f"Обновлено: {format_updated_at(view.updated_at)}",
             "Первая кнопка ниже — самое актуальное безопасное действие.",
