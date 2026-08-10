@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import logging
 
-from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramServerError
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramNetworkError,
+    TelegramServerError,
+)
 from aiogram.types import CallbackQuery
 
 from app.bot.context import BotContextService
@@ -15,10 +19,17 @@ CONSULTATION_CALLBACK_PREFIXES = (
     "consult_",
     "consultation_",
 )
+CONSULTATION_READ_ONLY_CALLBACKS = frozenset(
+    {
+        "consultation_result_open",
+    }
+)
 
 
 def is_consultation_callback(data: str | None) -> bool:
     value = str(data or "")
+    if value in CONSULTATION_READ_ONLY_CALLBACKS:
+        return False
     return any(value.startswith(prefix) for prefix in CONSULTATION_CALLBACK_PREFIXES)
 
 
@@ -27,6 +38,8 @@ class ConsultationRouteIsolationMiddleware:
 
     Telegram messages can live for months. A stale consultation button must not
     start, reserve, pay, cancel, or reschedule an M2 flow while M1 is active.
+    Read-only terminal consultation results remain available so an M1 follow-up
+    cannot hide the outcome of a consultation that was already completed.
     Pre-route cases and active M2 cases are intentionally passed through to the
     domain handlers, which keep their own status/snapshot checks.
     """
