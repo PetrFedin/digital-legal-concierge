@@ -139,6 +139,7 @@ def test_stale_m1_callbacks_use_strict_m1_archive_scope_only():
     stage_block = stage_source[stage_start:stage_end]
     assert "latest_completed_strict_m1_case_for_user" in stage_block
     assert "latest_completed_m1_case_for_user" not in stage_block
+    assert '"message_create"' not in stage_block
 
     payments_source = Path("app/bot/screens/payments.py").read_text(encoding="utf-8")
     payment_start = payments_source.index("async def _show_missing_m1_payment_case")
