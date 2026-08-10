@@ -53,6 +53,11 @@ M1_PAYMENT_EXPECTED_STATUSES = {
     PaymentCode.M1_INITIAL_PAYMENT: CaseStatus.M1_WAITING_PAYMENT_30000,
     PaymentCode.M1_COURT_PAYMENT: CaseStatus.M1_WAITING_PAYMENT_70000,
 }
+OFFLINE_M1_PAYMENT_CODES = {
+    PaymentCode.M1_INITIAL_PAYMENT,
+    PaymentCode.M1_COURT_PAYMENT,
+    PaymentCode.M1_SUCCESS_FEE,
+}
 
 
 def money(value):
@@ -67,10 +72,41 @@ def payment_status_label(value) -> str:
     return PAYMENT_STATUS_LABELS.get(status, "Статус уточняется")
 
 
+def is_offline_m1_payment_waiting_for_team(payment: Payment) -> bool:
+    """Identify a real offline M1 obligation, not merely a runtime provider toggle."""
+
+    return bool(
+        payments_disabled()
+        and payment.payment_code in OFFLINE_M1_PAYMENT_CODES
+        and payment.status
+        in {
+            PaymentStatus.PENDING,
+            PaymentStatus.WAITING_CONFIRMATION,
+        }
+        and not payment.payment_url
+        and not payment.provider
+    )
+
+
+def client_payment_status_label(payment: Payment) -> str:
+    if is_offline_m1_payment_waiting_for_team(payment):
+        return "Ожидает подтверждения командой"
+    return payment_status_label(payment.status)
+
+
+def client_payment_status_note(payment: Payment) -> str:
+    if not is_offline_m1_payment_waiting_for_team(payment):
+        return ""
+    return (
+        "Онлайн-оплата для этого этапа отключена. Новый платёж через бот создавать не нужно. "
+        "Команда обновит статус после проверки фактического поступления денег."
+    )
+
+
 def payment_summary_line(payment: Payment) -> str:
     return (
         f"• {payment.title}\n"
-        f"  {money(payment.amount)} · {payment_status_label(payment.status)}"
+        f"  {money(payment.amount)} · {client_payment_status_label(payment)}"
     )
 
 
@@ -606,10 +642,12 @@ async def open_payment(callback: CallbackQuery, db):
         )
         return
 
+    status_note = client_payment_status_note(payment)
     await callback.message.edit_text(
         f"💳 {payment.title}\n"
         f"Сумма: {money(payment.amount)}\n"
-        f"Статус: {payment_status_label(payment.status)}",
+        f"Статус: {client_payment_status_label(payment)}"
+        + (f"\n\n{status_note}" if status_note else ""),
         reply_markup=payment_keyboard(payment),
     )
 
