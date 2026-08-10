@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,9 +12,17 @@ from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
+from app.models.audit_log import AuditLog
 from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.payment import Payment
+
+
+INACTIVE_REVIEW_ORIGIN_STATUSES = {
+    PaymentStatus.EXPIRED,
+    PaymentStatus.CANCELLED,
+    PaymentStatus.FAILED,
+}
 
 
 class PaymentReviewResolutionError(ValueError):
@@ -58,20 +64,107 @@ class PaymentReviewService:
             raise LookupError("Дело не найдено")
         return case
 
-    async def _lock_latest_consultation(self, case_id: int) -> Consultation:
-        consultation = (
-            await self.db.execute(
-                select(Consultation)
-                .where(Consultation.case_id == case_id)
-                .order_by(Consultation.created_at.desc(), Consultation.id.desc())
-                .with_for_update()
-            )
-        ).scalars().first()
-        if not consultation:
+    @staticmethod
+    def reservation_context(payment: Payment) -> tuple[int | None, int | None]:
+        """Read the consultation and slot IDs encoded into an M2 payment key."""
+
+        parts = str(payment.reservation_key or "").split(":")
+        if len(parts) != 4 or parts[0] != "consultation" or parts[2] != "slot":
+            return None, None
+        try:
+            consultation_id = int(parts[1])
+            slot_id = int(parts[3])
+        except (TypeError, ValueError):
+            return None, None
+        if consultation_id <= 0 or slot_id <= 0:
+            return None, None
+        return consultation_id, slot_id
+
+    async def _lock_payment_consultation(
+        self,
+        *,
+        payment: Payment,
+        case_id: int,
+    ) -> Consultation:
+        """Resolve review context from the payment itself, never from a newer case row.
+
+        Legacy payments without a parsable reservation key are accepted only when
+        the case has exactly one consultation. With multiple consultations the
+        association is ambiguous, so review fails closed instead of mutating the
+        latest consultation by accident.
+        """
+
+        consultation_id, _ = self.reservation_context(payment)
+        if consultation_id is not None:
+            consultation = (
+                await self.db.execute(
+                    select(Consultation)
+                    .where(
+                        Consultation.id == consultation_id,
+                        Consultation.case_id == case_id,
+                    )
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if not consultation:
+                raise PaymentReviewResolutionError(
+                    "Платёж ссылается на консультацию, которой нет в этом деле. "
+                    "Автоматическое решение заблокировано."
+                )
+            return consultation
+
+        consultations = list(
+            (
+                await self.db.execute(
+                    select(Consultation)
+                    .where(Consultation.case_id == case_id)
+                    .order_by(Consultation.created_at.desc(), Consultation.id.desc())
+                    .with_for_update()
+                )
+            ).scalars().all()
+        )
+        if not consultations:
             raise PaymentReviewResolutionError(
-                "По делу не найдена консультация для оплаченного платежа"
+                "По делу не найдена консультация для полученного платежа"
             )
-        return consultation
+        if len(consultations) != 1:
+            raise PaymentReviewResolutionError(
+                "У старого платежа нет точной привязки к консультации, а в деле их несколько. "
+                "Автоматическое решение заблокировано; требуется сверка по истории."
+            )
+        return consultations[0]
+
+    async def _latest_review_origin_status(
+        self,
+        *,
+        payment: Payment,
+        case_id: int,
+    ) -> str | None:
+        events = list(
+            (
+                await self.db.execute(
+                    select(AuditLog)
+                    .where(
+                        AuditLog.entity_type == "case",
+                        AuditLog.entity_id == case_id,
+                        AuditLog.action == "CONSULTATION_PAYMENT_REVIEW_REQUIRED",
+                    )
+                    .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+                    .limit(50)
+                )
+            ).scalars().all()
+        )
+        for event in events:
+            new_value = event.new_value or {}
+            try:
+                event_payment_id = int(new_value.get("payment_id") or 0)
+            except (TypeError, ValueError):
+                event_payment_id = 0
+            if event_payment_id != int(payment.id):
+                continue
+            old_value = event.old_value or {}
+            return str(old_value.get("status") or "") or None
+        return None
 
     @staticmethod
     def _require_comment(comment: str | None) -> str:
@@ -120,13 +213,26 @@ class PaymentReviewService:
         comment = self._require_comment(comment)
         payment = await self._lock_payment(payment_id)
         case = await self._lock_case(payment.case_id)
-        consultation = await self._lock_latest_consultation(case.id)
+        consultation = await self._lock_payment_consultation(
+            payment=payment,
+            case_id=case.id,
+        )
 
         if payment.status == PaymentStatus.PAID:
             return payment, consultation
         if payment.status != PaymentStatus.PAID_REVIEW:
             raise PaymentReviewResolutionError(
                 "Платёж не находится в статусе PAID_REVIEW"
+            )
+        origin_status = await self._latest_review_origin_status(
+            payment=payment,
+            case_id=case.id,
+        )
+        if origin_status in INACTIVE_REVIEW_ORIGIN_STATUSES:
+            raise PaymentReviewResolutionError(
+                "Деньги поступили по ранее закрытой или истёкшей ссылке. "
+                "Такой платёж нельзя привязать к уже подтверждённой записи; "
+                "используйте контролируемый возврат."
             )
         if consultation.status != ConsultationStatus.BOOKED:
             raise PaymentReviewResolutionError(
@@ -150,6 +256,7 @@ class PaymentReviewService:
         old_value = {
             "payment_status": payment.status,
             "reservation_key": payment.reservation_key,
+            "review_origin_status": origin_status,
         }
         payment.status = PaymentStatus.PAID
         payment.reservation_key = PaymentService.consultation_reservation_key(
@@ -162,7 +269,7 @@ class PaymentReviewService:
                 next_status=CaseStatus.M2_CONSULTATION_BOOKED,
                 actor_type="admin",
                 actor_id=actor_id,
-                    comment="Подтверждение существующей брони после проверки платежа",
+                comment="Подтверждение существующей брони после проверки платежа",
             )
 
         await self._record_resolution(
@@ -203,7 +310,10 @@ class PaymentReviewService:
         comment = self._require_comment(comment)
         payment = await self._lock_payment(payment_id)
         case = await self._lock_case(payment.case_id)
-        consultation = await self._lock_latest_consultation(case.id)
+        consultation = await self._lock_payment_consultation(
+            payment=payment,
+            case_id=case.id,
+        )
 
         if payment.status == PaymentStatus.PAID:
             return payment, consultation
@@ -244,7 +354,7 @@ class PaymentReviewService:
             ):
                 raise PaymentReviewResolutionError(
                     "У консультации уже есть подтверждённая бронь. "
-                    "Используйте решение confirm_existing."
+                    "Используйте проверку текущей брони или возврат."
                 )
             if old_slot and old_slot.consultation_id == consultation.id:
                 await self.slots.release_slot(
@@ -279,7 +389,7 @@ class PaymentReviewService:
                 next_status=CaseStatus.M2_CONSULTATION_BOOKED,
                 actor_type="admin",
                 actor_id=actor_id,
-                    comment="Назначен новый слот после ручной проверки платежа",
+                comment="Назначен новый слот после ручной проверки платежа",
             )
 
         await self._record_resolution(
@@ -321,7 +431,10 @@ class PaymentReviewService:
         comment = self._require_comment(comment)
         payment = await self._lock_payment(payment_id)
         case = await self._lock_case(payment.case_id)
-        consultation = await self._lock_latest_consultation(case.id)
+        consultation = await self._lock_payment_consultation(
+            payment=payment,
+            case_id=case.id,
+        )
 
         if payment.status == PaymentStatus.REFUND_PENDING:
             return payment, consultation
@@ -332,6 +445,7 @@ class PaymentReviewService:
 
         old_value = {
             "payment_status": payment.status,
+            "reservation_key": payment.reservation_key,
             "consultation_status": consultation.status,
             "slot_id": consultation.slot_id,
             "scheduled_at": (
@@ -339,17 +453,30 @@ class PaymentReviewService:
                 if consultation.scheduled_at
                 else None
             ),
+            "case_status": case.status,
+            "case_next_action": case.next_action,
         }
-        if consultation.slot_id:
-            slot = await self.slots.get_slot_for_update(consultation.slot_id)
-            if slot and slot.consultation_id == consultation.id:
-                await self.slots.release_slot(slot.id, consultation.id)
 
-        consultation.slot_id = None
-        consultation.scheduled_at = None
-        consultation.status = ConsultationStatus.CANCELLED
+        booking_preserved = False
+        if consultation.status == ConsultationStatus.BOOKED and consultation.slot_id:
+            slot = await self.slots.get_slot_for_update(consultation.slot_id)
+            booking_preserved = bool(
+                slot
+                and slot.status == "booked"
+                and slot.consultation_id == consultation.id
+            )
+
+        if not booking_preserved:
+            if consultation.slot_id:
+                slot = await self.slots.get_slot_for_update(consultation.slot_id)
+                if slot and slot.consultation_id == consultation.id:
+                    await self.slots.release_slot(slot.id, consultation.id)
+            consultation.slot_id = None
+            consultation.scheduled_at = None
+            consultation.status = ConsultationStatus.CANCELLED
+            case.next_action = "Обработать возврат полученного платежа"
+
         payment.status = PaymentStatus.REFUND_PENDING
-        case.next_action = "Обработать возврат полученного платежа"
 
         await self._record_resolution(
             payment=payment,
@@ -362,6 +489,10 @@ class PaymentReviewService:
             new_value={
                 "payment_status": payment.status,
                 "consultation_status": consultation.status,
+                "slot_id": consultation.slot_id,
+                "booking_preserved": booking_preserved,
+                "case_status": case.status,
+                "case_next_action": case.next_action,
             },
         )
         await self.notifications.emit(
@@ -371,6 +502,7 @@ class PaymentReviewService:
                 "case_number": case.case_number,
                 "payment_id": payment.id,
                 "amount": str(payment.amount),
+                "booking_preserved": booking_preserved,
             },
             dedupe_key=f"payment-review:{payment.id}:refund-pending",
         )
