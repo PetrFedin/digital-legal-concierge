@@ -15,6 +15,7 @@ from app.bot.keyboards import one
 from app.config import settings
 from app.domain.cases.client_case_scope import (
     active_or_latest_completed_m1_case_for_user,
+    latest_completed_strict_m1_case_for_user,
 )
 from app.domain.consultations.consultation_intake import (
     ConsultationDescriptionRequired,
@@ -380,16 +381,12 @@ async def consult_pay(callback: CallbackQuery, db):
 
 
 async def _show_missing_m1_payment_case(callback: CallbackQuery, db, ctx, user) -> None:
-    case, completed = await active_or_latest_completed_m1_case_for_user(
-        db,
-        case_service=ctx.case_service,
-        user_id=user.id,
-    )
-    if completed and case:
+    completed = await latest_completed_strict_m1_case_for_user(db, user_id=user.id)
+    if completed:
         await callback.message.edit_text(
-            f"✅ Дело {case.case_number} уже завершено.\n\n"
+            f"✅ Дело {completed.case_number} уже завершено.\n\n"
             "Эта старая кнопка оплаты больше не создаёт платежей. "
-            "Проверьте итог или платёжную историю завершённого дела.",
+            "Проверьте итог или платёжную историю завершённого M1-дела.",
             reply_markup=one(
                 ("💳 Оплаты", "payments_open"),
                 ("📁 Итог дела", "my_case_open"),
