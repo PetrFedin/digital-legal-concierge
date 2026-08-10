@@ -13,6 +13,7 @@ from app.bot.client_case_view import (
 from app.bot.consultation_result import latest_terminal_client_consultation
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
+from app.bot.payment_presentation import offline_m1_payment_presentation
 from app.domain.cases.client_case_scope import latest_completed_m1_case_for_user
 from app.domain.payments.payment_service import PaymentService
 from app.domain.statuses.payment_statuses import PaymentStatus
@@ -108,7 +109,10 @@ def _case_buttons(view) -> list[tuple[str, str]]:
     if has_consultation_result:
         buttons.append(("👨‍⚖ Итог консультации", "consultation_result_open"))
 
-    if view.action and not (
+    offline_payment = offline_m1_payment_presentation(view)
+    if offline_payment:
+        buttons.append((offline_payment.button_label, offline_payment.callback))
+    elif view.action and not (
         has_consultation_result
         and view.action.callback == "consultation_booked_open"
     ):
@@ -279,9 +283,12 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
         and view.action
         and view.action.callback == "consultation_booked_open"
     )
+    offline_payment = offline_m1_payment_presentation(view)
     shown_next_action = (
         "Откройте итог консультации — там показан актуальный следующий шаг."
         if stale_booking_action
+        else offline_payment.next_action
+        if offline_payment
         else view.next_action
     )
 
@@ -406,6 +413,17 @@ async def next_action(callback: CallbackQuery, db):
             callback,
             db,
             notice="Статус дела уже изменился. Показан актуальный следующий шаг.",
+        )
+        return
+
+    if offline_m1_payment_presentation(view):
+        await _render_case(
+            callback,
+            db,
+            notice=(
+                "Онлайн-оплата сейчас отключена. Новый платёж не создавался: "
+                "показан статус уже открытого финансового этапа."
+            ),
         )
         return
 
