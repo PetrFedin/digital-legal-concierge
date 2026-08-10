@@ -7,13 +7,19 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
+from sqlalchemy import select
 
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
+from app.domain.cases.client_case_scope import (
+    CLIENT_COMPLETED_CASE_STATUSES,
+    latest_completed_case_for_user,
+)
 from app.domain.messages.message_service import MessageService
 from app.domain.notifications.immediate_delivery import deliver_selected_notifications
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.payments.mode import payments_disabled
+from app.models.case import Case
 
 router = Router()
 
@@ -36,6 +42,7 @@ URGENCY_LEVELS = {
     "msg_urgency_soon": "Нужен ответ сегодня",
     "msg_urgency_critical": "Критично: срок менее 24 часов",
 }
+COMPLETED_STATUS_VALUES = {str(value) for value in CLIENT_COMPLETED_CASE_STATUSES}
 
 
 class MessageStates(StatesGroup):
@@ -43,6 +50,10 @@ class MessageStates(StatesGroup):
     choosing_urgency = State()
     waiting_message = State()
     confirming_message = State()
+
+
+class MessageTargetChanged(RuntimeError):
+    """The draft target no longer matches the active client case."""
 
 
 def _truncate(value: str, limit: int) -> str:
@@ -164,18 +175,28 @@ def _history_slice(messages, requested_page: int):
     return list(messages[start:end]), page, total_pages
 
 
-def _format_dialog(messages, requested_page: int = 0) -> tuple[str, int, int]:
+def _format_dialog(
+    messages,
+    requested_page: int = 0,
+    *,
+    read_only: bool = False,
+) -> tuple[str, int, int]:
     page_messages, page, total_pages = _history_slice(messages, requested_page)
+    heading = "💬 Переписка завершённого дела" if read_only else "💬 Переписка по делу"
     if not page_messages:
+        detail = (
+            "Сообщений в архиве нет."
+            if read_only
+            else "Сообщений пока нет. Вы можете отправить первый вопрос команде."
+        )
         return (
-            "💬 Переписка по делу\n\n"
-            "Сообщений пока нет. Вы можете отправить первый вопрос команде.",
+            f"{heading}\n\n{detail}",
             page,
             total_pages,
         )
 
     lines = [
-        "💬 Переписка по делу",
+        heading,
         f"Страница {page + 1} из {total_pages}. Первая страница — самые новые сообщения.",
     ]
     for item in page_messages:
@@ -190,16 +211,19 @@ def _format_dialog(messages, requested_page: int = 0) -> tuple[str, int, int]:
     return _truncate("\n\n".join(lines), HISTORY_TEXT_LIMIT), page, total_pages
 
 
-def _history_keyboard(page: int, total_pages: int):
+def _history_keyboard(page: int, total_pages: int, *, read_only: bool = False):
     buttons: list[tuple[str, str]] = []
     if page < total_pages - 1:
         buttons.append(("⬅️ Более ранние", f"message_history:{page + 1}"))
     if page > 0:
         buttons.append(("Более новые ➡️", f"message_history:{page - 1}"))
+    if not read_only:
+        buttons.append(("✉️ Написать сообщение", "message_create"))
+    buttons.append(("🔄 Обновить", f"message_history:{page}"))
+    if read_only:
+        buttons.append(("🕘 История дела", "case_history_open"))
     buttons.extend(
         [
-            ("✉️ Написать сообщение", "message_create"),
-            ("🔄 Обновить", f"message_history:{page}"),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         ]
@@ -253,8 +277,88 @@ def _delivery_status_text(
     )
 
 
+async def _guard_existing_draft(callback: CallbackQuery, state: FSMContext) -> bool:
+    data = await state.get_data()
+    if not str(data.get("draft_text") or "").strip():
+        return False
+    await state.set_state(MessageStates.confirming_message)
+    await _replace_or_send(
+        callback,
+        "📝 У вас уже есть неотправленный черновик. Он не удалён.\n\n"
+        + _draft_review_text(data),
+        reply_markup=_review_markup(),
+    )
+    await callback.answer("Сначала завершите или удалите черновик.")
+    return True
+
+
+async def _start_message_draft(
+    callback: CallbackQuery,
+    state: FSMContext,
+    *,
+    case: Case | None,
+) -> None:
+    await state.clear()
+    await state.update_data(
+        case_id=int(case.id) if case else None,
+        case_number=str(case.case_number) if case else None,
+        new_request_confirmed=case is None,
+    )
+    await state.set_state(MessageStates.choosing_category)
+    data = await state.get_data()
+    await callback.message.edit_text(
+        _category_prompt(data),
+        reply_markup=one(*_category_buttons()),
+    )
+
+
+async def _locked_message_target(db, ctx, user, data: dict[str, object]) -> Case:
+    """Resolve the exact case captured when the draft started, under a row lock."""
+
+    raw_case_id = data.get("case_id")
+    if raw_case_id is not None:
+        try:
+            case_id = int(raw_case_id)
+        except (TypeError, ValueError) as error:
+            raise MessageTargetChanged(
+                "Исходное дело черновика больше не определяется однозначно."
+            ) from error
+        case = (
+            await db.execute(
+                select(Case)
+                .where(Case.id == case_id, Case.client_id == user.id)
+                .with_for_update()
+            )
+        ).scalars().first()
+        if case is None or str(case.status) in COMPLETED_STATUS_VALUES:
+            raise MessageTargetChanged(
+                "Исходное дело уже завершено или недоступно для новых сообщений."
+            )
+        active = await ctx.case_service.get_active_case_for_user(user.id)
+        if active is None or int(active.id) != case_id:
+            raise MessageTargetChanged(
+                "Активное дело изменилось после создания черновика."
+            )
+        return case
+
+    if not bool(data.get("new_request_confirmed")):
+        raise MessageTargetChanged(
+            "Создание нового обращения не было подтверждено."
+        )
+
+    active = await ctx.case_service.get_active_case_for_user(user.id)
+    if active is not None:
+        raise MessageTargetChanged(
+            "Пока вы готовили новое обращение, появилось активное дело. "
+            "Черновик не прикреплён к нему автоматически."
+        )
+    return await ctx.get_or_create_active_case_for_user(user)
+
+
 @router.callback_query(lambda c: c.data == "contact_lawyer")
 async def contact_lawyer(callback: CallbackQuery, db, state: FSMContext):
+    if await _guard_existing_draft(callback, state):
+        return
     await state.clear()
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
@@ -280,12 +384,28 @@ async def contact_lawyer(callback: CallbackQuery, db, state: FSMContext):
         )
         return
 
+    completed = await latest_completed_case_for_user(db, user_id=user.id)
+    if completed:
+        await callback.message.edit_text(
+            "🔒 Последнее обращение уже завершено.\n\n"
+            f"Дело {completed.case_number} доступно в архиве только для просмотра. "
+            "Старая кнопка связи не добавит сообщение в закрытое дело. "
+            "Для нового вопроса создайте отдельное обращение явно.",
+            reply_markup=one(
+                ("💬 Архив переписки", "message_history"),
+                ("📁 Итог обращения", "my_case_open"),
+                ("🆕 Создать новое обращение", "message_new_request"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
     await callback.message.edit_text(
         "💬 Юридическая помощь\n\n"
-        "Активного дела пока нет. Можно задать вопрос — после отправки будет "
-        "создано новое обращение, либо сразу выбрать время консультации.",
+        "Активного дела пока нет. Новый вопрос создаст отдельное обращение только "
+        "после вашего явного выбора.",
         reply_markup=one(
-            ("✉️ Задать вопрос", "message_create"),
+            ("🆕 Задать вопрос новым обращением", "message_new_request"),
             ("📅 Выбрать время консультации", "consult_booking_start"),
             ("🧮 Рассчитать неустойку", "calc_start"),
             ("🏠 Главная", "nav_home"),
@@ -297,11 +417,17 @@ async def contact_lawyer(callback: CallbackQuery, db, state: FSMContext):
     lambda c: bool(c.data)
     and (c.data == "message_history" or c.data.startswith("message_history:"))
 )
-async def message_history(callback: CallbackQuery, db):
+async def message_history(callback: CallbackQuery, db, state: FSMContext):
+    if await _guard_existing_draft(callback, state):
+        return
     requested_page = _history_page_from_callback(callback.data)
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     case = await ctx.case_service.get_active_case_for_user(user.id)
+    read_only = False
+    if not case:
+        case = await latest_completed_case_for_user(db, user_id=user.id)
+        read_only = case is not None
     if not case:
         await _safe_edit(
             callback,
@@ -318,7 +444,11 @@ async def message_history(callback: CallbackQuery, db):
     service = MessageService(db)
     try:
         messages = await service.list_case_messages(case.id, limit=100)
-        text, page, total_pages = _format_dialog(messages, requested_page)
+        text, page, total_pages = _format_dialog(
+            messages,
+            requested_page,
+            read_only=read_only,
+        )
         page_messages, _, _ = _history_slice(messages, page)
         visible_team_ids = tuple(
             int(item.id)
@@ -339,7 +469,7 @@ async def message_history(callback: CallbackQuery, db):
         )
         return
 
-    markup = _history_keyboard(page, total_pages)
+    markup = _history_keyboard(page, total_pages, read_only=read_only)
     try:
         changed = await _safe_edit(callback, text, reply_markup=markup)
         if changed:
@@ -365,19 +495,62 @@ async def message_create(
     state: FSMContext,
     db,
 ):
-    await state.clear()
+    if await _guard_existing_draft(callback, state):
+        return
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     case = await ctx.case_service.get_active_case_for_user(user.id)
-    await state.update_data(
-        case_number=str(case.case_number) if case else None,
-    )
-    await state.set_state(MessageStates.choosing_category)
-    data = await state.get_data()
+    if case:
+        await _start_message_draft(callback, state, case=case)
+        return
+
+    await state.clear()
+    completed = await latest_completed_case_for_user(db, user_id=user.id)
+    if completed:
+        await callback.message.edit_text(
+            "🔒 Это старое действие от уже завершённого обращения.\n\n"
+            f"Дело {completed.case_number} не принимает новые сообщения. "
+            "Архив останется без изменений. Если вопрос новый, создайте отдельное обращение явно.",
+            reply_markup=one(
+                ("💬 Архив переписки", "message_history"),
+                ("📁 Итог обращения", "my_case_open"),
+                ("🆕 Создать новое обращение", "message_new_request"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
     await callback.message.edit_text(
-        _category_prompt(data),
-        reply_markup=one(*_category_buttons()),
+        "✉️ Активного дела сейчас нет.\n\n"
+        "Чтобы старое сообщение или случайная кнопка не создали новое дело автоматически, "
+        "подтвердите новый запрос отдельным действием.",
+        reply_markup=one(
+            ("🆕 Создать новое обращение", "message_new_request"),
+            ("🧮 Рассчитать неустойку", "calc_start"),
+            ("🏠 Главная", "nav_home"),
+        ),
     )
+
+
+@router.callback_query(lambda c: c.data == "message_new_request")
+async def message_new_request(callback: CallbackQuery, state: FSMContext, db):
+    if await _guard_existing_draft(callback, state):
+        return
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    active = await ctx.case_service.get_active_case_for_user(user.id)
+    if active:
+        await callback.message.edit_text(
+            "📁 Пока вы открывали новый запрос, появилось активное дело. "
+            "Новое обращение не создано. Выберите, хотите ли написать по текущему делу.",
+            reply_markup=one(
+                ("✉️ Написать по текущему делу", "message_create"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+    await _start_message_draft(callback, state, case=None)
 
 
 @router.callback_query(lambda c: c.data == "message_back_category")
@@ -588,6 +761,74 @@ async def message_discard(callback: CallbackQuery, state: FSMContext):
     await callback.answer("Черновик удалён.")
 
 
+@router.callback_query(lambda c: c.data == "message_retarget_new_confirm")
+async def message_retarget_new_confirm(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if not str(data.get("draft_text") or "").strip():
+        await callback.message.edit_text(
+            "Черновик уже отсутствует. Новое обращение не создано.",
+            reply_markup=one(
+                ("✉️ Новый вопрос", "message_create"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+    await state.set_state(MessageStates.confirming_message)
+    await callback.message.edit_text(
+        "🆕 Перенести сохранённый черновик в новое обращение?\n\n"
+        "Исходное дело останется закрытым и не изменится. После подтверждения вы снова увидите текст "
+        "и отдельно нажмёте «Отправить вопрос» — автоматической отправки не будет.",
+        reply_markup=one(
+            ("Да, подготовить новое обращение", "message_retarget_new"),
+            ("↩️ Вернуться к черновику", "message_review_return"),
+            ("✖️ Отменить черновик", "message_discard_confirm"),
+        ),
+    )
+
+
+@router.callback_query(lambda c: c.data == "message_retarget_new")
+async def message_retarget_new(callback: CallbackQuery, state: FSMContext, db):
+    data = await state.get_data()
+    if not str(data.get("draft_text") or "").strip():
+        await state.clear()
+        await callback.message.edit_text(
+            "Черновик уже отсутствует. Новое обращение не создано.",
+            reply_markup=one(
+                ("✉️ Новый вопрос", "message_create"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    active = await ctx.case_service.get_active_case_for_user(user.id)
+    if active:
+        await state.set_state(MessageStates.confirming_message)
+        await callback.message.edit_text(
+            "📁 Уже появилось активное дело. Новый кейс не создан, а черновик не прикреплён к нему. "
+            "Вернитесь к черновику или откройте текущее дело и решите контекст явно.",
+            reply_markup=one(
+                ("↩️ Вернуться к черновику", "message_review_return"),
+                ("📁 Моё дело", "my_case_open"),
+                ("✖️ Отменить черновик", "message_discard_confirm"),
+            ),
+        )
+        return
+
+    await state.update_data(
+        case_id=None,
+        case_number=None,
+        new_request_confirmed=True,
+    )
+    await state.set_state(MessageStates.confirming_message)
+    data = await state.get_data()
+    await callback.message.edit_text(
+        "🆕 Черновик подготовлен для нового обращения. Ничего ещё не отправлено.\n\n"
+        + _draft_review_text(data),
+        reply_markup=_review_markup(),
+    )
+
+
 @router.callback_query(lambda c: c.data == "message_submit")
 async def message_submit(callback: CallbackQuery, state: FSMContext, db):
     data = await state.get_data()
@@ -622,9 +863,7 @@ async def message_submit(callback: CallbackQuery, state: FSMContext, db):
     try:
         ctx = BotContextService(db)
         user = await ctx.get_user_from_callback(callback)
-        case = await ctx.case_service.get_active_case_for_user(user.id)
-        if not case:
-            case = await ctx.get_or_create_active_case_for_user(user)
+        case = await _locked_message_target(db, ctx, user, data)
 
         created, is_new = await MessageService(db).get_or_create_client_message(
             case=case,
@@ -659,6 +898,23 @@ async def message_submit(callback: CallbackQuery, state: FSMContext, db):
         case_number = str(case.case_number)
         lawyer_assigned = bool(case.assigned_lawyer_id)
         await db.commit()
+    except MessageTargetChanged as error:
+        await db.rollback()
+        await state.set_state(MessageStates.confirming_message)
+        await _replace_or_send(
+            callback,
+            "⚠️ Вопрос не отправлен: контекст дела изменился.\n\n"
+            f"{error}\n\n"
+            "Черновик сохранён. Он не будет автоматически перенесён в другое или новое дело.",
+            reply_markup=one(
+                ("↩️ Вернуться к черновику", "message_review_return"),
+                ("🆕 Перенести в новое обращение", "message_retarget_new_confirm"),
+                ("📁 Моё дело", "my_case_open"),
+                ("✖️ Отменить черновик", "message_discard_confirm"),
+            ),
+        )
+        await callback.answer("Отправка остановлена: дело изменилось.")
+        return
     except Exception:
         await db.rollback()
         await state.set_state(MessageStates.confirming_message)
