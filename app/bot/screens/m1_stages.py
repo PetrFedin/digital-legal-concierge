@@ -11,7 +11,7 @@ from aiogram.types import CallbackQuery
 
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
-from app.domain.cases.client_case_scope import latest_completed_m1_case_for_user
+from app.domain.cases.client_case_scope import latest_completed_strict_m1_case_for_user
 from app.domain.payments.mode import payments_disabled
 from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
@@ -97,7 +97,7 @@ async def _show_missing_or_completed_stage(
 ) -> None:
     """Route an old M1 callback to the archive instead of silently starting a new case."""
 
-    completed = await latest_completed_m1_case_for_user(db, user_id=user.id)
+    completed = await latest_completed_strict_m1_case_for_user(db, user_id=user.id)
     if not completed:
         await _show_stale_stage(
             callback,
