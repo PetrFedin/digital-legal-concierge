@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.bot.client_case_view import load_client_case_view
 from app.bot.screens.my_case import _payment_summary
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
@@ -86,6 +87,38 @@ async def test_my_case_payment_summary_describes_real_review_and_refund_state(tm
         )
 
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_shared_client_case_view_always_reads_persisted_payment_state(tmp_path):
+    engine, factory = await create_database(tmp_path, "shared-payment-view.db")
+    async with factory() as session:
+        case = await create_case(session, suffix=2)
+        payment = payment_for(
+            case,
+            status=PaymentStatus.PAID_REVIEW,
+            suffix="shared-review",
+        )
+        session.add(payment)
+        await session.commit()
+
+        view = await load_client_case_view(session, case)
+        assert view.payments_summary == "Есть платёж, который проверяет команда"
+
+        payment.status = PaymentStatus.REFUND_PENDING
+        await session.commit()
+        view = await load_client_case_view(session, case)
+        assert view.payments_summary == "Возврат денежных средств обрабатывается"
+
+    await engine.dispose()
+
+
+def test_shared_client_case_view_does_not_hide_history_by_provider_mode():
+    source = Path("app/bot/client_case_view.py").read_text(encoding="utf-8")
+    assert "payments_disabled" not in source
+    assert "select(Payment)" in source
+    assert "Есть платёж, который проверяет команда" in source
+    assert "Возврат денежных средств обрабатывается" in source
 
 
 def test_admin_case_detail_has_contextual_review_and_refund_navigation():
