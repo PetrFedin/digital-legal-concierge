@@ -121,14 +121,26 @@ def test_shared_client_case_view_does_not_hide_history_by_provider_mode():
     assert "Возврат денежных средств обрабатывается" in source
 
 
-def test_admin_case_detail_has_contextual_review_and_refund_navigation():
+def test_admin_case_detail_has_exact_contextual_review_and_refund_navigation():
     source = Path("app/admin/case_detail_page.py").read_text(encoding="utf-8")
     assert "Получено — требуется сверка" in source
     assert "Возврат обрабатывается" in source
     assert "Открыть сверку этого платежа" in source
-    assert 'href="/admin/payment-reviews/ui"' in source
-    assert "Открыть очередь возвратов" in source
-    assert 'href="/admin/refunds/ui"' in source
+    assert 'href="/admin/payment-reviews/ui?payment_id=${x.id}"' in source
+    assert "Открыть возврат этого платежа" in source
+    assert 'href="/admin/refunds/ui?payment_id=${x.id}"' in source
+    assert ".item.payment-review" in source
+    assert ".item.payment-refund" in source
+
+
+def test_workdesk_visually_prioritizes_financial_attention_without_extra_actions():
+    source = Path("app/api/workdesk_ui.py").read_text(encoding="utf-8")
+    assert "code==='overdue'||code==='payment_review'" in source
+    assert "code==='unassigned'||code==='document_draft'||code==='document_legacy'||code==='refund'" in source
+    assert "financial-review" in source
+    assert "financial-refund" in source
+    assert "function attentionClass(x)" in source
+    assert "primary(x)" in source
 
 
 def test_payment_notifications_do_not_claim_booking_was_cancelled_by_refund():
