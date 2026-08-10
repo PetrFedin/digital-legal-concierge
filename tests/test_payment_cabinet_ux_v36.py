@@ -133,13 +133,19 @@ def test_admin_case_detail_has_exact_contextual_review_and_refund_navigation():
     assert ".item.payment-refund" in source
 
 
-def test_workdesk_visually_prioritizes_financial_attention_without_extra_actions():
+def test_workdesk_visually_prioritizes_and_preserves_financial_primary_action():
     source = Path("app/api/workdesk_ui.py").read_text(encoding="utf-8")
     assert "code==='overdue'||code==='payment_review'" in source
     assert "code==='unassigned'||code==='document_draft'||code==='document_legacy'||code==='refund'" in source
     assert "financial-review" in source
     assert "financial-refund" in source
     assert "function attentionClass(x)" in source
+    assert "function currentPrimary(id,d)" in source
+    assert "function financialAttention(d)" in source
+    assert "/admin/payment-reviews/ui?payment_id=${review.id}" in source
+    assert "/admin/refunds/ui?payment_id=${refund.id}" in source
+    assert "Финансы требуют действия" in source
+    assert "Другие разделы дела" in source
     assert "primary(x)" in source
 
 
