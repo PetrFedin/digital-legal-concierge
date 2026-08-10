@@ -87,6 +87,30 @@ def _m1_payment_context_matches(case: Case, code: str) -> bool:
     return str(case.route or "") == RouteCode.M1.value and str(case.status) == str(expected)
 
 
+def payment_review_keyboard(case: Case):
+    """Safe recovery navigation while money is under manual reconciliation.
+
+    A received payment under review must not expose actions that can reserve a
+    different slot or create another payment before the team resolves the money.
+    """
+
+    items = []
+    if (
+        str(case.route or "") == RouteCode.M2.value
+        and str(case.status) == CaseStatus.M2_CONSULTATION_BOOKED.value
+    ):
+        items.append(("👨‍⚖ Текущая запись", "consultation_booked_open"))
+    items.extend(
+        [
+            ("✉️ Написать команде", "message_create"),
+            ("💳 Все оплаты", "payments_open"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ]
+    )
+    return one(*items)
+
+
 async def _present_committed_callback(
     callback: CallbackQuery,
     text: str,
@@ -546,18 +570,49 @@ async def open_payment(callback: CallbackQuery, db):
             ),
         )
         return
-    payment, _case = await get_owned_payment(callback, db, payment_id)
-    if not payment:
+    payment, case = await get_owned_payment(callback, db, payment_id)
+    if not payment or not case:
         return
-    review_note = (
-        "\n\n⚠️ Деньги получены, но запись проверяет администратор."
-        if payment.status == PaymentStatus.PAID_REVIEW
-        else ""
+
+    is_booked_m2 = bool(
+        str(case.route or "") == RouteCode.M2.value
+        and str(case.status) == CaseStatus.M2_CONSULTATION_BOOKED.value
     )
+    if payment.status == PaymentStatus.PAID_REVIEW:
+        context_note = (
+            "\n\n✅ Ваша подтверждённая консультация остаётся записанной. "
+            "Сверка этого платежа не переносит и не отменяет встречу."
+            if is_booked_m2
+            else (
+                "\n\nПока сверка не завершена, бот не меняет запись автоматически. "
+                "Команда проверит платёж и сообщит следующий шаг."
+            )
+        )
+        await callback.message.edit_text(
+            f"💳 {payment.title}\n"
+            f"Сумма: {money(payment.amount)}\n"
+            f"Статус: {payment_status_label(payment.status)}"
+            "\n\n⚠️ Деньги поступили, но автоматическое применение платежа остановлено для безопасной сверки."
+            f"{context_note}",
+            reply_markup=payment_review_keyboard(case),
+        )
+        return
+
+    if payment.status == PaymentStatus.REFUND_PENDING and is_booked_m2:
+        await callback.message.edit_text(
+            f"💳 {payment.title}\n"
+            f"Сумма: {money(payment.amount)}\n"
+            f"Статус: {payment_status_label(payment.status)}\n\n"
+            "Возврат этого платежа обрабатывается отдельно от записи на консультацию. "
+            "✅ Текущая подтверждённая встреча остаётся без изменений.",
+            reply_markup=payment_review_keyboard(case),
+        )
+        return
+
     await callback.message.edit_text(
         f"💳 {payment.title}\n"
         f"Сумма: {money(payment.amount)}\n"
-        f"Статус: {payment_status_label(payment.status)}{review_note}",
+        f"Статус: {payment_status_label(payment.status)}",
         reply_markup=payment_keyboard(payment),
     )
 
@@ -605,16 +660,22 @@ async def fake(callback: CallbackQuery, db):
         return
 
     if payment.status == PaymentStatus.PAID_REVIEW:
+        is_booked_m2 = bool(
+            str(case.route or "") == RouteCode.M2.value
+            and str(case.status) == CaseStatus.M2_CONSULTATION_BOOKED.value
+        )
         await _present_committed_callback(
             callback,
-            "⚠️ Оплата получена, но резерв времени уже изменился или истёк. "
-            "Администратор проверит платёж и свяжется с вами.",
-            reply_markup=one(
-                ("📅 Выбрать новое время", "consult_booking_start"),
-                ("✉️ Написать команде", "message_create"),
-                ("📁 Моё дело", "my_case_open"),
-                ("🏠 Главная", "nav_home"),
+            (
+                "⚠️ Оплата получена и передана команде на сверку. "
+                "Автоматических изменений записи не выполнено."
+                + (
+                    "\n\n✅ Ваша подтверждённая консультация остаётся без изменений."
+                    if is_booked_m2
+                    else "\n\nКоманда проверит деньги и сообщит следующий безопасный шаг."
+                )
             ),
+            reply_markup=payment_review_keyboard(case),
         )
         return
 
