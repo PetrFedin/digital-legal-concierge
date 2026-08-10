@@ -1,7 +1,10 @@
+import ast
+import re
 from pathlib import Path
 
 
 SCREENS_DIR = Path("app/bot/screens")
+BOT_ENTRY = Path("app/bot/bot.py")
 
 CRITICAL_EXACT_CALLBACKS = {
     "nav_home",
@@ -21,42 +24,89 @@ CRITICAL_PREFIX_CALLBACKS = {
     "pay_open:",
 }
 
+CRITICAL_ROUTER_REGISTRATIONS = {
+    "common.router",
+    "calculator.router",
+    "my_case.router",
+    "document_action_center.router",
+    "documents.router",
+    "consultation_results.router",
+    "payments.router",
+    "consultations.router",
+    "m1_stages.router",
+    "messages.router",
+    "history.router",
+}
 
-def _screen_source() -> str:
-    return "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in sorted(SCREENS_DIR.glob("*.py"))
+
+def _callback_decorators() -> list[tuple[Path, str]]:
+    decorators: list[tuple[Path, str]] = []
+    for path in sorted(SCREENS_DIR.glob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for decorator in node.decorator_list:
+                if not isinstance(decorator, ast.Call):
+                    continue
+                if getattr(decorator.func, "attr", None) != "callback_query":
+                    continue
+                segment = ast.get_source_segment(source, decorator)
+                if segment:
+                    decorators.append((path, segment))
+    return decorators
+
+
+def _has_exact_callback_handler(decorators: list[tuple[Path, str]], callback: str) -> bool:
+    quoted = re.escape(callback)
+    patterns = (
+        re.compile(rf"\b[A-Za-z_]\w*\.data\s*==\s*['\"]{quoted}['\"]"),
+        re.compile(
+            rf"\b[A-Za-z_]\w*\.data\s+in\s+[\[\(][^\]\)]*['\"]{quoted}['\"]"
+        ),
+        re.compile(rf"\bF\.data\.in_\([^)]*['\"]{quoted}['\"]"),
     )
+    return any(pattern.search(segment) for _, segment in decorators for pattern in patterns)
+
+
+def _has_prefix_callback_handler(decorators: list[tuple[Path, str]], prefix: str) -> bool:
+    quoted = re.escape(prefix)
+    pattern = re.compile(
+        rf"\b[A-Za-z_]\w*\.data\.startswith\(\s*['\"]{quoted}['\"]\s*\)"
+    )
+    return any(pattern.search(segment) for _, segment in decorators)
 
 
 def test_all_critical_exact_callbacks_have_router_handlers():
-    source = _screen_source()
-    missing = []
-    for callback in sorted(CRITICAL_EXACT_CALLBACKS):
-        exact_forms = (
-            f'c.data == "{callback}"',
-            f"c.data == '{callback}'",
-            f'c.data in ["{callback}"',
-            f"c.data in ['{callback}'",
-        )
-        if not any(form in source for form in exact_forms):
-            missing.append(callback)
-
+    decorators = _callback_decorators()
+    missing = [
+        callback
+        for callback in sorted(CRITICAL_EXACT_CALLBACKS)
+        if not _has_exact_callback_handler(decorators, callback)
+    ]
     assert not missing, f"Critical Telegram callbacks without handlers: {missing}"
 
 
 def test_all_critical_prefix_callbacks_have_router_handlers():
-    source = _screen_source()
-    missing = []
-    for prefix in sorted(CRITICAL_PREFIX_CALLBACKS):
-        prefix_forms = (
-            f'c.data.startswith("{prefix}")',
-            f"c.data.startswith('{prefix}')",
-        )
-        if not any(form in source for form in prefix_forms):
-            missing.append(prefix)
-
+    decorators = _callback_decorators()
+    missing = [
+        prefix
+        for prefix in sorted(CRITICAL_PREFIX_CALLBACKS)
+        if not _has_prefix_callback_handler(decorators, prefix)
+    ]
     assert not missing, f"Critical Telegram callback prefixes without handlers: {missing}"
+
+
+def test_critical_screen_routers_are_registered_in_dispatcher():
+    source = BOT_ENTRY.read_text(encoding="utf-8")
+    start = source.index("for router in [")
+    end = source.index("dispatcher.include_router(router)", start)
+    registration_block = source[start:end]
+    missing = sorted(
+        router for router in CRITICAL_ROUTER_REGISTRATIONS if router not in registration_block
+    )
+    assert not missing, f"Critical Telegram routers are not registered: {missing}"
 
 
 def test_completed_archive_buttons_use_only_guarded_navigation_callbacks():
@@ -80,3 +130,20 @@ def test_completed_archive_buttons_use_only_guarded_navigation_callbacks():
     assert '"pay_start_30000"' not in completed_block
     assert '"pay_court_70000"' not in completed_block
     assert '"pay_success_fee"' not in completed_block
+
+
+def test_stale_m1_callbacks_use_strict_m1_archive_scope_only():
+    stage_source = Path("app/bot/screens/m1_stages.py").read_text(encoding="utf-8")
+    stage_start = stage_source.index("async def _show_missing_or_completed_stage")
+    stage_end = stage_source.index("@router.callback_query", stage_start)
+    stage_block = stage_source[stage_start:stage_end]
+    assert "latest_completed_strict_m1_case_for_user" in stage_block
+    assert "latest_completed_m1_case_for_user" not in stage_block
+
+    payments_source = Path("app/bot/screens/payments.py").read_text(encoding="utf-8")
+    payment_start = payments_source.index("async def _show_missing_m1_payment_case")
+    payment_end = payments_source.index("async def start_payment", payment_start)
+    payment_block = payments_source[payment_start:payment_end]
+    assert "latest_completed_strict_m1_case_for_user" in payment_block
+    assert "active_or_latest_completed_m1_case_for_user" not in payment_block
+    assert '"message_create"' not in payment_block
