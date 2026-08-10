@@ -66,7 +66,7 @@ class PaymentReviewService:
 
     @staticmethod
     def reservation_context(payment: Payment) -> tuple[int | None, int | None]:
-        """Read the consultation and slot IDs encoded into an M2 payment key."""
+        """Read consultation and slot IDs encoded into an M2 payment key."""
 
         parts = str(payment.reservation_key or "").split(":")
         if len(parts) != 4 or parts[0] != "consultation" or parts[2] != "slot":
@@ -85,22 +85,47 @@ class PaymentReviewService:
         *,
         payment: Payment,
         case_id: int,
+        consultation_id: int | None = None,
     ) -> Consultation:
-        """Resolve review context from the payment itself, never from a newer case row.
+        """Resolve review context from the payment, with guarded legacy override.
 
-        Legacy payments without a parsable reservation key are accepted only when
-        the case has exactly one consultation. With multiple consultations the
-        association is ambiguous, so review fails closed instead of mutating the
-        latest consultation by accident.
+        A parsable reservation key is authoritative and cannot be overridden. For
+        legacy payments without a key, a caller may explicitly select a
+        consultation in the same case. Without an explicit choice, legacy context
+        is accepted only when the case has exactly one consultation.
         """
 
-        consultation_id, _ = self.reservation_context(payment)
-        if consultation_id is not None:
+        linked_consultation_id, _ = self.reservation_context(payment)
+        if linked_consultation_id is not None:
+            if (
+                consultation_id is not None
+                and int(consultation_id) != linked_consultation_id
+            ):
+                raise PaymentReviewResolutionError(
+                    "Выбранная консультация не совпадает с привязкой платежа. "
+                    "Автоматическое решение заблокировано."
+                )
+            target_id = linked_consultation_id
+        elif consultation_id is not None:
+            try:
+                target_id = int(consultation_id)
+            except (TypeError, ValueError) as error:
+                raise PaymentReviewResolutionError(
+                    "Некорректный consultation_id для проверки платежа"
+                ) from error
+            if target_id <= 0:
+                raise PaymentReviewResolutionError(
+                    "Некорректный consultation_id для проверки платежа"
+                )
+        else:
+            target_id = None
+
+        if target_id is not None:
             consultation = (
                 await self.db.execute(
                     select(Consultation)
                     .where(
-                        Consultation.id == consultation_id,
+                        Consultation.id == target_id,
                         Consultation.case_id == case_id,
                     )
                     .with_for_update()
@@ -130,7 +155,7 @@ class PaymentReviewService:
         if len(consultations) != 1:
             raise PaymentReviewResolutionError(
                 "У старого платежа нет точной привязки к консультации, а в деле их несколько. "
-                "Автоматическое решение заблокировано; требуется сверка по истории."
+                "Выберите консультацию после сверки истории."
             )
         return consultations[0]
 
@@ -209,6 +234,7 @@ class PaymentReviewService:
         payment_id: int,
         actor_id: int | None,
         comment: str,
+        consultation_id: int | None = None,
     ) -> tuple[Payment, Consultation]:
         comment = self._require_comment(comment)
         payment = await self._lock_payment(payment_id)
@@ -216,6 +242,7 @@ class PaymentReviewService:
         consultation = await self._lock_payment_consultation(
             payment=payment,
             case_id=case.id,
+            consultation_id=consultation_id,
         )
 
         if payment.status == PaymentStatus.PAID:
@@ -306,6 +333,7 @@ class PaymentReviewService:
         slot_id: int,
         actor_id: int | None,
         comment: str,
+        consultation_id: int | None = None,
     ) -> tuple[Payment, Consultation]:
         comment = self._require_comment(comment)
         payment = await self._lock_payment(payment_id)
@@ -313,6 +341,7 @@ class PaymentReviewService:
         consultation = await self._lock_payment_consultation(
             payment=payment,
             case_id=case.id,
+            consultation_id=consultation_id,
         )
 
         if payment.status == PaymentStatus.PAID:
@@ -427,6 +456,7 @@ class PaymentReviewService:
         payment_id: int,
         actor_id: int | None,
         comment: str,
+        consultation_id: int | None = None,
     ) -> tuple[Payment, Consultation]:
         comment = self._require_comment(comment)
         payment = await self._lock_payment(payment_id)
@@ -434,6 +464,7 @@ class PaymentReviewService:
         consultation = await self._lock_payment_consultation(
             payment=payment,
             case_id=case.id,
+            consultation_id=consultation_id,
         )
 
         if payment.status == PaymentStatus.REFUND_PENDING:
@@ -457,16 +488,21 @@ class PaymentReviewService:
             "case_next_action": case.next_action,
         }
 
-        booking_preserved = False
+        linked_booking_valid = False
         if consultation.status == ConsultationStatus.BOOKED and consultation.slot_id:
             slot = await self.slots.get_slot_for_update(consultation.slot_id)
-            booking_preserved = bool(
+            linked_booking_valid = bool(
                 slot
                 and slot.status == "booked"
                 and slot.consultation_id == consultation.id
             )
 
-        if not booking_preserved:
+        case_context_preserved = bool(
+            linked_booking_valid
+            or str(case.status) == str(CaseStatus.M2_CONSULTATION_BOOKED)
+        )
+
+        if not linked_booking_valid:
             if consultation.slot_id:
                 slot = await self.slots.get_slot_for_update(consultation.slot_id)
                 if slot and slot.consultation_id == consultation.id:
@@ -474,7 +510,8 @@ class PaymentReviewService:
             consultation.slot_id = None
             consultation.scheduled_at = None
             consultation.status = ConsultationStatus.CANCELLED
-            case.next_action = "Обработать возврат полученного платежа"
+            if not case_context_preserved:
+                case.next_action = "Обработать возврат полученного платежа"
 
         payment.status = PaymentStatus.REFUND_PENDING
 
@@ -490,7 +527,8 @@ class PaymentReviewService:
                 "payment_status": payment.status,
                 "consultation_status": consultation.status,
                 "slot_id": consultation.slot_id,
-                "booking_preserved": booking_preserved,
+                "booking_preserved": linked_booking_valid,
+                "case_context_preserved": case_context_preserved,
                 "case_status": case.status,
                 "case_next_action": case.next_action,
             },
@@ -502,7 +540,8 @@ class PaymentReviewService:
                 "case_number": case.case_number,
                 "payment_id": payment.id,
                 "amount": str(payment.amount),
-                "booking_preserved": booking_preserved,
+                "booking_preserved": linked_booking_valid,
+                "case_context_preserved": case_context_preserved,
             },
             dedupe_key=f"payment-review:{payment.id}:refund-pending",
         )
@@ -517,6 +556,7 @@ class PaymentReviewService:
         actor_id: int | None,
         comment: str,
         slot_id: int | None = None,
+        consultation_id: int | None = None,
     ) -> tuple[Payment, Consultation]:
         normalized = str(decision or "").strip().lower()
         if normalized == "confirm_existing":
@@ -524,6 +564,7 @@ class PaymentReviewService:
                 payment_id=payment_id,
                 actor_id=actor_id,
                 comment=comment,
+                consultation_id=consultation_id,
             )
         if normalized == "assign_slot":
             if not slot_id:
@@ -535,12 +576,14 @@ class PaymentReviewService:
                 slot_id=slot_id,
                 actor_id=actor_id,
                 comment=comment,
+                consultation_id=consultation_id,
             )
         if normalized == "refund_pending":
             return await self.route_to_refund(
                 payment_id=payment_id,
                 actor_id=actor_id,
                 comment=comment,
+                consultation_id=consultation_id,
             )
         raise PaymentReviewResolutionError(
             "Решение должно быть confirm_existing, assign_slot или refund_pending"
