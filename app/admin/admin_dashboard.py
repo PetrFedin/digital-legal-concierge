@@ -9,6 +9,7 @@ from app.domain.documents.document_workflow import (
 from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.document import Document
+from app.models.message import Message
 from app.models.notification import Notification
 from app.models.payment import Payment
 
@@ -66,6 +67,15 @@ class AdminDashboardService:
         )
         payment_reviews = await self._count(
             select(func.count(Payment.id)).where(Payment.status == "PAID_REVIEW")
+        )
+        refund_pending = await self._count(
+            select(func.count(Payment.id)).where(Payment.status == "REFUND_PENDING")
+        )
+
+        unread_client_messages = await self._count(
+            select(func.count(Message.id))
+            .where(Message.sender_type == "client")
+            .where(Message.is_read.is_(False))
         )
 
         total_documents = await self._count(select(func.count(Document.id)))
@@ -136,6 +146,7 @@ class AdminDashboardService:
                 "documents_draft": documents_draft,
                 "consultations_today": consultations_today,
                 "overdue": overdue_cases,
+                "client_messages_unread": unread_client_messages,
                 "telegram_delivery": notification_attention,
                 # Compatibility aliases for already deployed UI versions.
                 "documents_for_review": documents_review,
@@ -145,6 +156,7 @@ class AdminDashboardService:
                 "total": total_payments,
                 "waiting": waiting_payment,
                 "reviews": payment_reviews,
+                "refund_pending": refund_pending,
             },
             "documents": {
                 "total": total_documents,
@@ -169,6 +181,8 @@ class AdminDashboardService:
             "active_cases": active_cases,
             "waiting_payment": waiting_payment,
             "payment_reviews": payment_reviews,
+            "refund_pending": refund_pending,
+            "unread_client_messages": unread_client_messages,
             "sla_overdue": overdue_cases,
             "consultations_booked": consultations_booked,
             "closed_cases": closed_cases,
