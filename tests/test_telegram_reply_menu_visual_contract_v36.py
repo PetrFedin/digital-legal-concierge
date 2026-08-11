@@ -1,33 +1,29 @@
-from app.bot.keyboards import (
-    ACTIVE_CASE_REPLY_MENU_BUTTONS,
-    COMPLETED_CASE_REPLY_MENU_BUTTONS,
-    reply_main_menu,
-)
+from app.bot.keyboards import reply_main_menu
 
 
 def _texts(markup):
     return [[button.text for button in row] for row in markup.keyboard]
 
 
-def test_active_reply_menu_puts_case_and_payments_first():
+def _flat(markup):
+    return sum(_texts(markup), [])
+
+
+def test_active_reply_menu_has_no_dead_payment_button():
     assert _texts(reply_main_menu(True)) == [
-        ["📁 Моё дело", "💳 Оплаты"],
-        ["📄 Документы", "💬 Переписка"],
-        ["✉️ Новый вопрос"],
+        ["📁 Моё дело", "📄 Документы"],
+        ["💬 Переписка", "✉️ Новый вопрос"],
         ["🏠 Главная"],
     ]
-    assert ACTIVE_CASE_REPLY_MENU_BUTTONS == reply_main_menu(True).keyboard
+    assert "💳 Оплаты" not in _flat(reply_main_menu(True))
 
 
-def test_completed_reply_menu_is_read_only_but_keeps_financial_history():
-    assert _texts(reply_main_menu(False, completed_case=True)) == [
-        ["📁 Моё дело", "💳 Оплаты"],
-        ["🧮 Новое обращение"],
+def test_completed_reply_menu_is_read_only_and_has_no_dead_actions():
+    menu = reply_main_menu(False, completed_case=True)
+    assert _texts(menu) == [
+        ["📁 Моё дело", "🧮 Новое обращение"],
         ["🏠 Главная"],
     ]
-    assert "📄 Документы" not in sum(_texts(reply_main_menu(False, completed_case=True)), [])
-    assert "💬 Переписка" not in sum(_texts(reply_main_menu(False, completed_case=True)), [])
-    assert COMPLETED_CASE_REPLY_MENU_BUTTONS == reply_main_menu(
-        False,
-        completed_case=True,
-    ).keyboard
+    assert "📄 Документы" not in _flat(menu)
+    assert "💬 Переписка" not in _flat(menu)
+    assert "💳 Оплаты" not in _flat(menu)
