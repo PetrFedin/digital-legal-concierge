@@ -9,13 +9,15 @@ NEW_CASE_REPLY_MENU_BUTTONS = [
 ]
 
 ACTIVE_CASE_REPLY_MENU_BUTTONS = [
-    [KeyboardButton(text="📁 Моё дело"), KeyboardButton(text="📄 Документы")],
-    [KeyboardButton(text="💬 Переписка"), KeyboardButton(text="✉️ Новый вопрос")],
+    [KeyboardButton(text="📁 Моё дело"), KeyboardButton(text="💳 Оплаты")],
+    [KeyboardButton(text="📄 Документы"), KeyboardButton(text="💬 Переписка")],
+    [KeyboardButton(text="✉️ Вопрос по делу")],
     [KeyboardButton(text="🏠 Главная")],
 ]
 
 COMPLETED_CASE_REPLY_MENU_BUTTONS = [
-    [KeyboardButton(text="📁 Моё дело"), KeyboardButton(text="🧮 Рассчитать неустойку")],
+    [KeyboardButton(text="📁 Моё дело"), KeyboardButton(text="💳 Оплаты")],
+    [KeyboardButton(text="🧮 Новое обращение")],
     [KeyboardButton(text="🏠 Главная")],
 ]
 
@@ -30,10 +32,10 @@ def reply_main_menu(
 ) -> ReplyKeyboardMarkup:
     if case_exists:
         keyboard = ACTIVE_CASE_REPLY_MENU_BUTTONS
-        placeholder = "Выберите: дело, документы или переписка"
+        placeholder = "Дело · оплаты · документы · переписка"
     elif completed_case:
         keyboard = COMPLETED_CASE_REPLY_MENU_BUTTONS
-        placeholder = "Выберите: архив дела или новое обращение"
+        placeholder = "Архив дела · оплаты · новое обращение"
     else:
         keyboard = NEW_CASE_REPLY_MENU_BUTTONS
         placeholder = "Выберите: расчёт или помощь юриста"
@@ -60,8 +62,9 @@ def main_menu(
             kb.button(text=text, callback_data=callback_data)
         if not primary_action or primary_action[1] != "my_case_open":
             kb.button(text="📁 Моё дело", callback_data="my_case_open")
+        kb.button(text="💳 Оплаты", callback_data="payments_open")
         kb.button(text="🧮 Новое обращение", callback_data="calc_start")
-        kb.adjust(*([1, 1, 1] if primary_action and primary_action[1] != "my_case_open" else [1, 1]))
+        kb.adjust(*([1, 1, 1, 1] if primary_action and primary_action[1] != "my_case_open" else [1, 1, 1]))
         return kb.as_markup()
 
     if not case_exists:
