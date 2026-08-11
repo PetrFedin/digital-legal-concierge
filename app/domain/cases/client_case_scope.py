@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.statuses.case_statuses import CaseStatus
+from app.domain.statuses.case_statuses import CaseStatus, RouteCode
 from app.models.case import Case
 
 
@@ -75,6 +75,36 @@ async def latest_completed_strict_m1_case_for_user(
     return result.scalars().first()
 
 
+async def latest_completed_strict_m2_case_for_user(
+    db: AsyncSession,
+    *,
+    user_id: int,
+) -> Case | None:
+    """Return only a completed M2 case for stale consultation-action guards.
+
+    ``ARCHIVED`` is retained for legacy records, but it is considered M2 here
+    only when the persisted route is explicitly M2. This prevents an old M2
+    Telegram button from borrowing the archive context of a completed M1 case.
+    """
+
+    result = await db.execute(
+        select(Case)
+        .where(Case.client_id == user_id)
+        .where(
+            or_(
+                Case.status == CaseStatus.M2_CLOSED,
+                and_(
+                    Case.status == CaseStatus.ARCHIVED,
+                    Case.route == RouteCode.M2.value,
+                ),
+            )
+        )
+        .order_by(*_completed_ordering())
+        .limit(1)
+    )
+    return result.scalars().first()
+
+
 async def latest_completed_m1_case_for_user(
     db: AsyncSession,
     *,
@@ -111,4 +141,5 @@ __all__ = [
     "latest_completed_case_for_user",
     "latest_completed_m1_case_for_user",
     "latest_completed_strict_m1_case_for_user",
+    "latest_completed_strict_m2_case_for_user",
 ]
