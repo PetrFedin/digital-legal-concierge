@@ -9,15 +9,13 @@ NEW_CASE_REPLY_MENU_BUTTONS = [
 ]
 
 ACTIVE_CASE_REPLY_MENU_BUTTONS = [
-    [KeyboardButton(text="📁 Моё дело"), KeyboardButton(text="💳 Оплаты")],
-    [KeyboardButton(text="📄 Документы"), KeyboardButton(text="💬 Переписка")],
-    [KeyboardButton(text="✉️ Новый вопрос")],
+    [KeyboardButton(text="📁 Моё дело"), KeyboardButton(text="📄 Документы")],
+    [KeyboardButton(text="💬 Переписка"), KeyboardButton(text="✉️ Новый вопрос")],
     [KeyboardButton(text="🏠 Главная")],
 ]
 
 COMPLETED_CASE_REPLY_MENU_BUTTONS = [
-    [KeyboardButton(text="📁 Моё дело"), KeyboardButton(text="💳 Оплаты")],
-    [KeyboardButton(text="🧮 Новое обращение")],
+    [KeyboardButton(text="📁 Моё дело"), KeyboardButton(text="🧮 Новое обращение")],
     [KeyboardButton(text="🏠 Главная")],
 ]
 
@@ -32,10 +30,10 @@ def reply_main_menu(
 ) -> ReplyKeyboardMarkup:
     if case_exists:
         keyboard = ACTIVE_CASE_REPLY_MENU_BUTTONS
-        placeholder = "Дело · оплаты · документы · переписка"
+        placeholder = "Дело · документы · переписка"
     elif completed_case:
         keyboard = COMPLETED_CASE_REPLY_MENU_BUTTONS
-        placeholder = "Архив дела · оплаты · новое обращение"
+        placeholder = "Архив дела · новое обращение"
     else:
         keyboard = NEW_CASE_REPLY_MENU_BUTTONS
         placeholder = "Выберите: расчёт или помощь юриста"
