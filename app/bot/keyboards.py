@@ -11,7 +11,7 @@ NEW_CASE_REPLY_MENU_BUTTONS = [
 ACTIVE_CASE_REPLY_MENU_BUTTONS = [
     [KeyboardButton(text="📁 Моё дело"), KeyboardButton(text="💳 Оплаты")],
     [KeyboardButton(text="📄 Документы"), KeyboardButton(text="💬 Переписка")],
-    [KeyboardButton(text="✉️ Вопрос по делу")],
+    [KeyboardButton(text="✉️ Новый вопрос")],
     [KeyboardButton(text="🏠 Главная")],
 ]
 
