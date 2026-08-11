@@ -355,64 +355,6 @@ async def _locked_message_target(db, ctx, user, data: dict[str, object]) -> Case
     return await ctx.get_or_create_active_case_for_user(user)
 
 
-@router.callback_query(lambda c: c.data == "contact_lawyer")
-async def contact_lawyer(callback: CallbackQuery, db, state: FSMContext):
-    if await _guard_existing_draft(callback, state):
-        return
-    await state.clear()
-    ctx = BotContextService(db)
-    user = await ctx.get_user_from_callback(callback)
-    case = await ctx.case_service.get_active_case_for_user(user.id)
-
-    consultation_note = (
-        "записаться на консультацию без онлайн-оплаты"
-        if payments_disabled()
-        else "записаться на консультацию"
-    )
-    if case:
-        await callback.message.edit_text(
-            "💬 Связаться с юридической командой\n\n"
-            "Здесь можно написать по текущему делу, открыть переписку "
-            f"или {consultation_note}.",
-            reply_markup=one(
-                ("✉️ Написать по текущему делу", "message_create"),
-                ("🗂 Открыть переписку", "message_history"),
-                ("📅 Записаться на консультацию", "consult_booking_start"),
-                ("📁 Моё дело", "my_case_open"),
-                ("🏠 Главная", "nav_home"),
-            ),
-        )
-        return
-
-    completed = await latest_completed_case_for_user(db, user_id=user.id)
-    if completed:
-        await callback.message.edit_text(
-            "🔒 Последнее обращение уже завершено.\n\n"
-            f"Дело {completed.case_number} доступно в архиве только для просмотра. "
-            "Старая кнопка связи не добавит сообщение в закрытое дело. "
-            "Для нового вопроса создайте отдельное обращение явно.",
-            reply_markup=one(
-                ("💬 Архив переписки", "message_history"),
-                ("📁 Итог обращения", "my_case_open"),
-                ("🆕 Создать новое обращение", "message_new_request"),
-                ("🏠 Главная", "nav_home"),
-            ),
-        )
-        return
-
-    await callback.message.edit_text(
-        "💬 Юридическая помощь\n\n"
-        "Активного дела пока нет. Новый вопрос создаст отдельное обращение только "
-        "после вашего явного выбора.",
-        reply_markup=one(
-            ("🆕 Задать вопрос новым обращением", "message_new_request"),
-            ("📅 Выбрать время консультации", "consult_booking_start"),
-            ("🧮 Рассчитать неустойку", "calc_start"),
-            ("🏠 Главная", "nav_home"),
-        ),
-    )
-
-
 @router.callback_query(
     lambda c: bool(c.data)
     and (c.data == "message_history" or c.data.startswith("message_history:"))
