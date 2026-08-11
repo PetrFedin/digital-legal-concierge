@@ -11,6 +11,7 @@ from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
+from app.models.consultation import Consultation
 from app.models.payment import Payment
 
 
@@ -97,6 +98,25 @@ class ConsultationChangeService:
                 ),
             )
 
+    async def _lock_booked_consultation(self, *, case_id: int, consultation_id: int):
+        consultation = (
+            await self.db.execute(
+                select(Consultation)
+                .where(
+                    Consultation.id == consultation_id,
+                    Consultation.case_id == case_id,
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if consultation is None:
+            raise ValueError("Подтверждённая консультация не найдена")
+        if consultation.status != ConsultationStatus.BOOKED:
+            raise ValueError(
+                "Эта консультация уже была изменена. Откройте актуальную запись перед повторным действием."
+            )
+        return consultation
+
     async def cancel_and_prepare_rebooking(
         self,
         *,
@@ -108,8 +128,14 @@ class ConsultationChangeService:
     ):
         if consultation.case_id != case.id:
             raise ValueError("Консультация не относится к текущему делу")
-        if consultation.status != ConsultationStatus.BOOKED:
-            raise ValueError("Отменить можно только подтверждённую консультацию")
+
+        # Re-read under row lock immediately before any financial or slot
+        # mutation. A stale Telegram callback cannot cancel the same booking
+        # twice or create competing replacement contexts.
+        consultation = await self._lock_booked_consultation(
+            case_id=case.id,
+            consultation_id=consultation.id,
+        )
 
         old_consultation_id = consultation.id
         description = consultation.client_description
