@@ -15,6 +15,7 @@ from sqlalchemy import select
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.states import ConsultationDescriptionStates
+from app.domain.cases.client_case_scope import latest_completed_strict_m2_case_for_user
 from app.domain.consultations.consultation_intake import (
     ActiveCaseRouteConflict,
     ConsultationDescriptionRequired,
@@ -650,11 +651,44 @@ async def choose_slot(callback: CallbackQuery, db):
 @router.callback_query(lambda c: payments_disabled() and c.data == "consult_pay")
 async def stale_consult_pay(callback: CallbackQuery, db):
     ctx, user, case = await _active_context(callback, db)
-    if not case or str(case.route or "") != RouteCode.M2.value:
-        await callback.message.edit_text(
-            "Активная консультация не найдена.",
+    if not case:
+        completed_m2 = await latest_completed_strict_m2_case_for_user(db, user_id=user.id)
+        await db.rollback()
+        if completed_m2:
+            await _safe_edit(
+                callback,
+                "🔒 КОНСУЛЬТАЦИЯ УЖЕ ЗАВЕРШЕНА\n\n"
+                f"Дело {completed_m2.case_number} находится в архиве. "
+                "Старая кнопка подтверждения оплаты не создаёт новую запись и не меняет закрытое обращение.\n\n"
+                "Откройте итог консультации или нужный раздел архива.",
+                reply_markup=one(
+                    ("👨‍⚖ Итог консультации", "consultation_result_open"),
+                    ("💳 Оплаты", "payments_open"),
+                    ("💬 Архив переписки", "message_history"),
+                    ("🕘 История дела", "case_history_open"),
+                    ("📁 Моё дело", "my_case_open"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+            )
+            return
+        await _safe_edit(
+            callback,
+            "👨‍⚖ Активная консультация не найдена.\n\n"
+            "Эта старая кнопка ничего не изменила. Новую консультацию можно начать отдельным действием.",
             reply_markup=one(
-                ("📝 Начать консультацию", "consult_subject_start"),
+                ("💬 Юридическая помощь", "contact_lawyer"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+    if str(case.route or "") != RouteCode.M2.value:
+        await db.rollback()
+        await _safe_edit(
+            callback,
+            "У вас уже есть активное дело по другому маршруту. Старая кнопка консультации ничего не изменила.",
+            reply_markup=one(
+                ("✉️ Написать по текущему делу", "message_create"),
+                ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
         )
