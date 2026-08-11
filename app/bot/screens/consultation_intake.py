@@ -25,31 +25,13 @@ from app.domain.consultations.consultation_intake import (
 )
 from app.domain.consultations.consultation_service import ConsultationService
 from app.domain.consultations.slot_service import SlotService, SlotUnavailableError
-from app.domain.documents.document_workflow import normalize_document_status
 from app.domain.payments.mode import payments_disabled
 from app.domain.statuses.case_statuses import CaseStatus, RouteCode
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.models.case import Case
-from app.models.document import Document
 
 router = Router()
 logger = logging.getLogger(__name__)
-
-
-CONSULTATION_STATUS_LABELS = {
-    ConsultationStatus.DESCRIPTION_PENDING: "Нужно описать вопрос",
-    ConsultationStatus.DOCUMENTS_OPTIONAL: "Можно добавить документы",
-    ConsultationStatus.SLOT_PENDING: "Нужно выбрать время",
-    ConsultationStatus.SLOT_RESERVED: "Время временно зарезервировано",
-    ConsultationStatus.PAYMENT_PENDING: "Ожидается подтверждение записи",
-    ConsultationStatus.BOOKED: "Консультация подтверждена",
-    ConsultationStatus.DONE: "Консультация проведена",
-    ConsultationStatus.CLIENT_NO_SHOW: "Клиент не подключился",
-    ConsultationStatus.LAWYER_NO_SHOW: "Юрист не подключился",
-    ConsultationStatus.CANCELLED: "Консультация отменена",
-    ConsultationStatus.RESCHEDULED: "Консультация перенесена",
-    ConsultationStatus.CLOSED: "Консультация закрыта",
-}
 
 
 def _format_date(value) -> str:
@@ -69,14 +51,6 @@ def _slot_text(slot) -> str:
         f"{_format_date(slot.starts_at)} · "
         f"{_format_time(slot.starts_at)}–{_format_time(slot.ends_at)}"
     )
-
-
-def _consultation_status_label(status) -> str:
-    try:
-        normalized = ConsultationStatus(str(status))
-    except ValueError:
-        return "Статус уточняется"
-    return CONSULTATION_STATUS_LABELS.get(normalized, "Статус уточняется")
 
 
 def _date_buttons(slots, callback_prefix: str):
@@ -724,91 +698,3 @@ async def stale_consult_pay(callback: CallbackQuery, db):
         )
         return
     await _show_booked(callback, consultation, slot)
-
-
-@router.callback_query(lambda c: c.data == "consultation_booked_open")
-async def consultation_booked_open(callback: CallbackQuery, db):
-    ctx, _user, case = await _active_context(callback, db)
-    if not case or str(case.route or "") != RouteCode.M2.value:
-        await callback.message.edit_text(
-            "Активная консультация не найдена.",
-            reply_markup=one(
-                ("📝 Начать консультацию", "consult_subject_start"),
-                ("✉️ Написать команде", "message_create"),
-                ("🏠 Главная", "nav_home"),
-            ),
-        )
-        return
-    consultation = await ConsultationService(db).get_current_for_case(case.id)
-    if not consultation:
-        await callback.message.edit_text(
-            "Активная запись не найдена. Откройте сохранённый следующий шаг.",
-            reply_markup=one(
-                ("📁 Моё дело", "my_case_open"),
-                ("✉️ Написать команде", "message_create"),
-                ("🏠 Главная", "nav_home"),
-            ),
-        )
-        return
-
-    documents = list(
-        (
-            await db.execute(
-                select(Document)
-                .where(Document.case_id == case.id)
-                .order_by(Document.created_at.desc(), Document.id.desc())
-            )
-        ).scalars().all()
-    )
-    active_documents = [
-        item for item in documents if normalize_document_status(item.status) != "ARCHIVED"
-    ]
-    document_summary = (
-        f"добавлено {len(active_documents)}"
-        if active_documents
-        else "не добавлены (необязательно)"
-    )
-    date_text = (
-        _format_datetime(consultation.scheduled_at)
-        if consultation.scheduled_at
-        else "ещё не выбраны"
-    )
-    description_ready = consultation_description_ready(consultation)
-    status = ConsultationStatus(str(consultation.status))
-
-    if not description_ready:
-        primary = ("▶️ Описать вопрос", "consult_subject_start")
-    elif status == ConsultationStatus.PAYMENT_PENDING:
-        primary = ("▶️ Продолжить подтверждение", "consult_pay")
-    elif status == ConsultationStatus.BOOKED:
-        primary = ("✉️ Задать вопрос команде", "message_create")
-    else:
-        primary = ("▶️ Выбрать дату и время", "consult_booking_start")
-
-    buttons: list[tuple[str, str]] = [primary]
-    if description_ready:
-        buttons.append(("📝 Изменить вопрос", "consult_subject_start"))
-    buttons.append(("📄 Документы", "documents_open"))
-    if status == ConsultationStatus.BOOKED:
-        buttons.extend(
-            [
-                ("🔄 Перенести консультацию", "consult_reschedule"),
-                ("Отменить консультацию", "consult_cancel"),
-            ]
-        )
-    buttons.extend(
-        [
-            ("📁 Моё дело", "my_case_open"),
-            ("🏠 Главная", "nav_home"),
-        ]
-    )
-
-    await callback.message.edit_text(
-        "👨‍⚖ Консультация и подготовка\n\n"
-        f"Статус: {_consultation_status_label(consultation.status)}\n"
-        f"Дата и время: {date_text}\n"
-        f"Вопрос: {'сохранён' if description_ready else 'нужно описать'}\n"
-        f"Документы: {document_summary}\n\n"
-        "Следуйте первой кнопке — она соответствует текущему этапу.",
-        reply_markup=one(*buttons),
-    )
