@@ -78,10 +78,13 @@ def main_menu(
         text, callback_data = primary_action
         kb.button(text=text, callback_data=callback_data)
 
+    # Keep the active-case menu visually grouped by user intent:
+    # case context -> communication/finance -> new legal request/help.
+    # This mirrors the persistent reply menu while keeping payment history
+    # reachable even when online payment creation is disabled.
     kb.button(text="📁 Моё дело", callback_data="my_case_open")
     kb.button(text="📄 Документы", callback_data="documents_open")
     kb.button(text="💬 Переписка", callback_data="message_history")
-    kb.button(text="✉️ Задать вопрос по делу", callback_data="message_create")
 
     # Payment provider mode controls whether a new online payment link can be
     # created; it must never hide persisted payment status/history from a client.
@@ -90,15 +93,15 @@ def main_menu(
     if show_payments:
         kb.button(text="💳 Оплаты", callback_data="payments_open")
 
-    kb.button(text="⚖️ Связь и помощь", callback_data="contact_lawyer")
+    kb.button(text="✉️ Новый вопрос", callback_data="message_create")
+    kb.button(text="⚖️ Юрист / консультация", callback_data="contact_lawyer")
 
     row_sizes: list[int] = []
     if primary_action:
         row_sizes.append(1)
-    row_sizes.extend([2, 2])
-    if show_payments:
-        row_sizes.append(1)
-    row_sizes.append(1)
+    row_sizes.append(2)
+    row_sizes.append(2 if show_payments else 1)
+    row_sizes.append(2)
     kb.adjust(*row_sizes)
     return kb.as_markup()
 

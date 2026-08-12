@@ -83,10 +83,25 @@ CLIENT_ACTIONS: dict[str, ClientAction] = {
         "documents_open",
         "Загрузите актуальный ДДУ и остальные материалы по делу.",
     ),
+    "M1_DOCUMENTS_RECEIVED": ClientAction(
+        "Открыть документы",
+        "documents_open",
+        "Документы уже переданы. Откройте список, чтобы проверить состав и текущий статус файлов.",
+    ),
+    "M1_LAWYER_REVIEW": ClientAction(
+        "Открыть документы",
+        "documents_open",
+        "Юрист проверяет документы. Здесь можно увидеть актуальные версии и замечания без повторной отправки.",
+    ),
     "M1_DOCS_REQUESTED": ClientAction(
         "Добавить документы",
         "documents_open",
         "Добавьте документы или исправьте файл по замечанию юриста.",
+    ),
+    "M1_ACCEPTED": ClientAction(
+        "Посмотреть ход дела",
+        "case_history_open",
+        "Дело принято юристом. Следующий рабочий этап откроется командой; история уже доступна для просмотра.",
     ),
     "M1_CONTRACT_READY": ClientAction(
         "Открыть договор",
@@ -98,15 +113,55 @@ CLIENT_ACTIONS: dict[str, ClientAction] = {
         "pay_start_30000",
         "Продолжите к этапу оформления доверенности.",
     ),
+    "M1_PAYMENT_30000_RECEIVED": ClientAction(
+        "Проверить оплаты",
+        "payments_open",
+        "Первый платёж получен. Откройте историю оплат; следующий этап появится после системной обработки платежа.",
+    ),
     "M1_POWER_OF_ATTORNEY": ClientAction(
         "Оформить доверенность",
         "poa_instruction",
         "Откройте инструкцию по оформлению доверенности.",
     ),
+    "M1_POA_RECEIVED": ClientAction(
+        "Посмотреть ход дела",
+        "case_history_open",
+        "Доверенность передана юристу. От вас сейчас ничего не требуется; ход подготовки претензии доступен в истории.",
+    ),
+    "M1_CLAIM_PREPARATION": ClientAction(
+        "Посмотреть ход дела",
+        "case_history_open",
+        "Юрист готовит претензию. Откройте историю, чтобы видеть зафиксированные события без лишних повторных действий.",
+    ),
+    "M1_CLAIM_SENT": ClientAction(
+        "Посмотреть ход дела",
+        "case_history_open",
+        "Претензия направлена. Откройте историю дела; следующий процессуальный этап будет открыт юристом по фактическим событиям.",
+    ),
+    "M1_WAITING_30_DAYS": ClientAction(
+        "Открыть срок ожидания",
+        "court_status",
+        "Проверьте текущий срок после претензии. Этот экран только показывает состояние и сам не открывает судебный этап.",
+    ),
+    "M1_COURT_STAGE": ClientAction(
+        "Открыть судебный статус",
+        "court_status",
+        "Откройте судебный этап и актуальные безопасные действия по делу.",
+    ),
     "M1_WAITING_PAYMENT_70000": ClientAction(
         "Продолжить исполнение",
         "pay_court_70000",
         "Продолжите к этапу исполнения решения.",
+    ),
+    "M1_PAYMENT_70000_RECEIVED": ClientAction(
+        "Проверить оплаты",
+        "payments_open",
+        "Второй платёж получен. Откройте оплаты; исполнительный этап откроется по штатной логике после подтверждения.",
+    ),
+    "M1_ENFORCEMENT": ClientAction(
+        "Следить за исполнением",
+        "case_history_open",
+        "Исполнительное производство идёт. Значимые события фиксируются в истории дела; дополнительных действий сейчас не требуется.",
     ),
     "M1_MONEY_RECEIVED": ClientAction(
         "Завершить финансовый этап",
@@ -117,6 +172,11 @@ CLIENT_ACTIONS: dict[str, ClientAction] = {
         "Завершить финансовый этап",
         "pay_success_fee",
         "Завершите финальный финансовый этап сопровождения.",
+    ),
+    "M1_SUCCESS_FEE_RECEIVED": ClientAction(
+        "Проверить оплаты",
+        "payments_open",
+        "Финальный платёж получен. Откройте историю оплат; закрытие дела выполняется системой после подтверждённого финансового события.",
     ),
     "M1_REJECTED": ClientAction(
         "Уточнить решение",
@@ -334,8 +394,6 @@ def _priority_action(case, documents: DocumentOverview) -> ClientAction | None:
     status = str(case.status)
     if status in {"M1_DOCUMENTS_PENDING", "M1_DOCS_REQUESTED"}:
         return CLIENT_ACTIONS[status]
-    if status in {"M1_DOCUMENTS_RECEIVED", "M1_LAWYER_REVIEW"} and documents.review_count:
-        return None
     return client_action_for(case)
 
 

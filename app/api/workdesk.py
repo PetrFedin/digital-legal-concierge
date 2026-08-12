@@ -198,7 +198,21 @@ def _primary_action(
             "label": "Обработать возврат",
             "href": f"/admin/refunds/ui?payment_id={payment_id}&case_id={case.id}",
         }
-    # An unassigned case must get an owner before responsibility can be tracked.
+    # The visible primary action must follow the same ordering as the queue.
+    # Otherwise a lower-priority assignment button can hide an SLA breach or a
+    # client message even though the card itself is sorted above by that reason.
+    if "overdue" in reason_codes:
+        return {
+            "kind": "link",
+            "label": "Устранить просрочку",
+            "href": f"/admin/workdesk/cases/{case.id}/action/sla",
+        }
+    if "messages" in reason_codes:
+        return {
+            "kind": "link",
+            "label": "Прочитать сообщение клиента",
+            "href": f"/message-center/ui?case_id={case.id}",
+        }
     if "unassigned" in reason_codes:
         return {
             "kind": "auto_assign",
@@ -208,18 +222,6 @@ def _primary_action(
                 "expected_lawyer_id": None,
                 "expected_status": str(case.status),
             },
-        }
-    if "messages" in reason_codes:
-        return {
-            "kind": "link",
-            "label": "Прочитать сообщение клиента",
-            "href": f"/message-center/ui?case_id={case.id}",
-        }
-    if "overdue" in reason_codes:
-        return {
-            "kind": "link",
-            "label": "Устранить просрочку",
-            "href": f"/admin/workdesk/cases/{case.id}/action/sla",
         }
     if "documents" in reason_codes:
         return {
