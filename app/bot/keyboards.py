@@ -15,7 +15,7 @@ ACTIVE_CASE_REPLY_MENU_BUTTONS = [
 ]
 
 COMPLETED_CASE_REPLY_MENU_BUTTONS = [
-    [KeyboardButton(text="📁 Моё дело"), KeyboardButton(text="🧮 Новое обращение")],
+    [KeyboardButton(text="📁 Моё дело"), KeyboardButton(text="🧮 Рассчитать неустойку")],
     [KeyboardButton(text="🏠 Главная")],
 ]
 
@@ -33,7 +33,7 @@ def reply_main_menu(
         placeholder = "Дело · документы · переписка"
     elif completed_case:
         keyboard = COMPLETED_CASE_REPLY_MENU_BUTTONS
-        placeholder = "Архив дела · новое обращение"
+        placeholder = "Архив дела · новый расчёт"
     else:
         keyboard = NEW_CASE_REPLY_MENU_BUTTONS
         placeholder = "Выберите: расчёт или помощь юриста"
