@@ -74,6 +74,11 @@ def test_rejected_m1_has_both_real_exit_paths_and_precedes_generic_contact_flow(
     assert "transfer_to_m2" in recovery
     assert "CaseStatus.M1_CLOSED" in recovery
 
+    guard = Path("app/bot/consultation_route_guard.py").read_text(encoding="utf-8")
+    assert 'event.data == "contact_lawyer"' in guard
+    assert "CaseStatus.M1_REJECTED" in guard
+    assert "return await handler(event, data)" in guard
+
 
 def test_document_workspace_is_role_safe_and_mobile_friendly():
     source = Path("app/api/document_access_portal.py").read_text(encoding="utf-8")
@@ -81,6 +86,6 @@ def test_document_workspace_is_role_safe_and_mobile_friendly():
     assert "/lawyer/workspace/ui" in source
     assert "/admin/workdesk/ui" in source
     assert "@media(max-width:580px)" in source
-    assert "one-time" not in source.lower() or "однораз" in source.lower()
+    assert "однораз" in source.lower()
     assert "/document-access/documents/" in source
     assert "/document-access/cases/" in source
