@@ -46,12 +46,11 @@ def _archive_payment_text(payment) -> str:
     return "\n".join(lines)
 
 
-async def _payment_context(callback: CallbackQuery, db):
+def _payment_id(callback: CallbackQuery) -> int | None:
     try:
-        payment_id = int((callback.data or "").split(":", 1)[1])
+        return int((callback.data or "").split(":", 1)[1])
     except (IndexError, TypeError, ValueError):
-        return None, None
-    return await payment_screen.get_owned_payment(callback, db, payment_id)
+        return None
 
 
 @router.callback_query(lambda c: bool(c.data) and c.data.startswith("pay_open:"))
@@ -63,9 +62,16 @@ async def guard_archived_payment_open(callback: CallbackQuery, db):
     surface the URL or a DEV-success action again.
     """
 
-    payment, case = await _payment_context(callback, db)
-    if not payment or not case:
+    payment_id = _payment_id(callback)
+    if payment_id is None:
         await payment_screen.open_payment(callback, db)
+        return
+
+    payment, case = await payment_screen.get_owned_payment(callback, db, payment_id)
+    if not payment or not case:
+        # get_owned_payment already presented the ownership/not-found recovery.
+        # Do not invoke the original handler a second time and answer one
+        # Telegram callback twice.
         return
     if not _case_is_completed(case):
         await payment_screen.open_payment(callback, db)
@@ -81,9 +87,13 @@ async def guard_archived_payment_open(callback: CallbackQuery, db):
 async def guard_archived_fake_success(callback: CallbackQuery, db):
     """Block stale DEV-success callbacks after a case has been completed."""
 
-    payment, case = await _payment_context(callback, db)
-    if not payment or not case:
+    payment_id = _payment_id(callback)
+    if payment_id is None:
         await payment_screen.fake(callback, db)
+        return
+
+    payment, case = await payment_screen.get_owned_payment(callback, db, payment_id)
+    if not payment or not case:
         return
     if not _case_is_completed(case):
         await payment_screen.fake(callback, db)
