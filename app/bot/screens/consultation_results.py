@@ -139,7 +139,13 @@ class TerminalBookedOpenFilter(Filter):
 
 
 class TerminalContactLawyerFilter(Filter):
-    """Replace stale consultation continuation with messaging after an outcome."""
+    """Replace stale consultation continuation with messaging after an outcome.
+
+    A historical M2 result can remain on the same case after it moves into M1.
+    If that later M1 review is rejected, ``contact_lawyer`` is the intentional
+    decision entry for choosing M2 or closing the case. Do not let the old M2
+    result steal that callback before the dedicated rejection recovery router.
+    """
 
     async def __call__(self, callback: CallbackQuery, db) -> bool | dict[str, object]:
         if callback.data != "contact_lawyer":
@@ -148,6 +154,8 @@ class TerminalContactLawyerFilter(Filter):
         if not active:
             return False
         case, consultation = active
+        if _case_status(case) == CaseStatus.M1_REJECTED:
+            return False
         return {
             "result_case": case,
             "result_consultation": consultation,
