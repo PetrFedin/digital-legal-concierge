@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import HTMLResponse
@@ -19,6 +19,7 @@ from app.domain.consultations.client_no_show_resolution_service import (
     ClientNoShowResolutionError,
     ClientNoShowResolutionService,
 )
+from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.models.case import Case
 from app.models.consultation import Consultation
@@ -41,6 +42,15 @@ async def _client_no_show_rows(db: AsyncSession) -> list[dict[str, object]]:
             .outerjoin(ConsultationSlot, ConsultationSlot.id == Consultation.slot_id)
             .outerjoin(Lawyer, Lawyer.id == Consultation.lawyer_id)
             .where(Consultation.status == ConsultationStatus.CLIENT_NO_SHOW)
+            .where(Case.route == "M2")
+            .where(
+                Case.status.notin_(
+                    [
+                        CaseStatus.M2_CLOSED.value,
+                        CaseStatus.ARCHIVED.value,
+                    ]
+                )
+            )
             .order_by(Consultation.scheduled_at.asc(), Consultation.id.asc())
             .limit(300)
         )
