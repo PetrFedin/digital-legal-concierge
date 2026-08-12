@@ -54,7 +54,7 @@ def test_terminal_consultation_primary_callbacks_have_telegram_owners():
     assert not missing, f"Consultation result callbacks without handlers: {missing}"
 
 
-def test_rejected_m1_has_both_real_exit_paths_and_precedes_generic_contact_flow():
+def test_rejected_m1_has_both_real_exit_paths_and_precedes_old_m2_contact_flow():
     allowed = allowed_next_statuses(CaseStatus.M1_REJECTED)
     assert CaseStatus.M2_DESCRIPTION_PENDING in allowed
     assert CaseStatus.M1_CLOSED in allowed
@@ -78,6 +78,15 @@ def test_rejected_m1_has_both_real_exit_paths_and_precedes_generic_contact_flow(
     assert 'event.data == "contact_lawyer"' in guard
     assert "CaseStatus.M1_REJECTED" in guard
     assert "return await handler(event, data)" in guard
+
+    terminal_results = Path("app/bot/screens/consultation_results.py").read_text(
+        encoding="utf-8"
+    )
+    start = terminal_results.index("class TerminalContactLawyerFilter")
+    end = terminal_results.index("def _format_scheduled_at", start)
+    terminal_filter = terminal_results[start:end]
+    assert "CaseStatus.M1_REJECTED" in terminal_filter
+    assert "return False" in terminal_filter
 
 
 def test_document_workspace_is_role_safe_and_mobile_friendly():
