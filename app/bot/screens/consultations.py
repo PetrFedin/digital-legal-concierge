@@ -324,28 +324,13 @@ async def confirm_reschedule_slot(callback: CallbackQuery, db):
         await _show_missing_booked_context(callback, db, action="reschedule")
         return
 
-    if (
-        consultation.id != expected_consultation_id
-        or int(consultation.slot_id or 0) != expected_old_slot_id
-    ):
-        await _safe_edit(
-            callback,
-            "Запись изменилась после выбора нового времени. Старая кнопка подтверждения больше не действует.\n\n"
-            "Откройте текущую запись и при необходимости начните перенос заново.",
-            reply_markup=one(
-                ("👨‍⚖ Открыть текущую запись", "consultation_booked_open"),
-                ("🔄 Начать перенос заново", "consult_reschedule"),
-                ("🏠 Главная", "nav_home"),
-            ),
-        )
-        return
-
     try:
         consultation, new_slot = await ConsultationService(db).reschedule_booked(
             consultation=consultation,
             case=case,
             client_id=user.id,
             new_slot_id=new_slot_id,
+            expected_old_slot_id=expected_old_slot_id,
         )
         await db.commit()
     except (SlotUnavailableError, ValueError) as error:
@@ -475,6 +460,7 @@ async def consult_cancel_confirm(callback: CallbackQuery, db):
                 ("🔄 Повторить отмену", "consult_cancel_confirm"),
                 ("👨‍⚖ Открыть текущую запись", "consultation_booked_open"),
                 ("✉️ Написать команде", "message_create"),
+                ("🏠 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
         )
