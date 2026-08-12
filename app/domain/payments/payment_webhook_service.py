@@ -145,6 +145,31 @@ class PaymentWebhookService:
         await self.db.flush()
         return payment
 
+    async def _emit_m1_paid_next_step(self, *, payment: Payment, case) -> None:
+        if (
+            payment.payment_code == PaymentCode.M1_INITIAL_PAYMENT
+            and str(case.status) == CaseStatus.M1_POWER_OF_ATTORNEY.value
+        ):
+            await self.notifications.emit(
+                event_code="M1_INITIAL_PAYMENT_CONFIRMED",
+                case_id=case.id,
+                user_id=case.client_id,
+                payload={"case_number": case.case_number},
+                dedupe_key=f"payment:{payment.id}:m1-initial-confirmed",
+            )
+            return
+        if (
+            payment.payment_code == PaymentCode.M1_COURT_PAYMENT
+            and str(case.status) == CaseStatus.M1_ENFORCEMENT.value
+        ):
+            await self.notifications.emit(
+                event_code="M1_COURT_PAYMENT_CONFIRMED",
+                case_id=case.id,
+                user_id=case.client_id,
+                payload={"case_number": case.case_number},
+                dedupe_key=f"payment:{payment.id}:m1-court-confirmed",
+            )
+
     async def process_successful_payment(
         self,
         *,
@@ -323,6 +348,7 @@ class PaymentWebhookService:
                     actor_id=None,
                     comment=f"Автопереход после оплаты {payment.payment_code}",
                 )
+            await self._emit_m1_paid_next_step(payment=payment, case=case)
             if (
                 payment.payment_code == PaymentCode.M1_SUCCESS_FEE
                 and case.status == CaseStatus.M1_CLOSED
@@ -398,6 +424,16 @@ class PaymentWebhookService:
                 "payment_code": payment.payment_code,
                 "payload": provider_payload or {},
             },
+        )
+        await self.notifications.emit(
+            event_code="PAYMENT_FAILED_CLIENT",
+            case_id=case.id,
+            user_id=case.client_id,
+            payload={
+                "case_number": case.case_number,
+                "payment_title": payment.title,
+            },
+            dedupe_key=f"payment:{payment.id}:failed-client",
         )
         await self.db.flush()
         return payment
