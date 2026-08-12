@@ -37,6 +37,7 @@ from app.api.lawyer_consultation_desk import router as lawyer_consultation_desk_
 from app.api.lawyer_m1_claim import router as lawyer_m1_claim_router
 from app.api.lawyer_m1_enforcement import router as lawyer_m1_enforcement_router
 from app.api.lawyer_workspace import router as lawyer_workspace_router
+from app.api.lawyer_workspace_rejection_ui import router as lawyer_workspace_rejection_ui_router
 from app.api.maintenance_center import router as maintenance_center_router
 from app.api.message_center import router as message_center_router
 from app.api.message_center_role_ui import router as message_center_role_ui_router
@@ -162,6 +163,7 @@ def create_app():
         ("settings_ui", settings_ui_router),
         ("admin", admin_router),
         ("payment_webhooks", payment_router),
+        ("lawyer_workspace_rejection_ui", lawyer_workspace_rejection_ui_router),
         ("guided_lawyer_ui", guided_lawyer_ui_router),
         ("lawyer", lawyer_router),
         ("lawyer_m1_claim", lawyer_m1_claim_router),
