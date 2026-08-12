@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 
 from app.admin.admin_dashboard import AdminDashboardService
-from app.api import workdesk
+from app.api import assignment_queue, workdesk
 from app.domain.cases.assignment_policy import (
     AUTO_ASSIGNMENT_REQUIRED_STATUS_VALUES,
     automatic_assignment_required,
@@ -51,8 +51,18 @@ def test_workdesk_adds_unassigned_reason_only_when_assignment_is_due():
     assert "automatic_assignment_required(case.status)" in source
 
 
-def test_static_safe_unassigned_route_precedes_legacy_dynamic_route():
+def test_safe_static_work_queues_precede_legacy_dynamic_route():
     paths = [route.path for route in create_app().routes]
-    static_index = paths.index("/admin/work-queues/unassigned")
     dynamic_index = paths.index("/admin/work-queues/{queue_name}")
-    assert static_index < dynamic_index
+
+    assert paths.index("/admin/work-queues/unassigned") < dynamic_index
+    assert paths.index("/admin/work-queues/consultations") < dynamic_index
+
+
+def test_consultation_queue_uses_booked_slot_lawyer_as_responsible_person():
+    source = inspect.getsource(assignment_queue.consultation_queue_with_slot_lawyer)
+
+    assert "Consultation.lawyer_id" in source
+    assert "lawyer_name=lawyer.full_name" in source
+    assert "Подготовиться к назначенной консультации" in source
+    assert "Провести консультацию и зафиксировать итог" in source
