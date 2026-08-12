@@ -183,6 +183,11 @@ CLIENT_ACTIONS: dict[str, ClientAction] = {
         "contact_lawyer",
         "Свяжитесь с юристом, чтобы уточнить причину и возможный следующий шаг.",
     ),
+    "M2_CONSULTATION_ROUTE": ClientAction(
+        "Описать вопрос",
+        "consult_description_start",
+        "Вы выбрали консультацию. Кратко опишите ситуацию и вопрос, чтобы продолжить без возврата в главное меню.",
+    ),
     "M2_DESCRIPTION_PENDING": ClientAction(
         "Описать вопрос",
         "consult_description_start",
