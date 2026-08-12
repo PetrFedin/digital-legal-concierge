@@ -42,6 +42,7 @@ _ACTION_TITLES = {
     "M2_CONSULTATION_BOOKED": "Консультация назначена",
     "M2_CONSULTATION_DONE": "Консультация проведена",
     "M2_CLOSED": "Консультационное обращение закрыто",
+    "CASE_ERROR_RECOVERED_TO_LAST_SAFE_STATUS": "Техническая блокировка снята",
 }
 
 _HIDDEN_ACTION_MARKERS = (
@@ -175,3 +176,11 @@ async def workdesk_case_timeline(
         "has_more": has_more,
         "next_before_id": next_before_id,
     }
+
+
+# Technical ERROR handling is a workdesk extension. Mount it through this router
+# so its guided /admin/workdesk/ui route is registered before the legacy workdesk
+# route without coupling the global app factory to another precedence detail.
+from app.api.technical_case_recovery import router as technical_case_recovery_router  # noqa: E402
+
+router.include_router(technical_case_recovery_router)
