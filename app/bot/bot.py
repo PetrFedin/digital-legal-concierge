@@ -14,6 +14,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.types import BotCommand, BotCommandScopeDefault, CallbackQuery, Message
 
+from app.bot.calculator_draft import CalculatorDraftNavigationMiddleware
 from app.bot.consultation_route_guard import ConsultationRouteIsolationMiddleware
 from app.bot.document_replacement_protection import (
     DocumentReplacementUploadProtectionMiddleware,
@@ -140,6 +141,11 @@ def build_dispatcher() -> Dispatcher:
     dispatcher = Dispatcher(storage=build_fsm_storage())
     dispatcher.update.middleware(DbMiddleware())
     flood_control = FloodControlMiddleware()
+    # Home/Cancel are allowed to leave the calculator, but they must not erase
+    # answers already entered. The middleware snapshots only calculator FSM
+    # data, lets the canonical navigation render, then restores a paused draft.
+    dispatcher.message.middleware(CalculatorDraftNavigationMiddleware())
+    dispatcher.callback_query.middleware(CalculatorDraftNavigationMiddleware())
     dispatcher.message.middleware(DraftMessageNavigationProtectionMiddleware())
     dispatcher.message.middleware(DocumentReplacementUploadProtectionMiddleware())
     dispatcher.message.middleware(flood_control)
