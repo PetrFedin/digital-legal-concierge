@@ -20,6 +20,10 @@ TEMPLATES = {
         "Дело {case_number} принято юристом в работу. "
         "Следующий шаг: {next_action}."
     ),
+    "m1_case_rejected": (
+        "По делу {case_number} юрист не принял обращение в полное ведение M1. "
+        "Причина: {reason}. {next_action}. Само обращение не закрывается автоматически."
+    ),
     "m1_documents_requested": (
         "По делу {case_number} юрист запросил дополнительные документы: "
         "{request}. Следующий шаг: {next_action}."
