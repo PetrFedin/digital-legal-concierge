@@ -38,6 +38,11 @@ def test_timeline_serializes_human_context_without_raw_audit_payloads():
     assert "token" not in str(item)
 
 
+def test_timeline_labels_case_history_admin_actor_as_administrator():
+    item = _serialize_event(_event(actor_type="admin_user", action="M1_CLAIM_SENT"))
+    assert item["actor_label"] == "Администратор"
+
+
 def test_timeline_categories_match_workdesk_visual_groups():
     assert _category("PAYMENT_PAID") == "payments"
     assert _category("CLIENT_MESSAGE_CREATED") == "messages"
