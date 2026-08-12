@@ -23,6 +23,7 @@ from app.api.exports import router as exports_router
 from app.api.final_handover_center import router as final_handover_center_router
 from app.api.final_qa_center import router as final_qa_center_router
 from app.api.go_live_center import router as go_live_center_router
+from app.api.guided_lawyer_ui import router as guided_lawyer_ui_router
 from app.api.handover import router as handover_router
 from app.api.health_center import router as health_center_router
 from app.api.initial_setup_wizard import router as initial_setup_wizard_router
@@ -154,6 +155,7 @@ def create_app():
         ("settings_ui", settings_ui_router),
         ("admin", admin_router),
         ("payment_webhooks", payment_router),
+        ("guided_lawyer_ui", guided_lawyer_ui_router),
         ("lawyer", lawyer_router),
         ("lawyer_m1_claim", lawyer_m1_claim_router),
         ("lawyer_workspace", lawyer_workspace_router),
