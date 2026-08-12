@@ -11,7 +11,7 @@ from aiogram.types import CallbackQuery
 
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
-from app.domain.statuses.case_statuses import RouteCode
+from app.domain.statuses.case_statuses import CaseStatus, RouteCode
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,13 @@ def is_consultation_callback(data: str | None) -> bool:
     )
 
 
+def _case_status(case) -> CaseStatus | None:
+    try:
+        return case.status if isinstance(case.status, CaseStatus) else CaseStatus(str(case.status))
+    except (TypeError, ValueError):
+        return None
+
+
 class ConsultationRouteIsolationMiddleware:
     """Fail closed when an old M2 callback is pressed during an active M1 case.
 
@@ -47,9 +54,11 @@ class ConsultationRouteIsolationMiddleware:
     start, reserve, pay, cancel, or reschedule an M2 flow while M1 is active.
     The generic ``contact_lawyer`` entry is guarded too because legacy Telegram
     screens may still expose it and older router ownership must never bypass the
-    active-case route. Read-only terminal consultation results remain available
-    so an M1 follow-up cannot hide the outcome of a consultation that was
-    already completed.
+    active-case route. The one intentional exception is M1_REJECTED: policy
+    explicitly allows the client to choose M2, and a dedicated recovery router
+    handles that decision without creating a parallel case. Read-only terminal
+    consultation results remain available so an M1 follow-up cannot hide the
+    outcome of a consultation that was already completed.
 
     Pre-route cases and active M2 cases are intentionally passed through to the
     domain handlers, which keep their own status/snapshot checks.
@@ -70,6 +79,15 @@ class ConsultationRouteIsolationMiddleware:
         user = await ctx.get_user_from_callback(event)
         case = await ctx.case_service.get_active_case_for_user(user.id)
         if case is None or str(case.route or "") != RouteCode.M1.value:
+            return await handler(event, data)
+
+        if (
+            event.data == "contact_lawyer"
+            and _case_status(case) == CaseStatus.M1_REJECTED
+        ):
+            # This is not a stale M2 button: it is the explicit decision screen
+            # after M1 rejection. The recovery router still requires a second
+            # confirmed action before changing route or closing the case.
             return await handler(event, data)
 
         text = (
