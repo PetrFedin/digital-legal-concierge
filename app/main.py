@@ -48,6 +48,7 @@ from app.api.operations_center import router as operations_center_router
 from app.api.operator import router as operator_router
 from app.api.ops_guide import router as ops_guide_router
 from app.api.payment_review_center import router as payment_review_center_router
+from app.api.payment_safety_guard import router as payment_safety_guard_router
 from app.api.payment_webhooks import router as payment_router
 from app.api.production_center import router as production_center_router
 from app.api.recovery_center import router as recovery_center_router
@@ -162,6 +163,7 @@ def create_app():
         ("task_center", task_center_router),
         ("settings_ui", settings_ui_router),
         ("admin", admin_router),
+        ("payment_safety_guard", payment_safety_guard_router),
         ("payment_webhooks", payment_router),
         ("lawyer_workspace_rejection_ui", lawyer_workspace_rejection_ui_router),
         ("guided_lawyer_ui", guided_lawyer_ui_router),
