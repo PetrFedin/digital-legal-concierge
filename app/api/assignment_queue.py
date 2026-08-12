@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime, time, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin import require_admin
+from app.api.workdesk_ui import WORKDESK_HTML
+from app.config import settings
 from app.db.session import get_db
 from app.domain.cases.assignment_policy import AUTO_ASSIGNMENT_REQUIRED_STATUS_VALUES
 from app.domain.cases.case_timeline import get_client_visible_status
@@ -33,6 +36,37 @@ _SLA_LABELS = {
 }
 _ACTIVE_CONSULTATION_STATUSES = ("BOOKED", "CONFIRMED")
 _CLOSED_CASE_STATUSES = ("M1_CLOSED", "M2_CLOSED", "ARCHIVED")
+
+_WORKDESK_RESPONSIBILITY_PATCH = r"""
+<script>
+(function(){
+  const originalOpenCase=openCase;
+  function cell(label){return [...cv.querySelectorAll('.grid .cell')].find(node=>node.querySelector('span')?.textContent.trim()===label)}
+  function replaceCell(node,label,value){if(node)node.innerHTML='<span>'+e(label)+'</span>'+e(value||'—')}
+  openCase=async function(id){
+    await originalOpenCase(id);
+    if(selected!==id)return;
+    let responsibility;
+    try{responsibility=await api('/admin/workdesk/cases/'+id+'/responsibility')}catch(_){return}
+    if(selected!==id||responsibility.route!=='M2')return;
+    replaceCell(cell('Ответственный'),'Юрист консультации',responsibility.lawyer_name||'будет определён выбранным слотом');
+    replaceCell(cell('SLA'),'Контроль консультации',responsibility.lawyer_name?'по выбранному слоту':'ожидается выбор слота');
+    replaceCell(cell('Срок'),'Время консультации',responsibility.scheduled_at?dt(responsibility.scheduled_at):'ещё не выбрано');
+    [...cv.querySelectorAll('.section a,.section button')].forEach(node=>{
+      const label=node.textContent.trim();
+      if(label==='SLA'||label==='Назначить перед SLA')node.remove();
+    });
+  };
+})();
+</script>
+"""
+
+
+def _inject_workdesk_patch(html: str) -> str:
+    marker = "</body>"
+    if html.count(marker) != 1:
+        raise RuntimeError("Workdesk template contract changed: </body> marker is not unique")
+    return html.replace(marker, _WORKDESK_RESPONSIBILITY_PATCH + marker, 1)
 
 
 def _case_queue_payload(
@@ -64,6 +98,77 @@ def _case_queue_payload(
         "sla_due_at": case.sla_due_at.isoformat() if case.sla_due_at else None,
         "created_at": case.created_at.isoformat(),
         "queue": queue,
+    }
+
+
+@router.get("/admin/workdesk/ui", response_class=HTMLResponse)
+async def guided_workdesk_ui(request: Request):
+    """Render the guided workdesk with route-aware responsibility labels."""
+
+    token = request.headers.get("x-admin-token") or request.cookies.get(
+        settings.admin_session_cookie
+    )
+    if not token:
+        return RedirectResponse(url="/login", status_code=303)
+    require_admin(token)
+    return HTMLResponse(_inject_workdesk_patch(WORKDESK_HTML))
+
+
+@router.get("/admin/workdesk/cases/{case_id}/responsibility")
+async def workdesk_case_responsibility(
+    case_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    """Explain who is operationally responsible without inventing M2 assignment."""
+
+    require_admin(x_admin_token)
+    case = await db.get(Case, case_id)
+    if case is None:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail="Дело не найдено")
+
+    if str(case.route or "") == "M2":
+        row = (
+            await db.execute(
+                select(Consultation, Lawyer)
+                .outerjoin(Lawyer, Lawyer.id == Consultation.lawyer_id)
+                .where(Consultation.case_id == case.id)
+                .order_by(Consultation.created_at.desc(), Consultation.id.desc())
+                .limit(1)
+            )
+        ).one_or_none()
+        consultation, lawyer = row if row is not None else (None, None)
+        return {
+            "case_id": case.id,
+            "route": "M2",
+            "mode": "consultation_slot",
+            "lawyer_id": lawyer.id if lawyer else None,
+            "lawyer_name": lawyer.full_name if lawyer else None,
+            "consultation_id": consultation.id if consultation else None,
+            "consultation_status": consultation.status if consultation else None,
+            "scheduled_at": (
+                consultation.scheduled_at.isoformat()
+                if consultation and consultation.scheduled_at
+                else None
+            ),
+        }
+
+    lawyer = (
+        await db.get(Lawyer, case.assigned_lawyer_id)
+        if case.assigned_lawyer_id
+        else None
+    )
+    return {
+        "case_id": case.id,
+        "route": str(case.route or ""),
+        "mode": "case_assignment",
+        "lawyer_id": lawyer.id if lawyer else None,
+        "lawyer_name": lawyer.full_name if lawyer else None,
+        "consultation_id": None,
+        "consultation_status": None,
+        "scheduled_at": None,
     }
 
 
