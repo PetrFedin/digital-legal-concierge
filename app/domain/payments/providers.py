@@ -155,9 +155,19 @@ class YooKassaPaymentProvider(BasePaymentProvider):
 
 
 def get_payment_provider() -> BasePaymentProvider:
-    provider = settings.payment_provider.strip().lower()
+    provider = str(settings.payment_provider or "").strip().lower()
     if provider == "disabled":
         return DisabledPaymentProvider()
     if provider == "yookassa":
         return YooKassaPaymentProvider()
-    return FakePaymentProvider()
+    if provider == "fake":
+        if settings.app_env not in {"local", "test"}:
+            raise RuntimeError(
+                "Fake-провайдер запрещён вне local/test. "
+                "Настройте YooKassa или явно отключите онлайн-оплату."
+            )
+        return FakePaymentProvider()
+    raise RuntimeError(
+        f"Неизвестный платёжный провайдер: {provider or '<empty>'}. "
+        "Поддерживаются disabled, fake (только local/test) и yookassa."
+    )
