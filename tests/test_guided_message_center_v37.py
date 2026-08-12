@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from app.api import guided_message_center
 from app.api.guided_message_center import CaseResponsibility
 from app.api.message_center import StaffScope
+from app.api.message_center_role_ui import role_safe_message_center_ui
 from app.main import create_app
 
 
@@ -19,9 +20,8 @@ def _first_route(path: str, method: str = "GET"):
 
 def _scope(*, lawyer_id: int | None):
     return StaffScope(
-        role="lawyer" if lawyer_id else "admin",
-        subject_id=lawyer_id or 1,
-        admin_user_id=None,
+        payload={},
+        roles=frozenset({"lawyer" if lawyer_id is not None else "admin"}),
         lawyer_id=lawyer_id,
     )
 
@@ -57,9 +57,7 @@ def test_route_aware_message_handlers_precede_legacy_handlers():
     assert _first_route(
         "/message-center/cases/{case_id}/reply", "POST"
     ).endpoint.__name__ == "guided_reply_to_client"
-    assert _first_route("/message-center/ui").endpoint.__name__ == (
-        "guided_message_center_ui"
-    )
+    assert _first_route("/message-center/ui").endpoint is role_safe_message_center_ui
 
 
 def test_m2_consultation_lawyer_can_access_own_conversation_without_case_assignment():
