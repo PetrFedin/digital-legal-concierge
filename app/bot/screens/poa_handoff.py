@@ -4,11 +4,13 @@ import logging
 
 from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramServerError
+from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 from sqlalchemy import select
 
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
+from app.bot.states import DocumentUploadStates
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.statuses.case_statuses import CaseStatus
@@ -21,7 +23,8 @@ _ACTION = "CLIENT_POA_READY_REPORTED"
 
 async def _show(callback: CallbackQuery, text: str) -> None:
     markup = one(
-        ("📄 Приложить документ", "documents_open"),
+        ("📎 Загрузить доверенность", "poa_upload_document"),
+        ("📄 Все документы", "documents_open"),
         ("📁 Моё дело", "my_case_open"),
         ("✉️ Задать вопрос команде", "message_create"),
         ("🏠 Главная", "nav_home"),
@@ -35,6 +38,40 @@ async def _show(callback: CallbackQuery, text: str) -> None:
         await callback.message.answer(text, reply_markup=markup)
     except (TelegramNetworkError, TelegramServerError):
         logger.warning("Telegram недоступен после сохранения сигнала о доверенности")
+
+
+@router.callback_query(lambda c: c.data == "poa_upload_document")
+async def upload_poa_document(callback: CallbackQuery, state: FSMContext, db):
+    """Open a one-step POA upload without sending the client back to generic document types."""
+
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    case = await ctx.case_service.get_active_case_for_user(user.id)
+    if not case or str(case.status) != CaseStatus.M1_POWER_OF_ATTORNEY.value:
+        await state.clear()
+        await _show(
+            callback,
+            "Загрузка доверенности из этого шага уже недоступна: этап дела изменился. "
+            "Откройте «Моё дело» и проверьте актуальное действие.",
+        )
+        return
+
+    await state.clear()
+    await state.update_data(document_type="POWER_OF_ATTORNEY")
+    await state.set_state(DocumentUploadStates.waiting_file)
+    await callback.message.edit_text(
+        "📎 Загрузить доверенность\n\n"
+        "Прикрепите скан или фото доверенности в PDF, DOCX, JPG или PNG. "
+        "Файл пройдёт проверку безопасности и сохранится в деле.\n\n"
+        "После загрузки передайте новый файл юристу. Сам факт загрузки не подтверждает "
+        "получение оригинала и не запускает претензию.",
+        reply_markup=one(
+            ("📄 Все документы", "documents_open"),
+            ("Отменить действие", "nav_cancel"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ),
+    )
 
 
 @router.callback_query(lambda c: c.data == "poa_done")
@@ -107,5 +144,5 @@ async def report_poa_ready(callback: CallbackQuery, db):
         "✅ Команда получила ваше сообщение о доверенности.\n\n"
         "Важно: это не подтверждает получение документа юристом и не запускает претензию. "
         "Статус изменится только после фактической проверки/получения доверенности назначенным юристом.\n\n"
-        "Если нужно передать скан или подтверждающий файл, приложите его через «Документы».",
+        "Если нужно передать скан или подтверждающий файл, загрузите доверенность отдельной кнопкой ниже.",
     )
