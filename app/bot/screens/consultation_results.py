@@ -26,7 +26,6 @@ from app.domain.statuses.case_statuses import CaseStatus
 router = Router()
 logger = logging.getLogger(__name__)
 
-
 CLOSED_CASE_STATUSES = frozenset(
     {
         CaseStatus.M1_CLOSED,
@@ -34,6 +33,29 @@ CLOSED_CASE_STATUSES = frozenset(
         CaseStatus.ARCHIVED,
     }
 )
+
+
+def _case_status(case) -> CaseStatus | None:
+    try:
+        return case.status if isinstance(case.status, CaseStatus) else CaseStatus(str(case.status))
+    except (TypeError, ValueError):
+        return None
+
+
+def _case_is_closed(case) -> bool:
+    return _case_status(case) in CLOSED_CASE_STATUSES
+
+
+def _progress_line(case, consultation) -> str:
+    """Compact, client-facing progress summary with no fabricated business state."""
+    if _case_is_closed(case):
+        return "АРХИВ · дело закрыто"
+    status = _case_status(case)
+    if status == CaseStatus.M2_TO_M1:
+        return "ПЕРЕДАНО В M1 · дальнейшие шаги идут в основном деле"
+    if status in {CaseStatus.M2_CONSULTATION_DONE, CaseStatus.M2_CLOSED} or is_terminal_consultation(consultation):
+        return "КОНСУЛЬТАЦИЯ ЗАВЕРШЕНА · результат сохранён"
+    return "КОНСУЛЬТАЦИЯ · результат сохранён"
 
 
 async def _callback_notice(
@@ -71,18 +93,6 @@ async def _safe_edit(callback: CallbackQuery, text: str, *, reply_markup) -> Non
         )
         return
     await _callback_notice(callback, "Итог открыт новым сообщением.")
-
-
-def _case_is_closed(case) -> bool:
-    try:
-        status = (
-            case.status
-            if isinstance(case.status, CaseStatus)
-            else CaseStatus(str(case.status))
-        )
-    except (TypeError, ValueError):
-        return False
-    return status in CLOSED_CASE_STATUSES
 
 
 async def _active_terminal_context(callback: CallbackQuery, db):
@@ -186,6 +196,7 @@ async def _render_result(callback: CallbackQuery, *, case, consultation) -> None
 
     lines = [
         "👨‍⚖ ИТОГ КОНСУЛЬТАЦИИ",
+        _progress_line(case, consultation),
         "",
         view.title,
         f"Дело: {case.case_number}",
