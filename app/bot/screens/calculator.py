@@ -7,6 +7,12 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
+from app.bot.calculator_draft import (
+    clear_calculator_draft_metadata,
+    draft_step,
+    draft_step_label,
+    has_saved_calculator_draft,
+)
 from app.bot.client_case_view import load_client_case_view
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
@@ -54,7 +60,7 @@ def _planned_keyboard():
     return one(
         ("Не знаю дату", "calc_unknown_date"),
         ("⬅️ Изменить стоимость", "calc_back_price"),
-        ("Отменить расчёт", "nav_home"),
+        ("💾 Сохранить и выйти", "nav_home"),
     )
 
 
@@ -63,14 +69,14 @@ def _transfer_keyboard():
         ("Да, передан", "calc_object_transferred_yes"),
         ("Нет, не передан", "calc_object_transferred_no"),
         ("⬅️ Изменить дату по ДДУ", "calc_back_planned"),
-        ("Отменить расчёт", "nav_home"),
+        ("💾 Сохранить и выйти", "nav_home"),
     )
 
 
 def _actual_keyboard():
     return one(
         ("⬅️ Назад к статусу передачи", "calc_back_transfer_status"),
-        ("Отменить расчёт", "nav_home"),
+        ("💾 Сохранить и выйти", "nav_home"),
     )
 
 
@@ -80,6 +86,29 @@ def _result_recovery_keyboard():
         ("📁 Моё дело", "my_case_open"),
         ("🏠 Главная", "nav_home"),
     )
+
+
+def _draft_summary(data: dict) -> str:
+    rows: list[str] = []
+    if data.get("contract_price"):
+        rows.append(f"💰 Стоимость: {data['contract_price']} ₽")
+    if data.get("planned_transfer_date"):
+        try:
+            shown = date.fromisoformat(str(data["planned_transfer_date"])).strftime("%d.%m.%Y")
+        except (TypeError, ValueError):
+            shown = str(data["planned_transfer_date"])
+        rows.append(f"📅 Дата по ДДУ: {shown}")
+    if "object_transferred" in data:
+        rows.append(
+            "🏗 Объект передан: " + ("да" if bool(data.get("object_transferred")) else "нет")
+        )
+    if data.get("actual_transfer_date"):
+        try:
+            shown_actual = date.fromisoformat(str(data["actual_transfer_date"])).strftime("%d.%m.%Y")
+        except (TypeError, ValueError):
+            shown_actual = str(data["actual_transfer_date"])
+        rows.append(f"🗓 Фактическая передача: {shown_actual}")
+    return "\n".join(rows) or "Введённые значения сохранены."
 
 
 async def _present_committed_callback(
@@ -131,6 +160,55 @@ def _base_data_ready(data: dict) -> bool:
     return bool(data.get("contract_price") and data.get("planned_transfer_date"))
 
 
+async def _start_fresh(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(CalculatorStates.waiting_contract_price)
+    await callback.message.edit_text(
+        _price_prompt(),
+        reply_markup=one(
+            ("Не знаю стоимость", "calc_unknown_price"),
+            ("💾 Сохранить и выйти", "nav_home"),
+        ),
+    )
+
+
+async def _resume_draft(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await clear_calculator_draft_metadata(state)
+    step = draft_step(data)
+    if step == "price":
+        await state.set_state(CalculatorStates.waiting_contract_price)
+        await callback.message.edit_text(
+            _price_prompt(str(data.get("contract_price") or "") or None),
+            reply_markup=one(
+                ("Не знаю стоимость", "calc_unknown_price"),
+                ("💾 Сохранить и выйти", "nav_home"),
+            ),
+        )
+        return
+    if step == "planned_date":
+        current = None
+        if data.get("planned_transfer_date"):
+            try:
+                current = date.fromisoformat(str(data["planned_transfer_date"])).strftime("%d.%m.%Y")
+            except (TypeError, ValueError):
+                current = None
+        await state.set_state(CalculatorStates.waiting_planned_transfer_date)
+        await callback.message.edit_text(_planned_prompt(current), reply_markup=_planned_keyboard())
+        return
+    if step == "transfer_status":
+        if not _base_data_ready(data):
+            await _start_fresh(callback, state)
+            return
+        await state.set_state(CalculatorStates.waiting_object_transfer_status)
+        await callback.message.edit_text(_transfer_prompt(), reply_markup=_transfer_keyboard())
+        return
+    if not _base_data_ready(data):
+        await _start_fresh(callback, state)
+        return
+    await state.set_state(CalculatorStates.waiting_actual_transfer_date)
+    await callback.message.edit_text(_actual_prompt(), reply_markup=_actual_keyboard())
+
+
 @router.callback_query(lambda c: c.data == "calc_start")
 async def calc_start(callback: CallbackQuery, state: FSMContext, db):
     ctx = BotContextService(db)
@@ -161,15 +239,56 @@ async def calc_start(callback: CallbackQuery, state: FSMContext, db):
         )
         return
 
-    await state.clear()
-    await state.set_state(CalculatorStates.waiting_contract_price)
+    data = await state.get_data()
+    if has_saved_calculator_draft(data):
+        await state.set_state(None)
+        await callback.message.edit_text(
+            "📝 Сохранён незавершённый расчёт\n\n"
+            f"{_draft_summary(data)}\n\n"
+            f"Следующий шаг: {draft_step_label(data)}.\n"
+            "Продолжите с сохранённого места или начните заново — сброс потребует подтверждения.",
+            reply_markup=one(
+                ("▶️ Продолжить расчёт", "calc_resume"),
+                ("Начать заново", "calc_restart_confirm"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    await _start_fresh(callback, state)
+
+
+@router.callback_query(lambda c: c.data == "calc_resume")
+async def resume_saved_calculation(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if not has_saved_calculator_draft(data):
+        await _start_fresh(callback, state)
+        return
+    await _resume_draft(callback, state)
+
+
+@router.callback_query(lambda c: c.data == "calc_restart_confirm")
+async def confirm_restart_calculation(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if not has_saved_calculator_draft(data):
+        await _start_fresh(callback, state)
+        return
+    await state.set_state(None)
     await callback.message.edit_text(
-        _price_prompt(),
+        "Начать расчёт заново?\n\n"
+        "Сохранённые ответы текущего незавершённого расчёта будут удалены. "
+        "Созданное дело и уже завершённые расчёты это действие не меняет.",
         reply_markup=one(
-            ("Не знаю стоимость", "calc_unknown_price"),
-            ("Отменить расчёт", "nav_home"),
+            ("Да, удалить черновик", "calc_restart"),
+            ("↩️ Вернуться к черновику", "calc_start"),
+            ("🏠 Главная", "nav_home"),
         ),
     )
+
+
+@router.callback_query(lambda c: c.data == "calc_restart")
+async def restart_calculation(callback: CallbackQuery, state: FSMContext):
+    await _start_fresh(callback, state)
 
 
 @router.callback_query(lambda c: c.data == "calc_back_price")
@@ -180,7 +299,7 @@ async def back_price(callback: CallbackQuery, state: FSMContext):
         _price_prompt(str(data.get("contract_price") or "") or None),
         reply_markup=one(
             ("Не знаю стоимость", "calc_unknown_price"),
-            ("Отменить расчёт", "nav_home"),
+            ("💾 Сохранить и выйти", "nav_home"),
         ),
     )
 
@@ -192,7 +311,7 @@ async def price(message: Message, state: FSMContext):
     except Exception:
         await message.answer(
             "⚠️ Введите сумму цифрами. Например: 8500000. Ранее введённые данные не изменены.",
-            reply_markup=one(("Отменить расчёт", "nav_home")),
+            reply_markup=one(("💾 Сохранить и выйти", "nav_home")),
         )
         return
     await state.update_data(contract_price=str(amount))
@@ -236,7 +355,7 @@ async def planned(message: Message, state: FSMContext):
             reply_markup=one(
                 ("💬 Перейти к юристу", "calc_unknown_date"),
                 ("⬅️ Изменить стоимость", "calc_back_price"),
-                ("Отменить расчёт", "nav_home"),
+                ("💾 Сохранить и выйти", "nav_home"),
             ),
         )
         return
@@ -368,7 +487,7 @@ async def calculate_show_callback(callback: CallbackQuery, state: FSMContext, db
             reply_markup=one(
                 ("🔄 Повторить расчёт", "calc_object_transferred_no"),
                 ("⬅️ Изменить дату по ДДУ", "calc_back_planned"),
-                ("Отменить расчёт", "nav_home"),
+                ("💾 Сохранить и выйти", "nav_home"),
             ),
         )
         return
