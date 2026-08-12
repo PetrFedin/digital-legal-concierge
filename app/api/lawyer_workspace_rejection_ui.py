@@ -4,11 +4,18 @@ from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 
 from app.api.guided_lawyer_ui import _WORKSPACE_DEEP_LINK_PATCH, _inject_patch
+from app.api.lawyer_consultation_decision_guard import (
+    router as lawyer_consultation_decision_guard_router,
+)
 from app.api.lawyer_m1_rejection import router as lawyer_m1_rejection_router
 from app.api.lawyer_workspace import WORKSPACE_HTML
 
 router = APIRouter(tags=["lawyer-workspace-rejection-ui"])
+# This composite router is mounted before guided/legacy lawyer routers in
+# create_app(). Keep mutation guards first so duplicated historical endpoints
+# can never win route precedence.
 router.include_router(lawyer_m1_rejection_router)
+router.include_router(lawyer_consultation_decision_guard_router)
 
 
 _M1_REJECTION_PATCH = r"""
