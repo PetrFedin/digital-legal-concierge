@@ -7,6 +7,7 @@ from fastapi.responses import RedirectResponse
 from app.api.acceptance_center import router as acceptance_center_router
 from app.api.access_management import router as access_management_router
 from app.api.admin import router as admin_router
+from app.api.admin_queue_guard import router as admin_queue_guard_router
 from app.api.assignment_queue import router as assignment_queue_router
 from app.api.audit_center import router as audit_center_router
 from app.api.auth import router as auth_router
@@ -162,6 +163,7 @@ def create_app():
         ("install_wizard", install_wizard_router),
         ("task_center", task_center_router),
         ("settings_ui", settings_ui_router),
+        ("admin_queue_guard", admin_queue_guard_router),
         ("admin", admin_router),
         ("payment_safety_guard", payment_safety_guard_router),
         ("payment_webhooks", payment_router),
