@@ -12,6 +12,7 @@ from app.api.case_action_ui import CASE_ACTION_HTML
 from app.api.workdesk_ui import WORKDESK_HTML
 from app.config import settings
 from app.db.session import get_db
+from app.domain.cases.assignment_policy import automatic_assignment_required
 from app.domain.cases.case_timeline import get_client_visible_status
 from app.domain.documents.document_workflow import (
     DocumentAttentionState,
@@ -147,7 +148,7 @@ def _attention_reasons(
         codes.append("overdue")
     if unread_client_messages > 0:
         codes.append("messages")
-    if case.assigned_lawyer_id is None:
+    if case.assigned_lawyer_id is None and automatic_assignment_required(case.status):
         codes.append("unassigned")
     if document_workflow.state != DocumentAttentionState.NONE:
         codes.append(document_workflow.code)
