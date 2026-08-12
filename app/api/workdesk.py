@@ -198,6 +198,20 @@ def _primary_action(
             "label": "Обработать возврат",
             "href": f"/admin/refunds/ui?payment_id={payment_id}&case_id={case.id}",
         }
+    # An overdue case without a lawyer cannot be acknowledged on the SLA screen:
+    # the case-scoped SLA projection intentionally requires an assignee. Keep the
+    # card ranked by the overdue reason, but make the visible CTA satisfy the
+    # prerequisite first so the operator never lands on an empty action screen.
+    if "overdue" in reason_codes and "unassigned" in reason_codes:
+        return {
+            "kind": "auto_assign",
+            "label": "Назначить юриста для устранения SLA",
+            "endpoint": f"/admin/cases/{case.id}/auto-assign",
+            "payload": {
+                "expected_lawyer_id": None,
+                "expected_status": str(case.status),
+            },
+        }
     # The visible primary action must follow the same ordering as the queue.
     # Otherwise a lower-priority assignment button can hide an SLA breach or a
     # client message even though the card itself is sorted above by that reason.
