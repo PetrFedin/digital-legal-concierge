@@ -18,6 +18,7 @@ DOC_TITLES = {
     "TRANSFER_ACT": "Акт",
     "PAYMENT_PROOF": "Платежный документ",
     "CORRESPONDENCE": "Переписка",
+    "POWER_OF_ATTORNEY": "Доверенность",
     "OTHER": "Другой документ",
 }
 
