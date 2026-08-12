@@ -323,6 +323,19 @@ async def confirm_reschedule_slot(callback: CallbackQuery, db):
     if not case or not consultation:
         await _show_missing_booked_context(callback, db, action="reschedule")
         return
+    if int(consultation.id) != expected_consultation_id:
+        await _safe_edit(
+            callback,
+            "Эта кнопка относится к предыдущей записи. Текущая консультация не изменена.\n\n"
+            "Откройте актуальную запись и запустите перенос заново — так старая кнопка не сможет изменить новый слот.",
+            reply_markup=one(
+                ("👨‍⚖ Открыть текущую запись", "consultation_booked_open"),
+                ("🔄 Начать актуальный перенос", "consult_reschedule"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
 
     try:
         consultation, new_slot = await ConsultationService(db).reschedule_booked(
