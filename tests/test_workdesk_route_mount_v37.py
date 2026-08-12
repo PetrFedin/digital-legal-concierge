@@ -9,6 +9,7 @@ def test_admin_workdesk_routes_are_mounted_in_application():
     assert "/admin/workdesk/cases/{case_id}/action/{task}" in paths
     assert "/admin/workdesk/cases/{case_id}/sla" in paths
     assert "/admin/workdesk/cases/{case_id}/documents" in paths
+    assert "/admin/workdesk/cases/{case_id}/timeline" in paths
 
 
 def test_launch_check_exposes_workdesk_for_deploy_verification():
