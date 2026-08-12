@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -24,7 +23,6 @@ from app.api.message_center import (
     queue_bucket,
     require_staff_scope,
 )
-from app.config import settings
 from app.db.session import get_db
 from app.domain.cases.assignment_policy import automatic_assignment_required
 from app.domain.messages.message_service import MessageService
@@ -265,7 +263,7 @@ _MESSAGE_CENTER_ROUTE_PATCH = r"""
     const caseId=Number(c.id),documents=localHref('/admin/workdesk/cases/'+caseId+'/action/documents');
     const label=c.route==='M2'?'Юрист консультации':'Ответственный';
     contextGrid.innerHTML=`<div class="cell"><span>Дело</span>${esc(c.number||caseId)}</div><div class="cell"><span>Клиент</span>${esc(c.client_name||'Клиент')}</div><div class="cell"><span>Статус</span>${esc(c.status||'—')}</div><div class="cell"><span>${esc(label)}</span>${esc(c.responsibility_label||'—')}</div>`;
-    contextLinks.innerHTML=`<a class="button secondary" href="${localHref('/admin/workdesk/ui')}">Рабочий стол</a><a class="button secondary" href="${documents}">Документы дела</a>`;
+    contextLinks.innerHTML=`<a class="button secondary" href="${localHref('/operator')}">Рабочий стол</a><a class="button secondary" href="${documents}">Документы дела</a>`;
   };
   const originalRenderActionState=renderActionState;
   renderActionState=function(d){
@@ -275,7 +273,7 @@ _MESSAGE_CENTER_ROUTE_PATCH = r"""
       currentState.innerHTML='<span class="badge green">Дело завершено</span> Переписка сохранена в архиве.';
       nextStepTitle.textContent='Только просмотр';
       nextStepText.textContent='Новые сообщения из закрытого дела не отправляются. Откройте рабочий стол или архив для дальнейшей проверки.';
-      nextStepActions.innerHTML='<a class="button secondary" href="/admin/workdesk/ui">Рабочий стол</a>';
+      nextStepActions.innerHTML='<a class="button secondary" href="/operator">Рабочий стол</a>';
       replyBox.classList.add('hidden');return;
     }
     if(!d.case.reply_allowed){
@@ -283,7 +281,7 @@ _MESSAGE_CENTER_ROUTE_PATCH = r"""
         currentState.innerHTML='<span class="badge amber">Юрист консультации ещё не определён</span> Ответственный появится после выбора времени.';
         nextStepTitle.textContent='Не создавать случайное назначение';
         nextStepText.textContent='Продолжите клиентский сценарий выбора времени. Для консультации ответственный определяется слотом, а не общей очередью М1.';
-        nextStepActions.innerHTML='<a class="button secondary" href="/admin/workdesk/ui">Рабочий стол</a>';
+        nextStepActions.innerHTML='<a class="button secondary" href="/operator">Рабочий стол</a>';
       }else{
         currentState.innerHTML='<span class="badge red">Требуется ответственный юрист</span> Для этого этапа М1 сначала нужно назначение.';
         nextStepTitle.textContent='Назначить ответственного';
@@ -295,7 +293,7 @@ _MESSAGE_CENTER_ROUTE_PATCH = r"""
     if(waiting){
       currentState.innerHTML='<span class="badge amber">Клиент ждёт ответа</span> Последнее сообщение пришло от клиента.';
       nextStepTitle.textContent='Ответить клиенту';
-      nextStepText.textContent=d.case.route==='M2'?'Ответ будет сохранён в деле и отправлен от текущего юриста консультации/команды поддержки.':'Проверьте контекст дела и отправьте один завершённый ответ.';
+      nextStepText.textContent=d.case.route==='M2'?'Ответ будет сохранён в деле и отправлен текущим юристом консультации или командой поддержки.':'Проверьте контекст дела и отправьте один завершённый ответ.';
       nextStepActions.innerHTML='<button onclick="showReplyBox()">Перейти к ответу</button>';
       replyBox.classList.remove('hidden');return;
     }
@@ -504,8 +502,8 @@ async def guided_case_messages(
         service = MessageService(db)
         messages = await service.list_case_messages(case_id)
         latest_message_id = messages[-1].id if messages else None
-        # Reading a closed case is allowed for audit/history, but no mutation
-        # other than read markers is offered to the user interface.
+        # Reading a closed case is allowed for audit/history, but no legal or
+        # financial mutation is exposed from the archive view.
         await service.mark_client_messages_read(case_id)
         await db.commit()
         return {
@@ -578,12 +576,15 @@ async def guided_reply_to_client(
             )
 
         if _scope_is_broad(scope):
-            message_lawyer_id = responsibility.lawyer_id
-            if payload.lawyer_id not in (None, message_lawyer_id):
+            if payload.lawyer_id is not None:
                 raise HTTPException(
                     status_code=409,
-                    detail="Нельзя отправить ответ от имени другого юриста",
+                    detail=(
+                        "Администратор отправляет сообщение от имени команды, "
+                        "а не под чужой учётной записью юриста."
+                    ),
                 )
+            message_lawyer_id = None
         else:
             message_lawyer_id = scope.lawyer_id
 
