@@ -57,6 +57,7 @@ from app.api.sla_center import router as sla_center_router
 from app.api.task_center import router as task_center_router
 from app.api.template_builder import router as template_builder_router
 from app.api.web_admin import router as web_admin_router
+from app.api.workdesk import router as workdesk_router
 from app.config import settings
 from app.domain.payments.mode import (
     payment_mode_valid,
@@ -158,6 +159,7 @@ def create_app():
         ("document_access", document_access_router),
         ("document_access_portal", document_access_portal_router),
         ("runtime", runtime_router),
+        ("workdesk", workdesk_router),
         ("web_admin", web_admin_router),
         ("operator", operator_router),
         ("exports", exports_router),
@@ -379,6 +381,7 @@ def create_app():
             "launch_assistant": "/launch-assistant",
             "operator_workspace": "/operator",
             "admin_ui": "/admin-ui",
+            "admin_workdesk_ui": "/admin/workdesk/ui",
             "lawyer_ui": "/lawyer/ui",
             "access_management": "/access/ui",
             "mfa_management": "/mfa/manage",
