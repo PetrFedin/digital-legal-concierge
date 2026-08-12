@@ -44,6 +44,7 @@ from app.bot.screens import (
     no_payment_legal,
     payment_archive_guard,
     payments,
+    poa_handoff,
     post_calculation,
 )
 from app.bot.security import SlidingWindowRateLimiter
@@ -164,6 +165,7 @@ def build_dispatcher() -> Dispatcher:
         payments.router,
         consultations.router,
         consent_flow.router,
+        poa_handoff.router,
         m1_stages.router,
         messages.router,
         history.router,
