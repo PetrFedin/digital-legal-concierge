@@ -7,6 +7,7 @@ from fastapi.responses import RedirectResponse
 from app.api.acceptance_center import router as acceptance_center_router
 from app.api.access_management import router as access_management_router
 from app.api.admin import router as admin_router
+from app.api.assignment_queue import router as assignment_queue_router
 from app.api.audit_center import router as audit_center_router
 from app.api.auth import router as auth_router
 from app.api.backup_center import router as backup_center_router
@@ -160,6 +161,7 @@ def create_app():
         ("document_access", document_access_router),
         ("document_access_portal", document_access_portal_router),
         ("runtime", runtime_router),
+        ("assignment_queue", assignment_queue_router),
         ("workdesk_timeline", workdesk_timeline_router),
         ("workdesk", workdesk_router),
         ("web_admin", web_admin_router),
