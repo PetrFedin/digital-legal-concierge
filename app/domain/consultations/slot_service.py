@@ -5,7 +5,10 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import and_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.cases.case_service import CaseService
+from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.consultation_statuses import ConsultationStatus
+from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
 
@@ -32,10 +35,28 @@ class SlotService:
         return statement.execution_options(synchronize_session="fetch")
 
     async def release_expired_holds(self) -> int:
+        """Release stale slots and return both M2 state machines to slot choice.
+
+        Consultation and Case are deliberately separate state machines. Leaving
+        the consultation in SLOT_PENDING while the case remains
+        M2_PAYMENT_PENDING makes Telegram still advertise an impossible payment.
+        Expiry therefore synchronizes both records and records the case
+        transition through CaseService instead of hiding it in a bulk update.
+        """
+
         now = datetime.now(timezone.utc)
         expired = (
             await self.db.execute(
-                select(ConsultationSlot.id, ConsultationSlot.consultation_id).where(
+                select(
+                    ConsultationSlot.id,
+                    ConsultationSlot.consultation_id,
+                    Consultation.case_id,
+                )
+                .outerjoin(
+                    Consultation,
+                    Consultation.id == ConsultationSlot.consultation_id,
+                )
+                .where(
                     ConsultationSlot.status == "held",
                     ConsultationSlot.hold_expires_at.is_not(None),
                     ConsultationSlot.hold_expires_at < now,
@@ -51,6 +72,13 @@ class SlotService:
             for row in expired
             if row.consultation_id is not None
         ]
+        case_ids = sorted(
+            {
+                int(row.case_id)
+                for row in expired
+                if row.case_id is not None
+            }
+        )
 
         if consultation_ids:
             await self.db.execute(
@@ -86,6 +114,32 @@ class SlotService:
                 )
             )
         )
+
+        if case_ids:
+            cases = list(
+                (
+                    await self.db.execute(
+                        select(Case)
+                        .where(Case.id.in_(case_ids))
+                        .with_for_update()
+                    )
+                ).scalars().all()
+            )
+            case_service = CaseService(self.db)
+            for case in cases:
+                if str(case.status) != CaseStatus.M2_PAYMENT_PENDING.value:
+                    continue
+                await case_service.change_status(
+                    case=case,
+                    next_status=CaseStatus.M2_SLOT_PENDING,
+                    actor_type="system",
+                    actor_id=None,
+                    comment=(
+                        "Резерв консультации истёк до подтверждения оплаты. "
+                        "Клиенту снова доступен выбор времени."
+                    ),
+                )
+
         await self.db.flush()
         return len(slot_ids)
 
