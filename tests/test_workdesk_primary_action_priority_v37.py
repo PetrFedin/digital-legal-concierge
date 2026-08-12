@@ -16,10 +16,23 @@ def _no_finance():
     return {"review_ids": [], "refund_ids": []}
 
 
-def test_sla_action_beats_message_and_assignment_when_all_are_present():
+def test_overdue_unassigned_case_assigns_lawyer_before_opening_sla_action():
     action = _primary_action(
         _case(),
         _reasons("overdue", "messages", "unassigned"),
+        describe_document_attention(()),
+        _no_finance(),
+    )
+    assert action["kind"] == "auto_assign"
+    assert action["label"] == "Назначить юриста для устранения SLA"
+    assert action["endpoint"] == "/admin/cases/17/auto-assign"
+    assert action["payload"]["expected_lawyer_id"] is None
+
+
+def test_overdue_assigned_case_opens_sla_action_before_messages():
+    action = _primary_action(
+        _case(),
+        _reasons("overdue", "messages"),
         describe_document_attention(()),
         _no_finance(),
     )
