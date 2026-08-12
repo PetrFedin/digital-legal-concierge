@@ -29,15 +29,26 @@ def test_active_result_exposes_single_primary_action_and_safe_navigation():
     assert ("🏠 Главная", "nav_home") in buttons
 
 
-def test_closed_case_has_no_action_that_can_reopen_the_old_consultation():
+def test_closed_case_exposes_read_only_archive_without_stale_consultation_actions():
     case = SimpleNamespace(status=CaseStatus.M2_CLOSED)
     view = ConsultationResultView(
         title="Консультация завершена",
         status_text="Результат готов",
         next_step="Дело закрыто.",
-        primary_label="Открыть архив",
-        primary_callback="consultation_result_open",
+        primary_label="Записаться повторно",
+        primary_callback="consult_follow_up_start",
         show_lawyer_result=True,
     )
 
-    assert _result_buttons(view, case=case) == [("🏠 На главную", "nav_home")]
+    buttons = _result_buttons(view, case=case)
+    assert buttons == [
+        ("📁 Архив обращения", "my_case_open"),
+        ("📄 Документы", "documents_open"),
+        ("💳 Оплаты", "payments_open"),
+        ("🕘 История", "case_history_open"),
+        ("🏠 Главная", "nav_home"),
+    ]
+    callbacks = {callback for _label, callback in buttons}
+    assert "consult_follow_up_start" not in callbacks
+    assert "consultation_booked_open" not in callbacks
+    assert "message_create" not in callbacks
