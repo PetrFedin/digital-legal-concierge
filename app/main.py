@@ -27,6 +27,7 @@ from app.api.go_live_center import router as go_live_center_router
 from app.api.guided_consultation_outcomes import router as guided_consultation_outcomes_router
 from app.api.guided_lawyer_ui import router as guided_lawyer_ui_router
 from app.api.guided_message_center import router as guided_message_center_router
+from app.api.guided_refund_center import router as guided_refund_center_router
 from app.api.handover import router as handover_router
 from app.api.health_center import router as health_center_router
 from app.api.initial_setup_wizard import router as initial_setup_wizard_router
@@ -149,6 +150,7 @@ def create_app():
         ("access_management", access_management_router),
         ("consultation_slots", consultation_slots_router),
         ("case_assignment", case_assignment_router),
+        ("guided_refund_center", guided_refund_center_router),
         ("refund_center", refund_center_router),
         ("retention_center", retention_center_router),
         ("payment_review_center", payment_review_center_router),
