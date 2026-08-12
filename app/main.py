@@ -24,6 +24,7 @@ from app.api.final_handover_center import router as final_handover_center_router
 from app.api.final_qa_center import router as final_qa_center_router
 from app.api.go_live_center import router as go_live_center_router
 from app.api.guided_lawyer_ui import router as guided_lawyer_ui_router
+from app.api.guided_message_center import router as guided_message_center_router
 from app.api.handover import router as handover_router
 from app.api.health_center import router as health_center_router
 from app.api.initial_setup_wizard import router as initial_setup_wizard_router
@@ -130,6 +131,7 @@ def create_app():
         ("release_manager", release_manager_router),
         ("acceptance_center", acceptance_center_router),
         ("search_center", search_center_router),
+        ("guided_message_center", guided_message_center_router),
         ("message_center", message_center_router),
         ("audit_center", audit_center_router),
         ("security_event_center", security_event_center_router),
