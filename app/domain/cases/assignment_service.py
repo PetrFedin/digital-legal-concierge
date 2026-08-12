@@ -143,12 +143,6 @@ class CaseAssignmentService:
         if case.assigned_lawyer_id is not None:
             return case
         self._ensure_case_can_be_assigned(case)
-        if not automatic_assignment_required(case.status):
-            raise ValueError(
-                "Автоматическое назначение ещё не требуется для текущего этапа. "
-                "Оно запускается после передачи документов в М1; консультация М2 "
-                "ведётся юристом выбранного слота."
-            )
 
         lawyer_rows = await self.list_active_lawyers()
         best = self._choose_best_lawyer(lawyer_rows)
@@ -350,6 +344,11 @@ class CaseAssignmentService:
     def _ensure_case_can_be_assigned(case: Case) -> None:
         if str(case.status).upper() in CLOSED_CASE_STATUSES:
             raise ValueError("Нельзя назначить юриста на закрытое дело")
+        if not automatic_assignment_required(case.status):
+            raise ValueError(
+                "Назначение юриста доступно только для рабочего M1 после передачи документов. "
+                "Ранние этапы остаются за клиентом, а M2 ведёт юрист выбранного консультационного слота."
+            )
 
     async def _get_case(
         self,
