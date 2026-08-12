@@ -17,6 +17,8 @@ from app.api.calculator_builder import router as calculator_builder_router
 from app.api.case_assignment import router as case_assignment_router
 from app.api.consultation_outcomes import router as consultation_outcomes_router
 from app.api.consultation_slots import router as consultation_slots_router
+from app.api.contract_center import router as contract_center_router
+from app.api.contract_workspace_ui import router as contract_workspace_ui_router
 from app.api.diagnostic_center import router as diagnostic_center_router
 from app.api.document_access import router as document_access_router
 from app.api.document_access_portal import router as document_access_portal_router
@@ -169,6 +171,8 @@ def create_app():
         ("admin", admin_router),
         ("payment_safety_guard", payment_safety_guard_router),
         ("payment_webhooks", payment_router),
+        ("contract_center", contract_center_router),
+        ("contract_workspace_ui", contract_workspace_ui_router),
         ("lawyer_workspace_rejection_ui", lawyer_workspace_rejection_ui_router),
         ("guided_lawyer_ui", guided_lawyer_ui_router),
         ("lawyer", lawyer_router),
@@ -424,6 +428,7 @@ def create_app():
             "security_event_center_ui": "/security-events/ui",
             "document_access_api": "/document-access/cases/{case_id}/documents",
             "document_access_ui": "/document-access/ui",
+            "contract_center_ui": "/contracts/ui?case_id={case_id}",
             "backup_center_ui": "/backup-center/ui",
             "backup_center_status": "/backup-center/status",
             "retention_center_ui": "/retention/ui",
