@@ -22,7 +22,8 @@ _CONSULTATION_DRAFT_PATCH = r"""
 <script>
 (function(){
   const prefix='dlc:consultation-draft:v1:';
-  function key(id,type){return prefix+String(id)+':'+String(type||'complete')}
+  function owner(){return (typeof data!=='undefined'&&data?.lawyer?.id)?String(data.lawyer.id):'unknown'}
+  function key(id,type){return prefix+owner()+':'+String(id)+':'+String(type||'complete')}
   function read(id,type){try{const raw=sessionStorage.getItem(key(id,type));return raw?JSON.parse(raw):null}catch(_){return null}}
   function save(id,type){
     const form=document.getElementById('form_'+id);
