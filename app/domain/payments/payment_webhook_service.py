@@ -19,6 +19,11 @@ PROTECTED_RECEIVED_PAYMENT_STATUSES = {
     PaymentStatus.REFUND_DECLINED,
     PaymentStatus.REFUNDED,
 }
+INACTIVE_M2_PAYMENT_STATUSES = {
+    PaymentStatus.EXPIRED,
+    PaymentStatus.CANCELLED,
+    PaymentStatus.FAILED,
+}
 
 
 class PaymentWebhookService:
@@ -45,13 +50,15 @@ class PaymentWebhookService:
         case,
         reason: str,
         provider_payload: dict | None,
+        actor_type: str = "payment_provider",
+        actor_id: int | None = None,
     ) -> Payment:
         old_status = payment.status
         payment.status = PaymentStatus.PAID_REVIEW
         await add_case_history_event(
             self.db,
-            actor_type="payment_provider",
-            actor_id=None,
+            actor_type=actor_type,
+            actor_id=actor_id,
             case_id=case.id,
             action="CONSULTATION_PAYMENT_REVIEW_REQUIRED",
             old_value={"status": old_status},
@@ -85,13 +92,36 @@ class PaymentWebhookService:
         payment,
         case,
         provider_payload=None,
+        actor_type: str = "payment_provider",
+        actor_id: int | None = None,
+        processed_action: str = "PAYMENT_WEBHOOK_PROCESSED",
     ):
+        """Apply a verified successful payment through the canonical state machine.
+
+        Provider webhooks use the defaults. A controlled offline confirmation may
+        provide an admin actor and a distinct audit action while still using the
+        exact same payment/case transition logic.
+        """
+
         payment = await self._lock_payment(payment.id)
 
         if payment.status in PROTECTED_RECEIVED_PAYMENT_STATUSES:
             return payment
 
         if payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT:
+            if payment.status in INACTIVE_M2_PAYMENT_STATUSES:
+                return await self._mark_consultation_payment_review(
+                    payment=payment,
+                    case=case,
+                    reason=(
+                        "Деньги поступили по уже закрытой, отменённой или ранее "
+                        "неуспешной ссылке. Автоматическое изменение консультации запрещено."
+                    ),
+                    provider_payload=provider_payload,
+                    actor_type=actor_type,
+                    actor_id=actor_id,
+                )
+
             consultation_service = ConsultationService(self.db)
             consultation = await consultation_service.get_current_for_case(case.id)
 
@@ -101,6 +131,8 @@ class PaymentWebhookService:
                     case=case,
                     reason="Активная консультация или связанный слот не найдены",
                     provider_payload=provider_payload,
+                    actor_type=actor_type,
+                    actor_id=actor_id,
                 )
 
             if payment.status == PaymentStatus.PAID:
@@ -122,6 +154,8 @@ class PaymentWebhookService:
                         "подтверждённая консультация не найдена"
                     ),
                     provider_payload=provider_payload,
+                    actor_type=actor_type,
+                    actor_id=actor_id,
                 )
 
             expected_reservation_key = PaymentService.consultation_reservation_key(
@@ -137,6 +171,8 @@ class PaymentWebhookService:
                         "или ранее выбранному времени"
                     ),
                     provider_payload=provider_payload,
+                    actor_type=actor_type,
+                    actor_id=actor_id,
                 )
 
             try:
@@ -150,12 +186,15 @@ class PaymentWebhookService:
                     case=case,
                     reason=str(error),
                     provider_payload=provider_payload,
+                    actor_type=actor_type,
+                    actor_id=actor_id,
                 )
 
             await self.payments.mark_paid(
                 payment=payment,
                 case=case,
-                actor_type="payment_provider",
+                actor_type=actor_type,
+                actor_id=actor_id,
             )
             if case.status != CaseStatus.M2_CONSULTATION_BOOKED:
                 await self.cases.change_status(
@@ -163,11 +202,12 @@ class PaymentWebhookService:
                     next_status=CaseStatus.M2_CONSULTATION_BOOKED,
                     actor_type="system",
                     actor_id=None,
-                            comment="Консультация подтверждена после оплаты",
+                    comment="Консультация подтверждена после оплаты",
                 )
             await self.notifications.emit(
                 event_code="M2_CONSULTATION_BOOKED",
                 case_id=case.id,
+                user_id=case.client_id,
                 payload={
                     "case_number": case.case_number,
                     "date": (
@@ -176,6 +216,7 @@ class PaymentWebhookService:
                         else "уточняется"
                     ),
                 },
+                dedupe_key=f"{expected_reservation_key}:booked",
             )
         else:
             if payment.status == PaymentStatus.PAID:
@@ -183,7 +224,8 @@ class PaymentWebhookService:
             await self.payments.mark_paid(
                 payment=payment,
                 case=case,
-                actor_type="payment_provider",
+                actor_type=actor_type,
+                actor_id=actor_id,
             )
             mapping = {
                 PaymentCode.M1_INITIAL_PAYMENT: [
@@ -205,15 +247,25 @@ class PaymentWebhookService:
                     next_status=status,
                     actor_type="system",
                     actor_id=None,
-                            comment=f"Автопереход после оплаты {payment.payment_code}",
+                    comment=f"Автопереход после оплаты {payment.payment_code}",
+                )
+            if (
+                payment.payment_code == PaymentCode.M1_SUCCESS_FEE
+                and case.status == CaseStatus.M1_CLOSED
+            ):
+                await self.notifications.emit(
+                    event_code="M1_CLOSED",
+                    case_id=case.id,
+                    payload={"case_number": case.case_number},
+                    dedupe_key=f"payment:{payment.id}:m1-closed",
                 )
 
         await add_case_history_event(
             self.db,
-            actor_type="payment_provider",
-            actor_id=None,
+            actor_type=actor_type,
+            actor_id=actor_id,
             case_id=case.id,
-            action="PAYMENT_WEBHOOK_PROCESSED",
+            action=processed_action,
             new_value={
                 "payment_id": payment.id,
                 "payment_code": payment.payment_code,

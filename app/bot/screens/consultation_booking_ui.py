@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
+from app.domain.cases.client_case_scope import latest_completed_strict_m2_case_for_user
 from app.domain.consultations.consultation_intake import consultation_description_ready
 from app.domain.consultations.consultation_service import ConsultationService
 from app.domain.documents.document_workflow import normalize_document_status
@@ -62,6 +63,39 @@ def consultation_status_label(value) -> str:
     if status is None:
         return "Статус уточняется"
     return CONSULTATION_STATUS_LABELS.get(status, "Статус уточняется")
+
+
+def consultation_progress(
+    *,
+    status: ConsultationStatus | None,
+    description_ready: bool,
+    active_document_count: int,
+) -> tuple[int, str]:
+    """Return a compact visual stage and human-readable progress hint."""
+
+    if status in TERMINAL_STATUSES:
+        return 4, "Завершено"
+    if status == ConsultationStatus.BOOKED:
+        return 3, "Время подтверждено"
+    if status in {
+        ConsultationStatus.SLOT_RESERVED,
+        ConsultationStatus.PAYMENT_PENDING,
+    }:
+        return 2, "Время выбрано · осталось подтвердить"
+    if description_ready and active_document_count:
+        return 1, "Вопрос и материалы готовы · следующий шаг — время"
+    if description_ready:
+        return 1, "Вопрос сохранён · следующий шаг — время"
+    return 0, "Начните с описания вопроса"
+
+
+def consultation_progress_bar(stage: int) -> str:
+    safe_stage = max(0, min(int(stage), 4))
+    labels = ["Вопрос", "Материалы", "Время", "Подтверждение", "Готово"]
+    return " · ".join(
+        f"{'●' if index <= safe_stage else '○'} {label}"
+        for index, label in enumerate(labels)
+    )
 
 
 def consultation_primary_action(
@@ -159,20 +193,39 @@ async def consultation_action_center(callback: CallbackQuery, db):
     case = await ctx.case_service.get_active_case_for_user(user.id)
 
     if not case:
-        await db.commit()
+        completed_m2 = await latest_completed_strict_m2_case_for_user(db, user_id=user.id)
+        await db.rollback()
+        if completed_m2:
+            await _safe_edit(
+                callback,
+                "🔒 КОНСУЛЬТАЦИЯ ЗАВЕРШЕНА\n\n"
+                f"Дело {completed_m2.case_number} уже находится в архиве. "
+                "Эта старая кнопка не создаёт новую запись, не меняет время и не открывает редактирование закрытого дела.\n\n"
+                "Откройте итог консультации или нужный раздел архива.",
+                reply_markup=one(
+                    ("👨‍⚖ Итог консультации", "consultation_result_open"),
+                    ("💳 Оплаты", "payments_open"),
+                    ("💬 Архив переписки", "message_history"),
+                    ("🕘 История дела", "case_history_open"),
+                    ("📁 Моё дело", "my_case_open"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+            )
+            return
         await _safe_edit(
             callback,
             "👨‍⚖ КОНСУЛЬТАЦИЯ\n\n"
-            "Активная консультация не найдена. Начните с описания ситуации или вернитесь на главную.",
+            "Активная или завершённая M2-консультация не найдена. Новая консультация не создана автоматически.",
             reply_markup=one(
-                ("💬 Связаться с юристом", "contact_lawyer"),
+                ("💬 Юридическая помощь", "contact_lawyer"),
+                ("🧮 Рассчитать неустойку", "calc_start"),
                 ("🏠 Главная", "nav_home"),
             ),
         )
         return
 
     if str(case.route or "") != RouteCode.M2.value:
-        await db.commit()
+        await db.rollback()
         await _safe_edit(
             callback,
             "👨‍⚖ КОНСУЛЬТАЦИЯ\n\n"
@@ -188,13 +241,12 @@ async def consultation_action_center(callback: CallbackQuery, db):
 
     consultation = await ConsultationService(db).get_current_for_case(case.id)
     if not consultation:
-        await db.commit()
+        await db.rollback()
         await _safe_edit(
             callback,
             "👨‍⚖ КОНСУЛЬТАЦИЯ\n\n"
-            "Текущая запись не найдена. Сохранённое дело остаётся доступно — откройте актуальный следующий шаг или начните консультацию заново.",
+            "Текущая запись не найдена. Сохранённое M2-дело остаётся доступно — откройте его актуальный следующий шаг. Новая запись не создаётся этой кнопкой.",
             reply_markup=one(
-                ("📝 Начать консультацию", "consult_subject_start"),
                 ("📁 Моё дело", "my_case_open"),
                 ("✉️ Написать команде", "message_create"),
                 ("🏠 Главная", "nav_home"),
@@ -214,7 +266,7 @@ async def consultation_action_center(callback: CallbackQuery, db):
     active_documents = [
         item for item in documents if normalize_document_status(item.status) != "ARCHIVED"
     ]
-    await db.commit()
+    await db.rollback()
 
     description_ready = consultation_description_ready(consultation)
     status = normalized_consultation_status(consultation.status)
@@ -223,6 +275,12 @@ async def consultation_action_center(callback: CallbackQuery, db):
         description_ready=description_ready,
         active_document_count=len(active_documents),
     )
+    stage, progress_hint = consultation_progress(
+        status=status,
+        description_ready=description_ready,
+        active_document_count=len(active_documents),
+    )
+    progress_bar = consultation_progress_bar(stage)
 
     buttons: list[tuple[str, str]] = [primary]
     if description_ready:
@@ -253,6 +311,7 @@ async def consultation_action_center(callback: CallbackQuery, db):
     await _safe_edit(
         callback,
         "👨‍⚖ КОНСУЛЬТАЦИЯ\n\n"
+        f"ПРОГРЕСС\n{progress_bar}\n{progress_hint}\n\n"
         "СЕЙЧАС\n"
         f"{consultation_status_label(consultation.status)}\n"
         f"Дата и время: {_format_datetime(consultation.scheduled_at)}\n\n"

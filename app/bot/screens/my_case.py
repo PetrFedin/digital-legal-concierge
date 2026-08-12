@@ -5,21 +5,18 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery
 
 from app.bot.client_case_view import (
-    CLIENT_ACTIONS,
-    ClientAction,
     client_action_for,
-    format_consultation_time,
     format_updated_at,
     load_client_case_view,
-    money,
-    next_action_text,
     progress_bar,
-    route_label,
 )
 from app.bot.consultation_result import latest_terminal_client_consultation
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
-from app.domain.payments.mode import payments_disabled
+from app.bot.payment_presentation import offline_m1_payment_presentation
+from app.domain.cases.client_case_scope import latest_completed_m1_case_for_user
+from app.domain.payments.payment_service import PaymentService
+from app.domain.statuses.payment_statuses import PaymentStatus
 
 router = Router()
 
@@ -68,6 +65,36 @@ def _has_consultation_result(view) -> bool:
     return summary.startswith(TERMINAL_CONSULTATION_PREFIXES)
 
 
+async def _payment_summary(db, case_id: int) -> str:
+    """Describe real payment history without exposing technical status codes."""
+
+    payments = await PaymentService(db).list_case_payments(case_id)
+    if not payments:
+        return "Платежей по обращению нет"
+
+    statuses = {str(payment.status) for payment in payments}
+    if str(PaymentStatus.PAID_REVIEW) in statuses:
+        return "Есть платёж, который проверяет команда"
+    if str(PaymentStatus.REFUND_PENDING) in statuses:
+        return "Возврат денежных средств обрабатывается"
+    if str(PaymentStatus.REFUND_DECLINED) in statuses:
+        return "По возврату требуется уточнение команды"
+
+    pending_count = sum(
+        1
+        for payment in payments
+        if str(payment.status)
+        in {
+            str(PaymentStatus.PENDING),
+            str(PaymentStatus.WAITING_CONFIRMATION),
+        }
+    )
+    if pending_count:
+        return f"Ожидают подтверждения: {pending_count}"
+
+    return f"Платежей в истории: {len(payments)} · активных действий по оплате нет"
+
+
 def _case_buttons(view) -> list[tuple[str, str]]:
     buttons: list[tuple[str, str]] = []
     if view.unread_team_messages:
@@ -82,7 +109,10 @@ def _case_buttons(view) -> list[tuple[str, str]]:
     if has_consultation_result:
         buttons.append(("👨‍⚖ Итог консультации", "consultation_result_open"))
 
-    if view.action and not (
+    offline_payment = offline_m1_payment_presentation(view)
+    if offline_payment:
+        buttons.append((offline_payment.button_label, offline_payment.callback))
+    elif view.action and not (
         has_consultation_result
         and view.action.callback == "consultation_booked_open"
     ):
@@ -103,8 +133,9 @@ def _case_buttons(view) -> list[tuple[str, str]]:
     else:
         buttons.append(("📋 Все документы", "documents_open"))
 
-    if not payments_disabled():
-        buttons.append(("💳 Оплаты", "payments_open"))
+    # Payment provider availability controls creation, not access to financial
+    # history. Keep the Payments cabinet visible even in disabled/offline mode.
+    buttons.append(("💳 Оплаты", "payments_open"))
     buttons.extend(
         [
             ("🕘 История дела", "case_history_open"),
@@ -115,9 +146,102 @@ def _case_buttons(view) -> list[tuple[str, str]]:
     return buttons
 
 
+async def _render_completed_case(
+    callback: CallbackQuery,
+    db,
+    *,
+    case,
+    notice: str | None = None,
+) -> None:
+    view = await load_client_case_view(db, case)
+    payment_summary = await _payment_summary(db, case.id)
+    is_m2 = str(view.route or "") == "M2"
+    has_consultation_result = _has_consultation_result(view)
+
+    lines: list[str] = []
+    if notice:
+        lines.extend([f"ℹ️ {notice}", ""])
+
+    if is_m2:
+        lines.extend(
+            [
+                "📁 ИТОГ КОНСУЛЬТАЦИИ",
+                f"№ {view.case_number}",
+                view.route_label,
+                "",
+                "СЕЙЧАС",
+                "✅ Консультационный маршрут завершён",
+                progress_bar(100),
+                "",
+                "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ",
+                "Действий по этому обращению больше не требуется. Итог консультации и материалы сохранены в архиве.",
+                "",
+                "АРХИВ ОБРАЩЕНИЯ",
+                f"🗓 Консультация: {view.consultation_summary}",
+                f"📄 Документы: {_document_detail(view)}",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "📁 ИТОГ ДЕЛА",
+                f"№ {view.case_number}",
+                view.route_label,
+                "",
+                "СЕЙЧАС",
+                "✅ Дело завершено",
+                progress_bar(100),
+                "",
+                "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ",
+                "Действий по этому делу больше не требуется. Финальный платёж подтверждён, финансовый этап завершён и дело закрыто.",
+                "",
+                "АРХИВ ДЕЛА",
+                f"📄 Документы: {_document_detail(view)}",
+            ]
+        )
+
+    lines.extend(
+        [
+            f"💳 Оплаты: {payment_summary}",
+            "",
+            f"Закрыто / обновлено: {format_updated_at(view.updated_at)}",
+            "Документы, история и платежи остаются доступны только для просмотра. Новое обращение создаётся отдельно.",
+        ]
+    )
+
+    buttons: list[tuple[str, str]] = []
+    if is_m2 and has_consultation_result:
+        buttons.append(("👨‍⚖ Итог консультации", "consultation_result_open"))
+    buttons.extend(
+        [
+            ("📄 Документы обращения", "documents_open"),
+            ("💳 Оплаты по обращению", "payments_open"),
+            ("🕘 История обращения", "case_history_open"),
+            ("🧮 Новое обращение", "calc_start"),
+            ("🏠 Главная", "nav_home"),
+        ]
+    )
+    await _safe_edit(
+        callback,
+        "\n".join(lines),
+        reply_markup=one(*buttons),
+        unchanged_notice="Итог обращения уже актуален.",
+    )
+
+
 async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None):
     _, user, case = await _active_case_context(callback, db)
     if not case:
+        completed = await latest_completed_m1_case_for_user(db, user_id=user.id)
+        if completed:
+            await _render_completed_case(
+                callback,
+                db,
+                case=completed,
+                notice=notice,
+            )
+            return
+
         latest_result = await latest_terminal_client_consultation(
             db,
             client_id=user.id,
@@ -152,15 +276,19 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
         return
 
     view = await load_client_case_view(db, case)
+    payment_summary = await _payment_summary(db, case.id)
     has_consultation_result = _has_consultation_result(view)
     stale_booking_action = bool(
         has_consultation_result
         and view.action
         and view.action.callback == "consultation_booked_open"
     )
+    offline_payment = offline_m1_payment_presentation(view)
     shown_next_action = (
         "Откройте итог консультации — там показан актуальный следующий шаг."
         if stale_booking_action
+        else offline_payment.next_action
+        if offline_payment
         else view.next_action
     )
 
@@ -208,10 +336,9 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
     )
     if view.route == "M2" or view.consultation_summary != "Не назначена":
         lines.append(f"🗓 Консультация: {view.consultation_summary}")
-    if view.payments_summary:
-        lines.append(f"💳 Оплаты: {view.payments_summary}")
     lines.extend(
         [
+            f"💳 Оплаты: {payment_summary}",
             "",
             f"Обновлено: {format_updated_at(view.updated_at)}",
             "Первая кнопка ниже — самое актуальное безопасное действие.",
@@ -286,6 +413,17 @@ async def next_action(callback: CallbackQuery, db):
             callback,
             db,
             notice="Статус дела уже изменился. Показан актуальный следующий шаг.",
+        )
+        return
+
+    if offline_m1_payment_presentation(view):
+        await _render_case(
+            callback,
+            db,
+            notice=(
+                "Онлайн-оплата сейчас отключена. Новый платёж не создавался: "
+                "показан статус уже открытого финансового этапа."
+            ),
         )
         return
 

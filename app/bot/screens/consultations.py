@@ -6,6 +6,7 @@ from aiogram.types import CallbackQuery
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.screens.consultation_intake import _safe_edit
+from app.domain.cases.client_case_scope import latest_completed_strict_m2_case_for_user
 from app.domain.consultations.consultation_change_service import (
     ConsultationChangeService,
 )
@@ -13,6 +14,7 @@ from app.domain.consultations.consultation_intake import consultation_descriptio
 from app.domain.consultations.consultation_service import ConsultationService
 from app.domain.consultations.slot_service import SlotService, SlotUnavailableError
 from app.domain.payments.mode import payments_disabled
+from app.domain.payments.refund_service import ConsultationRefundStateConflict
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 
 router = Router()
@@ -50,28 +52,83 @@ def booking_recovery_buttons() -> tuple[tuple[str, str], ...]:
     )
 
 
+def completed_archive_buttons(case) -> tuple[tuple[str, str], ...]:
+    """Read-only recovery for stale M2 controls pressed after the consultation was closed."""
+
+    return (
+        ("👨‍⚖ Открыть итог консультации", "consultation_result_open"),
+        ("💳 Оплаты", "payments_open"),
+        ("🗂 Переписка", "message_history"),
+        ("📁 Моё дело", "my_case_open"),
+        ("🏠 Главная", "nav_home"),
+    )
+
+
 async def _current_booked_context(callback: CallbackQuery, db):
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     case = await ctx.case_service.get_active_case_for_user(user.id)
     if not case:
-        return user, None, None
+        archived = await latest_completed_strict_m2_case_for_user(
+            db,
+            user_id=user.id,
+        )
+        return user, archived, None
     consultation = await ConsultationService(db).get_current_for_case(case.id)
     if not consultation or consultation.status != ConsultationStatus.BOOKED:
         return user, case, None
     return user, case, consultation
 
 
+async def _show_missing_booked_context(callback: CallbackQuery, db, *, action: str) -> None:
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    active = await ctx.case_service.get_active_case_for_user(user.id)
+    if active is not None:
+        await _safe_edit(
+            callback,
+            "Текущая подтверждённая консультация уже изменилась.\n\n"
+            "Старая кнопка не меняет активное дело. Откройте актуальный шаг консультации.",
+            reply_markup=one(
+                ("👨‍⚖ Открыть текущую запись", "consultation_booked_open"),
+                ("📁 Моё дело", "my_case_open"),
+                ("✉️ Написать команде", "message_create"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    archived = await latest_completed_strict_m2_case_for_user(
+        db,
+        user_id=user.id,
+    )
+    if archived is not None:
+        await _safe_edit(
+            callback,
+            "🔒 Консультация уже завершена.\n\n"
+            "Старая кнопка переноса/отмены больше не изменяет запись, слот или возврат. "
+            "Откройте архивный итог и финансовую историю.",
+            reply_markup=one(*completed_archive_buttons(archived)),
+        )
+        return
+
+    await _safe_edit(
+        callback,
+        "Подтверждённая консультация для этого действия больше не найдена. "
+        "Ничего не изменено.",
+        reply_markup=one(
+            ("📅 Выбрать дату и время", "consult_booking_start"),
+            ("✉️ Написать команде", "message_create"),
+            ("🏠 Главная", "nav_home"),
+        ),
+    )
+
+
 @router.callback_query(lambda c: c.data == "consult_reschedule")
 async def consult_reschedule(callback: CallbackQuery, db):
     _user, case, consultation = await _current_booked_context(callback, db)
     if not case or not consultation:
-        await _safe_edit(
-            callback,
-            "Подтверждённая консультация для переноса не найдена. "
-            "Откройте актуальный этап дела.",
-            reply_markup=one(*booking_recovery_buttons()),
-        )
+        await _show_missing_booked_context(callback, db, action="reschedule")
         return
 
     try:
@@ -187,12 +244,7 @@ async def choose_reschedule_slot(callback: CallbackQuery, db):
 
     _user, case, consultation = await _current_booked_context(callback, db)
     if not case or not consultation:
-        await _safe_edit(
-            callback,
-            "Текущая подтверждённая консультация уже изменилась. "
-            "Откройте актуальную запись перед новым переносом.",
-            reply_markup=one(*booking_recovery_buttons()),
-        )
+        await _show_missing_booked_context(callback, db, action="reschedule")
         return
 
     try:
@@ -269,27 +321,7 @@ async def confirm_reschedule_slot(callback: CallbackQuery, db):
 
     user, case, consultation = await _current_booked_context(callback, db)
     if not case or not consultation:
-        await _safe_edit(
-            callback,
-            "Текущая подтверждённая консультация уже изменилась. Повторный перенос не выполнялся.",
-            reply_markup=one(*booking_recovery_buttons()),
-        )
-        return
-
-    if (
-        consultation.id != expected_consultation_id
-        or int(consultation.slot_id or 0) != expected_old_slot_id
-    ):
-        await _safe_edit(
-            callback,
-            "Запись изменилась после выбора нового времени. Старая кнопка подтверждения больше не действует.\n\n"
-            "Откройте текущую запись и при необходимости начните перенос заново.",
-            reply_markup=one(
-                ("👨‍⚖ Открыть текущую запись", "consultation_booked_open"),
-                ("🔄 Начать перенос заново", "consult_reschedule"),
-                ("🏠 Главная", "nav_home"),
-            ),
-        )
+        await _show_missing_booked_context(callback, db, action="reschedule")
         return
 
     try:
@@ -298,6 +330,7 @@ async def confirm_reschedule_slot(callback: CallbackQuery, db):
             case=case,
             client_id=user.id,
             new_slot_id=new_slot_id,
+            expected_old_slot_id=expected_old_slot_id,
         )
         await db.commit()
     except (SlotUnavailableError, ValueError) as error:
@@ -342,30 +375,21 @@ async def confirm_reschedule_slot(callback: CallbackQuery, db):
 async def consult_cancel(callback: CallbackQuery, db):
     _user, case, consultation = await _current_booked_context(callback, db)
     if not case or not consultation:
-        await _safe_edit(
-            callback,
-            "Подтверждённая консультация для отмены не найдена. "
-            "Откройте актуальный этап дела.",
-            reply_markup=one(*booking_recovery_buttons()),
-        )
+        await _show_missing_booked_context(callback, db, action="cancel")
         return
 
-    if payments_disabled():
-        payment_text = "Онлайн-оплата для этой записи не использовалась."
-    else:
-        payment_text = (
-            "Если консультация оплачена, платёж перейдёт на проверку возврата; "
-            "результат будет виден в разделе «Оплаты»."
-        )
     await _safe_edit(
         callback,
         "⚠️ Отменить текущую консультацию?\n\n"
         "Слот освободится. Ваш вопрос и загруженные документы останутся в деле, "
         "поэтому новое время можно будет выбрать без повторного заполнения.\n\n"
-        f"{payment_text}",
+        "Если по этой записи деньги уже были получены, отмена запустит штатную "
+        "проверку возврата. Если фактической оплаты не было, возврат не потребуется. "
+        "Финансовый результат будет виден в разделе «Оплаты».",
         reply_markup=one(
             ("Да, отменить текущую запись", "consult_cancel_confirm"),
             ("Нет, сохранить запись", "consultation_booked_open"),
+            ("💳 Оплаты", "payments_open"),
             ("🏠 Главная", "nav_home"),
         ),
     )
@@ -375,11 +399,7 @@ async def consult_cancel(callback: CallbackQuery, db):
 async def consult_cancel_confirm(callback: CallbackQuery, db):
     user, case, consultation = await _current_booked_context(callback, db)
     if not case or not consultation:
-        await _safe_edit(
-            callback,
-            "Текущая запись уже изменилась или отсутствует. Повторная отмена не выполнялась.",
-            reply_markup=one(*booking_recovery_buttons()),
-        )
+        await _show_missing_booked_context(callback, db, action="cancel")
         return
 
     try:
@@ -393,6 +413,30 @@ async def consult_cancel_confirm(callback: CallbackQuery, db):
             )
         )
         await db.commit()
+    except ConsultationRefundStateConflict as error:
+        await db.rollback()
+        logger.warning(
+            "Отмена M2 заблокирована из-за конфликта статуса возврата: case_id=%s consultation_id=%s error=%s",
+            case.id,
+            consultation.id,
+            error,
+        )
+        await _safe_edit(
+            callback,
+            "⚠️ Возврат требует сверки\n\n"
+            "Автоматический повтор возврата заблокирован, чтобы деньги не были "
+            "возвращены дважды. Текущая консультация, слот и статус дела не изменены.\n\n"
+            "Откройте «Оплаты» для текущего финансового статуса или напишите команде — "
+            "вопрос будет привязан к этому делу.",
+            reply_markup=one(
+                ("💳 Оплаты", "payments_open"),
+                ("✉️ Написать команде", "message_create"),
+                ("👨‍⚖ Открыть текущую запись", "consultation_booked_open"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
     except (LookupError, ValueError) as error:
         await db.rollback()
         await _safe_edit(
@@ -416,6 +460,7 @@ async def consult_cancel_confirm(callback: CallbackQuery, db):
                 ("🔄 Повторить отмену", "consult_cancel_confirm"),
                 ("👨‍⚖ Открыть текущую запись", "consultation_booked_open"),
                 ("✉️ Написать команде", "message_create"),
+                ("🏠 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
         )
@@ -429,11 +474,11 @@ async def consult_cancel_confirm(callback: CallbackQuery, db):
     )
     if refund_required:
         payment_text = (
-            "Заявка на возврат оплаты передана на проверку. "
+            "Заявка на возврат полученной оплаты передана на проверку. "
             "Фактический результат появится в разделе «Оплаты»."
         )
     else:
-        payment_text = "Онлайн-оплата не использовалась, возврат не требуется."
+        payment_text = "По этой записи полученных денег не было, возврат не требуется."
 
     await _safe_edit(
         callback,

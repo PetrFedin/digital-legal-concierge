@@ -1,151 +1,42 @@
 NOTIFICATION_RULES = {
     "CASE_CREATED": {"recipients": ["admin"], "template": "case_created"},
-    "LAWYER_ASSIGNED": {
-        "recipients": ["lawyer"],
-        "template": "lawyer_assigned",
-    },
-    "STAFF_MESSAGE_REPLIED": {
-        "recipients": ["client"],
-        "template": "staff_message_reply",
-    },
-    "CLIENT_MESSAGE_RECEIVED": {
-        "recipients": ["lawyer", "admin"],
-        "template": "client_message_received",
-    },
-    "M1_CASE_ACCEPTED": {
-        "recipients": ["client"],
-        "template": "m1_case_accepted",
-    },
-    "M1_DOCUMENTS_REQUESTED": {
-        "recipients": ["client"],
-        "template": "m1_documents_requested",
-    },
-    "M1_CASE_TRANSFERRED_TO_M2": {
-        "recipients": ["client", "admin"],
-        "template": "m1_case_transferred_to_m2",
-    },
-    "M1_CLAIM_PREPARATION_STARTED": {
-        "recipients": ["client"],
-        "template": "m1_claim_preparation_started",
-    },
-    "M1_CLAIM_SENT": {
-        "recipients": ["client"],
-        "template": "m1_claim_sent",
-    },
-    "CASE_SLA_FIRST_RESPONSE_OVERDUE": {
-        "recipients": ["lawyer", "admin"],
-        "template": "case_sla_first_response_overdue",
-    },
-    "CASE_SLA_ACTION_OVERDUE": {
-        "recipients": ["lawyer", "admin"],
-        "template": "case_sla_action_overdue",
-    },
-    "CASE_SLA_ACKNOWLEDGED": {
-        "recipients": ["lawyer", "admin"],
-        "template": "case_sla_acknowledged",
-    },
-    "DOCUMENT_UPLOADED": {
-        "recipients": ["admin", "lawyer"],
-        "template": "document_uploaded",
-    },
-    "DOCUMENT_STATUS_CHANGED": {
-        "recipients": ["client"],
-        "template": "document_status_changed",
-    },
-    "DOCUMENT_APPROVED": {
-        "recipients": ["client"],
-        "template": "document_approved",
-    },
-    "DOCUMENT_REUPLOAD_REQUESTED": {
-        "recipients": ["client"],
-        "template": "document_reupload_requested",
-    },
-    "DOCUMENT_REJECTED": {
-        "recipients": ["client"],
-        "template": "document_rejected",
-    },
-    "PAYMENT_CREATED": {
-        "recipients": ["client"],
-        "template": "payment_created",
-    },
-    "PAYMENT_PAID": {
-        "recipients": ["client", "admin"],
-        "template": "payment_paid",
-    },
-    "PAYMENT_REMINDER": {
-        "recipients": ["client"],
-        "template": "payment_reminder",
-    },
-    "M2_CONSULTATION_BOOKED": {
-        "recipients": ["client", "lawyer", "admin"],
-        "template": "consultation_booked",
-    },
-    "CONSULTATION_RESCHEDULED": {
-        "recipients": ["client", "lawyer", "admin"],
-        "template": "consultation_rescheduled",
-    },
-    "CONSULTATION_REMINDER_24H": {
-        "recipients": ["client", "lawyer"],
-        "template": "consultation_reminder_24h",
-    },
-    "CONSULTATION_REMINDER_2H": {
-        "recipients": ["client", "lawyer"],
-        "template": "consultation_reminder_2h",
-    },
-    "CONSULTATION_COMPLETION_OVERDUE": {
-        "recipients": ["lawyer", "admin"],
-        "template": "consultation_completion_overdue",
-    },
-    "CONSULTATION_COMPLETED": {
-        "recipients": ["client", "admin"],
-        "template": "consultation_completed",
-    },
-    "CONSULTATION_CLIENT_NO_SHOW": {
-        "recipients": ["client", "lawyer", "admin"],
-        "template": "consultation_client_no_show",
-    },
-    "CONSULTATION_LAWYER_NO_SHOW": {
-        "recipients": ["client", "lawyer", "admin"],
-        "template": "consultation_lawyer_no_show",
-    },
-    "CONSULTATION_LAWYER_NO_SHOW_REBOOKED": {
-        "recipients": ["client", "lawyer", "admin"],
-        "template": "consultation_lawyer_no_show_rebooked",
-    },
-    "CONSULTATION_CANCELLATION_REQUESTED": {
-        "recipients": ["client", "lawyer", "admin"],
-        "template": "consultation_cancellation_requested",
-    },
-    "CONSULTATION_REFUNDED": {
-        "recipients": ["client", "admin"],
-        "template": "consultation_refunded",
-    },
-    "CONSULTATION_REFUND_DECLINED": {
-        "recipients": ["client", "admin"],
-        "template": "consultation_refund_declined",
-    },
-    "CONSULTATION_PAYMENT_REVIEW": {
-        "recipients": ["admin"],
-        "template": "consultation_payment_review",
-    },
-    "CONSULTATION_PAYMENT_REVIEW_RESOLVED": {
-        "recipients": ["client", "lawyer", "admin"],
-        "template": "consultation_payment_review_resolved",
-    },
-    "CONSULTATION_PAYMENT_REVIEW_REFUND_PENDING": {
-        "recipients": ["client", "admin"],
-        "template": "consultation_payment_review_refund_pending",
-    },
-    "CLAIM_30_DAYS_EXPIRED": {
-        "recipients": ["lawyer", "admin"],
-        "template": "claim_30_days_expired",
-    },
-    "COURT_STAGE_STARTED": {
-        "recipients": ["client", "lawyer"],
-        "template": "court_stage_started",
-    },
-    "COURT_PAYMENT_OPENED": {
-        "recipients": ["client"],
-        "template": "court_payment_opened",
-    },
+    "LAWYER_ASSIGNED": {"recipients": ["lawyer"], "template": "lawyer_assigned"},
+    "STAFF_MESSAGE_REPLIED": {"recipients": ["client"], "template": "staff_message_reply"},
+    "CLIENT_MESSAGE_RECEIVED": {"recipients": ["lawyer", "admin"], "template": "client_message_received"},
+    "M1_CASE_ACCEPTED": {"recipients": ["client"], "template": "m1_case_accepted"},
+    "M1_DOCUMENTS_REQUESTED": {"recipients": ["client"], "template": "m1_documents_requested"},
+    "M1_CASE_TRANSFERRED_TO_M2": {"recipients": ["client", "admin"], "template": "m1_case_transferred_to_m2"},
+    "M1_CLAIM_PREPARATION_STARTED": {"recipients": ["client"], "template": "m1_claim_preparation_started"},
+    "M1_CLAIM_SENT": {"recipients": ["client"], "template": "m1_claim_sent"},
+    "M1_MONEY_RECEIVED": {"recipients": ["client"], "template": "m1_money_received"},
+    "M1_CLOSED": {"recipients": ["client"], "template": "m1_closed"},
+    "CASE_SLA_FIRST_RESPONSE_OVERDUE": {"recipients": ["lawyer", "admin"], "template": "case_sla_first_response_overdue"},
+    "CASE_SLA_ACTION_OVERDUE": {"recipients": ["lawyer", "admin"], "template": "case_sla_action_overdue"},
+    "CASE_SLA_ACKNOWLEDGED": {"recipients": ["lawyer", "admin"], "template": "case_sla_acknowledged"},
+    "DOCUMENT_UPLOADED": {"recipients": ["admin", "lawyer"], "template": "document_uploaded"},
+    "DOCUMENT_STATUS_CHANGED": {"recipients": ["client"], "template": "document_status_changed"},
+    "DOCUMENT_APPROVED": {"recipients": ["client"], "template": "document_approved"},
+    "DOCUMENT_REUPLOAD_REQUESTED": {"recipients": ["client"], "template": "document_reupload_requested"},
+    "DOCUMENT_REJECTED": {"recipients": ["client"], "template": "document_rejected"},
+    "PAYMENT_CREATED": {"recipients": ["client"], "template": "payment_created"},
+    "PAYMENT_PAID": {"recipients": ["client", "admin"], "template": "payment_paid"},
+    "PAYMENT_REMINDER": {"recipients": ["client"], "template": "payment_reminder"},
+    "M2_CONSULTATION_BOOKED": {"recipients": ["client", "lawyer", "admin"], "template": "consultation_booked"},
+    "CONSULTATION_RESCHEDULED": {"recipients": ["client", "lawyer", "admin"], "template": "consultation_rescheduled"},
+    "CONSULTATION_REMINDER_24H": {"recipients": ["client", "lawyer"], "template": "consultation_reminder_24h"},
+    "CONSULTATION_REMINDER_2H": {"recipients": ["client", "lawyer"], "template": "consultation_reminder_2h"},
+    "CONSULTATION_COMPLETION_OVERDUE": {"recipients": ["lawyer", "admin"], "template": "consultation_completion_overdue"},
+    "CONSULTATION_COMPLETED": {"recipients": ["client", "admin"], "template": "consultation_completed"},
+    "CONSULTATION_CLIENT_NO_SHOW": {"recipients": ["client", "lawyer", "admin"], "template": "consultation_client_no_show"},
+    "CONSULTATION_LAWYER_NO_SHOW": {"recipients": ["client", "lawyer", "admin"], "template": "consultation_lawyer_no_show"},
+    "CONSULTATION_LAWYER_NO_SHOW_REBOOKED": {"recipients": ["client", "lawyer", "admin"], "template": "consultation_lawyer_no_show_rebooked"},
+    "CONSULTATION_CANCELLATION_REQUESTED": {"recipients": ["client", "lawyer", "admin"], "template": "consultation_cancellation_requested"},
+    "CONSULTATION_REFUNDED": {"recipients": ["client", "admin"], "template": "consultation_refunded"},
+    "CONSULTATION_REFUND_DECLINED": {"recipients": ["client", "admin"], "template": "consultation_refund_declined"},
+    "CONSULTATION_PAYMENT_REVIEW": {"recipients": ["admin"], "template": "consultation_payment_review"},
+    "CONSULTATION_PAYMENT_REVIEW_RESOLVED": {"recipients": ["client", "lawyer", "admin"], "template": "consultation_payment_review_resolved"},
+    "CONSULTATION_PAYMENT_REVIEW_REFUND_PENDING": {"recipients": ["client", "admin"], "template": "consultation_payment_review_refund_pending"},
+    "CLAIM_30_DAYS_EXPIRED": {"recipients": ["lawyer", "admin"], "template": "claim_30_days_expired"},
+    "COURT_STAGE_STARTED": {"recipients": ["client", "lawyer"], "template": "court_stage_started"},
+    "COURT_PAYMENT_OPENED": {"recipients": ["client"], "template": "court_payment_opened"},
 }

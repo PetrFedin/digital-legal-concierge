@@ -17,8 +17,8 @@ from app.domain.documents.document_workflow import (
     normalize_document_status,
 )
 from app.domain.messages.message_service import MessageService
-from app.domain.payments.mode import payments_disabled
 from app.domain.statuses.consultation_statuses import ConsultationStatus
+from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models.calculation import Calculation
 from app.models.consultation import Consultation
 from app.models.document import Document
@@ -360,6 +360,35 @@ def _calculation_summary(case, calculation: Calculation | None) -> str:
     return f"{money(calculation.penalty_amount)} · просрочка {calculation.delay_days} дн."
 
 
+def _payments_summary(payments: list[Payment]) -> str:
+    """Describe persisted payment history independently from provider mode."""
+
+    if not payments:
+        return "Платежей по обращению нет"
+
+    statuses = {str(payment.status) for payment in payments}
+    if str(PaymentStatus.PAID_REVIEW) in statuses:
+        return "Есть платёж, который проверяет команда"
+    if str(PaymentStatus.REFUND_PENDING) in statuses:
+        return "Возврат денежных средств обрабатывается"
+    if str(PaymentStatus.REFUND_DECLINED) in statuses:
+        return "По возврату требуется уточнение команды"
+
+    pending_count = sum(
+        1
+        for payment in payments
+        if str(payment.status)
+        in {
+            str(PaymentStatus.PENDING),
+            str(PaymentStatus.WAITING_CONFIRMATION),
+        }
+    )
+    if pending_count:
+        return f"Ожидают подтверждения: {pending_count}"
+
+    return f"Платежей в истории: {len(payments)} · активных действий по оплате нет"
+
+
 def _action_key(
     *,
     case,
@@ -432,25 +461,18 @@ async def load_client_case_view(
             .limit(1)
         )
     ).scalars().first()
+    payments = list(
+        (
+            await db.execute(
+                select(Payment)
+                .where(Payment.case_id == case.id)
+                .order_by(Payment.created_at.desc(), Payment.id.desc())
+            )
+        ).scalars().all()
+    )
     unread_team_messages, latest_team_message_at = (
         await MessageService(db).unread_lawyer_summary(case.id)
     )
-
-    pending_payments = 0
-    if not payments_disabled():
-        pending_payments = len(
-            list(
-                (
-                    await db.execute(
-                        select(Payment.id)
-                        .where(Payment.case_id == case.id)
-                        .where(
-                            Payment.status.in_(["PENDING", "WAITING_CONFIRMATION"])
-                        )
-                    )
-                ).scalars().all()
-            )
-        )
 
     document_overview = _document_overview(documents)
     action = _priority_action(case, document_overview)
@@ -460,22 +482,21 @@ async def load_client_case_view(
         else case.next_action
         or "От вас сейчас ничего не требуется. Ожидайте обновления от юридической команды."
     )
-    payments_summary = None
-    if not payments_disabled():
-        payments_summary = (
-            f"Ожидают подтверждения: {pending_payments}"
-            if pending_payments
-            else "Нет ожидающих оплат"
-        )
+    payments_summary = _payments_summary(payments)
 
     consultation_updated_at = (
         consultation.updated_at if consultation and consultation.updated_at else None
+    )
+    payment_updated_at = max(
+        (payment.updated_at for payment in payments if payment.updated_at is not None),
+        default=None,
     )
     updated_at = _latest_activity(
         case.updated_at,
         document_overview.latest_updated_at,
         consultation_updated_at,
         latest_team_message_at,
+        payment_updated_at,
     )
     effective_route = effective_client_route(case)
 

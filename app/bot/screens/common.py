@@ -18,23 +18,30 @@ from app.bot.consultation_result import (
 )
 from app.bot.context import BotContextService
 from app.bot.keyboards import main_menu, one, reply_main_menu
+from app.bot.payment_presentation import offline_m1_payment_presentation
+from app.domain.cases.client_case_scope import latest_completed_case_for_user
 from app.domain.payments.mode import payments_disabled
 
 router = Router()
 
 
 # Retained as a public compatibility contract for integrations that inspect
-# no-payment pilot wording. Actual client screens use the shared case view.
+# no-payment pilot wording. Actual client screens use the shared case view plus
+# the provider-aware payment presentation below.
 PILOT_NEXT_ACTIONS = {
-    "M1_WAITING_PAYMENT_30000": "Продолжить оформление доверенности",
-    "M1_WAITING_PAYMENT_70000": "Продолжить этап исполнения решения",
-    "M1_WAITING_SUCCESS_FEE": "Завершить финансовый этап",
+    "M1_WAITING_PAYMENT_30000": "Первый платёж ожидает подтверждения командой",
+    "M1_WAITING_PAYMENT_70000": "Второй платёж ожидает подтверждения командой",
+    "M1_WAITING_SUCCESS_FEE": "Финальный платёж ожидает подтверждения командой",
     "M2_PAYMENT_PENDING": "Подтвердить запись на консультацию",
 }
 
 CONSULTATION_RESULT_ACTION = (
     "👨‍⚖ Открыть итог консультации",
     "consultation_result_open",
+)
+COMPLETED_CASE_ACTION = (
+    "📁 Открыть архив обращения",
+    "my_case_open",
 )
 
 
@@ -48,12 +55,20 @@ def _next_action(case) -> str:
     return next_action_text(case)
 
 
+def _shown_next_action(view) -> str:
+    offline_payment = offline_m1_payment_presentation(view)
+    return offline_payment.next_action if offline_payment else view.next_action
+
+
 def _primary_action(view) -> tuple[str, str]:
     if view.unread_team_messages:
         return (
             f"💬 Прочитать ответ команды ({view.unread_team_messages})",
             "message_history",
         )
+    offline_payment = offline_m1_payment_presentation(view)
+    if offline_payment:
+        return (offline_payment.button_label, offline_payment.callback)
     if view.action:
         return (
             f"▶️ {view.action.label}",
@@ -126,18 +141,24 @@ async def _guard_callback_draft(callback: CallbackQuery, state: FSMContext) -> b
     return True
 
 
-async def _active_case_exists(db, message: Message) -> bool:
+async def _client_case_menu_state(db, message: Message) -> tuple[bool, bool]:
+    """Return (active_case, completed_archive) for the persistent reply menu."""
+
     ctx = BotContextService(db)
     user = await ctx.get_user_from_message(message)
     case = await ctx.case_service.get_active_case_for_user(user.id)
+    if case is not None:
+        await db.commit()
+        return True, False
+    completed = await latest_completed_case_for_user(db, user_id=user.id)
     await db.commit()
-    return case is not None
+    return False, completed is not None
 
 
 async def _home_text(
     db,
     message_or_callback,
-) -> tuple[str, bool, tuple[str, str] | None]:
+) -> tuple[str, bool, bool, tuple[str, str] | None]:
     ctx = BotContextService(db)
     if hasattr(message_or_callback, "from_user") and hasattr(
         message_or_callback,
@@ -150,7 +171,9 @@ async def _home_text(
     if case:
         view = await load_client_case_view(db, case)
         result_view = await _result_view_for_case(db, case)
-        shown_next_action = result_view.next_step if result_view else view.next_action
+        shown_next_action = (
+            result_view.next_step if result_view else _shown_next_action(view)
+        )
         primary_action = (
             CONSULTATION_RESULT_ACTION if result_view else _primary_action(view)
         )
@@ -211,7 +234,59 @@ async def _home_text(
                 "Главная кнопка ниже ведёт к самому актуальному действию.",
             ]
         )
-        return "\n".join(lines), True, primary_action
+        return "\n".join(lines), True, False, primary_action
+
+    completed_case = await latest_completed_case_for_user(db, user_id=user.id)
+    if completed_case:
+        view = await load_client_case_view(db, completed_case)
+        result_view = await _result_view_for_case(db, completed_case)
+        is_m2 = str(view.route or "") == "M2"
+        if is_m2:
+            lines = [
+                "🏠 Главная",
+                "",
+                "✅ Последняя консультация завершена",
+                f"📁 Обращение № {view.case_number}",
+                f"Услуга: {view.route_label}",
+                "",
+                "Итог",
+                (
+                    result_view.status_text
+                    if result_view
+                    else "Консультационный маршрут завершён."
+                ),
+                "",
+                "Что дальше",
+                "Действий по закрытому обращению больше не требуется. Итог, документы, платежи и история сохранены в архиве.",
+                "",
+                f"📄 Документы: {view.documents.summary}",
+                "💳 Оплаты: сохранены в архиве обращения",
+                "",
+                f"Обновлено: {format_updated_at(view.updated_at)}",
+                "Новое обращение можно начать отдельно; архив текущего останется только для просмотра.",
+            ]
+            primary_action = (
+                CONSULTATION_RESULT_ACTION if result_view else COMPLETED_CASE_ACTION
+            )
+        else:
+            lines = [
+                "🏠 Главная",
+                "",
+                "✅ Последнее дело завершено",
+                f"📁 Дело № {view.case_number}",
+                f"Услуга: {view.route_label}",
+                "",
+                "Итог",
+                "Финальный платёж подтверждён, финансовый этап завершён и дело закрыто.",
+                "",
+                f"📄 Документы: {view.documents.summary}",
+                "💳 Оплаты: сохранены в архиве дела",
+                "",
+                f"Обновлено: {format_updated_at(view.updated_at)}",
+                "Итог, история и платежи сохранены в режиме просмотра. Новое обращение можно начать отдельно.",
+            ]
+            primary_action = COMPLETED_CASE_ACTION
+        return "\n".join(lines), False, True, primary_action
 
     latest_result = await latest_terminal_client_consultation(
         db,
@@ -230,7 +305,7 @@ async def _home_text(
                 f"{result_view.next_step}\n\n"
                 "Полный результат юриста доступен по главной кнопке ниже."
             )
-            return text, False, CONSULTATION_RESULT_ACTION
+            return text, False, False, CONSULTATION_RESULT_ACTION
 
     text = (
         "🏠 Добро пожаловать\n\n"
@@ -238,7 +313,7 @@ async def _home_text(
         "и отслеживать ход дела прямо в Telegram.\n\n"
         "Расчёт предварительный и не является юридическим заключением."
     )
-    return text, False, None
+    return text, False, False, None
 
 
 @router.message(lambda m: m.text in ["/start", "/menu", "🏠 Главная"])
@@ -246,13 +321,20 @@ async def start(message: Message, db, state: FSMContext):
     if await _guard_message_draft(message, state):
         return
     await state.clear()
-    text, case_exists, primary_action = await _home_text(db, message)
+    text, case_exists, completed_case, primary_action = await _home_text(db, message)
     await db.commit()
-    await message.answer(text, reply_markup=reply_main_menu(case_exists))
+    await message.answer(
+        text,
+        reply_markup=reply_main_menu(
+            case_exists,
+            completed_case=completed_case,
+        ),
+    )
     await message.answer(
         "Выберите действие:",
         reply_markup=main_menu(
             case_exists,
+            completed_case=completed_case,
             primary_action=primary_action,
         ),
     )
@@ -371,9 +453,9 @@ async def menu_lawyer(message: Message, state: FSMContext):
 
 @router.message(lambda m: m.text == "/help")
 async def help_command(message: Message, db):
-    case_exists = await _active_case_exists(db, message)
+    case_exists, completed_case = await _client_case_menu_state(db, message)
     payment_line = (
-        "Онлайн-оплата сейчас отключена; доступные этапы продолжаются без платёжной ссылки."
+        "Онлайн-оплата сейчас отключена; обязательства и их статус доступны в разделе «Оплаты», а финансовый этап подтверждает команда после проверки фактического поступления."
         if payments_disabled()
         else "Оплата доступна на соответствующих этапах дела."
     )
@@ -381,13 +463,16 @@ async def help_command(message: Message, db):
         "ℹ️ Помощь\n\n"
         "Основные разделы:\n"
         "🧮 Рассчитать неустойку — предварительный расчёт, когда активного дела нет.\n"
-        "📁 Моё дело — текущий этап, готовность, ответы и следующее действие.\n"
+        "📁 Моё дело — текущий этап или read-only архив завершённого обращения.\n"
         "📄 Документы — актуальные версии, замечания и история.\n"
         "💬 Переписка — сообщения по активному делу.\n"
         "✉️ Новый вопрос — новый вопрос команде по делу.\n\n"
         f"{payment_line}\n\n"
         "Команды: /start, /menu, /status, /help, /cancel",
-        reply_markup=reply_main_menu(case_exists),
+        reply_markup=reply_main_menu(
+            case_exists,
+            completed_case=completed_case,
+        ),
     )
 
 
@@ -397,6 +482,51 @@ async def status_command(message: Message, db):
     user = await ctx.get_user_from_message(message)
     case = await ctx.case_service.get_active_case_for_user(user.id)
     if not case:
+        completed_case = await latest_completed_case_for_user(db, user_id=user.id)
+        if completed_case:
+            view = await load_client_case_view(db, completed_case)
+            result_view = await _result_view_for_case(db, completed_case)
+            await db.commit()
+            is_m2 = str(view.route or "") == "M2"
+            buttons: list[tuple[str, str]] = []
+            if is_m2 and result_view:
+                buttons.append(CONSULTATION_RESULT_ACTION)
+            buttons.extend(
+                [
+                    COMPLETED_CASE_ACTION,
+                    ("💳 Оплаты по обращению", "payments_open"),
+                    ("🕘 История обращения", "case_history_open"),
+                    ("🏠 Главная", "nav_home"),
+                ]
+            )
+            if is_m2:
+                text = (
+                    "✅ Последняя консультация завершена.\n\n"
+                    f"📁 Обращение № {view.case_number}\n"
+                    + (
+                        f"{result_view.status_text}\n\n"
+                        if result_view
+                        else "Консультационный маршрут завершён.\n\n"
+                    )
+                    + "Действий по закрытому обращению больше не требуется. Итог, документы, платежи и история доступны только для просмотра."
+                )
+            else:
+                text = (
+                    "✅ Последнее дело завершено.\n\n"
+                    f"📁 Дело № {view.case_number}\n"
+                    "Финальный платёж подтверждён, финансовый этап завершён и дело закрыто.\n\n"
+                    "Действий по этому делу больше не требуется. Итог, история и платежи доступны только для просмотра."
+                )
+            await message.answer(
+                text,
+                reply_markup=reply_main_menu(False, completed_case=True),
+            )
+            await message.answer(
+                "Открыть архив обращения:",
+                reply_markup=one(*buttons),
+            )
+            return
+
         latest_result = await latest_terminal_client_consultation(
             db,
             client_id=user.id,
@@ -431,7 +561,9 @@ async def status_command(message: Message, db):
     view = await load_client_case_view(db, case)
     result_view = await _result_view_for_case(db, case)
     await db.commit()
-    shown_next_action = result_view.next_step if result_view else view.next_action
+    shown_next_action = (
+        result_view.next_step if result_view else _shown_next_action(view)
+    )
     lines = [
         f"📁 {view.case_number}",
         f"Услуга: {view.route_label}",
@@ -453,6 +585,10 @@ async def status_command(message: Message, db):
                 "message_history",
             )
         )
+    if not result_view and not view.unread_team_messages:
+        primary_action = _primary_action(view)
+        if primary_action[1] != "my_case_open":
+            buttons.append(primary_action)
     buttons.extend(
         [
             ("📁 Моё дело", "my_case_open"),
@@ -474,10 +610,13 @@ async def cancel_message(message: Message, state: FSMContext, db):
     if await _guard_message_draft(message, state):
         return
     await state.clear()
-    case_exists = await _active_case_exists(db, message)
+    case_exists, completed_case = await _client_case_menu_state(db, message)
     await message.answer(
         "Действие отменено. Уже сохранённые данные не удалены.",
-        reply_markup=reply_main_menu(case_exists),
+        reply_markup=reply_main_menu(
+            case_exists,
+            completed_case=completed_case,
+        ),
     )
 
 
@@ -486,12 +625,13 @@ async def home(callback: CallbackQuery, db, state: FSMContext):
     if await _guard_callback_draft(callback, state):
         return
     await state.clear()
-    text, case_exists, primary_action = await _home_text(db, callback)
+    text, case_exists, completed_case, primary_action = await _home_text(db, callback)
     await _safe_callback_edit(
         callback,
         text,
         reply_markup=main_menu(
             case_exists,
+            completed_case=completed_case,
             primary_action=primary_action,
         ),
     )
@@ -502,12 +642,13 @@ async def noop(callback: CallbackQuery, db, state: FSMContext):
     if await _guard_callback_draft(callback, state):
         return
     await state.clear()
-    text, case_exists, primary_action = await _home_text(db, callback)
+    text, case_exists, completed_case, primary_action = await _home_text(db, callback)
     await _safe_callback_edit(
         callback,
         "Эта кнопка больше не актуальна. Показано текущее состояние.\n\n" + text,
         reply_markup=main_menu(
             case_exists,
+            completed_case=completed_case,
             primary_action=primary_action,
         ),
         unchanged_notice="Показано текущее состояние.",
@@ -519,12 +660,13 @@ async def cancel(callback: CallbackQuery, state: FSMContext, db):
     if await _guard_callback_draft(callback, state):
         return
     await state.clear()
-    text, case_exists, primary_action = await _home_text(db, callback)
+    text, case_exists, completed_case, primary_action = await _home_text(db, callback)
     await _safe_callback_edit(
         callback,
         "Действие отменено. Уже сохранённые данные не удалены.\n\n" + text,
         reply_markup=main_menu(
             case_exists,
+            completed_case=completed_case,
             primary_action=primary_action,
         ),
         unchanged_notice="Действие уже отменено.",
@@ -536,12 +678,13 @@ async def back(callback: CallbackQuery, state: FSMContext, db):
     if await _guard_callback_draft(callback, state):
         return
     await state.clear()
-    text, case_exists, primary_action = await _home_text(db, callback)
+    text, case_exists, completed_case, primary_action = await _home_text(db, callback)
     await _safe_callback_edit(
         callback,
         text,
         reply_markup=main_menu(
             case_exists,
+            completed_case=completed_case,
             primary_action=primary_action,
         ),
     )

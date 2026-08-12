@@ -243,6 +243,7 @@ class ConsultationService:
         case,
         client_id: int,
         new_slot_id: int,
+        expected_old_slot_id: int | None = None,
     ):
         locked_consultation = (
             await self.db.execute(
@@ -255,12 +256,27 @@ class ConsultationService:
             raise ValueError("Консультация не найдена")
         consultation = locked_consultation
 
+        if int(consultation.case_id) != int(case.id):
+            raise ValueError(
+                "Контекст дела изменился. Перенос не выполнен."
+            )
+        if int(case.client_id) != int(client_id):
+            raise ValueError(
+                "Консультация принадлежит другому клиенту. Перенос не выполнен."
+            )
         if consultation.status != ConsultationStatus.BOOKED:
             raise ValueError(
                 "Перенос без повторной оплаты доступен только для подтверждённой консультации"
             )
         if not consultation.slot_id:
             raise ValueError("У консультации отсутствует текущий слот")
+        if (
+            expected_old_slot_id is not None
+            and int(consultation.slot_id) != int(expected_old_slot_id)
+        ):
+            raise ValueError(
+                "Запись уже изменилась после подтверждения переноса. Старая кнопка больше не действует."
+            )
         if consultation.slot_id == new_slot_id:
             slot = await self.slots.get_slot(new_slot_id)
             if (

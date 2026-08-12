@@ -1,20 +1,32 @@
-from decimal import Decimal
+from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_history import add_case_history_event
+from app.domain.cases.case_service import CaseService
+from app.domain.cases.m1_recovery_amount import load_recovered_amount
 from app.domain.consultations.consultation_intake import (
     ConsultationDescriptionRequired,
     consultation_description_ready,
 )
 from app.domain.consultations.consultation_service import ConsultationService
+from app.domain.consultations.slot_service import SlotUnavailableError
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.payments.providers import get_payment_provider
+from app.domain.statuses.case_statuses import CaseStatus, RouteCode
 from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models.case import Case
 from app.models.payment import Payment
 from app.system.settings_service import SettingsService
+
+
+@dataclass(frozen=True)
+class M1SuccessFeeQuote:
+    recovered_amount: Decimal
+    percent: Decimal
+    amount: Decimal
 
 
 class PaymentService:
@@ -57,6 +69,31 @@ class PaymentService:
     def consultation_reservation_key(consultation_id: int, slot_id: int) -> str:
         return f"consultation:{consultation_id}:slot:{slot_id}"
 
+    @staticmethod
+    def _money(value: object) -> Decimal:
+        return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    async def _restore_m2_slot_selection_after_hold_loss(
+        self,
+        *,
+        case: Case,
+        error: Exception,
+    ) -> None:
+        if (
+            str(case.route or "") == RouteCode.M2.value
+            and str(case.status) == CaseStatus.M2_PAYMENT_PENDING.value
+        ):
+            await CaseService(self.db).change_status(
+                case=case,
+                next_status=CaseStatus.M2_SLOT_PENDING,
+                actor_type="system",
+                actor_id=None,
+                comment=(
+                    "Резерв консультации больше недоступен. "
+                    f"Возвращён выбор времени: {error}"
+                ),
+            )
+
     async def _prepare_consultation_payment_context(self, case: Case) -> str:
         consultation_service = ConsultationService(self.db)
         consultation = await consultation_service.get_current_for_case(case.id)
@@ -66,7 +103,14 @@ class PaymentService:
             raise ConsultationDescriptionRequired(
                 "Сначала опишите ситуацию и конкретный вопрос для юриста."
             )
-        slot = await consultation_service.require_payable_slot(consultation)
+        try:
+            slot = await consultation_service.require_payable_slot(consultation)
+        except SlotUnavailableError as error:
+            await self._restore_m2_slot_selection_after_hold_loss(
+                case=case,
+                error=error,
+            )
+            raise
         return self.consultation_reservation_key(consultation.id, slot.id)
 
     async def _expire_stale_consultation_payments(
@@ -141,6 +185,15 @@ class PaymentService:
             query = query.where(Payment.reservation_key == reservation_key)
         payment = (await self.db.execute(query)).scalars().first()
         if payment:
+            if amount is not None:
+                requested_amount = self._money(amount)
+                existing_amount = self._money(payment.amount)
+                if existing_amount != requested_amount:
+                    raise ValueError(
+                        "Существующий активный платёж имеет другую сумму: "
+                        f"{existing_amount} ₽ вместо актуальных {requested_amount} ₽. "
+                        "Автоматическая оплата заблокирована; требуется проверка платежа."
+                    )
             return payment
 
         final_amount = amount
@@ -176,24 +229,40 @@ class PaymentService:
         )
         return payment
 
-    async def estimate_success_fee_for_case(self, case_id: int):
-        from app.models.calculation import Calculation
-
+    async def success_fee_quote_for_case(self, case_id: int) -> M1SuccessFeeQuote:
         settings = SettingsService(self.db)
-        percent = Decimal(
-            str(await settings.get_value("payments.m1_success_fee_percent"))
+        try:
+            percent = Decimal(
+                str(await settings.get_value("payments.m1_success_fee_percent"))
+            )
+        except (InvalidOperation, TypeError, ValueError) as error:
+            raise ValueError(
+                "Ставка success fee настроена некорректно. Оплата заблокирована до проверки настройки."
+            ) from error
+        if percent <= 0:
+            raise ValueError(
+                "Ставка success fee должна быть больше нуля. Оплата заблокирована до проверки настройки."
+            )
+
+        recovered = await load_recovered_amount(self.db, case_id=case_id)
+        if recovered is None:
+            raise ValueError(
+                "Фактически взысканная сумма не зафиксирована. "
+                "Сначала юридическая команда должна подтвердить поступление денег."
+            )
+        amount = (
+            recovered * percent / Decimal("100")
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if amount <= 0:
+            raise ValueError("Success fee должен быть больше нуля")
+        return M1SuccessFeeQuote(
+            recovered_amount=recovered,
+            percent=percent,
+            amount=amount,
         )
-        result = await self.db.execute(
-            select(Calculation).where(Calculation.case_id == case_id)
-        )
-        calculation = result.scalars().first()
-        base = (
-            calculation.penalty_amount
-            if calculation and calculation.penalty_amount
-            else Decimal("0")
-        )
-        amount = (base * percent / Decimal("100")).quantize(Decimal("0.01"))
-        return amount if amount > 0 else Decimal("1.00")
+
+    async def estimate_success_fee_for_case(self, case_id: int):
+        return (await self.success_fee_quote_for_case(case_id)).amount
 
     async def create_payment_link(self, payment: Payment):
         if not payment.payment_url:

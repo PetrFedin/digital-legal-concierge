@@ -5,10 +5,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.admin.admin_dashboard import AdminDashboardService
 from app.config import settings
 from app.db.session import get_db
+from app.domain.cases.admin_manual_status_policy import (
+    assert_manual_status_change_allowed,
+)
 from app.domain.cases.assignment_service import CaseAssignmentService
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
 from app.domain.cases.case_transition_policy import CaseTransitionError
+from app.domain.payments.mode import payments_disabled
+from app.domain.payments.payment_types import PaymentCode
 from app.domain.payments.payment_webhook_service import PaymentWebhookService
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
@@ -23,6 +28,14 @@ from app.security.access_control import ROLE_ADMIN, decode_access_token, has_rol
 from app.system.settings_service import SettingsService
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+M1_OFFLINE_CONFIRMABLE_CODES = frozenset(
+    {
+        PaymentCode.M1_INITIAL_PAYMENT,
+        PaymentCode.M1_COURT_PAYMENT,
+        PaymentCode.M1_SUCCESS_FEE,
+    }
+)
 
 
 def require_admin(token: str | None) -> dict:
@@ -53,6 +66,26 @@ def payment_can_be_manually_confirmed(payment: Payment) -> bool:
     return (
         manual_payment_confirmation_enabled()
         and payment.provider in {None, "fake"}
+        and payment.status
+        in {
+            PaymentStatus.PENDING,
+            PaymentStatus.WAITING_CONFIRMATION,
+        }
+    )
+
+
+def offline_payment_confirmation_enabled() -> bool:
+    return payments_disabled()
+
+
+def payment_can_be_confirmed_offline(payment: Payment) -> bool:
+    """Allow real admin receipt confirmation only when online payments are disabled."""
+
+    return (
+        offline_payment_confirmation_enabled()
+        and payment.payment_code in M1_OFFLINE_CONFIRMABLE_CODES
+        and payment.provider is None
+        and not payment.payment_url
         and payment.status
         in {
             PaymentStatus.PENDING,
@@ -389,6 +422,7 @@ async def case_detail(
                 "status": payment.status,
                 "provider": payment.provider,
                 "manual_confirm_allowed": payment_can_be_manually_confirmed(payment),
+                "offline_confirm_allowed": payment_can_be_confirmed_offline(payment),
             }
             for payment in payments
         ],
@@ -437,6 +471,10 @@ async def manual_status(
                 status_code=409,
                 detail="Статус дела изменился после загрузки экрана. Обновите карточку",
             )
+        try:
+            assert_manual_status_change_allowed(case.status, next_status)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
         await CaseService(db).change_status(
             case=case,
             next_status=next_status,
@@ -556,6 +594,126 @@ async def manual_confirm_payment(
         raise
 
 
+@router.post("/payments/{payment_id}/confirm-offline")
+async def confirm_offline_payment(
+    payment_id: int,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    """Confirm verified bank/offline receipt when online payment mode is disabled."""
+
+    actor = require_admin(x_admin_token)
+    if not offline_payment_confirmation_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Офлайн-подтверждение доступно только когда онлайн-платежи отключены. "
+                "При активном провайдере статус принимает только платёжный webhook."
+            ),
+        )
+
+    reference = str(payload.get("reference") or "").strip()
+    comment = str(payload.get("comment") or "").strip()
+    expected_status = payload.get("expected_status")
+    if len(reference) < 3:
+        raise HTTPException(
+            status_code=400,
+            detail="Укажите банковский или бухгалтерский референс платежа — минимум 3 символа",
+        )
+    if len(comment) < 5:
+        raise HTTPException(
+            status_code=400,
+            detail="Укажите основание подтверждения поступления — минимум 5 символов",
+        )
+
+    actor_id = actor_id_from_token(actor)
+    try:
+        payment = (
+            await db.execute(
+                select(Payment)
+                .where(Payment.id == payment_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if not payment:
+            raise HTTPException(status_code=404, detail="payment not found")
+        if expected_status is not None and str(payment.status) != str(expected_status):
+            raise HTTPException(
+                status_code=409,
+                detail="Статус платежа изменился после загрузки экрана. Обновите карточку",
+            )
+        if not payment_can_be_confirmed_offline(payment):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Этот платёж нельзя подтверждать как офлайн-поступление: "
+                    "проверьте режим оплаты, назначение, провайдера и текущий статус."
+                ),
+            )
+
+        case = (
+            await db.execute(
+                select(Case)
+                .where(Case.id == payment.case_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if not case:
+            raise HTTPException(status_code=404, detail="case not found")
+
+        old_status = payment.status
+        await PaymentWebhookService(db).process_successful_payment(
+            payment=payment,
+            case=case,
+            provider_payload={
+                "source": "admin_offline_payment_confirm",
+                "reference": reference,
+                "comment": comment,
+                "actor_id": actor_id,
+            },
+            actor_type="admin",
+            actor_id=actor_id,
+            processed_action="OFFLINE_PAYMENT_PROCESSED",
+        )
+        await add_case_history_event(
+            db,
+            actor_type="admin",
+            actor_id=actor_id,
+            case_id=case.id,
+            action="ADMIN_OFFLINE_PAYMENT_CONFIRMED",
+            old_value={
+                "payment_id": payment.id,
+                "status": old_status,
+            },
+            new_value={
+                "payment_id": payment.id,
+                "status": payment.status,
+                "case_status": case.status,
+                "reference": reference,
+            },
+            comment=comment,
+        )
+        await db.commit()
+        return {
+            "ok": True,
+            "payment_id": payment.id,
+            "status": payment.status,
+            "case_id": case.id,
+            "case_status": case.status,
+            "reference": reference,
+        }
+    except HTTPException:
+        await db.rollback()
+        raise
+    except (CaseTransitionError, ValueError) as error:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except Exception:
+        await db.rollback()
+        raise
+
+
 @router.get("/payments")
 async def all_payments(
     db: AsyncSession = Depends(get_db),
@@ -575,6 +733,7 @@ async def all_payments(
             "status": payment.status,
             "provider": payment.provider,
             "manual_confirm_allowed": payment_can_be_manually_confirmed(payment),
+            "offline_confirm_allowed": payment_can_be_confirmed_offline(payment),
         }
         for payment in result.scalars().all()
     ]

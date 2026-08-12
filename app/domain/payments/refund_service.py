@@ -14,6 +14,23 @@ from app.models.consultation import Consultation
 from app.models.payment import Payment
 
 
+REFUND_REQUEST_START_STATUSES = {
+    PaymentStatus.PAID,
+    PaymentStatus.PAID_REVIEW,
+}
+REFUND_WORKFLOW_STATUSES = {
+    PaymentStatus.REFUND_PENDING,
+    PaymentStatus.REFUND_DECLINED,
+    PaymentStatus.REFUNDED,
+}
+REFUND_RELEVANT_STATUSES = REFUND_REQUEST_START_STATUSES | REFUND_WORKFLOW_STATUSES
+
+
+class ConsultationRefundStateConflict(ValueError):
+    """Historical money state conflicts with an apparently active consultation."""
+
+
+
 def as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
@@ -38,22 +55,25 @@ class ConsultationRefundService:
             raise LookupError("Консультация не найдена")
         return consultation
 
-    async def _lock_paid_consultation_payment(self, case_id: int) -> Payment:
+    @staticmethod
+    def _reservation_prefix(consultation_id: int) -> str:
+        return f"consultation:{int(consultation_id)}:slot:"
+
+    async def _lock_paid_consultation_payment(
+        self,
+        *,
+        case_id: int,
+        consultation_id: int,
+    ) -> Payment:
+        prefix = self._reservation_prefix(consultation_id)
         payment = (
             await self.db.execute(
                 select(Payment)
                 .where(
                     Payment.case_id == case_id,
-                    Payment.payment_code
-                    == PaymentCode.M2_CONSULTATION_PAYMENT,
-                    Payment.status.in_(
-                        [
-                            PaymentStatus.PAID,
-                            PaymentStatus.REFUND_PENDING,
-                            PaymentStatus.REFUND_DECLINED,
-                            PaymentStatus.REFUNDED,
-                        ]
-                    ),
+                    Payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT,
+                    Payment.reservation_key.like(f"{prefix}%"),
+                    Payment.status.in_(list(REFUND_RELEVANT_STATUSES)),
                 )
                 .order_by(Payment.created_at.desc(), Payment.id.desc())
                 .with_for_update()
@@ -61,7 +81,7 @@ class ConsultationRefundService:
         ).scalars().first()
         if not payment:
             raise ValueError(
-                "Оплаченный платёж по консультации не найден. "
+                "Полученный платёж именно по этой консультации не найден. "
                 "Отмена требует проверки администратора."
             )
         return payment
@@ -75,16 +95,14 @@ class ConsultationRefundService:
         reason: str | None = None,
     ) -> tuple[Consultation, Payment]:
         consultation = await self._lock_consultation(consultation.id)
-        payment = await self._lock_paid_consultation_payment(case.id)
+        payment = await self._lock_paid_consultation_payment(
+            case_id=case.id,
+            consultation_id=consultation.id,
+        )
 
         if (
             consultation.status == ConsultationStatus.CANCELLED
-            and payment.status
-            in {
-                PaymentStatus.REFUND_PENDING,
-                PaymentStatus.REFUND_DECLINED,
-                PaymentStatus.REFUNDED,
-            }
+            and payment.status in REFUND_WORKFLOW_STATUSES
         ):
             return consultation, payment
 
@@ -95,6 +113,13 @@ class ConsultationRefundService:
             )
         if not consultation.slot_id:
             raise ValueError("У консультации отсутствует подтверждённый слот")
+
+        if payment.status not in REFUND_REQUEST_START_STATUSES:
+            raise ConsultationRefundStateConflict(
+                "Финансовое состояние возврата не согласовано с активной консультацией. "
+                "Повторный возврат заблокирован, чтобы не провести его дважды. "
+                "Требуется проверка команды."
+            )
 
         slot = await self.slots.get_slot_for_update(consultation.slot_id)
         if (
@@ -168,6 +193,7 @@ class ConsultationRefundService:
                 "payment_id": payment.id,
                 "amount": str(payment.amount),
             },
+            dedupe_key=f"consultation:{consultation.id}:refund-requested",
         )
         await self.db.flush()
         return consultation, payment
@@ -257,6 +283,7 @@ class ConsultationRefundService:
                 "amount": str(payment.amount),
                 "comment": normalized_comment,
             },
+            dedupe_key=f"payment:{payment.id}:{event_code.lower()}",
         )
         await self.db.flush()
         return payment

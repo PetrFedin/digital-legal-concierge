@@ -16,11 +16,19 @@ def build_background_services() -> tuple[BackgroundService, ...]:
 
         services.append(BackgroundService(name="telegram-bot", factory=run_bot))
     if settings.run_scheduler:
+        from app.scheduler.notification_dispatcher import NotificationDispatcher
         from app.scheduler.scheduler import AppScheduler
 
+        notification_dispatcher = NotificationDispatcher()
         scheduler = AppScheduler()
-        services.append(
-            BackgroundService(name="scheduler", factory=scheduler.run_forever)
+        services.extend(
+            [
+                BackgroundService(
+                    name="notification-dispatcher",
+                    factory=notification_dispatcher.run_forever,
+                ),
+                BackgroundService(name="scheduler", factory=scheduler.run_forever),
+            ]
         )
     return tuple(services)
 

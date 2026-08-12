@@ -16,7 +16,7 @@ def test_lawyer_workspace_uses_inline_review_instead_of_native_confirmation():
     assert "Проверить действие" in source
     assert "Подтвердить действие" in source
     assert "backToCaseEdit" in source
-    assert "← Изменить комментарий" in source
+    assert "← Изменить данные" in source
     assert "data-stage=\"edit\"" in source
     assert "form.dataset.stage!=='review'" in source
 
