@@ -1,6 +1,10 @@
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.cases.assignment_policy import (
+    AUTO_ASSIGNMENT_REQUIRED_STATUS_VALUES,
+    automatic_assignment_required,
+)
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.sla_service import CaseSLAService
 from app.domain.notifications.notification_engine import NotificationEngine
@@ -139,6 +143,12 @@ class CaseAssignmentService:
         if case.assigned_lawyer_id is not None:
             return case
         self._ensure_case_can_be_assigned(case)
+        if not automatic_assignment_required(case.status):
+            raise ValueError(
+                "Автоматическое назначение ещё не требуется для текущего этапа. "
+                "Оно запускается после передачи документов в М1; консультация М2 "
+                "ведётся юристом выбранного слота."
+            )
 
         lawyer_rows = await self.list_active_lawyers()
         best = self._choose_best_lawyer(lawyer_rows)
@@ -168,7 +178,7 @@ class CaseAssignmentService:
             select(Case)
             .where(
                 Case.assigned_lawyer_id.is_(None),
-                Case.status.notin_(tuple(CLOSED_CASE_STATUSES)),
+                Case.status.in_(AUTO_ASSIGNMENT_REQUIRED_STATUS_VALUES),
             )
             .order_by(Case.created_at.asc(), Case.id.asc())
             .limit(safe_limit)
