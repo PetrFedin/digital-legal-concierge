@@ -24,6 +24,11 @@ INACTIVE_M2_PAYMENT_STATUSES = {
     PaymentStatus.CANCELLED,
     PaymentStatus.FAILED,
 }
+M1_EXPECTED_PAYMENT_CASE_STATUSES = {
+    PaymentCode.M1_INITIAL_PAYMENT: CaseStatus.M1_WAITING_PAYMENT_30000,
+    PaymentCode.M1_COURT_PAYMENT: CaseStatus.M1_WAITING_PAYMENT_70000,
+    PaymentCode.M1_SUCCESS_FEE: CaseStatus.M1_WAITING_SUCCESS_FEE,
+}
 
 
 class PaymentWebhookService:
@@ -82,6 +87,60 @@ class PaymentWebhookService:
                 "payment_id": payment.id,
                 "reason": reason,
             },
+        )
+        await self.db.flush()
+        return payment
+
+    async def _mark_stale_m1_payment_refund(
+        self,
+        *,
+        payment: Payment,
+        case,
+        expected_status: CaseStatus,
+        provider_payload: dict | None,
+        actor_type: str,
+        actor_id: int | None,
+    ) -> Payment:
+        """Preserve money truth without resurrecting an obsolete M1 stage."""
+
+        old_status = payment.status
+        payment.status = PaymentStatus.REFUND_PENDING
+        await add_case_history_event(
+            self.db,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            case_id=case.id,
+            action="M1_STALE_PAYMENT_REFUND_REQUIRED",
+            old_value={
+                "payment_id": payment.id,
+                "payment_status": old_status,
+                "case_status": str(case.status),
+                "case_route": case.route,
+            },
+            new_value={
+                "payment_id": payment.id,
+                "payment_code": payment.payment_code,
+                "payment_status": payment.status,
+                "expected_case_status": expected_status.value,
+                "case_status_preserved": str(case.status),
+                "case_route_preserved": case.route,
+                "payload": provider_payload or {},
+            },
+            comment=(
+                "Деньги поступили по M1-ссылке, которая больше не соответствует текущему "
+                "этапу дела. Дело не изменено; платёж направлен на ручной фактический возврат."
+            ),
+        )
+        await self.notifications.emit(
+            event_code="M1_STALE_PAYMENT_REFUND_PENDING",
+            case_id=case.id,
+            payload={
+                "case_number": case.case_number,
+                "payment_id": payment.id,
+                "amount": str(payment.amount),
+                "payment_title": payment.title,
+            },
+            dedupe_key=f"payment:{payment.id}:m1-stale-refund-pending",
         )
         await self.db.flush()
         return payment
@@ -221,6 +280,21 @@ class PaymentWebhookService:
         else:
             if payment.status == PaymentStatus.PAID:
                 return payment
+
+            expected_status = M1_EXPECTED_PAYMENT_CASE_STATUSES.get(payment.payment_code)
+            if expected_status is not None and (
+                str(case.route or "") != "M1"
+                or str(case.status) != expected_status.value
+            ):
+                return await self._mark_stale_m1_payment_refund(
+                    payment=payment,
+                    case=case,
+                    expected_status=expected_status,
+                    provider_payload=provider_payload,
+                    actor_type=actor_type,
+                    actor_id=actor_id,
+                )
+
             await self.payments.mark_paid(
                 payment=payment,
                 case=case,
