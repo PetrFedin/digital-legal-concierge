@@ -400,7 +400,10 @@ async def consult_cancel(callback: CallbackQuery, db):
         "проверку возврата. Если фактической оплаты не было, возврат не потребуется. "
         "Финансовый результат будет виден в разделе «Оплаты».",
         reply_markup=one(
-            ("Да, отменить текущую запись", "consult_cancel_confirm"),
+            (
+                "Да, отменить текущую запись",
+                f"consult_cancel_confirm:{consultation.id}:{int(consultation.slot_id or 0)}",
+            ),
             ("Нет, сохранить запись", "consultation_booked_open"),
             ("💳 Оплаты", "payments_open"),
             ("🏠 Главная", "nav_home"),
@@ -408,11 +411,59 @@ async def consult_cancel(callback: CallbackQuery, db):
     )
 
 
-@router.callback_query(lambda c: c.data == "consult_cancel_confirm")
+@router.callback_query(
+    lambda c: c.data == "consult_cancel_confirm"
+    or c.data.startswith("consult_cancel_confirm:")
+)
 async def consult_cancel_confirm(callback: CallbackQuery, db):
+    if callback.data == "consult_cancel_confirm":
+        await _safe_edit(
+            callback,
+            "Эта старая кнопка отмены не содержит снимок конкретной записи, поэтому больше не может менять консультацию.\n\n"
+            "Ничего не отменено. Откройте текущую запись и подтвердите отмену заново.",
+            reply_markup=one(
+                ("👨‍⚖ Открыть текущую запись", "consultation_booked_open"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    try:
+        _, consultation_id_text, slot_id_text = callback.data.split(":", 2)
+        expected_consultation_id = int(consultation_id_text)
+        expected_slot_id = int(slot_id_text)
+    except (TypeError, ValueError):
+        await _safe_edit(
+            callback,
+            "Кнопка отмены повреждена или устарела. Ничего не изменено.",
+            reply_markup=one(
+                ("👨‍⚖ Открыть текущую запись", "consultation_booked_open"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
     user, case, consultation = await _current_booked_context(callback, db)
     if not case or not consultation:
         await _show_missing_booked_context(callback, db, action="cancel")
+        return
+    if (
+        int(consultation.id) != expected_consultation_id
+        or int(consultation.slot_id or 0) != expected_slot_id
+    ):
+        await _safe_edit(
+            callback,
+            "Эта кнопка относится к предыдущей записи или предыдущему слоту. Текущая консультация не отменена.\n\n"
+            "Откройте актуальную запись и подтвердите отмену заново.",
+            reply_markup=one(
+                ("👨‍⚖ Открыть текущую запись", "consultation_booked_open"),
+                ("📁 Моё дело", "my_case_open"),
+                ("✉️ Написать команде", "message_create"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
         return
 
     try:
@@ -470,7 +521,7 @@ async def consult_cancel_confirm(callback: CallbackQuery, db):
             callback,
             "Отмена временно не выполнена. Текущая запись сохранена без изменений.",
             reply_markup=one(
-                ("🔄 Повторить отмену", "consult_cancel_confirm"),
+                ("🔄 Открыть отмену заново", "consult_cancel"),
                 ("👨‍⚖ Открыть текущую запись", "consultation_booked_open"),
                 ("✉️ Написать команде", "message_create"),
                 ("🏠 Моё дело", "my_case_open"),
