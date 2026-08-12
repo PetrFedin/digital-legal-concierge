@@ -18,7 +18,9 @@ def payments_enabled() -> bool:
     if provider == "yookassa":
         return bool(settings.yookassa_shop_id and settings.yookassa_secret_key)
     if provider == "fake":
-        return settings.app_env in {"local", "test"} or bool(settings.demo_mode)
+        # Fake payment links are a development/test facility only. A forgotten
+        # DEMO_MODE flag must never turn them back on in staging/production.
+        return settings.app_env in {"local", "test"}
     return False
 
 
