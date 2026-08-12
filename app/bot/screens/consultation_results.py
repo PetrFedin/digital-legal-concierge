@@ -165,7 +165,16 @@ def _format_scheduled_at(consultation) -> str | None:
 
 def _result_buttons(view, *, case) -> list[tuple[str, str]]:
     if _case_is_closed(case):
-        return [("🏠 На главную", "nav_home")]
+        # A closed consultation is read-only, not a dead end. Keep the exact
+        # archive surfaces reachable without offering stale booking/messaging
+        # mutations on the old case.
+        return [
+            ("📁 Архив обращения", "my_case_open"),
+            ("📄 Документы", "documents_open"),
+            ("💳 Оплаты", "payments_open"),
+            ("🕘 История", "case_history_open"),
+            ("🏠 Главная", "nav_home"),
+        ]
 
     buttons: list[tuple[str, str]] = [
         (view.primary_label, view.primary_callback),
@@ -194,40 +203,44 @@ async def _render_result(callback: CallbackQuery, *, case, consultation) -> None
         )
         return
 
+    closed = _case_is_closed(case)
     lines = [
         "👨‍⚖ ИТОГ КОНСУЛЬТАЦИИ",
+        f"№ {case.case_number}",
         _progress_line(case, consultation),
         "",
+        "СЕЙЧАС",
         view.title,
-        f"Дело: {case.case_number}",
+        view.status_text,
     ]
     scheduled_at = _format_scheduled_at(consultation)
     if scheduled_at:
-        lines.append(f"Время встречи: {scheduled_at}")
-    lines.extend(["", "РЕЗУЛЬТАТ", view.status_text])
+        lines.extend(["", f"🗓 Встреча: {scheduled_at}"])
 
     if view.show_lawyer_result:
         result = clip_client_result(consultation.lawyer_result)
+        lines.extend(["", "РЕЗУЛЬТАТ ЮРИСТА"])
         if result:
-            lines.extend(["", "Заключение юриста:", result])
+            lines.append(result)
         else:
-            lines.extend(
-                [
-                    "",
-                    "Заключение юриста сохранено без отдельного текста для клиента. Уточнить детали можно у команды.",
-                ]
+            lines.append(
+                "Отдельный текст для клиента не сохранён. Детали результата остаются в материалах обращения."
             )
 
-    if _case_is_closed(case) and view.primary_callback != "nav_home":
+    if closed:
         lines.extend(
             [
                 "",
-                "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ",
-                "Это дело уже закрыто. Итог сохранён для просмотра; новых действий по старому делу нет.",
+                "ЧТО ДАЛЬШЕ",
+                "Действий по закрытому обращению больше не требуется. Итог сохранён только для просмотра.",
+                "",
+                "АРХИВ ОБРАЩЕНИЯ",
+                "Документы, платежи и история остаются доступны ниже. Новое обращение создаётся отдельно и не меняет этот архив.",
             ]
         )
     else:
         lines.extend(["", "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ", view.next_step])
+
     await _safe_edit(
         callback,
         "\n".join(lines),
