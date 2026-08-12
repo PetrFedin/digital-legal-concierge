@@ -41,6 +41,7 @@ from app.bot.screens import (
     my_case,
     no_payment,
     no_payment_legal,
+    payment_archive_guard,
     payments,
     post_calculation,
 )
@@ -157,6 +158,7 @@ def build_dispatcher() -> Dispatcher:
         consultation_description.router,
         consultation_intake.router,
         no_payment.router,
+        payment_archive_guard.router,
         payments.router,
         consultations.router,
         consent_flow.router,
