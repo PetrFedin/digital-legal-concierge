@@ -16,6 +16,7 @@ _ACTOR_LABELS = {
     "client": "Клиент",
     "lawyer": "Юрист",
     "admin": "Администратор",
+    "admin_user": "Администратор",
     "operator": "Оператор",
     "staff": "Команда",
     "system": "Система",
@@ -147,20 +148,25 @@ async def workdesk_case_timeline(
     # Fetch extra rows because a small number of technical case audit events may
     # be hidden from the human timeline. Pagination stays cursor-based and never
     # exposes raw old/new JSON values to the browser.
+    scan_limit = min(limit * 4 + 1, 81)
     rows = list(
         (
             await db.execute(
-                query.order_by(AuditLog.id.desc()).limit(min(limit * 4 + 1, 81))
+                query.order_by(AuditLog.id.desc()).limit(scan_limit)
             )
         ).scalars().all()
     )
     visible = [row for row in rows if _visible_event(row)]
     page = visible[:limit]
-    has_more = len(visible) > limit or (
-        len(rows) >= min(limit * 4 + 1, 81)
-        and bool(page)
-    )
-    next_before_id = int(page[-1].id) if has_more and page else None
+    has_more = len(visible) > limit or len(rows) >= scan_limit
+    if has_more and page:
+        next_before_id = int(page[-1].id)
+    elif has_more and rows:
+        # Even a block containing only hidden technical events must advance the
+        # cursor, otherwise an older meaningful event becomes unreachable.
+        next_before_id = int(rows[-1].id)
+    else:
+        next_before_id = None
 
     return {
         "case_id": case_id,
