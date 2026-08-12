@@ -47,6 +47,7 @@ from app.bot.screens import (
     payments,
     poa_handoff,
     post_calculation,
+    service_contract,
 )
 from app.bot.security import SlidingWindowRateLimiter
 from app.config import settings
@@ -171,6 +172,7 @@ def build_dispatcher() -> Dispatcher:
         payments.router,
         consultations.router,
         consent_flow.router,
+        service_contract.router,
         poa_handoff.router,
         m1_stages.router,
         messages.router,
