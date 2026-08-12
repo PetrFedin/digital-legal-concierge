@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.guided_message_center import _inject_message_center_patch
-from app.api.message_center import MESSAGE_CENTER_HTML
+from app.api.message_center import MESSAGE_CENTER_HTML, require_staff_scope
+from app.db.session import get_db
 
 router = APIRouter(tags=["message-center-role-ui"])
 
@@ -35,5 +37,17 @@ def role_safe_message_center_html() -> str:
 
 
 @router.get("/message-center/ui", response_class=HTMLResponse)
-async def role_safe_message_center_ui():
+async def role_safe_message_center_ui(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    """Serve the shared message-center shell only to an authenticated staff role."""
+
+    try:
+        await require_staff_scope(request, db, x_admin_token)
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            return RedirectResponse(url="/login", status_code=303)
+        raise
     return HTMLResponse(role_safe_message_center_html())
