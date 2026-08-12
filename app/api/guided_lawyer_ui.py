@@ -1,10 +1,19 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import HTMLResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.lawyer_consultation_desk import CONSULTATION_DESK_HTML
 from app.api.lawyer_workspace import WORKSPACE_HTML
+from app.db.session import get_db
+from app.domain.cases.sla_service import CaseSLAError, CaseSLAService
+from app.domain.consultations.outcome_service import (
+    ConsultationOutcomeError,
+    ConsultationOutcomeService,
+)
+from app.models.case import Case
+from app.security.lawyer_access import require_lawyer_actor
 
 router = APIRouter(tags=["guided-lawyer-ui"])
 
@@ -102,6 +111,122 @@ def _inject_patch(html: str, patch: str) -> str:
     if html.count(marker) != 1:
         raise RuntimeError("Lawyer UI template contract changed: </body> marker is not unique")
     return html.replace(marker, patch + marker, 1)
+
+
+async def _case_after_consultation_outcome(
+    db: AsyncSession,
+    *,
+    case_id: int,
+    lawyer_id: int,
+    action: str,
+    comment: str | None,
+) -> Case:
+    """Return the M2 case and update assignment SLA only when one exists.
+
+    M2 ownership is defined by Consultation.lawyer_id from the booked calendar
+    slot. A Case.assigned_lawyer_id is intentionally optional for that route, so
+    requiring a generic M1 case assignment after a valid consultation outcome
+    makes the normal M2 completion/no-show path fail. If an M2 case was
+    explicitly assigned as an operational exception, its SLA is still updated.
+    """
+
+    case = await db.get(Case, case_id)
+    if case is None:
+        raise LookupError("Дело не найдено")
+    if case.assigned_lawyer_id == lawyer_id:
+        await CaseSLAService(db).record_lawyer_activity(
+            case=case,
+            lawyer_id=lawyer_id,
+            action=action,
+            comment=comment,
+        )
+    return case
+
+
+@router.post("/lawyer/consultations/{consultation_id}/complete")
+async def guided_complete_consultation(
+    consultation_id: int,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    """Complete the consultation using slot ownership, not generic case assignment."""
+
+    actor = await require_lawyer_actor(db, x_admin_token)
+    try:
+        consultation = await ConsultationOutcomeService(db).complete(
+            consultation_id=consultation_id,
+            lawyer_id=actor.lawyer.id,
+            result=payload.get("result") or "",
+            decision=payload.get("decision") or "",
+        )
+        case = await _case_after_consultation_outcome(
+            db,
+            case_id=consultation.case_id,
+            lawyer_id=actor.lawyer.id,
+            action="CONSULTATION_COMPLETED",
+            comment=payload.get("result"),
+        )
+        await db.commit()
+    except LookupError as error:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except (ConsultationOutcomeError, CaseSLAError, ValueError) as error:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except Exception:
+        await db.rollback()
+        raise
+    return {
+        "ok": True,
+        "consultation_id": consultation.id,
+        "status": consultation.status,
+        "decision": consultation.decision,
+        "sla_status": case.sla_status,
+        "sla_due_at": case.sla_due_at,
+    }
+
+
+@router.post("/lawyer/consultations/{consultation_id}/client-no-show")
+async def guided_client_no_show(
+    consultation_id: int,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    """Record client no-show without inventing a Case assignment for M2."""
+
+    actor = await require_lawyer_actor(db, x_admin_token)
+    try:
+        consultation = await ConsultationOutcomeService(db).mark_client_no_show(
+            consultation_id=consultation_id,
+            lawyer_id=actor.lawyer.id,
+            comment=payload.get("comment") or "",
+        )
+        case = await _case_after_consultation_outcome(
+            db,
+            case_id=consultation.case_id,
+            lawyer_id=actor.lawyer.id,
+            action="CONSULTATION_CLIENT_NO_SHOW",
+            comment=payload.get("comment"),
+        )
+        await db.commit()
+    except LookupError as error:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except (ConsultationOutcomeError, CaseSLAError, ValueError) as error:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except Exception:
+        await db.rollback()
+        raise
+    return {
+        "ok": True,
+        "consultation_id": consultation.id,
+        "status": consultation.status,
+        "sla_status": case.sla_status,
+        "sla_due_at": case.sla_due_at,
+    }
 
 
 @router.get("/lawyer/consultation-desk/ui", response_class=HTMLResponse)
