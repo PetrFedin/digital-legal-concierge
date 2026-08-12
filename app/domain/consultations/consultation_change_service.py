@@ -11,6 +11,7 @@ from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
+from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.payment import Payment
 
@@ -39,6 +40,12 @@ class ConsultationChangeService:
     Financial history is scoped to the concrete consultation by reservation_key.
     The provider mode that happens to be configured today cannot manufacture a
     historical payment or suppress a refund for money that was actually received.
+
+    Lock order for cancellation is intentionally Payment -> Case -> Consultation.
+    Payment webhooks lock the Payment first, so using the same leading lock here
+    serializes a cancellation with a concurrent provider callback. Financial
+    classification therefore happens only after the exact reservation payments,
+    current case and booked consultation have all been re-read under row locks.
     """
 
     def __init__(self, db: AsyncSession):
@@ -60,8 +67,26 @@ class ConsultationChangeService:
                 Payment.reservation_key.like(f"{prefix}%"),
             )
             .order_by(Payment.created_at.desc(), Payment.id.desc())
+            .with_for_update()
         )
         return list(result.scalars().all())
+
+    async def _lock_case_context(self, *, case_id: int, client_id: int) -> Case:
+        case = (
+            await self.db.execute(
+                select(Case)
+                .where(
+                    Case.id == case_id,
+                    Case.client_id == client_id,
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if case is None:
+            raise ValueError(
+                "Текущее дело изменилось или больше недоступно. Откройте актуальную карточку дела."
+            )
+        return case
 
     async def _expire_active_unpaid_links(
         self,
@@ -129,22 +154,32 @@ class ConsultationChangeService:
         if consultation.case_id != case.id:
             raise ValueError("Консультация не относится к текущему делу")
 
-        # Re-read under row lock immediately before any financial or slot
-        # mutation. A stale Telegram callback cannot cancel the same booking
-        # twice or create competing replacement contexts.
+        consultation_id = int(consultation.id)
+        case_id = int(case.id)
+
+        # Keep the same leading lock as the provider webhook: Payment first.
+        # If a provider callback wins the race, we observe its final paid/review
+        # status and route cancellation through refund. If cancellation wins,
+        # pending links are expired before a late callback can reuse the booking.
+        related_payments = await self._payments_for_consultation(
+            case_id=case_id,
+            consultation_id=consultation_id,
+        )
+        case = await self._lock_case_context(
+            case_id=case_id,
+            client_id=client_id,
+        )
         consultation = await self._lock_booked_consultation(
             case_id=case.id,
-            consultation_id=consultation.id,
+            consultation_id=consultation_id,
         )
 
         old_consultation_id = consultation.id
         description = consultation.client_description
         subject_type = consultation.subject_type or "new_or_other"
         related_case_id = consultation.related_case_id
-        related_payments = await self._payments_for_consultation(
-            case_id=case.id,
-            consultation_id=consultation.id,
-        )
+
+        # Financial state is classified only from the locked reservation rows.
         has_paid_or_refund_payment = any(
             payment.status in REFUND_RELEVANT_PAYMENT_STATUSES
             for payment in related_payments
