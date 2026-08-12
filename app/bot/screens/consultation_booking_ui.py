@@ -65,6 +65,39 @@ def consultation_status_label(value) -> str:
     return CONSULTATION_STATUS_LABELS.get(status, "Статус уточняется")
 
 
+def consultation_progress(
+    *,
+    status: ConsultationStatus | None,
+    description_ready: bool,
+    active_document_count: int,
+) -> tuple[int, str]:
+    """Return a compact visual stage and human-readable progress hint."""
+
+    if status in TERMINAL_STATUSES:
+        return 4, "Завершено"
+    if status == ConsultationStatus.BOOKED:
+        return 3, "Время подтверждено"
+    if status in {
+        ConsultationStatus.SLOT_RESERVED,
+        ConsultationStatus.PAYMENT_PENDING,
+    }:
+        return 2, "Время выбрано · осталось подтвердить"
+    if description_ready and active_document_count:
+        return 1, "Вопрос и материалы готовы · следующий шаг — время"
+    if description_ready:
+        return 1, "Вопрос сохранён · следующий шаг — время"
+    return 0, "Начните с описания вопроса"
+
+
+def consultation_progress_bar(stage: int) -> str:
+    safe_stage = max(0, min(int(stage), 4))
+    labels = ["Вопрос", "Материалы", "Время", "Подтверждение", "Готово"]
+    return " · ".join(
+        f"{'●' if index <= safe_stage else '○'} {label}"
+        for index, label in enumerate(labels)
+    )
+
+
 def consultation_primary_action(
     *,
     status: ConsultationStatus | None,
@@ -242,6 +275,12 @@ async def consultation_action_center(callback: CallbackQuery, db):
         description_ready=description_ready,
         active_document_count=len(active_documents),
     )
+    stage, progress_hint = consultation_progress(
+        status=status,
+        description_ready=description_ready,
+        active_document_count=len(active_documents),
+    )
+    progress_bar = consultation_progress_bar(stage)
 
     buttons: list[tuple[str, str]] = [primary]
     if description_ready:
@@ -272,6 +311,7 @@ async def consultation_action_center(callback: CallbackQuery, db):
     await _safe_edit(
         callback,
         "👨‍⚖ КОНСУЛЬТАЦИЯ\n\n"
+        f"ПРОГРЕСС\n{progress_bar}\n{progress_hint}\n\n"
         "СЕЙЧАС\n"
         f"{consultation_status_label(consultation.status)}\n"
         f"Дата и время: {_format_datetime(consultation.scheduled_at)}\n\n"
