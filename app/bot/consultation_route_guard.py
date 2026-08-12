@@ -47,21 +47,39 @@ def _case_status(case) -> CaseStatus | None:
         return None
 
 
+async def _render_guard(
+    event: CallbackQuery,
+    *,
+    text: str,
+    markup,
+    log_context: str,
+) -> None:
+    try:
+        await event.message.edit_text(text, reply_markup=markup)
+    except TelegramBadRequest as error:
+        if "message is not modified" not in str(error).lower():
+            try:
+                await event.message.answer(text, reply_markup=markup)
+            except (TelegramBadRequest, TelegramNetworkError, TelegramServerError):
+                logger.warning("Could not render %s", log_context, exc_info=True)
+    except (TelegramNetworkError, TelegramServerError):
+        logger.warning("Telegram unavailable while rendering %s", log_context, exc_info=True)
+
+
 class ConsultationRouteIsolationMiddleware:
-    """Fail closed when an old M2 callback is pressed during an active M1 case.
+    """Fail closed for stale consultation callbacks that conflict with case state.
 
-    Telegram messages can live for months. A stale consultation button must not
-    start, reserve, pay, cancel, or reschedule an M2 flow while M1 is active.
-    The generic ``contact_lawyer`` entry is guarded too because legacy Telegram
-    screens may still expose it and older router ownership must never bypass the
-    active-case route. The one intentional exception is M1_REJECTED: policy
-    explicitly allows the client to choose M2, and a dedicated recovery router
-    handles that decision without creating a parallel case. Read-only terminal
-    consultation results remain available so an M1 follow-up cannot hide the
-    outcome of a consultation that was already completed.
+    Telegram messages can live for months. A stale M2 callback must not start,
+    reserve, pay, cancel, or reschedule a consultation while M1 is active. A case
+    in ``ERROR`` is even stricter: no old consultation mutation is allowed on
+    either route until staff resolves the technical state. The client receives a
+    clear recovery screen with read-only context and messaging instead of being
+    sent into another business flow.
 
-    Pre-route cases and active M2 cases are intentionally passed through to the
-    domain handlers, which keep their own status/snapshot checks.
+    The one intentional M1 exception is ``M1_REJECTED``: policy explicitly lets
+    the client choose M2, and a dedicated recovery router handles that decision
+    without creating a parallel case. Read-only terminal consultation results
+    remain available so an M1 follow-up cannot hide an earlier M2 outcome.
     """
 
     async def __call__(self, handler, event, data):
@@ -78,13 +96,41 @@ class ConsultationRouteIsolationMiddleware:
         ctx = BotContextService(db)
         user = await ctx.get_user_from_callback(event)
         case = await ctx.case_service.get_active_case_for_user(user.id)
-        if case is None or str(case.route or "") != RouteCode.M1.value:
+        if case is None:
             return await handler(event, data)
 
-        if (
-            event.data == "contact_lawyer"
-            and _case_status(case) == CaseStatus.M1_REJECTED
-        ):
+        status = _case_status(case)
+        if status == CaseStatus.ERROR:
+            text = (
+                "🛠 ОБРАЩЕНИЕ НА ТЕХНИЧЕСКОЙ ПРОВЕРКЕ\n\n"
+                f"Дело {case.case_number}\n\n"
+                "СЕЙЧАС\n"
+                "Система не может безопасно определить следующий автоматический этап. "
+                "Поэтому старая кнопка не создаёт запись, не резервирует время и не запускает оплату.\n\n"
+                "ВАШИ ДАННЫЕ\n"
+                "Обращение, документы и история сохранены. Юридическая команда видит дело в отдельной технической очереди.\n\n"
+                "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+                "Напишите команде по этому делу. После проверки в «Моём деле» появится актуальное действие."
+            )
+            markup = one(
+                ("✉️ Написать команде", "message_create"),
+                ("📁 Проверить моё дело", "my_case_open"),
+                ("📄 Документы", "documents_open"),
+                ("🕘 История", "case_history_open"),
+                ("🏠 Главная", "nav_home"),
+            )
+            await _render_guard(
+                event,
+                text=text,
+                markup=markup,
+                log_context="case ERROR recovery guard",
+            )
+            return None
+
+        if str(case.route or "") != RouteCode.M1.value:
+            return await handler(event, data)
+
+        if event.data == "contact_lawyer" and status == CaseStatus.M1_REJECTED:
             # This is not a stale M2 button: it is the explicit decision screen
             # after M1 rejection. The recovery router still requires a second
             # confirmed action before changing route or closing the case.
@@ -102,14 +148,10 @@ class ConsultationRouteIsolationMiddleware:
             ("📄 Документы", "documents_open"),
             ("🏠 Главная", "nav_home"),
         )
-        try:
-            await event.message.edit_text(text, reply_markup=markup)
-        except TelegramBadRequest as error:
-            if "message is not modified" not in str(error).lower():
-                try:
-                    await event.message.answer(text, reply_markup=markup)
-                except (TelegramBadRequest, TelegramNetworkError, TelegramServerError):
-                    logger.warning("Could not render M1 consultation route guard", exc_info=True)
-        except (TelegramNetworkError, TelegramServerError):
-            logger.warning("Telegram unavailable while rendering M1 route guard", exc_info=True)
+        await _render_guard(
+            event,
+            text=text,
+            markup=markup,
+            log_context="M1 consultation route guard",
+        )
         return None
