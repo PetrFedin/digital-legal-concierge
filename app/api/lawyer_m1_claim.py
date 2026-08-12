@@ -237,7 +237,7 @@ async def open_court_payment(
     if not comment or len(comment) < 5:
         raise HTTPException(
             status_code=400,
-            detail="Укажите судебное событие или основание открытия второго платежа",
+            detail="Опишите судебный результат или основание открытия второго платежа",
         )
     try:
         case = await _assigned_snapshot_case(
@@ -252,6 +252,8 @@ async def open_court_payment(
             case=case,
             lawyer_id=actor.lawyer.id,
             comment=comment,
+            decision_reference=payload.get("decision_reference"),
+            decision_date=payload.get("decision_date"),
         )
         await CaseSLAService(db).record_lawyer_activity(
             case=case,
@@ -281,5 +283,7 @@ async def open_court_payment(
         "case_id": case.id,
         "status": case.status,
         "next_action": case.next_action,
+        "decision_reference": str(payload.get("decision_reference") or "").strip(),
+        "decision_date": str(payload.get("decision_date") or "").strip(),
         "updated_at": case.updated_at.isoformat(),
     }
