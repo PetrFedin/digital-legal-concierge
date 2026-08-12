@@ -4,6 +4,7 @@ NOTIFICATION_RULES = {
     "STAFF_MESSAGE_REPLIED": {"recipients": ["client"], "template": "staff_message_reply"},
     "CLIENT_MESSAGE_RECEIVED": {"recipients": ["lawyer", "admin"], "template": "client_message_received"},
     "M1_CASE_ACCEPTED": {"recipients": ["client"], "template": "m1_case_accepted"},
+    "M1_CONTRACT_PUBLISHED": {"recipients": ["client"], "template": "m1_contract_published"},
     "M1_CASE_REJECTED": {"recipients": ["client", "admin"], "template": "m1_case_rejected"},
     "M1_DOCUMENTS_REQUESTED": {"recipients": ["client"], "template": "m1_documents_requested"},
     "M1_CASE_TRANSFERRED_TO_M2": {"recipients": ["client", "admin"], "template": "m1_case_transferred_to_m2"},
