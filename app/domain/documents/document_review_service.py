@@ -6,6 +6,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_history import add_case_history_event
+from app.domain.cases.case_responsibility import (
+    TERMINAL_CASE_STATUS_VALUES,
+    effective_lawyer_ids_for_cases,
+    lawyer_can_access_case,
+)
 from app.domain.cases.case_service import CaseService
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.statuses.case_statuses import CaseStatus
@@ -102,12 +107,47 @@ class DocumentReviewService:
                 "Документ был изменён после загрузки экрана. Обновите очередь"
             )
 
-    @staticmethod
-    def ensure_actor_can_review(actor: DocumentActor, case: Case) -> None:
-        if actor.role == "lawyer" and case.assigned_lawyer_id != actor.lawyer_id:
+    async def ensure_actor_can_review(self, actor: DocumentActor, case: Case) -> None:
+        if str(case.status) in TERMINAL_CASE_STATUS_VALUES:
             raise DocumentReviewError(
-                "Документ относится к делу, не назначенному текущему юристу"
+                "Закрытое дело доступно только для просмотра. Решение по документу уже нельзя изменять"
             )
+        if actor.role == "lawyer" and not await lawyer_can_access_case(
+            self.db,
+            case=case,
+            lawyer_id=actor.lawyer_id,
+        ):
+            raise DocumentReviewError(
+                "Документ относится к делу, за которое текущий юрист не отвечает"
+            )
+
+    async def _lawyer_review_case_ids(
+        self,
+        *,
+        actor: DocumentActor,
+        case_id: int | None,
+    ) -> list[int]:
+        if actor.role != "lawyer" or actor.lawyer_id is None:
+            return []
+
+        statement = (
+            select(Case)
+            .join(Document, Document.case_id == Case.id)
+            .where(Document.status == DocumentStatus.ON_REVIEW)
+            .where(Case.status.notin_(TERMINAL_CASE_STATUS_VALUES))
+            .distinct()
+        )
+        if case_id is not None:
+            statement = statement.where(Case.id == int(case_id))
+        cases = list((await self.db.execute(statement)).scalars().all())
+        if not cases:
+            return []
+        responsibilities = await effective_lawyer_ids_for_cases(self.db, cases)
+        return [
+            int(case.id)
+            for case in cases
+            if responsibilities.get(int(case.id)) == int(actor.lawyer_id)
+        ]
 
     async def queue(
         self,
@@ -120,13 +160,20 @@ class DocumentReviewService:
             .join(Case, Case.id == Document.case_id)
             .join(User, User.id == Case.client_id)
             .where(Document.status == DocumentStatus.ON_REVIEW)
+            .where(Case.status.notin_(TERMINAL_CASE_STATUS_VALUES))
             .order_by(Document.created_at.asc(), Document.id.asc())
             .limit(300)
         )
         if case_id is not None:
             statement = statement.where(Case.id == int(case_id))
         if actor.role == "lawyer":
-            statement = statement.where(Case.assigned_lawyer_id == actor.lawyer_id)
+            owned_case_ids = await self._lawyer_review_case_ids(
+                actor=actor,
+                case_id=case_id,
+            )
+            if not owned_case_ids:
+                return []
+            statement = statement.where(Case.id.in_(owned_case_ids))
         rows = (await self.db.execute(statement)).all()
         return [
             {
@@ -261,7 +308,7 @@ class DocumentReviewService:
         ).scalar_one_or_none()
         if not case:
             raise DocumentReviewError("Дело документа не найдено")
-        self.ensure_actor_can_review(actor, case)
+        await self.ensure_actor_can_review(actor, case)
 
         current_status = DocumentStatus(str(document.status))
         if current_status == target:
