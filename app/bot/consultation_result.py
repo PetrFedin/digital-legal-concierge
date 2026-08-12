@@ -192,6 +192,7 @@ async def prepare_follow_up_consultation(
     outcome: Consultation,
     client_id: int,
 ) -> tuple[Consultation, bool]:
+    outcome_id = int(outcome.id)
     locked_case = (
         await db.execute(
             select(Case)
@@ -203,12 +204,26 @@ async def prepare_follow_up_consultation(
         raise ValueError("Текущее дело больше не найдено")
     case = locked_case
 
-    if case.client_id != client_id or outcome.case_id != case.id:
+    locked_outcome = (
+        await db.execute(
+            select(Consultation)
+            .where(
+                Consultation.id == outcome_id,
+                Consultation.case_id == case.id,
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if not locked_outcome:
+        raise ValueError("Результат консультации больше не найден")
+    outcome = locked_outcome
+
+    if case.client_id != client_id:
         raise ValueError("Консультация не относится к текущему клиенту")
     if normalize_consultation_status(outcome.status) != ConsultationStatus.DONE:
         raise ValueError("Повторная запись доступна только после завершённой консультации")
     if str(outcome.decision or "").strip().lower() != "follow_up":
-        raise ValueError("Повторная запись не указана следующим шагом юриста")
+        raise ValueError("Повторная запись больше не указана следующим шагом юриста")
 
     latest = await latest_case_consultation(db, case_id=case.id)
     if latest and latest.id != outcome.id and not is_terminal_consultation(latest):
