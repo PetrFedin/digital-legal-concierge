@@ -23,6 +23,13 @@ def manual_status_change_allowed(
     source = normalize_status(current)
     destination = normalize_status(target)
 
+    # ERROR is not a business stage and must not become a generic status switch.
+    # Recovery is derived from the audited transition that entered ERROR and is
+    # exposed by CaseErrorRecoveryService only for a narrow set of case-owned
+    # stages. Payment and consultation truth remains in their domain ledgers.
+    if source == CaseStatus.ERROR:
+        return False
+
     # Rejected M1 cases may be closed without a recovery/payment flow. This is
     # an explicit normal transition and is not a success-fee closure.
     if source == CaseStatus.M1_REJECTED and destination == CaseStatus.M1_CLOSED:
@@ -39,6 +46,12 @@ def assert_manual_status_change_allowed(
     current: str | CaseStatus,
     target: str | CaseStatus,
 ) -> None:
+    source = normalize_status(current)
+    if source == CaseStatus.ERROR:
+        raise ValueError(
+            "Технический статус ERROR нельзя менять вручную. Используйте безопасное "
+            "восстановление по последнему подтверждённому этапу в технической карточке дела."
+        )
     if manual_status_change_allowed(current, target):
         return
     raise ValueError(
