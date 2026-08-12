@@ -164,10 +164,114 @@ _M1_POA_PATCH = r"""
 """
 
 
+_COURT_DECISION_PATCH = r"""
+<script>
+(function(){
+  const courtReferenceDrafts=new Map(),courtDateDrafts=new Map();
+  if(configs.open_court_payment){
+    configs.open_court_payment.effect='Система сначала сохранит дату и идентификатор судебного акта в аудите. Только после этого откроется второй платёж 70 000 ₽.';
+  }
+
+  function ensureCourtEvidence(id){
+    let block=document.getElementById('court_evidence_'+id);
+    if(block)return block;
+    const label=document.getElementById('case_comment_label_'+id);
+    if(!label)return null;
+    block=document.createElement('div');
+    block.id='court_evidence_'+id;
+    block.style.display='none';
+    block.innerHTML=`<label class="label" for="court_date_${id}">Дата судебного акта</label><input id="court_date_${id}" type="date" oninput="this.dataset.touched='1'"><label class="label" for="court_reference_${id}">Номер дела / решения / идентификатор акта</label><input id="court_reference_${id}" autocomplete="off" maxlength="240" placeholder="Например: А40-12345/2026, решение от 12.08.2026"><div class="muted" style="margin:7px 0 10px">Не открывайте платёж по промежуточному событию. Укажите акт, после которого второй платёж действительно наступил по договору.</div>`;
+    label.parentNode.insertBefore(block,label);
+    return block;
+  }
+
+  function courtEvidence(id,showError=true){
+    const reference=(document.getElementById('court_reference_'+id)?.value||'').trim();
+    const decisionDate=(document.getElementById('court_date_'+id)?.value||'').trim();
+    if(reference.length<5){if(showError)showCaseError(id,'Укажите номер дела, решения или другой идентификатор судебного акта — минимум 5 символов.');return null}
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(decisionDate)){if(showError)showCaseError(id,'Укажите дату судебного акта.');return null}
+    const today=new Date();today.setHours(23,59,59,999);const parsed=new Date(decisionDate+'T00:00:00');
+    if(Number.isNaN(parsed.getTime())||parsed>today){if(showError)showCaseError(id,'Дата судебного акта не может быть в будущем.');return null}
+    courtReferenceDrafts.set(id,reference);courtDateDrafts.set(id,decisionDate);
+    return {reference,decisionDate};
+  }
+
+  const previousOpenCaseForm=openCaseForm;
+  openCaseForm=function(id,type){
+    previousOpenCaseForm(id,type);
+    const block=ensureCourtEvidence(id);
+    if(!block)return;
+    block.style.display=type==='open_court_payment'?'block':'none';
+    if(type==='open_court_payment'){
+      const ref=document.getElementById('court_reference_'+id),date=document.getElementById('court_date_'+id);
+      ref.value=courtReferenceDrafts.get(id)||'';
+      date.value=courtDateDrafts.get(id)||'';
+      ref.oninput=()=>courtReferenceDrafts.set(id,ref.value);
+      date.oninput=()=>courtDateDrafts.set(id,date.value);
+      const commentLabel=document.getElementById('case_comment_label_'+id);
+      if(commentLabel)commentLabel.textContent='Что произошло и почему по этому акту наступает второй платёж';
+    }
+  };
+
+  const previousReviewCaseForm=reviewCaseForm;
+  reviewCaseForm=function(id){
+    const form=document.getElementById('case_form_'+id),type=form?.dataset.type||'';
+    if(type!=='open_court_payment')return previousReviewCaseForm(id);
+    const evidence=courtEvidence(id,true);if(!evidence)return;
+    previousReviewCaseForm(id);
+    if(form.dataset.stage==='review'){
+      const effect=document.getElementById('case_review_effect_'+id);
+      if(effect)effect.textContent=(configs.open_court_payment.effect||'')+` Судебный акт: ${evidence.reference}, дата ${evidence.decisionDate}.`;
+    }
+  };
+
+  const previousSubmitCaseForm=submitCaseForm;
+  submitCaseForm=async function(id,button){
+    const form=document.getElementById('case_form_'+id),type=form?.dataset.type||'';
+    if(type!=='open_court_payment')return previousSubmitCaseForm(id,button);
+
+    const x=caseSnapshot(id),comment=(document.getElementById('case_comment_'+id)?.value||'').trim(),evidence=courtEvidence(id,true);
+    if(!x||!typeAvailable(x,type)){showCaseError(id,'Карточка дела изменилась. Черновик сохранён.',true);return}
+    if(form.dataset.stage!=='review'){showCaseError(id,'Сначала проверьте судебный акт и действие перед сохранением.');return}
+    if(comment.length<(configs.open_court_payment?.min||5)){showCaseError(id,'Опишите судебный результат или основание открытия второго платежа.');backToCaseEdit(id);return}
+    if(!evidence){backToCaseEdit(id);return}
+    caseDrafts.set(draftKey(id,type),comment);
+
+    return withAction(`case:${id}`,caseControls(id),button,async()=>{
+      try{
+        await api(`/lawyer/cases/${id}/court/payment/open`,{
+          method:'POST',
+          body:JSON.stringify({comment,decision_reference:evidence.reference,decision_date:evidence.decisionDate,expected_status:x.status,expected_updated_at:x.updated_at})
+        });
+      }catch(e){
+        if(e.status===409){
+          caseDrafts.set(draftKey(id,type),comment);courtReferenceDrafts.set(id,evidence.reference);courtDateDrafts.set(id,evidence.decisionDate);
+          showCaseError(id,'Карточка или судебные данные изменились. Ничего не сохранено; черновик оставлен.',true);
+          feedback('Второй платёж не открыт. Обновите карточку и снова проверьте судебный акт.','warn-text');
+        }else{
+          showCaseError(id,e.message);feedback('Второй платёж не открыт: '+e.message,'bad');
+        }
+        return;
+      }
+      caseDrafts.delete(draftKey(id,type));courtReferenceDrafts.delete(id);courtDateDrafts.delete(id);
+      try{await load(null,true)}catch(e){feedback('Судебный акт сохранён и второй платёж открыт, но кабинет не обновился: '+e.message,'warn-text');return}
+      feedback('Судебный акт зафиксирован. Второй платёж 70 000 ₽ открыт клиенту.','ok');
+    });
+  };
+})();
+</script>
+"""
+
+
 def enhanced_lawyer_workspace_html() -> str:
     return _inject_patch(
         WORKSPACE_HTML,
-        _WORKSPACE_DEEP_LINK_PATCH + _M1_REJECTION_PATCH + _M1_POA_PATCH,
+        (
+            _WORKSPACE_DEEP_LINK_PATCH
+            + _M1_REJECTION_PATCH
+            + _M1_POA_PATCH
+            + _COURT_DECISION_PATCH
+        ),
     )
 
 
