@@ -91,7 +91,7 @@ async def list_authorized_case_documents(
                     document_id=document.id,
                 )
             except DocumentAccessError as error:
-                if error.reason == "lawyer_not_assigned":
+                if error.reason in {"lawyer_not_assigned", "lawyer_not_responsible"}:
                     raise
                 continue
             result.append(
