@@ -3,6 +3,10 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.cases.case_responsibility import (
+    TERMINAL_CASE_STATUS_VALUES,
+    lawyer_can_access_case,
+)
 from app.domain.cases.case_timeline import get_client_visible_status
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.document_statuses import DocumentStatus
@@ -60,23 +64,30 @@ async def build_document_review_case_context(
 ) -> dict[str, object] | None:
     """Return a role-scoped, domain-derived next action for one document case.
 
-    The document review UI must not infer whether an M1 case is ready for
-    acceptance from counters alone. Readiness is delegated to the same
-    LawyerDecisionService invariant that protects the actual acceptance write.
+    M1 responsibility comes from the case assignment. M2 responsibility comes
+    from the newest consultation slot. The same resolver is used by downloads,
+    message center, workspace, queue and document decisions so a lawyer never
+    sees a case in one screen and gets a 403 from the next screen.
     """
 
-    statement = (
-        select(Case, User)
-        .join(User, User.id == Case.client_id)
-        .where(Case.id == int(case_id))
-    )
-    if actor.role == "lawyer":
-        statement = statement.where(Case.assigned_lawyer_id == actor.lawyer_id)
-    row = (await db.execute(statement)).first()
+    row = (
+        await db.execute(
+            select(Case, User)
+            .join(User, User.id == Case.client_id)
+            .where(Case.id == int(case_id))
+        )
+    ).first()
     if row is None:
         return None
 
     case, user = row
+    if actor.role == "lawyer" and not await lawyer_can_access_case(
+        db,
+        case=case,
+        lawyer_id=actor.lawyer_id,
+    ):
+        return None
+
     documents = list(
         (
             await db.execute(
@@ -116,9 +127,10 @@ async def build_document_review_case_context(
     unknown = sum(_document_status(document.status) is None for document in latest)
 
     case_status = _case_status(case.status)
+    closed = str(case.status) in TERMINAL_CASE_STATUS_VALUES
     documents_ready = False
     readiness_reason: str | None = None
-    if case.route == "M1":
+    if case.route == "M1" and not closed:
         try:
             await LawyerDecisionService(db).assert_documents_ready_for_acceptance(
                 case=case
@@ -130,12 +142,20 @@ async def build_document_review_case_context(
 
     can_accept = bool(
         actor.role == "lawyer"
+        and not closed
         and case.route == "M1"
         and case_status == CaseStatus.M1_LAWYER_REVIEW
         and documents_ready
     )
 
-    if on_review:
+    if closed:
+        primary_action = "open_case"
+        primary_label = "Открыть архив дела"
+        primary_note = (
+            "Дело закрыто. Документы и решения доступны только для просмотра; "
+            "изменять статус файла из архива нельзя."
+        )
+    elif on_review:
         primary_action = "review_document"
         primary_label = "Проверить документ"
         primary_note = f"Ожидают решения: {on_review}"
@@ -186,6 +206,7 @@ async def build_document_review_case_context(
         "case_status_label": get_client_visible_status(case.status),
         "case_updated_at": case.updated_at.isoformat(),
         "case_next_action": case.next_action,
+        "read_only": closed,
         "documents_total": len(latest),
         "documents_on_review": on_review,
         "documents_approved": approved,
