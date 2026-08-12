@@ -38,6 +38,13 @@ def as_utc(value: datetime) -> datetime:
 
 
 class ConsultationRefundService:
+    """Shared refund resolution plus consultation-specific cancellation logic.
+
+    The historical class name is kept for compatibility. Requesting a client
+    cancellation is still M2-only, while resolving an already-created
+    REFUND_PENDING payment works for both M2 and stale M1 receipts.
+    """
+
     def __init__(self, db: AsyncSession):
         self.db = db
         self.slots = SlotService(db)
@@ -222,8 +229,6 @@ class ConsultationRefundService:
         ).scalar_one_or_none()
         if not payment:
             raise LookupError("Платёж не найден")
-        if payment.payment_code != PaymentCode.M2_CONSULTATION_PAYMENT:
-            raise ValueError("Этот платёж не относится к консультации")
 
         if (
             normalized_decision == "refunded"
@@ -244,22 +249,36 @@ class ConsultationRefundService:
         if not case:
             raise LookupError("Дело не найдено")
 
+        is_consultation = payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT
         old_status = payment.status
         payment.status = (
             PaymentStatus.REFUNDED
             if normalized_decision == "refunded"
             else PaymentStatus.REFUND_DECLINED
         )
-        action = (
-            "CONSULTATION_REFUND_COMPLETED"
-            if normalized_decision == "refunded"
-            else "CONSULTATION_REFUND_DECLINED"
-        )
-        event_code = (
-            "CONSULTATION_REFUNDED"
-            if normalized_decision == "refunded"
-            else "CONSULTATION_REFUND_DECLINED"
-        )
+        if is_consultation:
+            action = (
+                "CONSULTATION_REFUND_COMPLETED"
+                if normalized_decision == "refunded"
+                else "CONSULTATION_REFUND_DECLINED"
+            )
+            event_code = (
+                "CONSULTATION_REFUNDED"
+                if normalized_decision == "refunded"
+                else "CONSULTATION_REFUND_DECLINED"
+            )
+        else:
+            action = (
+                "M1_PAYMENT_REFUND_COMPLETED"
+                if normalized_decision == "refunded"
+                else "M1_PAYMENT_REFUND_DECLINED"
+            )
+            event_code = (
+                "M1_PAYMENT_REFUNDED"
+                if normalized_decision == "refunded"
+                else "M1_PAYMENT_REFUND_DECLINED"
+            )
+
         await add_case_history_event(
             self.db,
             actor_type="admin",
@@ -269,8 +288,11 @@ class ConsultationRefundService:
             old_value={"payment_id": payment.id, "status": old_status},
             new_value={
                 "payment_id": payment.id,
+                "payment_code": payment.payment_code,
                 "status": payment.status,
                 "decision": normalized_decision,
+                "case_status_preserved": str(case.status),
+                "case_route_preserved": case.route,
             },
             comment=normalized_comment,
         )
@@ -280,6 +302,7 @@ class ConsultationRefundService:
             payload={
                 "case_number": case.case_number,
                 "payment_id": payment.id,
+                "payment_title": payment.title,
                 "amount": str(payment.amount),
                 "comment": normalized_comment,
             },
