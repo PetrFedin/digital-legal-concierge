@@ -3,17 +3,62 @@ from __future__ import annotations
 import logging
 
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramServerError
+from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.states import DocumentUploadStates
+from app.domain.statuses.case_statuses import CaseStatus
 from app.models.document import Document
 
 logger = logging.getLogger(__name__)
 
 _REPLACEMENT_STATUSES = {"REJECTED", "NEEDS_REUPLOAD"}
 _ARCHIVED_STATUS = "ARCHIVED"
+_M1_CLIENT_UPLOAD_STATUSES = {
+    CaseStatus.M1_DOCUMENTS_PENDING,
+    CaseStatus.M1_DOCUMENTS_RECEIVED,
+    CaseStatus.M1_DOCS_REQUESTED,
+}
+_M2_CLIENT_UPLOAD_STATUSES = {
+    CaseStatus.M2_DESCRIPTION_PENDING,
+    CaseStatus.M2_DOCUMENTS_OPTIONAL,
+    CaseStatus.M2_SLOT_PENDING,
+    CaseStatus.M2_PAYMENT_PENDING,
+    CaseStatus.M2_CONSULTATION_BOOKED,
+}
+_UPLOAD_CALLBACKS = {
+    "documents_upload_open",
+    "doc_upload_ddu",
+    "doc_upload_appendix",
+    "doc_upload_additional",
+    "doc_upload_act",
+    "doc_upload_payment",
+    "doc_upload_correspondence",
+    "doc_upload_other",
+}
+
+
+def _case_status(case) -> CaseStatus | None:
+    if case is None:
+        return None
+    if isinstance(case.status, CaseStatus):
+        return case.status
+    try:
+        return CaseStatus(str(case.status))
+    except (TypeError, ValueError):
+        return None
+
+
+def client_document_upload_allowed(case) -> bool:
+    status = _case_status(case)
+    route = str(getattr(case, "route", "") or "").upper()
+    if route == "M1":
+        return status in _M1_CLIENT_UPLOAD_STATUSES
+    if route == "M2":
+        return status in _M2_CLIENT_UPLOAD_STATUSES
+    return False
 
 
 def replacement_snapshot_matches(
@@ -52,6 +97,93 @@ async def _answer_recovery(event, text: str) -> None:
         )
     except (TelegramBadRequest, TelegramNetworkError, TelegramServerError):
         logger.warning("Не удалось показать восстановление замены документа.")
+
+
+async def _stage_recovery(event, state) -> None:
+    if state is not None and hasattr(state, "clear"):
+        await state.clear()
+    text = (
+        "ℹ️ Этап дела уже изменился. Эта загрузка больше не относится к текущему шагу, "
+        "поэтому файл не обрабатывался и статус дела не менялся.\n\n"
+        "Откройте «Моё дело» или актуальный раздел документов — там показано допустимое действие."
+    )
+    markup = one(
+        ("📁 Открыть текущее дело", "my_case_open"),
+        ("📄 Актуальные документы", "documents_open"),
+        ("🏠 Главная", "nav_home"),
+    )
+    try:
+        if isinstance(event, CallbackQuery):
+            try:
+                await event.message.edit_text(text, reply_markup=markup)
+            except TelegramBadRequest as error:
+                if "message is not modified" not in str(error).lower():
+                    await event.message.answer(text, reply_markup=markup)
+            await event.answer("Этап дела изменился.")
+        else:
+            await event.answer(text, reply_markup=markup)
+    except (TelegramBadRequest, TelegramNetworkError, TelegramServerError):
+        logger.warning("Не удалось показать восстановление загрузки после смены этапа.")
+
+
+class ClientDocumentUploadStageProtectionMiddleware:
+    """Fail closed when an old client upload action outlives its legal stage.
+
+    Telegram messages and inline keyboards can remain visible for a long time.
+    Every generic upload callback and the final file message therefore re-check
+    the active case immediately before entering the encrypted upload pipeline.
+    This prevents stale screens from attaching new evidence to contract,
+    payment, POA, court, enforcement, completed-consultation or closed stages.
+    """
+
+    @staticmethod
+    def _is_upload_callback(event: CallbackQuery) -> bool:
+        value = str(event.data or "")
+        return bool(
+            value in _UPLOAD_CALLBACKS
+            or value.startswith("doc_type:")
+            or value.startswith("document_reupload:")
+        )
+
+    async def __call__(self, handler, event, data):
+        state = data.get("state")
+        targeted = False
+        if isinstance(event, CallbackQuery):
+            targeted = self._is_upload_callback(event)
+        elif isinstance(event, Message) and state is not None:
+            current_state = await state.get_state()
+            targeted = bool(
+                current_state == DocumentUploadStates.waiting_file.state
+                and (getattr(event, "document", None) or getattr(event, "photo", None))
+            )
+        if not targeted:
+            return await handler(event, data)
+
+        db = data.get("db")
+        if db is None:
+            logger.error("Client document stage guard has no database session")
+            await _stage_recovery(event, state)
+            return None
+
+        try:
+            ctx = BotContextService(db)
+            if isinstance(event, CallbackQuery):
+                user = await ctx.get_user_from_callback(event)
+            else:
+                user = await ctx.get_user_from_message(event)
+            case = await ctx.case_service.get_active_case_for_user(user.id)
+        except Exception:
+            logger.exception("Не удалось проверить этап дела перед загрузкой документа.")
+            await db.rollback()
+            await _stage_recovery(event, state)
+            return None
+
+        if case is None or not client_document_upload_allowed(case):
+            await db.rollback()
+            await _stage_recovery(event, state)
+            return None
+
+        return await handler(event, data)
 
 
 class DocumentReplacementUploadProtectionMiddleware:
