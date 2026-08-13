@@ -32,6 +32,19 @@ async def _require_admin(request: Request, db: AsyncSession, header_token: str |
     return actor
 
 
+async def _admin_ui_or_login(
+    request: Request,
+    db: AsyncSession,
+    header_token: str | None,
+):
+    try:
+        return await _require_admin(request, db, header_token)
+    except DocumentAccessError as error:
+        if error.status_code == 401:
+            return None
+        raise
+
+
 @router.get("/health")
 async def public_liveness_probe():
     return {"ok": True, "version": VERSION}
@@ -81,17 +94,74 @@ async def setup_ui(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    try:
-        await _require_admin(request, db, x_admin_token)
-    except DocumentAccessError as error:
-        if error.status_code == 401:
-            return RedirectResponse(url="/login", status_code=303)
-        raise
+    actor = await _admin_ui_or_login(request, db, x_admin_token)
+    if actor is None:
+        return RedirectResponse(url="/login", status_code=303)
     return RedirectResponse(url="/settings-ui", status_code=303)
 
 
-# Mounted before legacy staff/workdesk routers in app.main. Exact production
-# endpoints below own the authenticated UI and reconciled integrity response.
+@router.get("/install-wizard")
+async def install_wizard_guard(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    await _require_admin(request, db, x_admin_token)
+    return {
+        "ok": True,
+        "status": "live_checks_required",
+        "settings": "/settings-ui",
+        "health": "/health-center/ui",
+        "diagnostics": "/diagnostic-center/ui",
+        "security": "/security-events/ui",
+    }
+
+
+@router.get("/install-wizard/ui")
+async def install_wizard_ui_guard(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    actor = await _admin_ui_or_login(request, db, x_admin_token)
+    if actor is None:
+        return RedirectResponse(url="/login", status_code=303)
+    return RedirectResponse(url="/diagnostic-center/ui", status_code=303)
+
+
+@router.get("/launch-assistant/status")
+async def launch_assistant_status_guard(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    await _require_admin(request, db, x_admin_token)
+    return {
+        "ok": True,
+        "status": "live_checks_required",
+        "workdesk": "/admin/workdesk/ui",
+        "process_integrity": "/admin/workdesk/integrity",
+        "health": "/health-center/ui",
+        "diagnostics": "/diagnostic-center/ui",
+        "security": "/security-events/ui",
+        "audit": "/audit-center/ui",
+    }
+
+
+@router.get("/launch-assistant")
+async def launch_assistant_ui_guard(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    actor = await _admin_ui_or_login(request, db, x_admin_token)
+    if actor is None:
+        return RedirectResponse(url="/login", status_code=303)
+    return RedirectResponse(url="/admin/workdesk/ui", status_code=303)
+
+
+# Mounted before legacy staff/workdesk/readiness routers in app.main. Exact
+# production endpoints below own the authenticated entrypoints.
 router.include_router(operator_guard_router)
 router.include_router(consultation_outcomes_ui_guard_router)
 router.include_router(workdesk_integrity_guard_router)
