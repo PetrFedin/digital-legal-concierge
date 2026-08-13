@@ -313,6 +313,62 @@ async def documents_action_center(
     await _render_home(callback, state, db)
 
 
+@router.callback_query(lambda c: c.data == "documents_list_open")
+async def exact_replacement_document_list(
+    callback: CallbackQuery,
+    state: FSMContext,
+    db,
+):
+    await _clear_document_upload_state(state)
+    _, case = await _active_case(callback, db)
+    if not case:
+        await _safe_present(
+            callback,
+            "Активное дело больше не найдено. Старая кнопка списка не создаёт новое обращение.",
+            reply_markup=_no_case_markup(),
+        )
+        return
+
+    all_documents = await DocumentService(db).list_case_documents(case.id)
+    documents = _active(all_documents)
+    replacements = [
+        item for item in documents if _status(item) in _REPLACEMENT_STATUSES
+    ]
+    if not replacements:
+        from app.bot.screens.documents import _render_current_documents
+
+        await _render_current_documents(callback, db, 0)
+        return
+
+    preview = "\n\n".join(_document_line(item) for item in documents[:8])
+    if len(documents) > 8:
+        preview += f"\n\n• Ещё актуальных документов: {len(documents) - 8}."
+    buttons = [
+        (
+            f"🔁 Заменить «{item.title}» · v{item.version}",
+            _reupload_callback(item),
+        )
+        for item in replacements[:6]
+    ]
+    buttons.extend(
+        [
+            ("🕘 История версий", "documents_history_open"),
+            ("✉️ Вопрос по документам", "message_create"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ]
+    )
+    await _safe_present(
+        callback,
+        "📋 АКТУАЛЬНЫЕ ДОКУМЕНТЫ\n\n"
+        "СЕЙЧАС\nЮрист запросил исправление одного или нескольких файлов.\n\n"
+        "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+        "Выберите конкретный документ ниже. Каждая кнопка привязана к точному document_id и версии; устаревший запрос будет заблокирован перед загрузкой файла.\n\n"
+        f"{preview}",
+        reply_markup=one(*buttons),
+    )
+
+
 async def _stale_reupload(
     callback: CallbackQuery,
     state: FSMContext,
