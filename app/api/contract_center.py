@@ -208,9 +208,12 @@ async function boot(){const r=await fetch('/auth/session',{credentials:'same-ori
 @router.get("/ui", response_class=HTMLResponse)
 async def contract_center_ui(
     request: Request,
+    db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    token = _session_token(request, x_admin_token)
-    if not token:
+    try:
+        await _actor(request, db, x_admin_token)
+    except HTTPException:
+        await db.rollback()
         return RedirectResponse(url="/login", status_code=303)
     return HTMLResponse(CONTRACT_CENTER_HTML)
