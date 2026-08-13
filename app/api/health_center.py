@@ -1,59 +1,103 @@
+from __future__ import annotations
+
 from pathlib import Path
 import shutil
-from fastapi import APIRouter, Depends
-from fastapi.responses import HTMLResponse
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db.session import get_db
+from app.security.access_control import ROLE_ADMIN, ROLE_SUPERADMIN
+from app.security.document_access import DocumentAccessError, resolve_document_actor
 
 router = APIRouter(prefix="/health-center", tags=["health-center"])
 
 
-def status(ok: bool, title: str, details: str = "") -> dict:
-    return {"ok": ok, "title": title, "details": details, "state": "green" if ok else "red"}
+def _token(request: Request, header_token: str | None) -> str | None:
+    return header_token or request.cookies.get(settings.admin_session_cookie)
+
+
+async def _require_admin(request: Request, db: AsyncSession, header_token: str | None):
+    actor = await resolve_document_actor(db, _token(request, header_token))
+    if actor.role not in {ROLE_ADMIN, ROLE_SUPERADMIN}:
+        raise HTTPException(status_code=403, detail="Доступ только для администратора")
+    return actor
+
+
+def _check(ok: bool, title: str, details: str) -> dict:
+    return {"ok": bool(ok), "title": title, "details": details}
 
 
 @router.get("")
-async def health_center(db: AsyncSession = Depends(get_db)):
-    checks = {}
+async def health_center(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    await _require_admin(request, db, x_admin_token)
+    checks: dict[str, dict] = {}
     try:
         await db.execute(text("SELECT 1"))
-        checks["database"] = status(True, "База данных", "Соединение активно")
-    except Exception as exc:
-        checks["database"] = status(False, "База данных", str(exc))
+        checks["database"] = _check(True, "База данных", "Соединение активно")
+    except Exception:
+        checks["database"] = _check(False, "База данных", "Соединение недоступно")
 
-    storage_path = Path(settings.storage_dir)
-    checks["storage"] = status(storage_path.exists(), "Хранилище документов", str(storage_path))
-
-    backup_path = Path(settings.backup_dir)
-    checks["backups"] = status(backup_path.exists(), "Резервные копии", str(backup_path))
-
-    disk = shutil.disk_usage(".")
+    storage = Path(settings.storage_dir)
+    backups = Path(settings.backup_dir)
+    checks["storage"] = _check(
+        storage.exists(),
+        "Хранилище документов",
+        "Доступно" if storage.exists() else "Недоступно",
+    )
+    checks["backups"] = _check(
+        backups.exists(),
+        "Резервные копии",
+        "Доступны" if backups.exists() else "Недоступны",
+    )
+    disk = shutil.disk_usage(storage if storage.exists() else ".")
     free_mb = int(disk.free / 1024 / 1024)
-    checks["disk"] = status(free_mb >= settings.min_free_disk_mb, "Свободное место", f"{free_mb} MB")
-
-    bot_ok = (not settings.run_bot) or bool(settings.bot_token and settings.bot_token != "CHANGE_ME")
-    checks["telegram"] = status(bot_ok, "Telegram", "BOT_TOKEN задан" if bot_ok else "BOT_TOKEN не задан")
-
-    payment_ok = settings.payment_provider == "fake" or bool(settings.yookassa_shop_id and settings.yookassa_secret_key)
-    checks["payments"] = status(payment_ok, "Платежи", settings.payment_provider)
-
-    checks["scheduler"] = status(True, "Scheduler", "включен" if settings.run_scheduler else "выключен")
-    checks["demo_mode"] = status(True, "Demo Mode", "включен" if settings.demo_mode else "выключен")
-
-    ok = all(item["ok"] for item in checks.values())
-    return {"ok": ok, "version": "1.0.0-v20", "checks": checks}
+    checks["disk"] = _check(
+        free_mb >= settings.min_free_disk_mb,
+        "Свободное место",
+        f"Доступно {free_mb} MB",
+    )
+    checks["telegram"] = _check(
+        (not settings.run_bot) or bool(settings.bot_token and settings.bot_token != "CHANGE_ME"),
+        "Telegram",
+        "Готов" if settings.run_bot else "Отключён настройкой",
+    )
+    checks["scheduler"] = _check(
+        True,
+        "Scheduler",
+        "Включён" if settings.run_scheduler else "Отключён настройкой",
+    )
+    return {
+        "ok": all(item["ok"] for item in checks.values()),
+        "version": "1.0.0-v46",
+        "checks": checks,
+    }
 
 
 @router.get("/ui", response_class=HTMLResponse)
-async def health_center_ui():
-    return """
-    <html><head><meta charset='utf-8'><title>Health Center</title>
-    <style>body{font-family:Arial;margin:30px;background:#f7f7f7} .card{background:white;padding:20px;border-radius:14px;margin:12px 0;box-shadow:0 1px 8px #ddd} a{display:inline-block;margin:6px 10px 6px 0}</style></head>
-    <body><h1>Health Center v20</h1><div class='card'>Проверка состояния Telegram-бота, БД, файлов, платежей, backup и scheduler.</div>
-    <a href='/health-center'>JSON status</a><a href='/diagnostic-center/ui'>Diagnostic Center</a><a href='/recovery-center/ui'>Recovery Center</a><a href='/operator'>Operator</a><a href='/admin-ui'>Admin</a>
-    <script>fetch('/health-center').then(r=>r.json()).then(d=>{let html=''; for(const [k,v] of Object.entries(d.checks)){html+=`<div class="card"><b>${v.state==='green'?'🟢':'🔴'} ${v.title}</b><br>${v.details}</div>`} document.body.insertAdjacentHTML('beforeend',html)})</script>
-    </body></html>
-    """
+async def health_center_ui(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    try:
+        await _require_admin(request, db, x_admin_token)
+    except DocumentAccessError as error:
+        if error.status_code == 401:
+            return RedirectResponse(url="/login", status_code=303)
+        raise
+    return HTMLResponse(
+        """
+<!doctype html><html lang='ru'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Состояние системы</title><style>
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;margin:0;background:#f4f6fa;color:#172033}.wrap{max-width:920px;margin:auto;padding:28px}.head{display:flex;justify-content:space-between;gap:12px;align-items:center}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}.card{background:#fff;padding:16px;border:1px solid #e4e7ec;border-radius:14px}.ok{color:#067647}.bad{color:#b42318}.muted{color:#667085;font-size:13px}a{color:#3157d5;text-decoration:none;font-weight:700}@media(max-width:700px){.grid{grid-template-columns:1fr}}
+</style></head><body><div class='wrap'><div class='head'><div><h1>Состояние системы</h1><div class='muted'>Только безопасные operational checks.</div></div><a href='/admin/workdesk/ui'>К рабочему столу</a></div><div id='summary' class='card'>Проверяю…</div><div id='checks' class='grid'></div></div><script>
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));fetch('/health-center',{credentials:'same-origin',cache:'no-store'}).then(async r=>{if(r.status===401){location.href='/login';return}const d=await r.json();if(!r.ok)throw Error(d.detail||'Ошибка');summary.innerHTML=`<b class="${d.ok?'ok':'bad'}">${d.ok?'✓ Основные проверки пройдены':'⚠ Требуется внимание'}</b><div class="muted">Версия ${esc(d.version)}</div>`;checks.innerHTML=Object.values(d.checks||{}).map(x=>`<div class="card"><b class="${x.ok?'ok':'bad'}">${x.ok?'✓':'!' } ${esc(x.title)}</b><div class="muted">${esc(x.details)}</div></div>`).join('')}).catch(e=>{summary.innerHTML='<b class="bad">Проверка не выполнена</b><div class="muted">'+esc(e.message)+'</div>'})</script></body></html>
+"""
+    )
