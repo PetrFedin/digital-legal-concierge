@@ -2,12 +2,7 @@ from __future__ import annotations
 
 
 def document_detail_for_client(view) -> str:
-    """Describe document lifecycle without claiming lawyer work started early.
-
-    Document.ON_REVIEW means the package has been handed to the legal queue. The
-    semantic boundary for actual lawyer review is the case status
-    M1_LAWYER_REVIEW, which is set only by an authorized staff decision.
-    """
+    """Describe document lifecycle without claiming lawyer work started early."""
 
     documents = view.documents
     status = str(getattr(view, "case_status", "") or "")
@@ -25,24 +20,48 @@ def document_detail_for_client(view) -> str:
 
 
 def install_client_wording() -> None:
-    """Install presentation rules without changing document/domain state."""
+    """Install presentation rules without changing document/payment state."""
 
+    from app.bot.client_case_view import CLIENT_ACTIONS, ClientAction
     from app.bot.screens import document_action_center, my_case
     from app.domain.statuses.case_statuses import CaseStatus
 
     my_case._document_detail = document_detail_for_client
 
-    # A submitted document enters ON_REVIEW as a queue/storage state before a
-    # human decision begins substantive review. Keep the per-file label neutral.
-    document_action_center._STATUS_LABELS["ON_REVIEW"] = (
-        "передан юридической команде"
+    # Payment CTAs must describe the actual obligation. The callbacks and all
+    # idempotency/status guards remain unchanged; only client presentation is
+    # made explicit so a payment action cannot masquerade as generic progress.
+    CLIENT_ACTIONS["M1_WAITING_PAYMENT_30000"] = ClientAction(
+        "Оплатить 30 000 ₽",
+        "pay_start_30000",
+        "Первый платёж открывает этап доверенности только после подтверждения оплаты.",
+    )
+    CLIENT_ACTIONS["M1_WAITING_PAYMENT_70000"] = ClientAction(
+        "Оплатить 70 000 ₽",
+        "pay_court_70000",
+        "Второй платёж доступен после зафиксированного судебного акта и открывает этап исполнения только после подтверждения оплаты.",
+    )
+    CLIENT_ACTIONS["M1_MONEY_RECEIVED"] = ClientAction(
+        "Оплатить финальный процент",
+        "pay_success_fee",
+        "Финальный платёж рассчитывается от фактически взысканной суммы. Проверьте сумму на экране оплаты перед подтверждением.",
+    )
+    CLIENT_ACTIONS["M1_WAITING_SUCCESS_FEE"] = ClientAction(
+        "Оплатить финальный процент",
+        "pay_success_fee",
+        "Оплатите рассчитанный процент от фактически взысканной суммы. После подтверждения финансовый этап завершается.",
+    )
+    CLIENT_ACTIONS["M2_PAYMENT_PENDING"] = ClientAction(
+        "Перейти к оплате консультации",
+        "consult_pay",
+        "Оплатите консультацию для выбранного времени. Если резерв времени уже истёк, система вернёт вас к выбору актуального слота.",
     )
 
-    if getattr(
-        document_action_center,
-        "_client_handoff_wording_installed",
-        False,
-    ):
+    # A submitted document enters ON_REVIEW as a queue/storage state before a
+    # human decision begins substantive review. Keep the per-file label neutral.
+    document_action_center._STATUS_LABELS["ON_REVIEW"] = "передан юридической команде"
+
+    if getattr(document_action_center, "_client_handoff_wording_installed", False):
         return
 
     original_next_action = document_action_center._next_action
