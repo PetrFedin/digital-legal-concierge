@@ -66,6 +66,82 @@ async def _render_guard(
         logger.warning("Telegram unavailable while rendering %s", log_context, exc_info=True)
 
 
+class ConsentRouteSelectionMiddleware:
+    """Prevent an old consent callback from silently selecting M1.
+
+    The consent screen is valid only after the client explicitly selected the
+    full-service route and the case reached CLIENT_DECISION. Telegram keeps old
+    inline buttons indefinitely, so a ``consent_accept`` callback received while
+    the case is still CALCULATED must be treated as stale and routed back to the
+    explicit choice instead of mutating the legal workflow.
+    """
+
+    async def __call__(self, handler, event, data):
+        if not isinstance(event, CallbackQuery) or event.data != "consent_accept":
+            return await handler(event, data)
+
+        db = data.get("db")
+        if db is None:
+            logger.error("Consent route guard did not receive a DB session")
+            await _render_guard(
+                event,
+                text=(
+                    "Не удалось безопасно проверить текущий этап. Согласие не применено. "
+                    "Откройте «Моё дело» и продолжите с актуального шага."
+                ),
+                markup=one(
+                    ("📁 Моё дело", "my_case_open"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+                log_context="consent route DB guard",
+            )
+            return None
+
+        try:
+            ctx = BotContextService(db)
+            user = await ctx.get_user_from_callback(event)
+            case = await ctx.case_service.get_active_case_for_user(user.id)
+        except Exception:
+            logger.exception("Не удалось проверить этап перед подтверждением согласия")
+            await db.rollback()
+            await _render_guard(
+                event,
+                text=(
+                    "Не удалось безопасно проверить текущий этап. Согласие не применено. "
+                    "Откройте «Моё дело» и повторите действие."
+                ),
+                markup=one(
+                    ("📁 Моё дело", "my_case_open"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+                log_context="consent route lookup guard",
+            )
+            return None
+
+        if case is None or _case_status(case) != CaseStatus.CALCULATED:
+            return await handler(event, data)
+
+        await db.rollback()
+        await _render_guard(
+            event,
+            text=(
+                "🧭 СНАЧАЛА ВЫБЕРИТЕ ДАЛЬНЕЙШИЙ ПУТЬ\n\n"
+                "Предварительный расчёт сохранён, но маршрут юридической помощи ещё не выбран. "
+                "Старая кнопка согласия не может сама перевести обращение в полное ведение M1.\n\n"
+                "Выберите дальнейший путь. Если выберете ведение дела, согласие на обработку "
+                "документов появится отдельным следующим шагом."
+            ),
+            markup=one(
+                ("▶️ Выбрать дальнейший путь", "calc_decision_open"),
+                ("💬 Перейти к консультации", "calc_to_m2"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+            log_context="stale consent route selection",
+        )
+        return None
+
+
 class ConsultationRouteIsolationMiddleware:
     """Fail closed for stale consultation callbacks that conflict with case state.
 
