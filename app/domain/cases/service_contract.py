@@ -83,6 +83,8 @@ async def publish_service_contract(
         encrypted_data_key=stored.encrypted_data_key,
         encrypted_data_key_nonce=stored.encrypted_data_key_nonce,
         encrypted_at=stored.encrypted_at,
+        audit_actor_type=_actor_type(actor),
+        audit_actor_id=_actor_id(actor),
     )
     document.title = SERVICE_CONTRACT_TITLE
     document.status = DocumentStatus.APPROVED
