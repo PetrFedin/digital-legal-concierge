@@ -15,6 +15,7 @@ from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.types import BotCommand, BotCommandScopeDefault, CallbackQuery, Message
 
 from app.bot.calculator_draft import CalculatorDraftNavigationMiddleware
+from app.bot.client_wording_patch import install_client_wording
 from app.bot.consultation_route_guard import ConsultationRouteIsolationMiddleware
 from app.bot.document_replacement_protection import (
     ClientDocumentUploadStageProtectionMiddleware,
@@ -140,6 +141,7 @@ def build_fsm_storage() -> BaseStorage:
 
 
 def build_dispatcher() -> Dispatcher:
+    install_client_wording()
     dispatcher = Dispatcher(storage=build_fsm_storage())
     dispatcher.update.middleware(DbMiddleware())
     flood_control = FloodControlMiddleware()
