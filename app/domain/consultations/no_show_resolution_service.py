@@ -4,8 +4,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_history import add_case_history_event
+from app.domain.cases.case_service import CaseService
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.payments.payment_types import PaymentCode
+from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models.case import Case
@@ -22,6 +24,36 @@ class NoShowResolutionService:
     def __init__(self, db: AsyncSession):
         self.db = db
         self.notifications = NotificationEngine(db)
+        self.cases = CaseService(db)
+
+    async def _advance_refund_case(
+        self,
+        *,
+        case: Case,
+        admin_id: int | None,
+        comment: str,
+    ) -> None:
+        status = (
+            case.status
+            if isinstance(case.status, CaseStatus)
+            else CaseStatus(str(case.status))
+        )
+        if status == CaseStatus.M2_CONSULTATION_BOOKED:
+            await self.cases.change_status(
+                case=case,
+                next_status=CaseStatus.M2_CONSULTATION_DONE,
+                actor_type="admin",
+                actor_id=admin_id,
+                comment=(
+                    "Консультация отменена после подтверждённой неявки юриста; "
+                    "ожидается фактический результат возврата"
+                ),
+            )
+        elif status != CaseStatus.M2_CONSULTATION_DONE:
+            raise NoShowResolutionError(
+                "Статус дела уже изменился. Перед возвратом обновите карточку консультации"
+            )
+        case.next_action = "Ожидать фактический результат возврата; повторная запись не создаётся автоматически"
 
     async def route_lawyer_no_show_to_refund(
         self,
@@ -45,6 +77,17 @@ class NoShowResolutionService:
         ).scalar_one_or_none()
         if not consultation:
             raise LookupError("Консультация не найдена")
+
+        case = (
+            await self.db.execute(
+                select(Case)
+                .where(Case.id == consultation.case_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if not case:
+            raise LookupError("Дело не найдено")
+
         if consultation.status == ConsultationStatus.CANCELLED:
             payment = (
                 await self.db.execute(
@@ -56,24 +99,23 @@ class NoShowResolutionService:
                         Payment.status == PaymentStatus.REFUND_PENDING,
                     )
                     .order_by(Payment.id.desc())
+                    .with_for_update()
                 )
             ).scalars().first()
             if payment:
+                # Repair historical rows that were cancelled/refund-pending while
+                # the case incorrectly remained M2_CONSULTATION_BOOKED.
+                await self._advance_refund_case(
+                    case=case,
+                    admin_id=admin_id,
+                    comment=normalized_comment,
+                )
+                await self.db.flush()
                 return consultation, payment
         if consultation.status != ConsultationStatus.LAWYER_NO_SHOW:
             raise NoShowResolutionError(
                 "Возврат по этой операции доступен только после неявки юриста"
             )
-
-        case = (
-            await self.db.execute(
-                select(Case)
-                .where(Case.id == consultation.case_id)
-                .with_for_update()
-            )
-        ).scalar_one_or_none()
-        if not case:
-            raise LookupError("Дело не найдено")
 
         payment = (
             await self.db.execute(
@@ -98,9 +140,16 @@ class NoShowResolutionService:
                 "Оплаченный платёж консультации не найден"
             )
         if payment.status == PaymentStatus.REFUND_PENDING:
+            await self._advance_refund_case(
+                case=case,
+                admin_id=admin_id,
+                comment=normalized_comment,
+            )
+            await self.db.flush()
             return consultation, payment
 
         old_value = {
+            "case_status": str(case.status),
             "consultation_status": consultation.status,
             "slot_id": consultation.slot_id,
             "scheduled_at": (
@@ -122,12 +171,20 @@ class NoShowResolutionService:
                 slot.consultation_id = None
                 slot.held_by_user_id = None
                 slot.hold_expires_at = None
+                # An administratively cancelled meeting must not leave a booked
+                # slot blocked forever.
+                if str(slot.status) in {"booked", "held", "lawyer_no_show"}:
+                    slot.status = "available"
 
         consultation.slot_id = None
         consultation.scheduled_at = None
         consultation.status = ConsultationStatus.CANCELLED
         payment.status = PaymentStatus.REFUND_PENDING
-        case.next_action = "Обработать возврат после неявки юриста"
+        await self._advance_refund_case(
+            case=case,
+            admin_id=admin_id,
+            comment=normalized_comment,
+        )
 
         await add_case_history_event(
             self.db,
@@ -137,6 +194,7 @@ class NoShowResolutionService:
             action="CONSULTATION_LAWYER_NO_SHOW_REFUND_REQUESTED",
             old_value=old_value,
             new_value={
+                "case_status": str(case.status),
                 "consultation_id": consultation.id,
                 "consultation_status": consultation.status,
                 "payment_id": payment.id,
