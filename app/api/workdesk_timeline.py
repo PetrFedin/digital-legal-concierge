@@ -34,12 +34,28 @@ _ACTION_TITLES = {
     "CASE_SLA_ACTION_OVERDUE": "Просрочено следующее действие юриста",
     "DOCUMENT_UPLOADED": "Документ загружен",
     "DOCUMENT_STATUS_CHANGED": "Решение по документу обновлено",
+    "DOCUMENTS_SENT_TO_REVIEW": "Документы переданы юридической команде",
+    "DOCUMENT_REVIEW_DECISION": "Юрист принял решение по документу",
+    "SERVICE_CONTRACT_PUBLISHED": "Опубликована версия договора",
+    "CLIENT_SERVICE_CONTRACT_CONFIRMED": "Клиент подтвердил текущую версию договора",
+    "CLIENT_POA_READY_REPORTED": "Клиент сообщил о готовности доверенности",
+    "M1_POA_RECEIVED_CONFIRMED": "Юрист подтвердил получение доверенности",
     "PAYMENT_PAID": "Оплата подтверждена",
+    "M1_STALE_PAYMENT_REFUND_REQUIRED": "Поздний платёж направлен в возврат",
     "M1_MONEY_RECEIVED": "Зафиксировано фактическое взыскание",
     "M1_CLAIM_SENT": "Претензия направлена",
     "M1_COURT_OPENED": "Судебный этап открыт",
+    "COURT_STAGE_STARTED": "Судебный этап открыт",
+    "M1_COURT_DECISION_RECORDED": "Зафиксирован судебный акт",
+    "COURT_PAYMENT_OPENED": "Открыт второй платёж после судебного акта",
     "M1_CLOSED": "Дело закрыто",
     "M2_CONSULTATION_BOOKED": "Консультация назначена",
+    "CONSULTATION_BOOKED_AFTER_PAYMENT": "Оплата применена, консультация подтверждена",
+    "CONSULTATION_SLOT_HOLD_EXPIRED": "Истёк резерв времени консультации",
+    "CONSULTATION_COMPLETED": "Зафиксирован результат консультации",
+    "CONSULTATION_CLIENT_NO_SHOW": "Зафиксирована неявка клиента",
+    "CONSULTATION_LAWYER_NO_SHOW": "Зафиксирована неявка юриста",
+    "CONSULTATION_REBOOKED_AFTER_LAWYER_NO_SHOW": "Консультация бесплатно перенесена",
     "M2_CONSULTATION_DONE": "Консультация проведена",
     "M2_CLOSED": "Консультационное обращение закрыто",
     "CASE_ERROR_RECOVERED_TO_LAST_SAFE_STATUS": "Техническая блокировка снята",
@@ -71,11 +87,13 @@ def _category(action: str) -> str:
         return "sla"
     if "PAYMENT" in key or "REFUND" in key or "FEE" in key:
         return "payments"
+    if "CONTRACT" in key:
+        return "contract"
     if "DOCUMENT" in key or "DOCS" in key or "POA" in key:
         return "documents"
     if "MESSAGE" in key:
         return "messages"
-    if "CONSULT" in key or key.startswith("M2_"):
+    if "CONSULT" in key or "SLOT_HOLD" in key or key.startswith("M2_"):
         return "consultation"
     if any(
         marker in key
@@ -178,9 +196,18 @@ async def workdesk_case_timeline(
     }
 
 
-# Technical ERROR handling is a workdesk extension. Mount it through this router
-# so its guided /admin/workdesk/ui route is registered before the legacy workdesk
-# route without coupling the global app factory to another precedence detail.
-from app.api.technical_case_recovery import router as technical_case_recovery_router  # noqa: E402
+# Workdesk extensions are mounted here because this router is registered before
+# the legacy workdesk router. The technical recovery module owns the guided
+# /admin/workdesk/ui override; enrich its base HTML with the read-only process
+# integrity banner before mounting that override.
+from app.api import technical_case_recovery as technical_case_recovery  # noqa: E402
+from app.api.workdesk_integrity import (  # noqa: E402
+    inject_workdesk_integrity,
+    router as workdesk_integrity_router,
+)
 
-router.include_router(technical_case_recovery_router)
+technical_case_recovery.WORKDESK_HTML = inject_workdesk_integrity(
+    technical_case_recovery.WORKDESK_HTML
+)
+router.include_router(workdesk_integrity_router)
+router.include_router(technical_case_recovery.router)
