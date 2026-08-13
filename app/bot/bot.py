@@ -17,6 +17,7 @@ from aiogram.types import BotCommand, BotCommandScopeDefault, CallbackQuery, Mes
 from app.bot.calculator_draft import CalculatorDraftNavigationMiddleware
 from app.bot.consultation_route_guard import ConsultationRouteIsolationMiddleware
 from app.bot.document_replacement_protection import (
+    ClientDocumentUploadStageProtectionMiddleware,
     DocumentReplacementUploadProtectionMiddleware,
 )
 from app.bot.draft_protection import (
@@ -148,10 +149,12 @@ def build_dispatcher() -> Dispatcher:
     dispatcher.message.middleware(CalculatorDraftNavigationMiddleware())
     dispatcher.callback_query.middleware(CalculatorDraftNavigationMiddleware())
     dispatcher.message.middleware(DraftMessageNavigationProtectionMiddleware())
+    dispatcher.message.middleware(ClientDocumentUploadStageProtectionMiddleware())
     dispatcher.message.middleware(DocumentReplacementUploadProtectionMiddleware())
     dispatcher.message.middleware(flood_control)
     dispatcher.callback_query.middleware(DraftProtectionMiddleware())
     dispatcher.callback_query.middleware(ConsultationRouteIsolationMiddleware())
+    dispatcher.callback_query.middleware(ClientDocumentUploadStageProtectionMiddleware())
     dispatcher.callback_query.middleware(flood_control)
     dispatcher.callback_query.middleware(CallbackAcknowledgeMiddleware())
     for router in [
