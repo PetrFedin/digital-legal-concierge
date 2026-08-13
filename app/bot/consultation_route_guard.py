@@ -159,6 +159,8 @@ class ConsultationRouteIsolationMiddleware:
     """
 
     async def __call__(self, handler, event, data):
+        if isinstance(event, CallbackQuery) and event.data == "consent_accept":
+            return await ConsentRouteSelectionMiddleware()(handler, event, data)
         if not isinstance(event, CallbackQuery) or not is_consultation_callback(event.data):
             return await handler(event, data)
 
