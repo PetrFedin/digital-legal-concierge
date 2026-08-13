@@ -22,6 +22,13 @@ def generate_case_number(case_id: int) -> str:
     return f"DLC-{datetime.now().year}-{case_id:06d}"
 
 
+_CLIENT_DOCUMENT_COLLECTION_STATUSES = {
+    CaseStatus.M1_DOCUMENTS_PENDING,
+    CaseStatus.M1_DOCUMENTS_RECEIVED,
+    CaseStatus.M1_DOCS_REQUESTED,
+}
+
+
 class CaseService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -153,6 +160,34 @@ class CaseService:
         await self.db.flush()
         return case, True
 
+    @staticmethod
+    def _normalize_client_document_handoff(
+        *,
+        case: Case,
+        next_status: str | CaseStatus,
+        actor_type: str,
+        comment: str | None,
+    ) -> tuple[str | CaseStatus, str | None]:
+        """A client may hand documents over, but cannot claim lawyer review began."""
+        if str(actor_type or "").strip().lower() != "client":
+            return next_status, comment
+        source = normalize_status(case.status)
+        destination = normalize_status(next_status)
+        if (
+            destination != CaseStatus.M1_LAWYER_REVIEW
+            or source not in _CLIENT_DOCUMENT_COLLECTION_STATUSES
+        ):
+            return next_status, comment
+        clean_comment = str(comment or "").strip()
+        suffix = (
+            "Документы зарегистрированы у юридической команды; "
+            "начало содержательной проверки фиксирует юрист отдельным действием."
+        )
+        return (
+            CaseStatus.M1_DOCUMENTS_RECEIVED,
+            f"{clean_comment} {suffix}".strip(),
+        )
+
     async def change_status(
         self,
         *,
@@ -163,6 +198,12 @@ class CaseService:
         comment: str | None = None,
         force: bool = False,
     ):
+        next_status, comment = self._normalize_client_document_handoff(
+            case=case,
+            next_status=next_status,
+            actor_type=actor_type,
+            comment=comment,
+        )
         case, _changed = await self._transition(
             case=case,
             next_status=next_status,
@@ -248,7 +289,7 @@ class CaseService:
             CaseStatus.CALCULATED: "Выбрать дальнейший маршрут",
             CaseStatus.CLIENT_DECISION: "Выбрать дальнейший маршрут",
             CaseStatus.M1_DOCUMENTS_PENDING: "Загрузить документы",
-            CaseStatus.M1_DOCUMENTS_RECEIVED: "Передать документы на проверку",
+            CaseStatus.M1_DOCUMENTS_RECEIVED: "Ожидать назначения и начала проверки",
             CaseStatus.M1_LAWYER_REVIEW: "Ожидать проверки юристом",
             CaseStatus.M1_DOCS_REQUESTED: "Загрузить запрошенные документы",
             CaseStatus.M1_ACCEPTED: "Ожидать договор",
