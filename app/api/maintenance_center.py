@@ -4,12 +4,15 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.legacy_center_guards import router as legacy_center_guards_router
 from app.config import settings
 from app.db.session import get_db
 from app.security.access_control import ROLE_ADMIN, ROLE_SUPERADMIN
 from app.security.document_access import DocumentAccessError, resolve_document_actor
 
-router = APIRouter(prefix="/maintenance-center", tags=["maintenance-center"])
+# Keep this router unprefixed so compatibility guards can own the exact legacy
+# URLs before the older center routers are mounted in app.main.
+router = APIRouter(tags=["maintenance-center"])
 
 
 def _token(request: Request, header_token: str | None) -> str | None:
@@ -23,7 +26,7 @@ async def _require_admin(request: Request, db: AsyncSession, header_token: str |
     return actor
 
 
-@router.get("/status")
+@router.get("/maintenance-center/status")
 async def maintenance_status(
     request: Request,
     db: AsyncSession = Depends(get_db),
@@ -43,7 +46,7 @@ async def maintenance_status(
     }
 
 
-@router.get("/ui")
+@router.get("/maintenance-center/ui")
 async def maintenance_ui(
     request: Request,
     db: AsyncSession = Depends(get_db),
@@ -56,3 +59,8 @@ async def maintenance_ui(
             return RedirectResponse(url="/login", status_code=303)
         raise
     return RedirectResponse(url="/admin/workdesk/ui", status_code=303)
+
+
+# These routes are deliberately registered after the maintained maintenance
+# endpoints but before final_qa_center/retention_center are included by main.py.
+router.include_router(legacy_center_guards_router)
