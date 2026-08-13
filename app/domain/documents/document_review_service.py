@@ -197,6 +197,27 @@ class DocumentReviewService:
             for document, case, user in rows
         ]
 
+    async def _start_m1_review_if_needed(
+        self,
+        *,
+        actor: DocumentActor,
+        case: Case,
+    ) -> None:
+        if (
+            str(case.route or "") != "M1"
+            or CaseStatus(str(case.status)) != CaseStatus.M1_DOCUMENTS_RECEIVED
+        ):
+            return
+        await CaseService(self.db).change_status(
+            case=case,
+            next_status=CaseStatus.M1_LAWYER_REVIEW,
+            actor_type="lawyer" if actor.role == "lawyer" else "admin_user",
+            actor_id=actor.lawyer_id or actor.account_id,
+            comment=(
+                "Юридическая проверка начата первым валидным решением по переданному документу"
+            ),
+        )
+
     async def _request_new_version(
         self,
         *,
@@ -328,6 +349,11 @@ class DocumentReviewService:
             raise DocumentReviewError(
                 "Документ уже вышел из очереди проверки. Обновите список"
             )
+
+        # Only an authorized staff decision may establish the semantic boundary
+        # between "package received" and "lawyer review started". Snapshot and
+        # ON_REVIEW checks run first, so a stale decision cannot advance the case.
+        await self._start_m1_review_if_needed(actor=actor, case=case)
 
         old_value = {
             "document_id": document.id,
