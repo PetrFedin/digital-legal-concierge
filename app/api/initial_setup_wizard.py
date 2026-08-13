@@ -7,6 +7,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.consultation_outcomes_ui_guard import router as consultation_outcomes_ui_guard_router
 from app.api.operator_guard import router as operator_guard_router
 from app.config import settings
 from app.db.session import get_db
@@ -89,7 +90,7 @@ async def setup_ui(
     return RedirectResponse(url="/settings-ui", status_code=303)
 
 
-# This router is mounted before the legacy operator router and before app-level
-# health/ready endpoints in app.main, so public probes remain minimal and the
-# old anonymous operator shell cannot be served.
+# This router is mounted before the legacy operator and consultation outcome
+# routers and before app-level health/ready endpoints in app.main.
 router.include_router(operator_guard_router)
+router.include_router(consultation_outcomes_ui_guard_router)
