@@ -8,15 +8,29 @@ from app.api.workdesk_integrity import build_workdesk_integrity
 from app.config import settings
 from app.db.session import get_db
 from app.domain.cases.case_timeline import get_client_visible_status
+from app.domain.cases.m1_internal_payment_recovery import M1InternalPaymentRecoveryService
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
+from app.models.admin_user import AdminUser
 from app.models.case import Case
+from app.models.lawyer import Lawyer
 from app.models.payment import Payment
 from app.models.user import User
-from app.security.access_control import ROLE_ADMIN, ROLE_SUPERADMIN
+from app.security.access_control import (
+    ROLE_ADMIN,
+    ROLE_LAWYER,
+    ROLE_SUPERADMIN,
+    normalize_roles,
+)
 from app.security.document_access import resolve_document_actor
 
 router = APIRouter(tags=["workdesk-integrity-guard"])
+
+_TERMINAL_CASE_STATUSES = {
+    CaseStatus.M1_CLOSED.value,
+    CaseStatus.M2_CLOSED.value,
+    CaseStatus.ARCHIVED.value,
+}
 
 
 def _rebuild_item(item: dict) -> None:
@@ -32,6 +46,39 @@ def _rebuild_item(item: dict) -> None:
             "href": first.get("action_href"),
             "kind": first.get("action_kind") or "case",
         }
+
+
+def _new_item(case: Case, user: User, issue: dict) -> dict:
+    return {
+        "case_id": int(case.id),
+        "case_number": case.case_number,
+        "client_name": user.full_name,
+        "route": case.route,
+        "status": str(case.status),
+        "status_label": get_client_visible_status(str(case.status)),
+        "updated_at": case.updated_at.isoformat() if case.updated_at else None,
+        "severity": issue["severity"],
+        "issue_count": 1,
+        "issues": [issue],
+        "primary_action": {
+            "label": issue.get("action_label") or "Открыть карточку",
+            "href": issue.get("action_href"),
+            "kind": issue.get("action_kind") or "case",
+        },
+    }
+
+
+def _append_issue(items: list[dict], case: Case, user: User, issue: dict) -> None:
+    item = next(
+        (x for x in items if int(x.get("case_id") or 0) == int(case.id)),
+        None,
+    )
+    if item is None:
+        items.append(_new_item(case, user, issue))
+        return
+    if not any(x.get("code") == issue.get("code") for x in item.get("issues") or []):
+        item.setdefault("issues", []).append(issue)
+    _rebuild_item(item)
 
 
 def _route_actionable_exceptions(item: dict) -> None:
@@ -81,7 +128,6 @@ async def _add_declined_refunds(db: AsyncSession, items: list[dict]) -> None:
             )
         ).all()
     )
-    by_case = {int(item["case_id"]): item for item in items}
     for payment, case, user in rows:
         case_id = int(case.id)
         issue = {
@@ -97,35 +143,8 @@ async def _add_declined_refunds(db: AsyncSession, items: list[dict]) -> None:
             "action_href": f"/admin/refunds/ui?payment_id={int(payment.id)}&case_id={case_id}",
             "action_kind": None,
         }
-        item = by_case.get(case_id)
-        if item is None:
-            item = {
-                "case_id": case_id,
-                "case_number": case.case_number,
-                "client_name": user.full_name,
-                "route": case.route,
-                "status": str(case.status),
-                "status_label": get_client_visible_status(str(case.status)),
-                "updated_at": (
-                    payment.updated_at.isoformat()
-                    if payment.updated_at
-                    else case.updated_at.isoformat()
-                    if case.updated_at
-                    else None
-                ),
-                "severity": "warning",
-                "issue_count": 1,
-                "issues": [issue],
-                "primary_action": {
-                    "label": issue["action_label"],
-                    "href": issue["action_href"],
-                    "kind": "case",
-                },
-            }
-            items.append(item)
-            by_case[case_id] = item
-        elif not any(x.get("code") == issue["code"] for x in item.get("issues") or []):
-            item.setdefault("issues", []).append(issue)
+        _append_issue(items, case, user, issue)
+        item = next(x for x in items if int(x["case_id"]) == case_id)
 
         # CANCELLED + M2_DONE is expected while a refund is unresolved. Once the
         # financial issue is explicit, the generic consultation mismatch is not
@@ -136,11 +155,138 @@ async def _add_declined_refunds(db: AsyncSession, items: list[dict]) -> None:
                 for x in item.get("issues") or []
                 if x.get("code") != "m2_done_case_consultation_status_mismatch"
             ]
-        _rebuild_item(item)
+            _rebuild_item(item)
+
+
+async def _add_stuck_internal_paid_stages(db: AsyncSession, items: list[dict]) -> None:
+    source_statuses = tuple(plan.source.value for plan in M1InternalPaymentRecoveryService.__dict__.get("RECOVERY_PLANS", {}).values())
+    # RECOVERY_PLANS is module-level by design; use the public resolver below so
+    # this guard stays correct even if the plan table changes representation.
+    source_statuses = (
+        CaseStatus.M1_PAYMENT_30000_RECEIVED.value,
+        CaseStatus.M1_PAYMENT_70000_RECEIVED.value,
+        CaseStatus.M1_SUCCESS_FEE_RECEIVED.value,
+    )
+    rows = list(
+        (
+            await db.execute(
+                select(Case, User)
+                .join(User, User.id == Case.client_id)
+                .where(Case.status.in_(source_statuses))
+                .order_by(Case.updated_at.asc(), Case.id.asc())
+            )
+        ).all()
+    )
+    if not rows:
+        return
+
+    case_ids = [int(case.id) for case, _user in rows]
+    paid_rows = list(
+        (
+            await db.execute(
+                select(Payment)
+                .where(Payment.case_id.in_(case_ids))
+                .where(Payment.status == PaymentStatus.PAID.value)
+                .order_by(Payment.created_at.asc(), Payment.id.asc())
+            )
+        ).scalars().all()
+    )
+    paid_by_case: dict[int, list[Payment]] = {}
+    for payment in paid_rows:
+        paid_by_case.setdefault(int(payment.case_id), []).append(payment)
+
+    for case, user in rows:
+        plan = M1InternalPaymentRecoveryService.plan_for_status(case.status)
+        if plan is None:
+            continue
+        proof = next(
+            (
+                payment
+                for payment in reversed(paid_by_case.get(int(case.id), []))
+                if str(payment.payment_code) == plan.payment_code.value
+            ),
+            None,
+        )
+        if proof is not None:
+            issue = {
+                "code": "m1_internal_paid_stage_stuck",
+                "severity": "critical",
+                "title": "Оплата подтверждена, но дело осталось на внутреннем платёжном статусе",
+                "detail": (
+                    f"Найден PAID-платёж #{proof.id} нужного назначения. Штатный flow должен был "
+                    f"сразу перейти в «{get_client_visible_status(plan.target.value)}». "
+                    "Восстановление проверит статус и доказательство ещё раз под блокировкой."
+                ),
+                "action_label": "Восстановить этап",
+                "action_href": f"/admin/workdesk/cases/{int(case.id)}/recover-payment-stage/ui",
+                "action_kind": None,
+            }
+        else:
+            issue = {
+                "code": "m1_internal_paid_stage_without_proof",
+                "severity": "critical",
+                "title": "Внутренний платёжный статус не подтверждён фактическим PAID-платежом",
+                "detail": (
+                    "Автоматическое продолжение заблокировано: у дела нет PAID-платежа нужного "
+                    "назначения. Нельзя вручную переводить дело вперёд без финансового доказательства."
+                ),
+                "action_label": "Разобрать технически",
+                "action_href": f"/admin/technical-cases/ui?case_id={int(case.id)}",
+                "action_kind": None,
+            }
+        _append_issue(items, case, user, issue)
+
+
+async def _add_unreachable_assignees(db: AsyncSession, items: list[dict]) -> None:
+    login_rows = (
+        await db.execute(
+            select(AdminUser.email, AdminUser.role).where(
+                AdminUser.is_active.is_(True),
+                AdminUser.email.is_not(None),
+            )
+        )
+    ).all()
+    login_ready_emails = {
+        str(email).strip().lower()
+        for email, roles in login_rows
+        if str(email or "").strip()
+        and ROLE_LAWYER in normalize_roles(roles)
+    }
+
+    rows = list(
+        (
+            await db.execute(
+                select(Case, User, Lawyer)
+                .join(User, User.id == Case.client_id)
+                .join(Lawyer, Lawyer.id == Case.assigned_lawyer_id)
+                .where(Case.assigned_lawyer_id.is_not(None))
+                .where(Case.status.notin_(tuple(_TERMINAL_CASE_STATUSES)))
+                .order_by(Case.updated_at.asc(), Case.id.asc())
+                .limit(1000)
+            )
+        ).all()
+    )
+    for case, user, lawyer in rows:
+        email = str(lawyer.email or "").strip().lower()
+        if lawyer.is_active and email and email in login_ready_emails:
+            continue
+        issue = {
+            "code": "assigned_lawyer_cannot_login",
+            "severity": "critical",
+            "title": "Назначенный юрист не может полноценно войти в рабочий кабинет",
+            "detail": (
+                f"Дело назначено «{lawyer.full_name}», но профиль не связан с активным "
+                "персональным аккаунтом с ролью lawyer либо профиль отключён. До исправления "
+                "ответственность и SLA формально существуют, но действие юриста может быть невозможно."
+            ),
+            "action_label": "Переназначить юриста",
+            "action_href": None,
+            "action_kind": "assign",
+        }
+        _append_issue(items, case, user, issue)
 
 
 async def _add_stuck_money_received(db: AsyncSession, items: list[dict]) -> None:
-    existing = {int(item["case_id"]) for item in items}
     rows = list(
         (
             await db.execute(
@@ -152,7 +298,6 @@ async def _add_stuck_money_received(db: AsyncSession, items: list[dict]) -> None
         ).all()
     )
     for case, user in rows:
-        case_id = int(case.id)
         issue = {
             "code": "m1_money_received_stage_stuck",
             "severity": "critical",
@@ -166,31 +311,7 @@ async def _add_stuck_money_received(db: AsyncSession, items: list[dict]) -> None
             "action_href": None,
             "action_kind": "case",
         }
-        if case_id in existing:
-            item = next(x for x in items if int(x["case_id"]) == case_id)
-            if not any(x.get("code") == issue["code"] for x in item.get("issues") or []):
-                item.setdefault("issues", []).append(issue)
-                _rebuild_item(item)
-            continue
-        items.append(
-            {
-                "case_id": case_id,
-                "case_number": case.case_number,
-                "client_name": user.full_name,
-                "route": case.route,
-                "status": str(case.status),
-                "status_label": get_client_visible_status(str(case.status)),
-                "updated_at": case.updated_at.isoformat() if case.updated_at else None,
-                "severity": "critical",
-                "issue_count": 1,
-                "issues": [issue],
-                "primary_action": {
-                    "label": "Открыть карточку",
-                    "href": None,
-                    "kind": "case",
-                },
-            }
-        )
+        _append_issue(items, case, user, issue)
 
 
 @router.get("/admin/workdesk/integrity")
@@ -211,6 +332,8 @@ async def workdesk_integrity_guard(
         _normalize_refund_pending_case(item)
         _route_actionable_exceptions(item)
     await _add_declined_refunds(db, items)
+    await _add_stuck_internal_paid_stages(db, items)
+    await _add_unreachable_assignees(db, items)
     await _add_stuck_money_received(db, items)
     items.sort(
         key=lambda item: (
