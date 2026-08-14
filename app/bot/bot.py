@@ -166,8 +166,8 @@ def build_dispatcher() -> Dispatcher:
     dispatcher.callback_query.middleware(CallbackAcknowledgeMiddleware())
     for router in [
         common.router,
-        calculator.router,
         post_calculation.router,
+        calculator.router,
         my_case.router,
         document_action_center.router,
         documents.router,
