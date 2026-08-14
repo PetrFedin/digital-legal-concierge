@@ -128,7 +128,8 @@ def test_public_health_ready_and_launch_check_do_not_expose_infrastructure():
     assert "database_url" not in ready_body
     assert "admin_api_token" not in ready_body
     assert "payment_webhook_secret" not in ready_body
-    assert 'return {"ok": ready, "version": VERSION}' in ready_body
+    assert "JSONResponse(status_code=503" in ready_body
+    assert 'payload = {"ok": ready, "version": VERSION}' in ready_body
     assert "storage_dir" not in launch_body
     assert "payment_provider" not in launch_body
     assert "bot_token" not in launch_body
@@ -180,10 +181,26 @@ def test_consultation_schedule_is_role_scoped_and_uses_live_hold_setting():
     assert "with_for_update()" in api
     assert 'str(settings.app_env or "").strip().lower() not in {"local", "test"}' in api
     assert "Тестирование записи" not in api
+    assert ".limit(1)" in api
+    assert ").scalars().first()" in api
     assert "consultations.slot_hold_minutes" in service
     hold_block = service.split("async def hold_slot", 1)[1].split("async def book_available_slot", 1)[0]
     assert "await self.get_hold_minutes()" in hold_block
     assert "self.HOLD_MINUTES" not in hold_block
+
+
+def test_expired_m2_hold_expires_exact_old_payment_and_writes_history():
+    service = read("app/domain/consultations/slot_service.py")
+    release = service.split("async def release_expired_holds", 1)[1].split("async def get_available_slots", 1)[0]
+    assert 'return f"consultation:{int(consultation_id)}:slot:{int(slot_id)}"' in service
+    assert "PaymentCode.M2_CONSULTATION_PAYMENT" in release
+    assert "PaymentStatus.PENDING" in release
+    assert "PaymentStatus.WAITING_CONFIRMATION" in release
+    assert "payment.status = PaymentStatus.EXPIRED" in release
+    assert 'action="CONSULTATION_PAYMENT_LINK_EXPIRED"' in release
+    assert 'action="CONSULTATION_SLOT_HOLD_EXPIRED"' in release
+    assert "CaseStatus.M2_SLOT_PENDING" in release
+    assert ".with_for_update()" in release
 
 
 def test_case_assignment_actor_cannot_be_spoofed_from_payload():
@@ -207,3 +224,51 @@ def test_staff_financial_sla_and_lawyer_shells_have_server_side_guards():
     assert 'RedirectResponse(url="/lawyer/workspace/ui"' in lawyer
     assert '@router.get("/lawyer/consultation-desk/ui"' in lawyer
     assert "guarded_consultation_desk_html" in lawyer
+
+
+def test_runtime_diagnostics_require_personal_admin_and_public_release_is_minimal():
+    runtime = read("app/api/runtime.py")
+    assert "resolve_document_actor" in runtime
+    assert '@router.get("/snapshot")' in runtime
+    assert '@router.get("/case/{case_id}/full")' in runtime
+    assert "payment_url" not in runtime
+    release_block = runtime.split('@router.get("/release")', 1)[1].split('@router.get("/snapshot")', 1)[0]
+    assert '"application_version"' in release_block
+    assert '"release"' in release_block
+    assert '"git_commit"' in release_block
+    assert "migration_heads" not in release_block
+    assert "image_repository" not in release_block
+    assert "image_tag" not in release_block
+
+
+def test_fake_manual_payment_is_local_test_only_and_never_enabled_by_demo_mode():
+    source = read("app/api/admin.py")
+    block = source.split("def manual_payment_confirmation_enabled", 1)[1].split(
+        "def payment_can_be_manually_confirmed", 1
+    )[0]
+    assert 'settings.payment_provider' in block
+    assert 'settings.app_env' in block
+    assert '{"local", "test"}' in block
+    assert "demo_mode" not in block
+
+
+def test_workdesk_and_operator_navigation_have_no_self_loop_to_legacy_admin_ui():
+    workdesk = read("app/api/assignment_queue.py")
+    operator = read("app/api/operator_guard.py")
+    assert "legacyAdminLink.href='/consultation-slots/ui'" in workdesk
+    assert "legacyAdminLink.textContent='Расписание'" in workdesk
+    assert "Рабочие разделы администратора" in operator
+    assert "/search-center/ui" in operator
+    assert "/consultation-slots/ui" in operator
+
+
+def test_telegram_home_de_duplicates_primary_and_avoids_misleading_parallel_consultation():
+    source = read("app/bot/keyboards.py")
+    assert "primary_callback = primary_action[1] if primary_action else None" in source
+    assert "if callback_data != primary_callback" in source
+    active_block = source.split("if primary_action:", 2)[-1]
+    assert 'secondary("📁 Моё дело", "my_case_open")' in active_block
+    assert 'secondary("📄 Документы", "documents_open")' in active_block
+    assert 'secondary("💬 Переписка", "message_history")' in active_block
+    assert 'secondary("✉️ Новый вопрос", "message_create")' in active_block
+    assert 'secondary("⚖️ Юрист / консультация", "contact_lawyer")' not in active_block
