@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, time, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +17,8 @@ from app.domain.cases.case_timeline import get_client_visible_status
 from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.lawyer import Lawyer
+from app.security.access_control import ROLE_ADMIN, ROLE_SUPERADMIN
+from app.security.document_access import DocumentAccessError, resolve_document_actor
 
 router = APIRouter(tags=["admin-assignment-queue"])
 
@@ -110,6 +112,26 @@ _WORKDESK_RESPONSIBILITY_PATCH = r"""
       if(label==='SLA'||label==='Назначить перед SLA')node.remove();
     });
   };
+
+  // Operational screens link back with ?case_id=. Honor that intent in the
+  // canonical Workdesk instead of dropping the operator at a generic overview.
+  // Wait for boot() to obtain the personal API token, then open exactly that
+  // side card. No mutation is performed by the deep link.
+  const requestedCaseId=Number(new URLSearchParams(window.location.search).get('case_id')||0);
+  if(Number.isInteger(requestedCaseId)&&requestedCaseId>0){
+    let attempts=0;
+    const timer=setInterval(()=>{
+      attempts+=1;
+      if(token){
+        clearInterval(timer);
+        void openCase(requestedCaseId).then(()=>{
+          say('Открыто дело из предыдущего рабочего экрана.','ok');
+        }).catch(()=>{});
+      }else if(attempts>=40){
+        clearInterval(timer);
+      }
+    },100);
+  }
 })();
 </script>
 """
@@ -155,15 +177,24 @@ def _case_queue_payload(
 
 
 @router.get("/admin/workdesk/ui", response_class=HTMLResponse)
-async def guided_workdesk_ui(request: Request):
-    """Render the canonical Workdesk with route-aware context and integrity."""
+async def guided_workdesk_ui(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    """Render the canonical Workdesk only for a live personal admin session."""
 
-    token = request.headers.get("x-admin-token") or request.cookies.get(
-        settings.admin_session_cookie
-    )
+    token = x_admin_token or request.cookies.get(settings.admin_session_cookie)
     if not token:
         return RedirectResponse(url="/login", status_code=303)
-    require_admin(token)
+    try:
+        actor = await resolve_document_actor(db, token)
+    except DocumentAccessError as error:
+        if error.status_code == 401:
+            return RedirectResponse(url="/login", status_code=303)
+        raise
+    if actor.role not in {ROLE_ADMIN, ROLE_SUPERADMIN}:
+        raise HTTPException(status_code=403, detail="Доступ только для администратора")
     html = _inject_workdesk_patch(WORKDESK_HTML)
     return HTMLResponse(inject_workdesk_integrity(html))
 
@@ -179,8 +210,6 @@ async def workdesk_case_responsibility(
     require_admin(x_admin_token)
     case = await db.get(Case, case_id)
     if case is None:
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=404, detail="Дело не найдено")
 
     if str(case.route or "") == "M2":
