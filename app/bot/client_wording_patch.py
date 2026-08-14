@@ -28,9 +28,6 @@ def install_client_wording() -> None:
 
     my_case._document_detail = document_detail_for_client
 
-    # Payment CTAs must describe the actual obligation. The callbacks and all
-    # idempotency/status guards remain unchanged; only client presentation is
-    # made explicit so a payment action cannot masquerade as generic progress.
     CLIENT_ACTIONS["M1_WAITING_PAYMENT_30000"] = ClientAction(
         "Оплатить 30 000 ₽",
         "pay_start_30000",
@@ -41,10 +38,13 @@ def install_client_wording() -> None:
         "pay_court_70000",
         "Второй платёж доступен после зафиксированного судебного акта и открывает этап исполнения только после подтверждения оплаты.",
     )
+    # M1_MONEY_RECEIVED is an internal transition inside the lawyer-owned
+    # enforcement transaction. The client must never manufacture/open the fee
+    # from this intermediate state. If it persists, Workdesk integrity flags it.
     CLIENT_ACTIONS["M1_MONEY_RECEIVED"] = ClientAction(
-        "Оплатить финальный процент",
-        "pay_success_fee",
-        "Финальный платёж рассчитывается от фактически взысканной суммы. Проверьте сумму на экране оплаты перед подтверждением.",
+        "Проверить финальный расчёт",
+        "my_case_open",
+        "Фактически взысканная сумма зафиксирована. Команда завершает расчёт финального процента; оплачивать его нужно только после появления отдельного платежа.",
     )
     CLIENT_ACTIONS["M1_WAITING_SUCCESS_FEE"] = ClientAction(
         "Оплатить финальный процент",
@@ -57,8 +57,6 @@ def install_client_wording() -> None:
         "Оплатите консультацию для выбранного времени. Если резерв времени уже истёк, система вернёт вас к выбору актуального слота.",
     )
 
-    # A submitted document enters ON_REVIEW as a queue/storage state before a
-    # human decision begins substantive review. Keep the per-file label neutral.
     document_action_center._STATUS_LABELS["ON_REVIEW"] = "передан юридической команде"
 
     if getattr(document_action_center, "_client_handoff_wording_installed", False):
