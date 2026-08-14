@@ -127,12 +127,13 @@ async def resolve_legacy_outcome(
 _LEGACY_OUTCOME_UI_PATCH = r"""
 <script>
 (function(){
+  const requestedCaseId=Number(new URLSearchParams(location.search).get('case_id')||0);
   const previousCard=card;
   card=function(x){
     if(x.resolution_kind!=='legacy_other')return previousCard(x);
     const id=Number(x.consultation_id),caseId=Number(x.case_id),result=x.lawyer_result||'Отдельный текст результата не сохранён.';
     const saved=drafts.get(draftKey(id,'legacy'))||'';
-    return `<article class="case"><div class="case-head"><div><h3>${esc(x.case_number)}</h3><div class="muted">${esc(x.client_name)} · ${esc(x.lawyer_name||'Юрист не указан')}</div></div><span class="badge red">Незавершённый старый итог</span></div><div class="meta"><div class="cell"><span>Встреча</span>${esc(dt(x.scheduled_at))}</div><div class="cell"><span>Старое решение</span>Иное / неопределённое</div></div><div class="next"><b>Результат юриста</b><br>${esc(result)}</div><div class="notice"><b>Нужно завершить старый процесс.</b> Новые консультации больше не допускают неопределённый итог. Выберите ровно один законченный следующий шаг; generic-смена статуса для этого запрещена.</div><label class="field-label" for="legacy_decision_${id}">Конечный следующий шаг</label><select id="legacy_decision_${id}" class="select"><option value="">Выберите решение</option><option value="close">Закрыть обращение</option><option value="to_m1">Перевести в полное ведение M1</option><option value="follow_up">Рекомендовать повторную консультацию</option></select><label class="field-label" for="legacy_comment_${id}">Основание решения</label><textarea id="legacy_comment_${id}" oninput="rememberDraft(${id},'legacy',this.value)" placeholder="Что проверено и почему выбран этот следующий шаг">${esc(saved)}</textarea><div class="hint">Минимум 10 символов. При follow-up новая консультация не создаётся автоматически — клиент сам подтвердит повторную запись в Telegram.</div><div class="rule"><b>Ничего не изменится</b>, пока вы не подтвердите решение.</div><div class="row" style="margin-top:9px"><button data-consultation-id="${id}" class="green" onclick="resolveLegacyOutcome(${id},this)">Проверить и завершить</button><a class="button secondary" href="/message-center/ui?case_id=${caseId}">Переписка</a><a class="button secondary" href="/admin/workdesk/ui?case_id=${caseId}">Открыть дело</a></div></article>`;
+    return `<article class="case"><div class="case-head"><div><h3>${esc(x.case_number)}</h3><div class="muted">${esc(x.client_name)} · ${esc(x.lawyer_name||'Юрист не указан')}</div></div><span class="badge red">Незавершённый старый итог</span></div><div class="meta"><div class="cell"><span>Встреча</span>${esc(dt(x.scheduled_at))}</div><div class="cell"><span>Старое решение</span>Иное / неопределённое</div></div><div class="next"><b>Результат юриста</b><br>${esc(result)}</div><div class="notice"><b>Нужно завершить старый процесс.</b> Новые консультации больше не допускают неопределённый итог. Выберите ровно один законченный следующий шаг; generic-смена статуса для этого запрещена.</div><label class="rule" for="legacy_decision_${id}"><b>Конечный следующий шаг</b></label><select id="legacy_decision_${id}" class="select"><option value="">Выберите решение</option><option value="close">Закрыть обращение</option><option value="to_m1">Перевести в полное ведение M1</option><option value="follow_up">Рекомендовать повторную консультацию</option></select><label class="rule" for="legacy_comment_${id}"><b>Основание решения</b></label><textarea id="legacy_comment_${id}" oninput="rememberDraft(${id},'legacy',this.value)" placeholder="Что проверено и почему выбран этот следующий шаг">${esc(saved)}</textarea><div class="hint">Минимум 10 символов. При follow-up новая консультация не создаётся автоматически — клиент сам подтвердит повторную запись в Telegram.</div><div class="rule"><b>Ничего не изменится</b>, пока вы не подтвердите решение.</div><div class="row" style="margin-top:9px"><button data-consultation-id="${id}" class="green" onclick="resolveLegacyOutcome(${id},this)">Проверить и завершить</button><a class="button secondary" href="/message-center/ui?case_id=${caseId}">Переписка</a><a class="button secondary" href="/admin/workdesk/ui?case_id=${caseId}">Открыть дело</a></div></article>`;
   };
 
   window.resolveLegacyOutcome=async function(id,button){
@@ -160,13 +161,18 @@ _LEGACY_OUTCOME_UI_PATCH = r"""
       api('/admin/consultation-outcomes/legacy')
     ]);
     slots=data[1]||[];
-    const rows=[...(data[0]||[]),...(data[2]||[])];
+    let rows=[...(data[0]||[]),...(data[2]||[])];
     rows.sort((a,b)=>{
       const rank=x=>x.resolution_kind==='legacy_other'?0:String(x.status)==='CLIENT_NO_SHOW'?1:String(x.status)==='LAWYER_NO_SHOW'?2:3;
       return rank(a)-rank(b)||String(a.starts_at||a.scheduled_at||'9999').localeCompare(String(b.starts_at||b.scheduled_at||'9999'))||Number(a.consultation_id)-Number(b.consultation_id);
     });
+    if(requestedCaseId)rows=rows.filter(x=>Number(x.case_id)===requestedCaseId);
     render(rows);
-    feedback(rows.length?'Показаны консультации, требующие законченного решения.':'Очередь обработана.','muted');
+    if(requestedCaseId){
+      feedback(rows.length?'Показаны незавершённые решения по выбранному делу.':'По выбранному делу незавершённых консультационных решений больше нет.','muted');
+    }else{
+      feedback(rows.length?'Показаны консультации, требующие законченного решения.':'Очередь обработана.','muted');
+    }
   };
 })();
 </script>
