@@ -72,6 +72,29 @@ async def public_readiness_probe(db: AsyncSession = Depends(get_db)):
     return {"ok": ready, "version": VERSION}
 
 
+@router.get("/launch-check")
+async def protected_launch_check(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    await _require_admin(request, db, x_admin_token)
+    return {
+        "ok": True,
+        "status": "live_verification_required",
+        "version": VERSION,
+        "workdesk": "/admin/workdesk/ui",
+        "process_integrity": "/admin/workdesk/integrity",
+        "settings": "/settings-ui",
+        "health": "/health-center/ui",
+        "diagnostics": "/diagnostic-center/ui",
+        "security": "/security-events/ui",
+        "audit": "/audit-center/ui",
+        "backup": "/backup-center/ui",
+        "retention": "/retention/ui",
+    }
+
+
 @router.get("/admin-ui")
 async def legacy_admin_ui_guard(
     request: Request,
