@@ -24,6 +24,12 @@ from app.domain.statuses.case_statuses import CaseStatus
 router = Router()
 logger = logging.getLogger(__name__)
 
+_LEGACY_UNBOUND_CHOICES = {
+    "calc_continue_m1",
+    "calc_to_m2",
+    "calc_postpone",
+}
+
 
 async def _safe_edit(callback: CallbackQuery, text: str, *, reply_markup) -> None:
     try:
@@ -36,6 +42,22 @@ async def _safe_edit(callback: CallbackQuery, text: str, *, reply_markup) -> Non
 
 def _status(case) -> CaseStatus:
     return case.status if isinstance(case.status, CaseStatus) else CaseStatus(str(case.status))
+
+
+def _bound(action: str, case_id: int) -> str:
+    return f"{action}:v2:{int(case_id)}"
+
+
+def _case_id_from_bound(callback: CallbackQuery, action: str) -> int | None:
+    value = str(callback.data or "")
+    prefix = f"{action}:v2:"
+    if not value.startswith(prefix):
+        return None
+    try:
+        case_id = int(value[len(prefix) :])
+    except ValueError:
+        return None
+    return case_id if case_id > 0 else None
 
 
 async def _current_case_recovery(callback: CallbackQuery, case) -> None:
@@ -56,7 +78,7 @@ async def _current_case_recovery(callback: CallbackQuery, case) -> None:
         )
     else:
         text = (
-            "ℹ️ Состояние дела уже изменилось. Старая кнопка ничего не изменила. "
+            "ℹ️ Состояние дела из этого сообщения уже изменилось. Кнопка ничего не изменила. "
             "Откройте актуальную карточку — там показан следующий доступный шаг."
         )
 
@@ -70,21 +92,28 @@ async def _current_case_recovery(callback: CallbackQuery, case) -> None:
     )
 
 
-async def _apply_choice(callback: CallbackQuery, db, choice: str):
+async def _apply_choice(
+    callback: CallbackQuery,
+    db,
+    *,
+    choice: str,
+    expected_case_id: int,
+):
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     try:
         result = await PostCalculationDecisionService(db).apply(
             client_id=user.id,
+            case_id=expected_case_id,
             choice=choice,
         )
     except LookupError:
         await db.rollback()
         await _safe_edit(
             callback,
-            "Активное дело не найдено. Расчёт не изменён. Можно начать новый расчёт или вернуться на главную.",
+            "Дело из этого сообщения больше не найдено или вам недоступно. Ничего не изменено.",
             reply_markup=one(
-                ("🧮 Новый расчёт", "calc_start"),
+                ("📁 Открыть актуальное дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
         )
@@ -121,6 +150,7 @@ async def decision_open(callback: CallbackQuery, db):
         return
 
     status = _status(case)
+    case_id = int(case.id)
     if status == CaseStatus.CALCULATED:
         await _safe_edit(
             callback,
@@ -129,9 +159,9 @@ async def decision_open(callback: CallbackQuery, db):
             "⚖️ Ведение дела — передача документов юристу и дальнейшее сопровождение.\n"
             "💬 Консультация — описать вопрос, при желании добавить документы и выбрать время.",
             reply_markup=one(
-                ("⚖️ Продолжить ведение дела", "calc_continue_m1"),
-                ("💬 Перейти к консультации", "calc_to_m2"),
-                ("Пока ничего не менять", "calc_postpone"),
+                ("⚖️ Продолжить ведение дела", _bound("calc_continue_m1", case_id)),
+                ("💬 Перейти к консультации", _bound("calc_to_m2", case_id)),
+                ("Пока ничего не менять", _bound("calc_postpone", case_id)),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
@@ -146,9 +176,9 @@ async def decision_open(callback: CallbackQuery, db):
             "До подтверждения документы юристу не передаются.\n\n"
             "Решение ещё можно изменить и перейти к консультации.",
             reply_markup=one(
-                ("📄 Перейти к согласию", "consent_open"),
-                ("💬 Вместо этого — консультация", "calc_to_m2"),
-                ("Пока ничего не менять", "calc_postpone"),
+                ("📄 Перейти к согласию", _bound("consent_open", case_id)),
+                ("💬 Вместо этого — консультация", _bound("calc_to_m2", case_id)),
+                ("Пока ничего не менять", _bound("calc_postpone", case_id)),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
@@ -189,9 +219,29 @@ async def decision_open(callback: CallbackQuery, db):
     )
 
 
-@router.callback_query(lambda c: c.data == "calc_continue_m1")
+@router.callback_query(lambda c: c.data in _LEGACY_UNBOUND_CHOICES)
+async def legacy_unbound_choice_refresh(callback: CallbackQuery, db):
+    # Historical calculator messages do not carry a case id. They are useful as
+    # navigation only, but can no longer authorize a business mutation because
+    # a newer case may now be active for the same Telegram user.
+    await callback.answer("Обновляем безопасный экран выбора.")
+    await decision_open(callback, db)
+
+
+@router.callback_query(
+    lambda c: bool(c.data) and c.data.startswith("calc_continue_m1:v2:")
+)
 async def continue_m1_after_calculation(callback: CallbackQuery, db):
-    _user, result = await _apply_choice(callback, db, CHOICE_M1)
+    case_id = _case_id_from_bound(callback, "calc_continue_m1")
+    if case_id is None:
+        await decision_open(callback, db)
+        return
+    _user, result = await _apply_choice(
+        callback,
+        db,
+        choice=CHOICE_M1,
+        expected_case_id=case_id,
+    )
     if result is None:
         return
     if result.outcome != "m1_consent_required":
@@ -208,17 +258,26 @@ async def continue_m1_after_calculation(callback: CallbackQuery, db):
         "Откройте согласие на обработку персональных данных и подтвердите его отдельно. "
         "Только после этого откроется загрузка документов.",
         reply_markup=one(
-            ("📄 Перейти к согласию", "consent_open"),
-            ("💬 Вместо этого — консультация", "calc_to_m2"),
-            ("Пока ничего не менять", "calc_postpone"),
+            ("📄 Перейти к согласию", _bound("consent_open", int(result.case.id))),
+            ("💬 Вместо этого — консультация", _bound("calc_to_m2", int(result.case.id))),
+            ("Пока ничего не менять", _bound("calc_postpone", int(result.case.id))),
             ("🏠 Главная", "nav_home"),
         ),
     )
 
 
-@router.callback_query(lambda c: c.data == "calc_to_m2")
+@router.callback_query(lambda c: bool(c.data) and c.data.startswith("calc_to_m2:v2:"))
 async def continue_m2_after_calculation(callback: CallbackQuery, db):
-    user, result = await _apply_choice(callback, db, CHOICE_M2)
+    case_id = _case_id_from_bound(callback, "calc_to_m2")
+    if case_id is None:
+        await decision_open(callback, db)
+        return
+    user, result = await _apply_choice(
+        callback,
+        db,
+        choice=CHOICE_M2,
+        expected_case_id=case_id,
+    )
     if result is None:
         return
     if result.outcome != "m2_intake":
@@ -230,7 +289,11 @@ async def continue_m2_after_calculation(callback: CallbackQuery, db):
         # The route transition and consultation context are committed together.
         # If context creation fails, the route choice is rolled back as well so
         # the client is never stranded in M2 without a consultation record.
-        await ConsultationIntakeService(db).get_or_create_context(user)
+        context_case, _consultation = await ConsultationIntakeService(db).get_or_create_context(user)
+        if int(context_case.id) != int(result.case.id):
+            raise ActiveCaseRouteConflict(
+                "Активное обращение изменилось во время выбора консультации"
+            )
         await db.commit()
     except ActiveCaseRouteConflict as error:
         await db.rollback()
@@ -251,7 +314,7 @@ async def continue_m2_after_calculation(callback: CallbackQuery, db):
             callback,
             "Не удалось безопасно открыть консультацию. Выбор маршрута не сохранён — расчёт остался на прежнем этапе. Повторите действие или откройте текущее дело.",
             reply_markup=one(
-                ("🔄 Повторить консультацию", "calc_to_m2"),
+                ("🔄 Повторить консультацию", _bound("calc_to_m2", case_id)),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
@@ -272,9 +335,18 @@ async def continue_m2_after_calculation(callback: CallbackQuery, db):
     )
 
 
-@router.callback_query(lambda c: c.data == "calc_postpone")
+@router.callback_query(lambda c: bool(c.data) and c.data.startswith("calc_postpone:v2:"))
 async def postpone_after_calculation(callback: CallbackQuery, db):
-    _user, result = await _apply_choice(callback, db, CHOICE_POSTPONE)
+    case_id = _case_id_from_bound(callback, "calc_postpone")
+    if case_id is None:
+        await decision_open(callback, db)
+        return
+    _user, result = await _apply_choice(
+        callback,
+        db,
+        choice=CHOICE_POSTPONE,
+        expected_case_id=case_id,
+    )
     if result is None:
         return
     if result.outcome != "postponed":
