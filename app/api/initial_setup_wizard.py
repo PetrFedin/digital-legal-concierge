@@ -72,6 +72,18 @@ async def public_readiness_probe(db: AsyncSession = Depends(get_db)):
     return {"ok": ready, "version": VERSION}
 
 
+@router.get("/admin-ui")
+async def legacy_admin_ui_guard(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    actor = await _admin_ui_or_login(request, db, x_admin_token)
+    if actor is None:
+        return RedirectResponse(url="/login", status_code=303)
+    return RedirectResponse(url="/admin/workdesk/ui", status_code=303)
+
+
 @router.get("/initial-setup-wizard/status")
 async def setup_status(
     request: Request,
