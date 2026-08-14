@@ -29,6 +29,7 @@ from app.bot.lease import TelegramPollingLease
 from app.bot.screens import (
     calculator,
     common,
+    consent_decision_guard,
     consent_flow,
     consent_stale_guard,
     consultation_booking_ui,
@@ -181,6 +182,7 @@ def build_dispatcher() -> Dispatcher:
         payment_archive_guard.router,
         payments.router,
         consultations.router,
+        consent_decision_guard.router,
         consent_stale_guard.router,
         consent_flow.router,
         service_contract.router,
