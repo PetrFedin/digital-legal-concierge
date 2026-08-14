@@ -6,6 +6,7 @@ from aiogram.types import CallbackQuery
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.screens import payments as payment_screen
+from app.bot.screens.m1_stale_view_guard import router as m1_stale_view_guard_router
 from app.domain.cases.client_case_scope import (
     CLIENT_COMPLETED_CASE_STATUSES,
     latest_completed_strict_m1_case_for_user,
@@ -17,6 +18,10 @@ from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
 
 router = Router()
+# payment_archive_guard is mounted before legacy m1_stages in bot.py. Stale
+# informational callbacks live here so old POA/court buttons are reconciled to
+# the actual case state before the historical view handlers can render them.
+router.include_router(m1_stale_view_guard_router)
 _COMPLETED_VALUES = {str(status) for status in CLIENT_COMPLETED_CASE_STATUSES}
 
 
