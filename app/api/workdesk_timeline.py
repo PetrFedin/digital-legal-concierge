@@ -67,6 +67,7 @@ _ACTION_TITLES = {
     "CONSULTATION_REFUND_COMPLETED": "Возврат консультации отмечен выполненным",
     "CONSULTATION_REFUND_DECLINED": "По возврату консультации зафиксирован отказ",
     "CONSULTATION_REFUND_REOPENED": "Возврат консультации повторно открыт после отказа",
+    "M1_INTERNAL_PAYMENT_STAGE_RECOVERED": "Восстановлен зависший платёжный этап",
     "M2_CONSULTATION_DONE": "Консультация проведена",
     "M2_CLOSED": "Консультационное обращение закрыто",
     "CASE_ERROR_RECOVERED_TO_LAST_SAFE_STATUS": "Техническая блокировка снята",
@@ -203,13 +204,24 @@ async def workdesk_case_timeline(
 
 
 from app.api import technical_case_recovery as technical_case_recovery  # noqa: E402
+from app.api.m1_internal_payment_recovery import (  # noqa: E402
+    router as m1_internal_payment_recovery_router,
+)
 from app.api.workdesk_integrity import (  # noqa: E402
     inject_workdesk_integrity,
     router as workdesk_integrity_router,
+)
+from app.api.workdesk_integrity_guard import (  # noqa: E402
+    router as workdesk_integrity_guard_router,
 )
 
 technical_case_recovery.WORKDESK_HTML = inject_workdesk_integrity(
     technical_case_recovery.WORKDESK_HTML
 )
+# Guarded integrity/recovery routes must be registered before the legacy
+# workdesk-integrity router so duplicate URL shapes resolve to the hardened
+# personal-session implementation.
+router.include_router(workdesk_integrity_guard_router)
+router.include_router(m1_internal_payment_recovery_router)
 router.include_router(workdesk_integrity_router)
 router.include_router(technical_case_recovery.router)
