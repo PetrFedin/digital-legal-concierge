@@ -27,28 +27,20 @@ class ConsentDecisionResult:
 
 
 class ConsentDecisionService:
-    """Serialize consent acceptance/decline against post-calculation route choice."""
+    """Apply version-bound consent acceptance/decline under a row lock."""
 
     def __init__(self, db: AsyncSession):
         self.db = db
         self.cases = CaseService(db)
 
-    async def _lock_latest_active_case(self, *, client_id: int) -> Case | None:
+    async def _lock_case(self, *, client_id: int, case_id: int) -> Case | None:
         return (
             await self.db.execute(
                 select(Case)
-                .where(Case.client_id == int(client_id))
                 .where(
-                    Case.status.notin_(
-                        (
-                            CaseStatus.M1_CLOSED,
-                            CaseStatus.M2_CLOSED,
-                            CaseStatus.ARCHIVED,
-                        )
-                    )
+                    Case.id == int(case_id),
+                    Case.client_id == int(client_id),
                 )
-                .order_by(Case.created_at.desc(), Case.id.desc())
-                .limit(1)
                 .with_for_update()
             )
         ).scalars().first()
@@ -65,15 +57,16 @@ class ConsentDecisionService:
         self,
         *,
         client_id: int,
+        case_id: int,
         decision: str,
     ) -> ConsentDecisionResult:
         normalized = str(decision or "").strip().lower()
         if normalized not in {CONSENT_ACCEPT, CONSENT_DECLINE}:
             raise ConsentDecisionError("Неизвестное решение по согласию")
 
-        case = await self._lock_latest_active_case(client_id=client_id)
+        case = await self._lock_case(client_id=client_id, case_id=case_id)
         if case is None:
-            raise LookupError("Активное дело не найдено")
+            raise LookupError("Дело из этого экрана не найдено или недоступно")
 
         status = self._status(case)
         if status.value.startswith("M1_"):
