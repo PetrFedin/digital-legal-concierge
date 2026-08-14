@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, Header, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +14,7 @@ from app.api.consultation_outcomes import (
     list_outcome_queue,
     require_admin,
 )
+from app.config import settings
 from app.db.session import get_db
 from app.domain.consultations.client_no_show_resolution_service import (
     ClientNoShowResolutionError,
@@ -26,6 +27,8 @@ from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
 from app.models.lawyer import Lawyer
 from app.models.user import User
+from app.security.access_control import ROLE_ADMIN, ROLE_SUPERADMIN
+from app.security.document_access import DocumentAccessError, resolve_document_actor
 
 router = APIRouter(
     prefix="/admin/consultation-outcomes",
@@ -231,5 +234,20 @@ def _inject_client_no_show_ui(html: str) -> str:
 
 
 @router.get("/ui", response_class=HTMLResponse)
-async def guided_consultation_outcomes_ui():
+async def guided_consultation_outcomes_ui(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    token = x_admin_token or request.cookies.get(settings.admin_session_cookie)
+    if not token:
+        return RedirectResponse(url="/login", status_code=303)
+    try:
+        actor = await resolve_document_actor(db, token)
+    except DocumentAccessError as error:
+        if error.status_code == 401:
+            return RedirectResponse(url="/login", status_code=303)
+        raise
+    if actor.role not in {ROLE_ADMIN, ROLE_SUPERADMIN}:
+        raise HTTPException(status_code=403, detail="Доступ только для администратора")
     return HTMLResponse(_inject_client_no_show_ui(OUTCOMES_HTML))
