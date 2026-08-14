@@ -17,6 +17,11 @@ router = APIRouter(tags=["contract-workspace-ui"])
 _CONTRACT_WORKSPACE_PATCH = r"""
 <script>
 (function(){
+  const headerLinks=document.querySelector('header .links');
+  if(headerLinks&&!headerLinks.querySelector('a[href="/consultation-slots/ui"]')){
+    headerLinks.insertAdjacentHTML('afterbegin','<a class="button secondary" href="/consultation-slots/ui">Расписание</a>');
+  }
+
   const previousPrimaryButton=primaryButton;
   primaryButton=function(x){
     if(x?.route==='M1'&&String(x.status||'')==='M1_CONTRACT_READY'){
