@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin import require_admin
+from app.api.workdesk_integrity import inject_workdesk_integrity
 from app.api.workdesk_ui import WORKDESK_HTML
 from app.config import settings
 from app.db.session import get_db
@@ -49,8 +50,52 @@ _WORKDESK_RESPONSIBILITY_PATCH = r"""
   }
 
   const originalOpenCase=openCase;
+  const originalAssign=assign;
   function cell(label){return [...cv.querySelectorAll('.grid .cell')].find(node=>node.querySelector('span')?.textContent.trim()===label)}
   function replaceCell(node,label,value){if(node)node.innerHTML='<span>'+e(label)+'</span>'+e(value||'—')}
+
+  // The normal assign action is for an actually unassigned M1 case. Integrity
+  // can additionally expose a case whose assigned profile can no longer log in.
+  // In that situation a normal auto-assign would be a no-op, so route it through
+  // the locked repair endpoint instead of leaving the operator at a dead button.
+  assign=async function(id,b){
+    let snapshot;
+    try{snapshot=await api('/admin/case-workspace/'+id)}catch(x){say('Не удалось проверить текущее назначение: '+(x.message||x),'bad');return}
+    const currentLawyer=Number(snapshot.case?.lawyer_id||0);
+    if(!currentLawyer)return originalAssign(id,b);
+    if(busy)return;
+    busy=true;
+    if(b)b.disabled=true;
+    const old=b?b.textContent:'';
+    if(b)b.textContent='Проверяем назначение…';
+    try{
+      const result=await api('/admin/case-assignment/cases/'+id+'/repair-unreachable',{
+        method:'POST',
+        body:JSON.stringify({
+          expected_lawyer_id:currentLawyer,
+          expected_status:snapshot.case.status,
+          comment:'Workdesk: назначенный юрист недоступен для персонального входа'
+        })
+      });
+      say(
+        result.result==='reassigned'
+          ?'Недоступный ответственный заменён доступным юристом.'
+          :'Недоступное назначение снято. Дело осталось в контролируемой очереди и не потеряно.',
+        'ok'
+      );
+      await openCase(id);
+      if(mode==='queue')await openQueue(queue,document.querySelector('[data-v='+queue+']'));
+      else await loadOverview();
+      if(typeof loadProcessIntegrity==='function')await loadProcessIntegrity();
+    }catch(x){
+      say('Исправление назначения не выполнено: '+(x.message||x),'bad');
+      await openCase(id);
+    }finally{
+      busy=false;
+      if(b){b.disabled=false;b.textContent=old}
+    }
+  };
+
   openCase=async function(id){
     await originalOpenCase(id);
     if(selected!==id)return;
@@ -111,7 +156,7 @@ def _case_queue_payload(
 
 @router.get("/admin/workdesk/ui", response_class=HTMLResponse)
 async def guided_workdesk_ui(request: Request):
-    """Render the guided workdesk with route-aware responsibility labels."""
+    """Render the canonical Workdesk with route-aware context and integrity."""
 
     token = request.headers.get("x-admin-token") or request.cookies.get(
         settings.admin_session_cookie
@@ -119,7 +164,8 @@ async def guided_workdesk_ui(request: Request):
     if not token:
         return RedirectResponse(url="/login", status_code=303)
     require_admin(token)
-    return HTMLResponse(_inject_workdesk_patch(WORKDESK_HTML))
+    html = _inject_workdesk_patch(WORKDESK_HTML)
+    return HTMLResponse(inject_workdesk_integrity(html))
 
 
 @router.get("/admin/workdesk/cases/{case_id}/responsibility")
