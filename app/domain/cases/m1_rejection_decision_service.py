@@ -27,28 +27,20 @@ class M1RejectionDecisionResult:
 
 
 class M1RejectionDecisionService:
-    """Serialize mutually exclusive client decisions after a lawyer rejects M1."""
+    """Serialize a version-bound client decision after a lawyer rejects M1."""
 
     def __init__(self, db: AsyncSession):
         self.db = db
         self.cases = CaseService(db)
 
-    async def _lock_latest_case(self, *, client_id: int) -> Case | None:
+    async def _lock_case(self, *, client_id: int, case_id: int) -> Case | None:
         return (
             await self.db.execute(
                 select(Case)
-                .where(Case.client_id == int(client_id))
                 .where(
-                    Case.status.notin_(
-                        (
-                            CaseStatus.M1_CLOSED,
-                            CaseStatus.M2_CLOSED,
-                            CaseStatus.ARCHIVED,
-                        )
-                    )
+                    Case.id == int(case_id),
+                    Case.client_id == int(client_id),
                 )
-                .order_by(Case.created_at.desc(), Case.id.desc())
-                .limit(1)
                 .with_for_update()
             )
         ).scalars().first()
@@ -65,15 +57,16 @@ class M1RejectionDecisionService:
         self,
         *,
         client_id: int,
+        case_id: int,
         decision: str,
     ) -> M1RejectionDecisionResult:
         normalized = str(decision or "").strip().lower()
         if normalized not in {DECISION_TO_M2, DECISION_CLOSE}:
             raise M1RejectionDecisionError("Неизвестное решение после отказа M1")
 
-        case = await self._lock_latest_case(client_id=client_id)
+        case = await self._lock_case(client_id=client_id, case_id=case_id)
         if case is None:
-            raise LookupError("Активное дело не найдено")
+            raise LookupError("Дело из этого сообщения не найдено или недоступно")
 
         status = self._status(case)
         if status != CaseStatus.M1_REJECTED:
