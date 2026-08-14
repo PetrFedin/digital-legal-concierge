@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -69,7 +69,10 @@ async def public_readiness_probe(db: AsyncSession = Depends(get_db)):
         and payment_mode_valid()
         and keys_ready
     )
-    return {"ok": ready, "version": VERSION}
+    payload = {"ok": ready, "version": VERSION}
+    if not ready:
+        return JSONResponse(status_code=503, content=payload)
+    return payload
 
 
 @router.get("/launch-check")
