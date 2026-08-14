@@ -30,6 +30,7 @@ _M2_CLIENT_UPLOAD_STATUSES = {
 }
 _UPLOAD_CALLBACKS = {
     "documents_upload_open",
+    "doc_finish_upload",
     "doc_upload_ddu",
     "doc_upload_appendix",
     "doc_upload_additional",
@@ -103,8 +104,8 @@ async def _stage_recovery(event, state) -> None:
     if state is not None and hasattr(state, "clear"):
         await state.clear()
     text = (
-        "ℹ️ Этап дела уже изменился. Эта загрузка больше не относится к текущему шагу, "
-        "поэтому файл не обрабатывался и статус дела не менялся.\n\n"
+        "ℹ️ Этап дела уже изменился. Эта загрузка или передача файлов больше не относится к текущему шагу, "
+        "поэтому файл не обрабатывался, документы не передавались и статус дела не менялся.\n\n"
         "Откройте «Моё дело» или актуальный раздел документов — там показано допустимое действие."
     )
     markup = one(
@@ -127,13 +128,14 @@ async def _stage_recovery(event, state) -> None:
 
 
 class ClientDocumentUploadStageProtectionMiddleware:
-    """Fail closed when an old client upload action outlives its legal stage.
+    """Fail closed when an old client upload/handoff action outlives its legal stage.
 
     Telegram messages and inline keyboards can remain visible for a long time.
-    Every generic upload callback and the final file message therefore re-check
-    the active case immediately before entering the encrypted upload pipeline.
-    This prevents stale screens from attaching new evidence to contract,
-    payment, POA, court, enforcement, completed-consultation or closed stages.
+    Every generic upload callback, final document handoff callback and the final
+    file message therefore re-check the active case immediately before entering
+    the encrypted upload/review pipeline. This prevents stale screens from
+    attaching or submitting new evidence during contract, payment, POA, court,
+    enforcement, completed-consultation or closed stages.
     """
 
     @staticmethod
@@ -173,7 +175,7 @@ class ClientDocumentUploadStageProtectionMiddleware:
                 user = await ctx.get_user_from_message(event)
             case = await ctx.case_service.get_active_case_for_user(user.id)
         except Exception:
-            logger.exception("Не удалось проверить этап дела перед загрузкой документа.")
+            logger.exception("Не удалось проверить этап дела перед загрузкой/передачей документа.")
             await db.rollback()
             await _stage_recovery(event, state)
             return None
