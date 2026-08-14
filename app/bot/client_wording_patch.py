@@ -20,13 +20,27 @@ def document_detail_for_client(view) -> str:
 
 
 def install_client_wording() -> None:
-    """Install presentation rules without changing document/payment state."""
+    """Install client presentation and fail-closed runtime compatibility rules."""
 
     from app.bot.client_case_view import CLIENT_ACTIONS, ClientAction
-    from app.bot.screens import document_action_center, my_case
+    from app.bot.screens import document_action_center, my_case, payments
+    from app.config import settings
     from app.domain.statuses.case_statuses import CaseStatus
 
     my_case._document_detail = document_detail_for_client
+
+    # Historical payments.py still contains a compatibility helper that treated
+    # demo_mode as permission to expose a DEV payment button. Production runtime
+    # must never derive financial authorization from a demo/presentation flag.
+    # Both payment_keyboard() and pay_fake_success call this module function at
+    # runtime, so replacing it here removes the button and blocks the callback.
+    def local_test_fake_payments_only() -> bool:
+        return bool(
+            str(settings.payment_provider or "").strip().lower() == "fake"
+            and str(settings.app_env or "").strip().lower() in {"local", "test"}
+        )
+
+    payments.fake_payments_enabled = local_test_fake_payments_only
 
     CLIENT_ACTIONS["M1_WAITING_PAYMENT_30000"] = ClientAction(
         "Оплатить 30 000 ₽",
