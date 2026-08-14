@@ -57,8 +57,11 @@ def actor_id_from_token(payload: dict) -> int | None:
 
 
 def manual_payment_confirmation_enabled() -> bool:
-    return settings.payment_provider == "fake" and (
-        settings.app_env in {"local", "test"} or settings.demo_mode
+    # Fake payment confirmation is a local/test fixture only. ``demo_mode`` is
+    # never a production authorization or financial control switch.
+    return (
+        str(settings.payment_provider or "").strip().lower() == "fake"
+        and str(settings.app_env or "").strip().lower() in {"local", "test"}
     )
 
 
