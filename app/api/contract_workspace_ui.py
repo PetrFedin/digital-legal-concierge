@@ -5,6 +5,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.guided_lawyer_ui import _inject_patch
+from app.api.lawyer_consultation_decision_guard import guarded_consultation_desk_html
 from app.api.lawyer_workspace_rejection_ui import enhanced_lawyer_workspace_html
 from app.config import settings
 from app.db.session import get_db
@@ -44,17 +45,42 @@ def contract_aware_workspace_html() -> str:
     )
 
 
+async def _lawyer_ui_or_login(
+    request: Request,
+    db: AsyncSession,
+    header_token: str | None,
+):
+    token = header_token or request.cookies.get(settings.admin_session_cookie)
+    if not token:
+        return None
+    try:
+        return await require_lawyer_actor(db, token)
+    except HTTPException:
+        return None
+
+
 @router.get("/lawyer/workspace/ui", response_class=HTMLResponse)
 async def contract_aware_lawyer_workspace_ui(
     request: Request,
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    token = x_admin_token or request.cookies.get(settings.admin_session_cookie)
-    if not token:
-        return RedirectResponse(url="/login", status_code=303)
-    try:
-        await require_lawyer_actor(db, token)
-    except HTTPException:
+    actor = await _lawyer_ui_or_login(request, db, x_admin_token)
+    if actor is None:
         return RedirectResponse(url="/login", status_code=303)
     return HTMLResponse(contract_aware_workspace_html())
+
+
+@router.get("/lawyer/consultation-desk/ui", response_class=HTMLResponse)
+async def protected_lawyer_consultation_desk_ui(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    actor = await _lawyer_ui_or_login(request, db, x_admin_token)
+    if actor is None:
+        return RedirectResponse(url="/login", status_code=303)
+    # Keep the production decision guard (close/to_m1/follow_up only) and the
+    # consultation draft-preservation patch, but move the HTML boundary before
+    # the historical anonymous shell in route order.
+    return HTMLResponse(guarded_consultation_desk_html())
