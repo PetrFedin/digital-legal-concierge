@@ -14,11 +14,6 @@ CHOICE_M1 = "m1"
 CHOICE_M2 = "m2"
 CHOICE_POSTPONE = "postpone"
 _ALLOWED_CHOICES = {CHOICE_M1, CHOICE_M2, CHOICE_POSTPONE}
-_TERMINAL_STATUSES = {
-    CaseStatus.M1_CLOSED,
-    CaseStatus.M2_CLOSED,
-    CaseStatus.ARCHIVED,
-}
 
 
 class PostCalculationDecisionError(ValueError):
@@ -34,27 +29,27 @@ class PostCalculationDecisionResult:
 
 
 class PostCalculationDecisionService:
-    """Apply the three post-calculation choices under one case row lock.
+    """Apply a version-bound post-calculation choice under a case row lock.
 
-    Telegram inline keyboards remain clickable long after they were rendered and
-    users can also double-tap different buttons. The current case is therefore
-    re-read under ``FOR UPDATE`` immediately before any route mutation. Business
-    transitions are delegated to CaseService so history, SLA and transition
-    policy stay identical to the rest of the product.
+    Telegram inline keyboards remain clickable long after they were rendered.
+    Every mutating v2 callback therefore carries the case id that produced the
+    screen. The service locks exactly that case and verifies ownership before a
+    business transition, so a message from an older case can never mutate a new
+    active case that happens to be on the same status.
     """
 
     def __init__(self, db: AsyncSession):
         self.db = db
         self.cases = CaseService(db)
 
-    async def _lock_active_case(self, *, client_id: int) -> Case | None:
+    async def _lock_case(self, *, client_id: int, case_id: int) -> Case | None:
         return (
             await self.db.execute(
                 select(Case)
-                .where(Case.client_id == int(client_id))
-                .where(Case.status.notin_(tuple(_TERMINAL_STATUSES)))
-                .order_by(Case.created_at.desc(), Case.id.desc())
-                .limit(1)
+                .where(
+                    Case.id == int(case_id),
+                    Case.client_id == int(client_id),
+                )
                 .with_for_update()
             )
         ).scalars().first()
@@ -76,15 +71,16 @@ class PostCalculationDecisionService:
         self,
         *,
         client_id: int,
+        case_id: int,
         choice: str,
     ) -> PostCalculationDecisionResult:
         normalized_choice = str(choice or "").strip().lower()
         if normalized_choice not in _ALLOWED_CHOICES:
             raise PostCalculationDecisionError("Неизвестный выбор после расчёта")
 
-        case = await self._lock_active_case(client_id=client_id)
+        case = await self._lock_case(client_id=client_id, case_id=case_id)
         if case is None:
-            raise LookupError("Активное дело не найдено")
+            raise LookupError("Дело из этого экрана не найдено или недоступно")
 
         status = self._status(case)
         route = self._route(case)
