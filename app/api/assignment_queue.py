@@ -40,6 +40,14 @@ _CLOSED_CASE_STATUSES = ("M1_CLOSED", "M2_CLOSED", "ARCHIVED")
 _WORKDESK_RESPONSIBILITY_PATCH = r"""
 <script>
 (function(){
+  const headerLinks=document.querySelector('header .links');
+  const legacyAdminLink=headerLinks?.querySelector('a[href="/admin-ui"]');
+  if(legacyAdminLink){
+    legacyAdminLink.href='/consultation-slots/ui';
+    legacyAdminLink.textContent='Расписание';
+    legacyAdminLink.title='Свободные слоты, резервы и расписание юристов';
+  }
+
   const originalOpenCase=openCase;
   function cell(label){return [...cv.querySelectorAll('.grid .cell')].find(node=>node.querySelector('span')?.textContent.trim()===label)}
   function replaceCell(node,label,value){if(node)node.innerHTML='<span>'+e(label)+'</span>'+e(value||'—')}
