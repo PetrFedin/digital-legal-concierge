@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, Header, HTTPException
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,13 +16,18 @@ from app.models.notification import Notification
 from app.models.payment import Payment
 from app.models.user import User
 from app.release import release_metadata
+from app.security.access_control import ROLE_ADMIN, ROLE_SUPERADMIN
+from app.security.document_access import resolve_document_actor
 
 router = APIRouter(prefix="/runtime", tags=["runtime"])
 
 
-def check(token: str | None):
-    if token != settings.admin_api_token:
-        raise HTTPException(status_code=401, detail="bad token")
+async def _admin(request: Request, db: AsyncSession, header_token: str | None):
+    token = header_token or request.cookies.get(settings.admin_session_cookie)
+    actor = await resolve_document_actor(db, token)
+    if actor.role not in {ROLE_ADMIN, ROLE_SUPERADMIN}:
+        raise HTTPException(status_code=403, detail="Доступ только для администратора")
+    return actor
 
 
 @router.get("/release")
@@ -32,10 +39,11 @@ async def release_info():
 
 @router.get("/snapshot")
 async def snapshot(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    check(x_admin_token)
+    await _admin(request, db, x_admin_token)
 
     async def count(model):
         result = await db.execute(select(func.count(model.id)))
@@ -57,15 +65,16 @@ async def snapshot(
 @router.get("/case/{case_id}/full")
 async def case_full(
     case_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    check(x_admin_token)
+    await _admin(request, db, x_admin_token)
     case = (
         await db.execute(select(Case).where(Case.id == case_id))
     ).scalars().first()
     if not case:
-        raise HTTPException(404, "case not found")
+        raise HTTPException(404, "Дело не найдено")
     documents = (
         await db.execute(select(Document).where(Document.case_id == case_id))
     ).scalars().all()
@@ -81,6 +90,7 @@ async def case_full(
             .where(AuditLog.entity_type == "case")
             .where(AuditLog.entity_id == case_id)
             .order_by(AuditLog.created_at.asc())
+            .limit(500)
         )
     ).scalars().all()
     return {
@@ -108,7 +118,7 @@ async def case_full(
                 "code": payment.payment_code,
                 "amount": str(payment.amount),
                 "status": payment.status,
-                "url": payment.payment_url,
+                "provider": payment.provider,
             }
             for payment in payments
         ],
@@ -121,12 +131,15 @@ async def case_full(
             }
             for consultation in consultations
         ],
+        # Raw old_value/new_value may contain client data, provider details or
+        # historical technical payloads. The timeline/audit centers remain the
+        # canonical place for authorized detailed inspection.
         "audit": [
             {
+                "id": event.id,
                 "action": event.action,
-                "old": event.old_value,
-                "new": event.new_value,
-                "comment": event.comment,
+                "actor_type": event.actor_type,
+                "created_at": event.created_at.isoformat() if event.created_at else None,
             }
             for event in audit
         ],
