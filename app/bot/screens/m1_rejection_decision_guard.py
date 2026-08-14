@@ -22,15 +22,32 @@ from app.domain.consultations.consultation_intake import (
 router = Router()
 logger = logging.getLogger(__name__)
 
+_LEGACY_UNBOUND_MUTATIONS = {
+    "m1_rejected_to_m2",
+    "m1_rejected_close_confirm",
+}
+
 
 async def _safe_edit(callback: CallbackQuery, text: str, *, reply_markup) -> None:
     try:
         await callback.message.edit_text(text, reply_markup=reply_markup)
     except TelegramBadRequest as error:
-        if "message is not modified" in str(error).lower():
+        if "message is not modified" not in str(error).lower():
             raise
     except (TelegramNetworkError, TelegramServerError):
         logger.warning("Telegram не обновил экран решения после отказа M1")
+
+
+def _case_id(callback: CallbackQuery, action: str) -> int | None:
+    value = str(callback.data or "")
+    prefix = f"{action}:v2:"
+    if not value.startswith(prefix):
+        return None
+    try:
+        case_id = int(value[len(prefix) :])
+    except ValueError:
+        return None
+    return case_id if case_id > 0 else None
 
 
 async def _stale(callback: CallbackQuery, db, text: str) -> None:
@@ -46,32 +63,56 @@ async def _stale(callback: CallbackQuery, db, text: str) -> None:
     )
 
 
-@router.callback_query(lambda c: c.data == "m1_rejected_to_m2")
+@router.callback_query(lambda c: c.data in _LEGACY_UNBOUND_MUTATIONS)
+async def legacy_rejection_mutation_is_navigation_only(callback: CallbackQuery, db):
+    # Historical keyboards do not contain a case identifier. They can remain in
+    # Telegram after another case is created, therefore they never authorize a
+    # route switch or closure anymore.
+    await _stale(
+        callback,
+        db,
+        "Эта кнопка относится к старому экрану отказа и не содержит номер дела. Ничего не изменено. Откройте актуальную карточку и выберите действие заново.",
+    )
+
+
+@router.callback_query(
+    lambda c: bool(c.data) and c.data.startswith("m1_rejected_to_m2:v2:")
+)
 async def guarded_rejected_m1_to_m2(callback: CallbackQuery, db):
+    case_id = _case_id(callback, "m1_rejected_to_m2")
+    if case_id is None:
+        await _stale(callback, db, "Некорректная кнопка. Дело не изменено.")
+        return
+
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     try:
         result = await M1RejectionDecisionService(db).apply(
             client_id=user.id,
+            case_id=case_id,
             decision=DECISION_TO_M2,
         )
         if result.outcome != "m2_intake":
             await _stale(
                 callback,
                 db,
-                "Эта кнопка относится к уже изменившемуся решению. Ничего не изменено — показан безопасный возврат к текущему делу.",
+                "Решение по этому делу уже изменилось. Старая кнопка ничего не изменила.",
             )
             return
 
-        # Keep the route switch and consultation record atomic. A failed intake
-        # rolls the route switch back, so no M2 case is left without its context.
-        _case, consultation = await ConsultationIntakeService(db).get_or_create_context(user)
+        # Keep route switch and consultation record atomic. The intake service
+        # must resolve the same exact case that the bound callback authorized.
+        context_case, consultation = await ConsultationIntakeService(db).get_or_create_context(user)
+        if int(context_case.id) != int(result.case.id):
+            raise ActiveCaseRouteConflict(
+                "Активное обращение изменилось во время перехода к консультации"
+            )
         await db.commit()
     except LookupError:
         await _stale(
             callback,
             db,
-            "Активное дело уже завершено. Перевод в консультацию не выполнялся.",
+            "Дело из этого сообщения уже завершено, удалено или недоступно. Перевод не выполнялся.",
         )
         return
     except (M1RejectionDecisionError, ActiveCaseRouteConflict, ValueError) as error:
@@ -122,20 +163,28 @@ async def guarded_rejected_m1_to_m2(callback: CallbackQuery, db):
     )
 
 
-@router.callback_query(lambda c: c.data == "m1_rejected_close_confirm")
+@router.callback_query(
+    lambda c: bool(c.data) and c.data.startswith("m1_rejected_close_confirm:v2:")
+)
 async def guarded_rejected_m1_close(callback: CallbackQuery, db):
+    case_id = _case_id(callback, "m1_rejected_close_confirm")
+    if case_id is None:
+        await _stale(callback, db, "Некорректная кнопка. Дело не изменено.")
+        return
+
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     try:
         result = await M1RejectionDecisionService(db).apply(
             client_id=user.id,
+            case_id=case_id,
             decision=DECISION_CLOSE,
         )
         if result.outcome != "closed":
             await _stale(
                 callback,
                 db,
-                "Статус дела уже изменился. Старая кнопка закрытия ничего не изменила.",
+                "Статус именно этого дела уже изменился. Повторное закрытие не выполнялось.",
             )
             return
         await db.commit()
@@ -143,7 +192,7 @@ async def guarded_rejected_m1_close(callback: CallbackQuery, db):
         await _stale(
             callback,
             db,
-            "Обращение уже не активно. Повторное закрытие не выполнялось.",
+            "Дело из этого сообщения уже не активно или недоступно. Повторное закрытие не выполнялось.",
         )
         return
     except (M1RejectionDecisionError, ValueError) as error:
