@@ -9,10 +9,6 @@ from aiogram.types import CallbackQuery
 
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
-from app.domain.consultations.consultation_intake import (
-    ActiveCaseRouteConflict,
-    ConsultationIntakeService,
-)
 from app.domain.statuses.case_statuses import CaseStatus
 
 router = Router()
@@ -56,6 +52,22 @@ async def _active(callback: CallbackQuery, db):
     return ctx, user, case
 
 
+def _bound(action: str, case_id: int) -> str:
+    return f"{action}:v2:{int(case_id)}"
+
+
+def _bound_case_id(callback: CallbackQuery, action: str) -> int | None:
+    value = str(callback.data or "")
+    prefix = f"{action}:v2:"
+    if not value.startswith(prefix):
+        return None
+    try:
+        case_id = int(value[len(prefix) :])
+    except ValueError:
+        return None
+    return case_id if case_id > 0 else None
+
+
 class RejectedM1ContactFilter(Filter):
     """Turn the generic contact button into the actual M1 rejection decision."""
 
@@ -67,6 +79,7 @@ class RejectedM1ContactFilter(Filter):
 
 
 async def _show_options(callback: CallbackQuery, case) -> None:
+    case_id = int(case.id)
     await _safe_edit(
         callback,
         "⚖️ РЕШЕНИЕ ПО ВЕДЕНИЮ ДЕЛА\n\n"
@@ -79,9 +92,9 @@ async def _show_options(callback: CallbackQuery, case) -> None:
         "3. Сначала написать команде и уточнить решение.\n\n"
         "Выберите один вариант. Ничего не изменится без отдельного подтверждения.",
         reply_markup=one(
-            ("👨‍⚖ Перейти в консультацию", "m1_rejected_to_m2"),
+            ("👨‍⚖ Перейти в консультацию", _bound("m1_rejected_to_m2", case_id)),
             ("✉️ Уточнить решение у команды", "message_create"),
-            ("Завершить обращение", "m1_rejected_close"),
+            ("Завершить обращение", _bound("m1_rejected_close", case_id)),
             ("📄 Документы", "documents_open"),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
@@ -106,101 +119,10 @@ async def rejected_m1_options(callback: CallbackQuery, db):
     await _show_options(callback, case)
 
 
-@router.callback_query(lambda c: c.data == "m1_rejected_to_m2")
-async def rejected_m1_to_consultation(callback: CallbackQuery, db):
-    ctx, user, case = await _active(callback, db)
-    if not case:
-        await _safe_edit(
-            callback,
-            "Активное дело уже завершено. Перевод в консультацию не выполнялся.",
-            reply_markup=one(
-                ("📁 Моё дело", "my_case_open"),
-                ("🏠 Главная", "nav_home"),
-            ),
-        )
-        return
-    if _status(case) != CaseStatus.M1_REJECTED:
-        await _safe_edit(
-            callback,
-            "Эта кнопка относится к старому решению. Дело не изменено — показан безопасный возврат.",
-            reply_markup=one(
-                ("📁 Открыть актуальное дело", "my_case_open"),
-                ("✉️ Написать команде", "message_create"),
-                ("🏠 Главная", "nav_home"),
-            ),
-        )
-        return
-
-    try:
-        await ctx.case_service.transfer_to_m2(
-            case=case,
-            actor_type="client",
-            actor_id=user.id,
-            reason="Клиент выбрал консультацию после отказа в полном ведении M1",
-        )
-        _case, consultation = await ConsultationIntakeService(db).get_or_create_context(user)
-        await db.commit()
-    except ActiveCaseRouteConflict as error:
-        await db.rollback()
-        await _safe_edit(
-            callback,
-            f"Перевод не выполнен: {error}\n\nТекущее дело сохранено без изменений.",
-            reply_markup=one(
-                ("📁 Моё дело", "my_case_open"),
-                ("✉️ Написать команде", "message_create"),
-                ("🏠 Главная", "nav_home"),
-            ),
-        )
-        return
-    except (ValueError, LookupError) as error:
-        await db.rollback()
-        await _safe_edit(
-            callback,
-            f"Перевод в консультацию пока не завершён: {error}\n\nПовторите из актуального дела или напишите команде.",
-            reply_markup=one(
-                ("🔄 Проверить дело", "my_case_open"),
-                ("✉️ Написать команде", "message_create"),
-                ("🏠 Главная", "nav_home"),
-            ),
-        )
-        return
-    except Exception:
-        await db.rollback()
-        logger.exception("Не удалось перевести отклонённый M1 в M2")
-        await _safe_edit(
-            callback,
-            "Перевод в консультацию временно не завершён. Данные не потеряны; откройте актуальное дело перед повтором.",
-            reply_markup=one(
-                ("🔄 Открыть актуальное дело", "my_case_open"),
-                ("✉️ Написать команде", "message_create"),
-                ("🏠 Главная", "nav_home"),
-            ),
-        )
-        return
-
-    description_ready = bool(str(consultation.client_description or "").strip())
-    primary = (
-        ("📅 Продолжить: выбрать время", "consult_booking_start")
-        if description_ready
-        else ("📝 Описать вопрос", "consult_subject_start")
-    )
-    await _safe_edit(
-        callback,
-        "✅ Обращение переведено в консультацию.\n\n"
-        "Документы и история остаются в том же деле. Отдельное дублирующее обращение не создано.\n\n"
-        "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
-        "Опишите вопрос для консультации или продолжите с уже сохранённым описанием.",
-        reply_markup=one(
-            primary,
-            ("📄 Документы", "documents_open"),
-            ("✉️ Написать команде", "message_create"),
-            ("📁 Моё дело", "my_case_open"),
-            ("🏠 Главная", "nav_home"),
-        ),
-    )
-
-
-@router.callback_query(lambda c: c.data == "m1_rejected_close")
+@router.callback_query(
+    lambda c: c.data == "m1_rejected_close"
+    or (bool(c.data) and c.data.startswith("m1_rejected_close:v2:"))
+)
 async def rejected_m1_close_prompt(callback: CallbackQuery, db):
     _ctx, _user, case = await _active(callback, db)
     if _status(case) != CaseStatus.M1_REJECTED:
@@ -213,85 +135,35 @@ async def rejected_m1_close_prompt(callback: CallbackQuery, db):
             ),
         )
         return
+
+    expected_case_id = _bound_case_id(callback, "m1_rejected_close")
+    if expected_case_id is not None and expected_case_id != int(case.id):
+        await _safe_edit(
+            callback,
+            "Эта кнопка относится к другому обращению. Ничего не изменено. Откройте актуальное дело.",
+            reply_markup=one(
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
     await _safe_edit(
         callback,
         "⚠️ Завершить обращение?\n\n"
-        "После подтверждения дело станет закрытым и перейдёт в режим просмотра. Документы, переписка и история сохранятся в архиве.\n\n"
+        f"Дело № {case.case_number}\n\n"
+        "После подтверждения именно это дело станет закрытым и перейдёт в режим просмотра. "
+        "Документы, переписка и история сохранятся в архиве.\n\n"
         "Если вы хотите сначала уточнить решение или перейти в консультацию, вернитесь назад.",
         reply_markup=one(
-            ("✅ Да, завершить обращение", "m1_rejected_close_confirm"),
+            (
+                "✅ Да, завершить обращение",
+                _bound("m1_rejected_close_confirm", int(case.id)),
+            ),
             ("← Вернуться к вариантам", "contact_lawyer"),
             ("✉️ Написать команде", "message_create"),
         ),
     )
 
 
-@router.callback_query(lambda c: c.data == "m1_rejected_close_confirm")
-async def rejected_m1_close_confirm(callback: CallbackQuery, db):
-    ctx, user, case = await _active(callback, db)
-    if not case:
-        await _safe_edit(
-            callback,
-            "Обращение уже не активно. Повторное закрытие не выполнялось.",
-            reply_markup=one(
-                ("📁 Открыть архив", "my_case_open"),
-                ("🏠 Главная", "nav_home"),
-            ),
-        )
-        return
-    if _status(case) != CaseStatus.M1_REJECTED:
-        await _safe_edit(
-            callback,
-            "Статус дела уже изменился. Повторное закрытие не выполнялось.",
-            reply_markup=one(
-                ("📁 Моё дело", "my_case_open"),
-                ("🏠 Главная", "nav_home"),
-            ),
-        )
-        return
-
-    try:
-        await ctx.case_service.change_status(
-            case=case,
-            next_status=CaseStatus.M1_CLOSED,
-            actor_type="client",
-            actor_id=user.id,
-            comment="Клиент завершил обращение после отказа в полном ведении M1",
-        )
-        await db.commit()
-    except ValueError as error:
-        await db.rollback()
-        await _safe_edit(
-            callback,
-            f"Закрытие не выполнено: {error}\n\nОткройте актуальное состояние дела.",
-            reply_markup=one(
-                ("📁 Моё дело", "my_case_open"),
-                ("✉️ Написать команде", "message_create"),
-                ("🏠 Главная", "nav_home"),
-            ),
-        )
-        return
-    except Exception:
-        await db.rollback()
-        logger.exception("Не удалось закрыть отклонённый M1")
-        await _safe_edit(
-            callback,
-            "Обращение временно не закрыто. Ничего не потеряно; повторите из актуального дела.",
-            reply_markup=one(
-                ("🔄 Открыть дело", "my_case_open"),
-                ("✉️ Написать команде", "message_create"),
-                ("🏠 Главная", "nav_home"),
-            ),
-        )
-        return
-
-    await _safe_edit(
-        callback,
-        "✅ Обращение завершено.\n\n"
-        "Оно больше не считается активным. Документы, переписка и история сохранены в архиве. Новое обращение можно начать отдельно.",
-        reply_markup=one(
-            ("📁 Открыть архив обращения", "my_case_open"),
-            ("🧮 Новое обращение", "calc_start"),
-            ("🏠 Главная", "nav_home"),
-        ),
-    )
+__all__ = ["router", "RejectedM1ContactFilter"]
