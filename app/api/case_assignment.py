@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.staff_ui_guards import router as staff_ui_guards_router
 from app.config import settings
 from app.db.session import get_db
 from app.domain.cases.assignment_service import CaseAssignmentService
@@ -10,7 +11,12 @@ from app.security.access_control import ROLE_ADMIN, ROLE_SUPERADMIN
 from app.security.document_access import resolve_document_actor
 
 
-router = APIRouter(prefix="/admin/case-assignment", tags=["admin", "case-assignment"])
+# Keep an unprefixed composite router because it is mounted before payment-review
+# and SLA routers in app.main. The assignment subrouter preserves all historical
+# /admin/case-assignment URLs while the early staff guards own their exact UI URLs.
+router = APIRouter(tags=["admin", "case-assignment"])
+assignment_router = APIRouter(prefix="/admin/case-assignment")
+router.include_router(staff_ui_guards_router)
 
 
 async def _admin(request: Request, db: AsyncSession, header_token: str | None):
@@ -31,7 +37,7 @@ def _comment(payload: dict, default: str, *, minimum: int = 0) -> str:
     return value
 
 
-@router.get("/lawyers")
+@assignment_router.get("/lawyers")
 async def list_lawyer_workload(
     request: Request,
     db: AsyncSession = Depends(get_db),
@@ -41,7 +47,7 @@ async def list_lawyer_workload(
     return await CaseAssignmentService(db).list_active_lawyers()
 
 
-@router.post("/cases/{case_id}/assign/{lawyer_id}")
+@assignment_router.post("/cases/{case_id}/assign/{lawyer_id}")
 async def assign_case(
     case_id: int,
     lawyer_id: int,
@@ -99,7 +105,7 @@ async def assign_case(
     }
 
 
-@router.post("/cases/{case_id}/unassign")
+@assignment_router.post("/cases/{case_id}/unassign")
 async def unassign_case(
     case_id: int,
     request: Request,
@@ -109,10 +115,7 @@ async def unassign_case(
 ):
     actor = await _admin(request, db, x_admin_token)
     payload = payload or {}
-    comment = _comment(
-        payload,
-        "Администратор снял назначение юриста",
-    )
+    comment = _comment(payload, "Администратор снял назначение юриста")
     try:
         case = await CaseAssignmentService(db).unassign_case(
             case_id=case_id,
@@ -137,3 +140,6 @@ async def unassign_case(
         "assigned_lawyer_id": case.assigned_lawyer_id,
         "actor_id": int(actor.account_id),
     }
+
+
+router.include_router(assignment_router)
