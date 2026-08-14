@@ -19,16 +19,24 @@ def test_guided_workdesk_mounts_process_integrity():
     assert "m1_contract_confirmation_missing" in scanner
     assert "m2_expired_hold_not_reconciled" in scanner
     assert "m1_money_received_stage_stuck" in guard
+    assert "refund_declined_" in guard
     assert "router.include_router(workdesk_integrity_guard_router)" in setup
 
 
 def test_client_success_fee_callback_cannot_open_business_stage():
     source = read("app/bot/screens/payment_archive_guard.py")
+    wording = read("app/bot/client_wording_patch.py")
     bot = read("app/bot/bot.py")
     assert '@router.callback_query(lambda c: c.data == "pay_success_fee")' in source
     assert "CaseStatus.M1_MONEY_RECEIVED.value" in source
     assert "CaseStatus.M1_WAITING_SUCCESS_FEE.value" in source
     assert "change_status(" not in source
+    assert 'CLIENT_ACTIONS["M1_MONEY_RECEIVED"] = ClientAction(' in wording
+    money_received_block = wording.split('CLIENT_ACTIONS["M1_MONEY_RECEIVED"]', 1)[1].split(
+        'CLIENT_ACTIONS["M1_WAITING_SUCCESS_FEE"]', 1
+    )[0]
+    assert '"my_case_open"' in money_received_block
+    assert '"pay_success_fee"' not in money_received_block
     assert bot.index("payment_archive_guard.router,") < bot.index("m1_stages.router,")
 
 
@@ -43,13 +51,15 @@ def test_client_wording_uses_real_document_review_boundary_and_explicit_payments
     assert "Оплатить финальный процент" in source
 
 
-def test_legacy_operator_is_shadowed_by_early_authenticated_guard():
+def test_legacy_operator_and_admin_cabinet_are_shadowed_by_authenticated_entrypoints():
     setup = read("app/api/initial_setup_wizard.py")
     guard = read("app/api/operator_guard.py")
     main = read("app/main.py")
     assert "router.include_router(operator_guard_router)" in setup
     assert "resolve_document_actor" in guard
     assert '@router.get("/operator")' in guard
+    assert '@router.get("/admin-ui")' in setup
+    assert 'RedirectResponse(url="/admin/workdesk/ui"' in setup
     assert main.index('(\"initial_setup_wizard\", initial_setup_wizard_router)') < main.index(
         '(\"operator\", operator_router)'
     )
@@ -74,33 +84,43 @@ def test_lawyer_no_show_refund_leaves_no_booked_case_or_blocked_slot():
     assert ".with_for_update()" in source
 
 
-def test_confirmed_m2_refund_closes_consultation_case_only_after_real_resolution():
+def test_m2_refund_closes_only_after_real_resolution_and_decline_is_retryable():
     guard = read("app/api/refund_resolution_guard.py")
     operator = read("app/api/operator_guard.py")
     assert '@router.post("/admin/refunds/{payment_id}/resolve")' in guard
     assert 'if decision == "refunded"' in guard
     assert "CaseStatus.M2_CONSULTATION_DONE" in guard
     assert "CaseStatus.M2_CLOSED" in guard
-    assert "REFUND_DECLINED" not in guard
+    assert '@router.get("/admin/refunds/declined")' in guard
+    assert '@router.post("/admin/refunds/{payment_id}/retry")' in guard
+    retry_block = guard.split('@router.post("/admin/refunds/{payment_id}/retry")', 1)[1]
+    assert "PaymentStatus.REFUND_DECLINED" in retry_block
+    assert "PaymentStatus.REFUND_PENDING" in retry_block
+    assert "CaseService(db).change_status" not in retry_block
     assert "router.include_router(refund_resolution_guard_router)" in operator
 
 
-def test_m2_outcomes_and_legacy_readiness_shells_are_server_guarded():
+def test_m2_outcomes_and_legacy_resolution_are_server_guarded():
     setup = read("app/api/initial_setup_wizard.py")
     outcomes_guard = read("app/api/consultation_outcomes_ui_guard.py")
+    legacy = read("app/api/legacy_consultation_outcome_guard.py")
+    service = read("app/domain/consultations/legacy_outcome_resolution_service.py")
     assert "resolve_document_actor" in outcomes_guard
     assert '@router.get("/admin/consultation-outcomes/ui"' in outcomes_guard
+    assert "router.include_router(legacy_consultation_outcome_router)" in outcomes_guard
+    assert '@router.get("/admin/consultation-outcomes/legacy")' in legacy
+    assert '@router.post("/admin/consultation-outcomes/{consultation_id}/legacy/resolve")' in legacy
+    assert 'VALID_DECISIONS = frozenset({"close", "to_m1", "follow_up"})' in service
+    assert 'current_decision != "other"' in service
+    assert "CONSULTATION_LEGACY_OUTCOME_RESOLVED" in service
     assert "router.include_router(consultation_outcomes_ui_guard_router)" in setup
-    assert '@router.get("/install-wizard")' in setup
-    assert '@router.get("/install-wizard/ui")' in setup
-    assert '@router.get("/launch-assistant/status")' in setup
-    assert '@router.get("/launch-assistant")' in setup
 
 
-def test_public_health_and_ready_do_not_expose_environment_or_secret_flags():
+def test_public_health_ready_and_launch_check_do_not_expose_infrastructure():
     setup = read("app/api/initial_setup_wizard.py")
     health_body = setup.split('@router.get("/health")', 1)[1].split('@router.get("/ready")', 1)[0]
-    ready_body = setup.split('@router.get("/ready")', 1)[1].split('@router.get("/initial-setup-wizard/status")', 1)[0]
+    ready_body = setup.split('@router.get("/ready")', 1)[1].split('@router.get("/launch-check")', 1)[0]
+    launch_body = setup.split('@router.get("/launch-check")', 1)[1].split('@router.get("/admin-ui")', 1)[0]
     assert "app_env" not in health_body
     assert "database_url" not in health_body
     assert "admin_api_token" not in health_body
@@ -109,3 +129,81 @@ def test_public_health_and_ready_do_not_expose_environment_or_secret_flags():
     assert "admin_api_token" not in ready_body
     assert "payment_webhook_secret" not in ready_body
     assert 'return {"ok": ready, "version": VERSION}' in ready_body
+    assert "storage_dir" not in launch_body
+    assert "payment_provider" not in launch_body
+    assert "bot_token" not in launch_body
+    assert "await _require_admin" in launch_body
+
+
+def test_live_settings_are_personal_validated_versioned_and_audited():
+    ui = read("app/api/settings_ui.py")
+    service = read("app/system/settings_service.py")
+    assert "resolve_document_actor" in ui
+    assert "expected_updated_at" in ui
+    assert "escape(" in ui
+    assert 'DEFAULT_SETTINGS.get(key)' in service
+    assert "_coerce_value" in service
+    assert ".with_for_update()" in service
+    assert "expected_updated_at" in service
+    assert 'action="SYSTEM_SETTING_UPDATED"' in service
+    assert 'actor_id=actor_id' in service
+
+
+def test_staff_search_is_authenticated_bounded_and_html_escaped():
+    source = read("app/api/search_center.py")
+    assert "resolve_document_actor" in source
+    assert "MAX_QUERY_LENGTH = 120" in source
+    assert '.replace("%", "\\\\%")' in source
+    assert ".limit(20)" in source
+    assert "escape(" in source
+    assert '@router.get("/search-center/status")' in source
+    assert '@router.get("/search-center/ui"' in source
+
+
+def test_bulk_exports_require_personal_admin_and_never_accept_query_token():
+    source = read("app/api/exports.py")
+    assert "resolve_document_actor" in source
+    assert "ADMIN_BULK_EXPORT_CREATED" in source
+    assert "Cache-Control" in source
+    assert "_csv_cell" in source
+    assert "token: str | None = Query" not in source
+    assert "admin_api_token" not in source
+
+
+def test_consultation_schedule_is_role_scoped_and_uses_live_hold_setting():
+    api = read("app/api/consultation_slots.py")
+    service = read("app/domain/consultations/slot_service.py")
+    assert "resolve_document_actor" in api
+    assert "Юрист может управлять только собственным расписанием" in api
+    assert "Чужое расписание недоступно" in api
+    assert "Массовая сверка резервов доступна только администратору" in api
+    assert "with_for_update()" in api
+    assert 'str(settings.app_env or "").strip().lower() not in {"local", "test"}' in api
+    assert "Тестирование записи" not in api
+    assert "consultations.slot_hold_minutes" in service
+    hold_block = service.split("async def hold_slot", 1)[1].split("async def book_available_slot", 1)[0]
+    assert "await self.get_hold_minutes()" in hold_block
+    assert "self.HOLD_MINUTES" not in hold_block
+
+
+def test_case_assignment_actor_cannot_be_spoofed_from_payload():
+    source = read("app/api/case_assignment.py")
+    assert "resolve_document_actor" in source
+    assert "payload.get(\"actor_id\")" not in source
+    assert "actor_id=int(actor.account_id)" in source
+    assert "allow_overload and actor.role != ROLE_SUPERADMIN" in source
+    assert "expected_lawyer_id" in source
+
+
+def test_staff_financial_sla_and_lawyer_shells_have_server_side_guards():
+    staff = read("app/api/staff_ui_guards.py")
+    assignment = read("app/api/case_assignment.py")
+    lawyer = read("app/api/contract_workspace_ui.py")
+    assert '@router.get("/admin/payment-reviews/ui"' in staff
+    assert '@router.get("/admin/sla/ui"' in staff
+    assert "resolve_document_actor" in staff
+    assert "router.include_router(staff_ui_guards_router)" in assignment
+    assert '@router.get("/lawyer/ui")' in lawyer
+    assert 'RedirectResponse(url="/lawyer/workspace/ui"' in lawyer
+    assert '@router.get("/lawyer/consultation-desk/ui"' in lawyer
+    assert "guarded_consultation_desk_html" in lawyer
