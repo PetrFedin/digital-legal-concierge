@@ -4,12 +4,16 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.superadmin_ui_guards import router as superadmin_ui_guards_router
 from app.config import settings
 from app.db.session import get_db
 from app.security.access_control import ROLE_ADMIN, ROLE_SUPERADMIN
 from app.security.document_access import DocumentAccessError, resolve_document_actor
 
 router = APIRouter(tags=["acceptance-center"])
+# acceptance_center is mounted before access_management; the personal MFA
+# superadmin shell guard therefore owns /access/ui before the legacy route.
+router.include_router(superadmin_ui_guards_router)
 
 
 def _token(request: Request, header_token: str | None) -> str | None:
