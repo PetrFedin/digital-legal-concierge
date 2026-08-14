@@ -23,11 +23,25 @@ def install_client_wording() -> None:
     """Install client presentation and fail-closed runtime compatibility rules."""
 
     from app.bot.client_case_view import CLIENT_ACTIONS, ClientAction
-    from app.bot.screens import document_action_center, my_case, payments
+    from app.bot.keyboards import one
+    from app.bot.screens import calculator, document_action_center, my_case, payments
     from app.config import settings
     from app.domain.statuses.case_statuses import CaseStatus
 
     my_case._document_detail = document_detail_for_client
+
+    # Calculator result historically exposed three unbound mutating callbacks.
+    # They do not contain case_id, so an old Telegram message could otherwise be
+    # clicked after a new case was created. The current result has one navigation
+    # action; the decision screen then emits version-bound v2 callbacks.
+    def safe_calculator_result_keyboard():
+        return one(
+            ("🧭 Выбрать дальнейший путь", "calc_decision_open"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        )
+
+    calculator.result_kb = safe_calculator_result_keyboard
 
     # Historical payments.py still contains a compatibility helper that treated
     # demo_mode as permission to expose a DEV payment button. Production runtime
