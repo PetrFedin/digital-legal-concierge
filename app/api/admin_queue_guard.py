@@ -1,15 +1,20 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin import require_admin
+from app.config import settings
 from app.db.session import get_db
 from app.domain.cases.assignment_policy import AUTO_ASSIGNMENT_REQUIRED_STATUS_VALUES
 from app.domain.cases.assignment_service import CaseAssignmentService
+from app.models.audit_log import AuditLog
 from app.models.case import Case
 from app.models.lawyer import Lawyer
+from app.scheduler.scheduler import AppScheduler
+from app.security.access_control import ROLE_SUPERADMIN
+from app.security.document_access import resolve_document_actor
 
 router = APIRouter(prefix="/admin", tags=["admin-queue-guard"])
 
@@ -109,3 +114,73 @@ async def retire_legacy_lawyer_creation(
             "mfa_required": True,
         },
     )
+
+
+@router.post("/scheduler/run-once")
+async def safe_manual_scheduler_run_once(
+    payload: dict,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    """Run the broad operational scheduler only as an explicit privileged action."""
+
+    token = x_admin_token or request.cookies.get(settings.admin_session_cookie)
+    actor = await resolve_document_actor(db, token)
+    if actor.role != ROLE_SUPERADMIN:
+        raise HTTPException(
+            status_code=403,
+            detail="Ручной запуск полного scheduler доступен только суперадминистратору с MFA",
+        )
+    if str(payload.get("confirmation") or "").strip() != "RUN_SCHEDULER_ONCE":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Для ручного массового запуска передайте confirmation=RUN_SCHEDULER_ONCE. "
+                "Обычная работа должна выполняться фоновым scheduler автоматически."
+            ),
+        )
+
+    db.add(
+        AuditLog(
+            actor_type="admin_user",
+            actor_id=actor.account_id,
+            action="scheduler.manual_run_requested",
+            entity_type="scheduler",
+            entity_id=None,
+            old_value=None,
+            new_value={"mode": "full_cycle", "source": "manual_admin_api"},
+            comment="Суперадминистратор с MFA подтвердил ручной запуск полного scheduler",
+        )
+    )
+    await db.commit()
+
+    result = await AppScheduler().run_once()
+    compact_result = {
+        "scheduler_acquired": bool(result.get("scheduler_acquired")),
+        "scheduler_ok": bool(result.get("scheduler_ok")),
+        "job_names": sorted(
+            str(key)
+            for key in result.keys()
+            if key not in {"scheduler_acquired", "scheduler_ok", "scheduler_skipped"}
+        ),
+        "skipped": result.get("scheduler_skipped"),
+    }
+    db.add(
+        AuditLog(
+            actor_type="admin_user",
+            actor_id=actor.account_id,
+            action="scheduler.manual_run_completed",
+            entity_type="scheduler",
+            entity_id=None,
+            old_value=None,
+            new_value=compact_result,
+            comment=(
+                "Ручной полный scheduler завершён"
+                if compact_result["scheduler_ok"]
+                else "Ручной полный scheduler завершён с ошибкой/пропуском"
+            ),
+        )
+    )
+    await db.commit()
+    return result
