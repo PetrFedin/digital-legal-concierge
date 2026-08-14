@@ -53,55 +53,68 @@ def main_menu(
     primary_action: tuple[str, str] | None = None,
 ):
     kb = InlineKeyboardBuilder()
+    primary_callback = primary_action[1] if primary_action else None
+
+    def secondary(text: str, callback_data: str) -> None:
+        # One screen = one primary action. If the primary button already opens
+        # a section, do not render the same callback again under another label.
+        if callback_data != primary_callback:
+            kb.button(text=text, callback_data=callback_data)
 
     if completed_case and not case_exists:
         if primary_action:
             text, callback_data = primary_action
             kb.button(text=text, callback_data=callback_data)
-        if not primary_action or primary_action[1] != "my_case_open":
-            kb.button(text="📁 Моё дело", callback_data="my_case_open")
-        kb.button(text="💳 Оплаты", callback_data="payments_open")
-        kb.button(text="🧮 Новое обращение", callback_data="calc_start")
-        kb.adjust(*([1, 1, 1, 1] if primary_action and primary_action[1] != "my_case_open" else [1, 1, 1]))
+        secondary("📁 Моё дело", "my_case_open")
+        secondary("💳 Оплаты", "payments_open")
+        secondary("🧮 Новое обращение", "calc_start")
+        count = 3 - int(primary_callback in {"my_case_open", "payments_open", "calc_start"})
+        kb.adjust(*([1] * (count + int(bool(primary_action)))))
         return kb.as_markup()
 
     if not case_exists:
         if primary_action:
             text, callback_data = primary_action
             kb.button(text=text, callback_data=callback_data)
-        kb.button(text="🧮 Рассчитать неустойку", callback_data="calc_start")
-        kb.button(text="💬 Связаться с юристом", callback_data="contact_lawyer")
-        kb.adjust(*([1, 1, 1] if primary_action else [1, 1]))
+        secondary("🧮 Рассчитать неустойку", "calc_start")
+        secondary("💬 Связаться с юристом", "contact_lawyer")
+        count = 2 - int(primary_callback in {"calc_start", "contact_lawyer"})
+        kb.adjust(*([1] * (count + int(bool(primary_action)))))
         return kb.as_markup()
 
     if primary_action:
         text, callback_data = primary_action
         kb.button(text=text, callback_data=callback_data)
 
-    # Keep the active-case menu visually grouped by user intent:
-    # case context -> communication/finance -> new legal request/help.
-    # This mirrors the persistent reply menu while keeping payment history
-    # reachable even when online payment creation is disabled.
-    kb.button(text="📁 Моё дело", callback_data="my_case_open")
-    kb.button(text="📄 Документы", callback_data="documents_open")
-    kb.button(text="💬 Переписка", callback_data="message_history")
+    # Secondary navigation is intentionally compact. Starting a second M2 flow
+    # over an active M1 is forbidden by the domain layer, so the old generic
+    # "Юрист / консультация" shortcut was both redundant and misleading.
+    secondary("📁 Моё дело", "my_case_open")
+    secondary("📄 Документы", "documents_open")
+    secondary("💬 Переписка", "message_history")
 
-    # Payment provider mode controls whether a new online payment link can be
-    # created; it must never hide persisted payment status/history from a client.
-    # Explicit callers may still suppress the shortcut for a specialized screen.
     show_payments = True if payments_enabled is None else bool(payments_enabled)
     if show_payments:
-        kb.button(text="💳 Оплаты", callback_data="payments_open")
+        secondary("💳 Оплаты", "payments_open")
 
-    kb.button(text="✉️ Новый вопрос", callback_data="message_create")
-    kb.button(text="⚖️ Юрист / консультация", callback_data="contact_lawyer")
+    secondary("✉️ Новый вопрос", "message_create")
 
-    row_sizes: list[int] = []
-    if primary_action:
-        row_sizes.append(1)
-    row_sizes.append(2)
-    row_sizes.append(2 if show_payments else 1)
-    row_sizes.append(2)
+    # Re-layout after de-duplication. Primary always owns its own row; secondary
+    # actions are grouped by two where possible for a compact Telegram panel.
+    secondary_count = 4 + int(show_payments)
+    if primary_callback in {
+        "my_case_open",
+        "documents_open",
+        "message_history",
+        "payments_open" if show_payments else "",
+        "message_create",
+    }:
+        secondary_count -= 1
+    row_sizes: list[int] = [1] if primary_action else []
+    while secondary_count > 0:
+        row = min(2, secondary_count)
+        row_sizes.append(row)
+        secondary_count -= row
     kb.adjust(*row_sizes)
     return kb.as_markup()
 
