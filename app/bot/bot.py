@@ -30,6 +30,7 @@ from app.bot.screens import (
     calculator,
     common,
     consent_flow,
+    consent_stale_guard,
     consultation_booking_ui,
     consultation_description,
     consultation_intake,
@@ -178,6 +179,7 @@ def build_dispatcher() -> Dispatcher:
         payment_archive_guard.router,
         payments.router,
         consultations.router,
+        consent_stale_guard.router,
         consent_flow.router,
         service_contract.router,
         poa_handoff.router,
@@ -255,6 +257,7 @@ async def run_bot() -> None:
                     retry_delay,
                 )
                 await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, max_retry_delay)
             except asyncio.CancelledError:
                 logger.info("Остановка Telegram-бота.")
                 raise
