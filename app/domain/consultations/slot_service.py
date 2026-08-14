@@ -5,12 +5,16 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import and_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
+from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.consultation_statuses import ConsultationStatus
+from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
+from app.models.payment import Payment
 from app.system.settings_service import SettingsService
 
 
@@ -34,9 +38,6 @@ class SlotService:
         )
         minutes = int(value)
         if minutes < 5 or minutes > 24 * 60:
-            # SettingsService prevents new invalid writes. Fail closed as well
-            # for a historical/manual DB value rather than creating an absurd
-            # reservation window.
             raise SlotUnavailableError(
                 "Настройка удержания слота некорректна. Обратитесь к администратору."
             )
@@ -46,8 +47,20 @@ class SlotService:
     def _bulk(statement):
         return statement.execution_options(synchronize_session="fetch")
 
+    @staticmethod
+    def _reservation_key(consultation_id: int, slot_id: int) -> str:
+        # Keep the same stable key contract as PaymentService without importing
+        # it here (PaymentService depends on SlotService).
+        return f"consultation:{int(consultation_id)}:slot:{int(slot_id)}"
+
     async def release_expired_holds(self) -> int:
-        """Release stale slots and return both M2 state machines to slot choice."""
+        """Release expired M2 holds, expire their links and restore slot choice.
+
+        A provider callback locks Payment first and then attempts consultation/
+        slot changes. We follow the same leading lock for matching active payment
+        rows before mutating consultation/slot/case state, which keeps a late
+        provider callback serialized with the expiry reconciliation.
+        """
 
         now = datetime.now(timezone.utc)
         expired = (
@@ -66,14 +79,15 @@ class SlotService:
                     ConsultationSlot.hold_expires_at.is_not(None),
                     ConsultationSlot.hold_expires_at < now,
                 )
+                .order_by(ConsultationSlot.id.asc())
             )
         ).all()
         if not expired:
             return 0
 
-        slot_ids = [row.id for row in expired]
+        slot_ids = [int(row.id) for row in expired]
         consultation_ids = [
-            row.consultation_id
+            int(row.consultation_id)
             for row in expired
             if row.consultation_id is not None
         ]
@@ -84,6 +98,62 @@ class SlotService:
                 if row.case_id is not None
             }
         )
+        reservation_by_slot: dict[int, str] = {}
+        case_by_reservation: dict[str, int] = {}
+        for row in expired:
+            if row.consultation_id is None or row.case_id is None:
+                continue
+            key = self._reservation_key(int(row.consultation_id), int(row.id))
+            reservation_by_slot[int(row.id)] = key
+            case_by_reservation[key] = int(row.case_id)
+
+        payment_ids_by_case: dict[int, list[int]] = {}
+        if case_by_reservation:
+            payment_rows = list(
+                (
+                    await self.db.execute(
+                        select(Payment)
+                        .where(
+                            Payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT,
+                            Payment.reservation_key.in_(list(case_by_reservation)),
+                            Payment.status.in_(
+                                [
+                                    PaymentStatus.PENDING,
+                                    PaymentStatus.WAITING_CONFIRMATION,
+                                ]
+                            ),
+                        )
+                        .order_by(Payment.id.asc())
+                        .with_for_update()
+                    )
+                ).scalars().all()
+            )
+            for payment in payment_rows:
+                old_status = payment.status
+                payment.status = PaymentStatus.EXPIRED
+                case_id = int(payment.case_id)
+                payment_ids_by_case.setdefault(case_id, []).append(int(payment.id))
+                await add_case_history_event(
+                    self.db,
+                    actor_type="system",
+                    actor_id=None,
+                    case_id=case_id,
+                    action="CONSULTATION_PAYMENT_LINK_EXPIRED",
+                    old_value={
+                        "payment_id": payment.id,
+                        "status": old_status,
+                        "reservation_key": payment.reservation_key,
+                    },
+                    new_value={
+                        "payment_id": payment.id,
+                        "status": payment.status,
+                        "reason": "slot_hold_expired",
+                    },
+                    comment=(
+                        "Платёжная ссылка относится к истёкшему резерву времени и больше "
+                        "не может автоматически подтвердить консультацию."
+                    ),
+                )
 
         if consultation_ids:
             await self.db.execute(
@@ -120,30 +190,68 @@ class SlotService:
             )
         )
 
+        cases_by_id: dict[int, Case] = {}
         if case_ids:
             cases = list(
                 (
                     await self.db.execute(
                         select(Case)
                         .where(Case.id.in_(case_ids))
+                        .order_by(Case.id.asc())
                         .with_for_update()
                     )
                 ).scalars().all()
             )
+            cases_by_id = {int(case.id): case for case in cases}
             case_service = CaseService(self.db)
             for case in cases:
-                if str(case.status) != CaseStatus.M2_PAYMENT_PENDING.value:
-                    continue
-                await case_service.change_status(
-                    case=case,
-                    next_status=CaseStatus.M2_SLOT_PENDING,
-                    actor_type="system",
-                    actor_id=None,
-                    comment=(
-                        "Резерв консультации истёк до подтверждения оплаты. "
-                        "Клиенту снова доступен выбор времени."
+                if str(case.status) == CaseStatus.M2_PAYMENT_PENDING.value:
+                    await case_service.change_status(
+                        case=case,
+                        next_status=CaseStatus.M2_SLOT_PENDING,
+                        actor_type="system",
+                        actor_id=None,
+                        comment=(
+                            "Резерв консультации истёк до подтверждения оплаты. "
+                            "Клиенту снова доступен выбор времени."
+                        ),
+                    )
+
+        for row in expired:
+            if row.case_id is None:
+                continue
+            case_id = int(row.case_id)
+            case = cases_by_id.get(case_id)
+            await add_case_history_event(
+                self.db,
+                actor_type="system",
+                actor_id=None,
+                case_id=case_id,
+                action="CONSULTATION_SLOT_HOLD_EXPIRED",
+                old_value={
+                    "slot_id": int(row.id),
+                    "consultation_id": (
+                        int(row.consultation_id)
+                        if row.consultation_id is not None
+                        else None
                     ),
-                )
+                    "reservation_key": reservation_by_slot.get(int(row.id)),
+                },
+                new_value={
+                    "slot_status": "available",
+                    "consultation_status": (
+                        ConsultationStatus.SLOT_PENDING.value
+                        if row.consultation_id is not None
+                        else None
+                    ),
+                    "case_status": str(case.status) if case is not None else None,
+                    "expired_payment_ids": payment_ids_by_case.get(case_id, []),
+                },
+                comment=(
+                    "Истёк резерв времени консультации. Старый слот освобождён, "
+                    "активная ссылка этого резерва закрыта, клиент вернулся к выбору времени."
+                ),
+            )
 
         await self.db.flush()
         return len(slot_ids)
