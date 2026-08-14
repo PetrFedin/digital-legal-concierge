@@ -7,6 +7,7 @@ from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.screens import payments as payment_screen
 from app.bot.screens.m1_stale_view_guard import router as m1_stale_view_guard_router
+from app.config import settings
 from app.domain.cases.client_case_scope import (
     CLIENT_COMPLETED_CASE_STATUSES,
     latest_completed_strict_m1_case_for_user,
@@ -27,6 +28,15 @@ _COMPLETED_VALUES = {str(status) for status in CLIENT_COMPLETED_CASE_STATUSES}
 
 def _case_is_completed(case) -> bool:
     return bool(case and str(case.status) in _COMPLETED_VALUES)
+
+
+def _fake_payment_mutation_allowed() -> bool:
+    """A presentation/demo flag is never authorization to mutate money."""
+
+    return bool(
+        str(settings.payment_provider or "").strip().lower() == "fake"
+        and str(settings.app_env or "").strip().lower() in {"local", "test"}
+    )
 
 
 def _archive_keyboard():
@@ -91,11 +101,30 @@ async def guard_archived_payment_open(callback: CallbackQuery, db):
 
 @router.callback_query(lambda c: bool(c.data) and c.data.startswith("pay_fake_success:"))
 async def guard_archived_fake_success(callback: CallbackQuery, db):
-    """Block stale DEV-success callbacks after a case has been completed."""
+    """Keep every fake-payment mutation local/test-only, including old buttons."""
 
     payment_id = _payment_id(callback)
+    if not _fake_payment_mutation_allowed():
+        await callback.message.edit_text(
+            "Эта тестовая кнопка оплаты недоступна в текущем окружении. Финансовый статус не изменён.\n\n"
+            "Используйте реальную ссылку оплаты либо дождитесь подтверждения команды.",
+            reply_markup=one(
+                ("💳 Все оплаты", "payments_open"),
+                ("📁 Моё дело", "my_case_open"),
+                ("✉️ Написать команде", "message_create"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
     if payment_id is None:
-        await payment_screen.fake(callback, db)
+        await callback.message.edit_text(
+            "Тестовая кнопка повреждена. Платёж не изменён.",
+            reply_markup=one(
+                ("💳 Все оплаты", "payments_open"),
+                ("📁 Моё дело", "my_case_open"),
+            ),
+        )
         return
 
     payment, case = await payment_screen.get_owned_payment(callback, db, payment_id)
