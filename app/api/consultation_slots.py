@@ -207,18 +207,21 @@ async def create_slot(
             actor=actor,
             requested_lawyer_id=payload.get("lawyer_id"),
         )
-        # Lawyer row lock serializes overlapping slot creation for the same
-        # calendar even when two browser tabs submit simultaneously.
+        # The lawyer row lock serializes new writes. Historical duplicate
+        # overlaps must still fail as a clean conflict instead of raising
+        # MultipleResultsFound and turning a scheduling problem into HTTP 500.
         overlap = (
             await db.execute(
-                select(ConsultationSlot.id).where(
+                select(ConsultationSlot.id)
+                .where(
                     ConsultationSlot.lawyer_id == lawyer.id,
                     ConsultationSlot.status.in_(ACTIVE_SLOT_STATUSES),
                     ConsultationSlot.starts_at < ends_at,
                     ConsultationSlot.ends_at > starts_at,
                 )
+                .limit(1)
             )
-        ).scalar_one_or_none()
+        ).scalars().first()
         if overlap is not None:
             raise HTTPException(409, "У юриста уже есть пересекающийся активный слот")
 
@@ -262,8 +265,6 @@ async def create_test_slots(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    # Compatibility for isolated automated/local fixtures only. This route is
-    # deliberately absent as a production capability and is not shown in UI.
     if str(settings.app_env or "").strip().lower() not in {"local", "test"}:
         raise HTTPException(404, "Маршрут недоступен")
     actor = await _staff(request, db, x_admin_token)
