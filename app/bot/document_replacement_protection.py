@@ -104,7 +104,7 @@ async def _stage_recovery(event, state) -> None:
     if state is not None and hasattr(state, "clear"):
         await state.clear()
     text = (
-        "ℹ️ Этап дела уже изменился. Эта загрузка или передача файлов больше не относится к текущему шагу, "
+        "ℹ️ Этап дела или само обращение уже изменились. Эта загрузка или передача файлов больше не относится к текущему шагу, "
         "поэтому файл не обрабатывался, документы не передавались и статус дела не менялся.\n\n"
         "Откройте «Моё дело» или актуальный раздел документов — там показано допустимое действие."
     )
@@ -133,9 +133,10 @@ class ClientDocumentUploadStageProtectionMiddleware:
     Telegram messages and inline keyboards can remain visible for a long time.
     Every generic upload callback, final document handoff callback and the final
     file message therefore re-check the active case immediately before entering
-    the encrypted upload/review pipeline. This prevents stale screens from
-    attaching or submitting new evidence during contract, payment, POA, court,
-    enforcement, completed-consultation or closed stages.
+    the encrypted upload/review pipeline. Generic uploads additionally carry
+    ``document_case_id`` in FSM state; the file is rejected before download if
+    another case has become active. Direct lawyer-requested replacements use the
+    stricter document/version snapshot middleware below.
     """
 
     @staticmethod
@@ -150,14 +151,16 @@ class ClientDocumentUploadStageProtectionMiddleware:
     async def __call__(self, handler, event, data):
         state = data.get("state")
         targeted = False
+        is_file_message = False
         if isinstance(event, CallbackQuery):
             targeted = self._is_upload_callback(event)
         elif isinstance(event, Message) and state is not None:
             current_state = await state.get_state()
-            targeted = bool(
+            is_file_message = bool(
                 current_state == DocumentUploadStates.waiting_file.state
                 and (getattr(event, "document", None) or getattr(event, "photo", None))
             )
+            targeted = is_file_message
         if not targeted:
             return await handler(event, data)
 
@@ -184,6 +187,29 @@ class ClientDocumentUploadStageProtectionMiddleware:
             await db.rollback()
             await _stage_recovery(event, state)
             return None
+
+        if is_file_message:
+            try:
+                state_data = await state.get_data()
+            except Exception:
+                logger.exception("Не удалось прочитать snapshot загрузки документа")
+                await db.rollback()
+                await _stage_recovery(event, state)
+                return None
+
+            has_replacement_marker = bool(
+                "replacement_document_id" in state_data
+                or "replacement_expected_version" in state_data
+            )
+            if not has_replacement_marker:
+                try:
+                    expected_case_id = int(state_data.get("document_case_id"))
+                except (TypeError, ValueError):
+                    expected_case_id = 0
+                if expected_case_id <= 0 or expected_case_id != int(case.id):
+                    await db.rollback()
+                    await _stage_recovery(event, state)
+                    return None
 
         return await handler(event, data)
 
