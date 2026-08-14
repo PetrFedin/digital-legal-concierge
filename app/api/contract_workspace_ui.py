@@ -59,6 +59,18 @@ async def _lawyer_ui_or_login(
         return None
 
 
+@router.get("/lawyer/ui")
+async def legacy_lawyer_ui_redirect(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    actor = await _lawyer_ui_or_login(request, db, x_admin_token)
+    if actor is None:
+        return RedirectResponse(url="/login", status_code=303)
+    return RedirectResponse(url="/lawyer/workspace/ui", status_code=303)
+
+
 @router.get("/lawyer/workspace/ui", response_class=HTMLResponse)
 async def contract_aware_lawyer_workspace_ui(
     request: Request,
@@ -80,7 +92,4 @@ async def protected_lawyer_consultation_desk_ui(
     actor = await _lawyer_ui_or_login(request, db, x_admin_token)
     if actor is None:
         return RedirectResponse(url="/login", status_code=303)
-    # Keep the production decision guard (close/to_m1/follow_up only) and the
-    # consultation draft-preservation patch, but move the HTML boundary before
-    # the historical anonymous shell in route order.
     return HTMLResponse(guarded_consultation_desk_html())
