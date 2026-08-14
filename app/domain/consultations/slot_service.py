@@ -11,6 +11,7 @@ from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
+from app.system.settings_service import SettingsService
 
 
 class SlotUnavailableError(RuntimeError):
@@ -18,31 +19,35 @@ class SlotUnavailableError(RuntimeError):
 
 
 class SlotService:
-    HOLD_MINUTES = 10
+    # Compatibility fallback only. Real holds are read from the validated live
+    # setting ``consultations.slot_hold_minutes`` for every new reservation.
+    HOLD_MINUTES = 30
     TEST_SLOT_DURATION_MINUTES = 60
     TEST_SLOT_STEP_MINUTES = 90
 
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    async def get_hold_minutes(self) -> int:
+        value = await SettingsService(self.db).get_value(
+            "consultations.slot_hold_minutes"
+        )
+        minutes = int(value)
+        if minutes < 5 or minutes > 24 * 60:
+            # SettingsService prevents new invalid writes. Fail closed as well
+            # for a historical/manual DB value rather than creating an absurd
+            # reservation window.
+            raise SlotUnavailableError(
+                "Настройка удержания слота некорректна. Обратитесь к администратору."
+            )
+        return minutes
+
     @staticmethod
     def _bulk(statement):
-        # SQLite returns timezone-naive datetime values even for timezone-aware
-        # columns. The default ORM "evaluate" strategy may compare them to an
-        # aware UTC value in Python. "fetch" synchronizes through database row
-        # identity instead, avoiding that comparison while keeping already
-        # loaded slot and consultation objects current after compare-and-set.
         return statement.execution_options(synchronize_session="fetch")
 
     async def release_expired_holds(self) -> int:
-        """Release stale slots and return both M2 state machines to slot choice.
-
-        Consultation and Case are deliberately separate state machines. Leaving
-        the consultation in SLOT_PENDING while the case remains
-        M2_PAYMENT_PENDING makes Telegram still advertise an impossible payment.
-        Expiry therefore synchronizes both records and records the case
-        transition through CaseService instead of hiding it in a bulk update.
-        """
+        """Release stale slots and return both M2 state machines to slot choice."""
 
         now = datetime.now(timezone.utc)
         expired = (
@@ -192,7 +197,8 @@ class SlotService:
     ) -> ConsultationSlot:
         await self.release_expired_holds()
         now = datetime.now(timezone.utc)
-        hold_expires_at = now + timedelta(minutes=self.HOLD_MINUTES)
+        hold_minutes = await self.get_hold_minutes()
+        hold_expires_at = now + timedelta(minutes=hold_minutes)
         result = await self.db.execute(
             self._bulk(
                 update(ConsultationSlot)
