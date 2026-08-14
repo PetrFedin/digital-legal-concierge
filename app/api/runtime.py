@@ -32,9 +32,15 @@ async def _admin(request: Request, db: AsyncSession, header_token: str | None):
 
 @router.get("/release")
 async def release_info():
-    """Non-sensitive build identity for deploy verification and rollback."""
+    """Minimal non-sensitive build identity for deploy verification."""
 
-    return {"ok": True, **release_metadata()}
+    metadata = release_metadata()
+    return {
+        "ok": True,
+        "application_version": metadata.get("application_version"),
+        "release": metadata.get("release"),
+        "git_commit": metadata.get("git_commit"),
+    }
 
 
 @router.get("/snapshot")
@@ -131,9 +137,6 @@ async def case_full(
             }
             for consultation in consultations
         ],
-        # Raw old_value/new_value may contain client data, provider details or
-        # historical technical payloads. The timeline/audit centers remain the
-        # canonical place for authorized detailed inspection.
         "audit": [
             {
                 "id": event.id,
