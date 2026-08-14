@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.case_assignment_repair import router as case_assignment_repair_router
 from app.api.staff_ui_guards import router as staff_ui_guards_router
 from app.config import settings
 from app.db.session import get_db
@@ -17,6 +18,7 @@ from app.security.document_access import resolve_document_actor
 router = APIRouter(tags=["admin", "case-assignment"])
 assignment_router = APIRouter(prefix="/admin/case-assignment")
 router.include_router(staff_ui_guards_router)
+router.include_router(case_assignment_repair_router)
 
 
 async def _admin(request: Request, db: AsyncSession, header_token: str | None):
