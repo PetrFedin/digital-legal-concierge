@@ -211,17 +211,12 @@ from app.api.workdesk_integrity import (  # noqa: E402
     inject_workdesk_integrity,
     router as workdesk_integrity_router,
 )
-from app.api.workdesk_integrity_guard import (  # noqa: E402
-    router as workdesk_integrity_guard_router,
-)
 
 technical_case_recovery.WORKDESK_HTML = inject_workdesk_integrity(
     technical_case_recovery.WORKDESK_HTML
 )
-# Guarded integrity/recovery routes must be registered before the legacy
-# workdesk-integrity router so duplicate URL shapes resolve to the hardened
-# personal-session implementation.
-router.include_router(workdesk_integrity_guard_router)
+# The hardened integrity endpoint is mounted earlier by initial_setup_wizard.
+# Keep only M1 proof-bound recovery here, before the legacy workdesk routes.
 router.include_router(m1_internal_payment_recovery_router)
 router.include_router(workdesk_integrity_router)
 router.include_router(technical_case_recovery.router)
