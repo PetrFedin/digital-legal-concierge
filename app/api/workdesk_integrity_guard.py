@@ -32,6 +32,33 @@ def _rebuild_item(item: dict) -> None:
         }
 
 
+def _route_actionable_exceptions(item: dict) -> None:
+    """Point integrity findings only to screens that can actually finish them."""
+
+    case_id = int(item.get("case_id") or 0)
+    changed = False
+    for issue in item.get("issues") or []:
+        code = str(issue.get("code") or "")
+        if code == "m2_client_no_show_resolution_required":
+            # The generic case action screen intentionally handles BOOKED and
+            # LAWYER_NO_SHOW only. CLIENT_NO_SHOW has different economics:
+            # a new booking requires a new payment, or the matter is closed.
+            issue["action_label"] = "Решить неявку клиента"
+            issue["action_href"] = f"/admin/consultation-outcomes/ui?case_id={case_id}"
+            issue["action_kind"] = None
+            changed = True
+        elif code == "m2_unsupported_legacy_outcome":
+            # There is no safe generic status switch for proof-bearing M2
+            # states. Keep the operator in the canonical exception queue rather
+            # than sending them to a case action page with no valid mutation.
+            issue["action_label"] = "Открыть контроль консультаций"
+            issue["action_href"] = f"/admin/consultation-outcomes/ui?case_id={case_id}"
+            issue["action_kind"] = None
+            changed = True
+    if changed:
+        _rebuild_item(item)
+
+
 def _normalize_refund_pending_case(item: dict) -> None:
     if str(item.get("status")) != CaseStatus.M2_CONSULTATION_DONE.value:
         return
@@ -120,6 +147,7 @@ async def workdesk_integrity_guard(
     items = list(result.get("items") or [])
     for item in items:
         _normalize_refund_pending_case(item)
+        _route_actionable_exceptions(item)
     await _add_stuck_money_received(db, items)
     items.sort(
         key=lambda item: (
