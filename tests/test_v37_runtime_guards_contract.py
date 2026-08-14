@@ -10,11 +10,16 @@ def read(path: str) -> str:
 def test_guided_workdesk_mounts_process_integrity():
     source = read("app/api/workdesk_timeline.py")
     scanner = read("app/api/workdesk_integrity.py")
+    guard = read("app/api/workdesk_integrity_guard.py")
+    setup = read("app/api/initial_setup_wizard.py")
     assert "inject_workdesk_integrity" in source
     assert "router.include_router(workdesk_integrity_router)" in source
     assert '@router.get("/admin/workdesk/integrity")' in scanner
+    assert '@router.get("/admin/workdesk/integrity")' in guard
     assert "m1_contract_confirmation_missing" in scanner
     assert "m2_expired_hold_not_reconciled" in scanner
+    assert "m1_money_received_stage_stuck" in guard
+    assert "router.include_router(workdesk_integrity_guard_router)" in setup
 
 
 def test_client_success_fee_callback_cannot_open_business_stage():
@@ -57,3 +62,50 @@ def test_recovery_changes_only_explicit_locked_rows():
     assert 'Notification.id.in_(notification_ids)' in source
     assert "Payment.expires_at <= now" in source
     assert ".with_for_update()" in source
+
+
+def test_lawyer_no_show_refund_leaves_no_booked_case_or_blocked_slot():
+    source = read("app/domain/consultations/no_show_resolution_service.py")
+    assert "CaseStatus.M2_CONSULTATION_DONE" in source
+    assert "consultation.status = ConsultationStatus.CANCELLED" in source
+    assert "payment.status = PaymentStatus.REFUND_PENDING" in source
+    assert 'slot.status = "available"' in source
+    assert "_advance_refund_case" in source
+    assert ".with_for_update()" in source
+
+
+def test_confirmed_m2_refund_closes_consultation_case_only_after_real_resolution():
+    guard = read("app/api/refund_resolution_guard.py")
+    operator = read("app/api/operator_guard.py")
+    assert '@router.post("/admin/refunds/{payment_id}/resolve")' in guard
+    assert 'if decision == "refunded"' in guard
+    assert "CaseStatus.M2_CONSULTATION_DONE" in guard
+    assert "CaseStatus.M2_CLOSED" in guard
+    assert "REFUND_DECLINED" not in guard
+    assert "router.include_router(refund_resolution_guard_router)" in operator
+
+
+def test_m2_outcomes_and_legacy_readiness_shells_are_server_guarded():
+    setup = read("app/api/initial_setup_wizard.py")
+    outcomes_guard = read("app/api/consultation_outcomes_ui_guard.py")
+    assert "resolve_document_actor" in outcomes_guard
+    assert '@router.get("/admin/consultation-outcomes/ui"' in outcomes_guard
+    assert "router.include_router(consultation_outcomes_ui_guard_router)" in setup
+    assert '@router.get("/install-wizard")' in setup
+    assert '@router.get("/install-wizard/ui")' in setup
+    assert '@router.get("/launch-assistant/status")' in setup
+    assert '@router.get("/launch-assistant")' in setup
+
+
+def test_public_health_and_ready_do_not_expose_environment_or_secret_flags():
+    setup = read("app/api/initial_setup_wizard.py")
+    health_body = setup.split('@router.get("/health")', 1)[1].split('@router.get("/ready")', 1)[0]
+    ready_body = setup.split('@router.get("/ready")', 1)[1].split('@router.get("/initial-setup-wizard/status")', 1)[0]
+    assert "app_env" not in health_body
+    assert "database_url" not in health_body
+    assert "admin_api_token" not in health_body
+    assert 'return {"ok": True, "version": VERSION}' in health_body
+    assert "database_url" not in ready_body
+    assert "admin_api_token" not in ready_body
+    assert "payment_webhook_secret" not in ready_body
+    assert 'return {"ok": ready, "version": VERSION}' in ready_body
