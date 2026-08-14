@@ -8,8 +8,10 @@ from app.domain.cases.assignment_policy import (
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.sla_service import CaseSLAService
 from app.domain.notifications.notification_engine import NotificationEngine
+from app.models.admin_user import AdminUser
 from app.models.case import Case
 from app.models.lawyer import Lawyer
+from app.security.access_control import ROLE_LAWYER, normalize_roles
 
 
 CLOSED_CASE_STATUSES = {
@@ -29,6 +31,40 @@ class CaseAssignmentService:
         self.notifications = NotificationEngine(db)
         self.sla = CaseSLAService(db)
 
+    async def _active_lawyer_login_emails(self) -> set[str]:
+        """Return staff emails that can actually authenticate as a lawyer.
+
+        Lawyer is the business profile used for workload/ownership, while
+        AdminUser is the personal login account. A profile without an active
+        AdminUser+lawyer role is not an operational assignee: assigning a case
+        to it would create an E2E dead end because nobody could open the lawyer
+        cabinet as that person.
+        """
+
+        rows = (
+            await self.db.execute(
+                select(AdminUser.email, AdminUser.role).where(
+                    AdminUser.is_active.is_(True),
+                    AdminUser.email.is_not(None),
+                )
+            )
+        ).all()
+        return {
+            str(email).strip().lower()
+            for email, roles in rows
+            if str(email or "").strip()
+            and ROLE_LAWYER in normalize_roles(roles)
+        }
+
+    async def _assert_lawyer_login_ready(self, lawyer: Lawyer) -> None:
+        email = str(lawyer.email or "").strip().lower()
+        login_emails = await self._active_lawyer_login_emails()
+        if not email or email not in login_emails:
+            raise ValueError(
+                "Юрист не имеет активного персонального аккаунта с ролью lawyer. "
+                "Создайте/восстановите сотрудника через Управление доступом и только потом назначайте дело"
+            )
+
     async def list_active_lawyers(self) -> list[dict]:
         workload = (
             select(
@@ -43,6 +79,7 @@ class CaseAssignmentService:
             .subquery()
         )
 
+        login_emails = await self._active_lawyer_login_emails()
         result = await self.db.execute(
             select(Lawyer, func.coalesce(workload.c.active_cases, 0))
             .outerjoin(workload, workload.c.lawyer_id == Lawyer.id)
@@ -52,6 +89,9 @@ class CaseAssignmentService:
 
         lawyers: list[dict] = []
         for lawyer, active_cases in result.all():
+            lawyer_email = str(lawyer.email or "").strip().lower()
+            if not lawyer_email or lawyer_email not in login_emails:
+                continue
             active_cases = int(active_cases)
             workload_limit = max(int(lawyer.workload_limit or 0), 0)
             lawyers.append(
@@ -68,6 +108,7 @@ class CaseAssignmentService:
                     "is_available": (
                         workload_limit > 0 and active_cases < workload_limit
                     ),
+                    "login_ready": True,
                 }
             )
         return lawyers
@@ -372,6 +413,7 @@ class CaseAssignmentService:
         ).scalar_one_or_none()
         if lawyer is None:
             raise LookupError("Юрист не найден")
+        await self._assert_lawyer_login_ready(lawyer)
         return lawyer
 
     async def _count_active_cases(self, lawyer_id: int) -> int:
