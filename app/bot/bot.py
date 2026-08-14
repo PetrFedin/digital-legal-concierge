@@ -28,6 +28,7 @@ from app.bot.draft_protection import (
 from app.bot.lease import TelegramPollingLease
 from app.bot.screens import (
     calculator,
+    calculator_unknown_data_guard,
     common,
     consent_decision_guard,
     consent_flow,
@@ -167,6 +168,7 @@ def build_dispatcher() -> Dispatcher:
     for router in [
         common.router,
         post_calculation.router,
+        calculator_unknown_data_guard.router,
         calculator.router,
         my_case.router,
         document_action_center.router,
