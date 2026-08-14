@@ -92,6 +92,17 @@ def install_client_wording() -> None:
 
     original_next_action = document_action_center._next_action
 
+    def bind_document_mutations(case, buttons):
+        case_id = int(case.id)
+        result = []
+        for label, callback in buttons:
+            if callback == "doc_finish_upload":
+                callback = f"doc_finish_upload:v2:{case_id}"
+            elif callback == "doc_skip_m2":
+                callback = f"doc_skip_m2:v2:{case_id}"
+            result.append((label, callback))
+        return result
+
     def next_action_with_real_review_boundary(case, documents):
         counts = document_action_center._counts(documents)
         status = document_action_center._case_status(case)
@@ -108,7 +119,8 @@ def install_client_wording() -> None:
                 "отправлять эти файлы не нужно.",
                 [("🔄 Проверить статус", "documents_open")],
             )
-        return original_next_action(case, documents)
+        text, buttons = original_next_action(case, documents)
+        return text, bind_document_mutations(case, buttons)
 
     document_action_center._next_action = next_action_with_real_review_boundary
     document_action_center._client_handoff_wording_installed = True
