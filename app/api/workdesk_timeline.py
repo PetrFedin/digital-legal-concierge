@@ -42,6 +42,8 @@ _ACTION_TITLES = {
     "M1_POA_RECEIVED_CONFIRMED": "Юрист подтвердил получение доверенности",
     "PAYMENT_PAID": "Оплата подтверждена",
     "M1_STALE_PAYMENT_REFUND_REQUIRED": "Поздний платёж направлен в возврат",
+    "M1_PAYMENT_REFUND_COMPLETED": "Возврат M1 отмечен выполненным",
+    "M1_PAYMENT_REFUND_DECLINED": "По возврату M1 зафиксирован отказ",
     "M1_MONEY_RECEIVED": "Зафиксировано фактическое взыскание",
     "M1_CLAIM_SENT": "Претензия направлена",
     "M1_COURT_OPENED": "Судебный этап открыт",
@@ -53,9 +55,16 @@ _ACTION_TITLES = {
     "CONSULTATION_BOOKED_AFTER_PAYMENT": "Оплата применена, консультация подтверждена",
     "CONSULTATION_SLOT_HOLD_EXPIRED": "Истёк резерв времени консультации",
     "CONSULTATION_COMPLETED": "Зафиксирован результат консультации",
+    "CONSULTATION_LEGACY_OUTCOME_RESOLVED": "Уточнён итог старой консультации",
     "CONSULTATION_CLIENT_NO_SHOW": "Зафиксирована неявка клиента",
+    "CONSULTATION_CLIENT_NO_SHOW_REBOOKING_OPENED": "После неявки клиента открыта новая запись",
+    "CONSULTATION_CLIENT_NO_SHOW_CASE_CLOSED": "Обращение закрыто после неявки клиента",
     "CONSULTATION_LAWYER_NO_SHOW": "Зафиксирована неявка юриста",
     "CONSULTATION_REBOOKED_AFTER_LAWYER_NO_SHOW": "Консультация бесплатно перенесена",
+    "CONSULTATION_LAWYER_NO_SHOW_REFUND_REQUESTED": "Возврат открыт после неявки юриста",
+    "CONSULTATION_CANCELLATION_REQUESTED": "Консультация отменена, возврат передан в работу",
+    "CONSULTATION_REFUND_COMPLETED": "Возврат консультации отмечен выполненным",
+    "CONSULTATION_REFUND_DECLINED": "По возврату консультации зафиксирован отказ",
     "M2_CONSULTATION_DONE": "Консультация проведена",
     "M2_CLOSED": "Консультационное обращение закрыто",
     "CASE_ERROR_RECOVERED_TO_LAST_SAFE_STATUS": "Техническая блокировка снята",
@@ -164,9 +173,6 @@ async def workdesk_case_timeline(
     if before_id is not None:
         query = query.where(AuditLog.id < before_id)
 
-    # Fetch extra rows because a small number of technical case audit events may
-    # be hidden from the human timeline. Pagination stays cursor-based and never
-    # exposes raw old/new JSON values to the browser.
     scan_limit = min(limit * 4 + 1, 81)
     rows = list(
         (
@@ -181,8 +187,6 @@ async def workdesk_case_timeline(
     if has_more and page:
         next_before_id = int(page[-1].id)
     elif has_more and rows:
-        # Even a block containing only hidden technical events must advance the
-        # cursor, otherwise an older meaningful event becomes unreachable.
         next_before_id = int(rows[-1].id)
     else:
         next_before_id = None
@@ -196,10 +200,6 @@ async def workdesk_case_timeline(
     }
 
 
-# Workdesk extensions are mounted here because this router is registered before
-# the legacy workdesk router. The technical recovery module owns the guided
-# /admin/workdesk/ui override; enrich its base HTML with the read-only process
-# integrity banner before mounting that override.
 from app.api import technical_case_recovery as technical_case_recovery  # noqa: E402
 from app.api.workdesk_integrity import (  # noqa: E402
     inject_workdesk_integrity,
