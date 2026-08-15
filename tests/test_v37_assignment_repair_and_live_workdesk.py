@@ -38,13 +38,24 @@ def test_unreachable_assignee_repair_is_snapshot_locked_and_not_manual_status_ed
     assert "next_status" not in source
 
 
-def test_repair_keeps_case_controlled_when_replacement_capacity_is_absent():
+def test_repair_keeps_unassignment_durable_when_replacement_races_or_capacity_is_absent():
     source = read("app/api/case_assignment_repair.py")
 
-    assert '"unassigned_waiting_capacity"' in source
-    assert '"obsolete_assignment_removed"' in source
-    assert '"reassigned"' in source
-    assert "await db.commit()" in source
+    repair = source.split("async def repair_unreachable_assignment(", 1)[1].split(
+        '@router.get(\n    "/admin/case-assignment/cases/{case_id}/repair-unreachable/ui"', 1
+    )[0]
+    assert "await service.unassign_case(" in repair
+    assert "async with db.begin_nested():" in repair
+    assert "except (LookupError, ValueError) as error:" in repair
+    assert "CASE_REASSIGNMENT_DEFERRED_AFTER_UNREACHABLE_REMOVAL" in repair
+    assert "await db.commit()" in repair
+    assert '"unassigned_waiting_capacity"' in repair
+    assert '"replacement_warning": replacement_warning' in repair
+
+
+def test_repair_availability_counter_excludes_fully_loaded_lawyers():
+    source = read("app/api/case_assignment_repair.py")
+    assert 'sum(\n            1 for item in operational if bool(item.get("is_available"))\n        )' in source
 
 
 def test_workdesk_assign_button_routes_existing_assignee_to_repair_endpoint():
