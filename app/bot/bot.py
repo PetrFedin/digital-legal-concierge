@@ -15,7 +15,12 @@ from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.types import BotCommand, BotCommandScopeDefault, CallbackQuery, Message
 
 from app.bot.calculator_draft import CalculatorDraftNavigationMiddleware
+from app.bot.client_message_provenance import ClientMessageProvenanceMiddleware
 from app.bot.client_wording_patch import install_client_wording
+from app.bot.consultation_booking_provenance import ConsultationBookingProvenanceMiddleware
+from app.bot.consultation_description_provenance import (
+    ConsultationDescriptionProvenanceMiddleware,
+)
 from app.bot.consultation_route_guard import ConsultationRouteIsolationMiddleware
 from app.bot.document_replacement_protection import (
     ClientDocumentUploadStageProtectionMiddleware,
@@ -40,6 +45,7 @@ from app.bot.screens import (
     consultations,
     document_action_center,
     document_mutation_guard,
+    document_upload_binding_guard,
     documents,
     fallback,
     history,
@@ -47,7 +53,6 @@ from app.bot.screens import (
     m1_rejection_decision_guard,
     m1_rejection_recovery,
     m1_stages,
-    m1_stale_view_guard,
     messages,
     my_case,
     no_payment,
@@ -57,6 +62,7 @@ from app.bot.screens import (
     poa_handoff,
     post_calculation,
     service_contract,
+    telegram_safety_composite,
 )
 from app.bot.security import SlidingWindowRateLimiter
 from app.config import settings
@@ -157,21 +163,33 @@ def build_dispatcher() -> Dispatcher:
     # data, lets the canonical navigation render, then restores a paused draft.
     dispatcher.message.middleware(CalculatorDraftNavigationMiddleware())
     dispatcher.callback_query.middleware(CalculatorDraftNavigationMiddleware())
+
     dispatcher.message.middleware(DraftMessageNavigationProtectionMiddleware())
+    dispatcher.message.middleware(ConsultationDescriptionProvenanceMiddleware())
+    dispatcher.message.middleware(ClientMessageProvenanceMiddleware())
     dispatcher.message.middleware(ClientDocumentUploadStageProtectionMiddleware())
     dispatcher.message.middleware(DocumentReplacementUploadProtectionMiddleware())
     dispatcher.message.middleware(flood_control)
+
     dispatcher.callback_query.middleware(DraftProtectionMiddleware())
     dispatcher.callback_query.middleware(ConsultationRouteIsolationMiddleware())
+    dispatcher.callback_query.middleware(ConsultationBookingProvenanceMiddleware())
+    dispatcher.callback_query.middleware(ConsultationDescriptionProvenanceMiddleware())
+    dispatcher.callback_query.middleware(ClientMessageProvenanceMiddleware())
     dispatcher.callback_query.middleware(ClientDocumentUploadStageProtectionMiddleware())
     dispatcher.callback_query.middleware(flood_control)
     dispatcher.callback_query.middleware(CallbackAcknowledgeMiddleware())
+
+    # Order is a business invariant. Provenance-bearing/exact-case guards must
+    # see historical Telegram callbacks before the legacy action handlers can
+    # mutate a case, payment, document or appointment.
     for router in [
         common.router,
         post_calculation.router,
         calculator_unknown_data_guard.router,
         calculator.router,
         my_case.router,
+        document_upload_binding_guard.router,
         document_mutation_guard.router,
         document_action_center.router,
         documents.router,
@@ -183,6 +201,7 @@ def build_dispatcher() -> Dispatcher:
         m1_rejection_recovery.router,
         consultation_intake.router,
         no_payment.router,
+        telegram_safety_composite.router,
         payment_archive_guard.router,
         payments.router,
         consultations.router,
@@ -192,7 +211,6 @@ def build_dispatcher() -> Dispatcher:
         service_contract.router,
         poa_handoff.router,
         m1_legal_stages.router,
-        m1_stale_view_guard.router,
         m1_stages.router,
         messages.router,
         history.router,
@@ -265,7 +283,6 @@ async def run_bot() -> None:
                     retry_delay,
                 )
                 await asyncio.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2, max_retry_delay)
             except asyncio.CancelledError:
                 logger.info("Остановка Telegram-бота.")
                 raise
