@@ -9,8 +9,23 @@ from app.bot.document_replacement_protection import client_document_upload_allow
 from app.bot.keyboards import one
 from app.bot.screens import document_action_center, documents as legacy_documents
 from app.bot.states import DocumentUploadStates
+from app.domain.statuses.case_statuses import CaseStatus
 
 router = Router()
+
+_DOCUMENT_TYPE_CODES = {code for _, code in legacy_documents.TYPES}
+_M2_CAN_SKIP_STATUSES = {
+    CaseStatus.M2_DESCRIPTION_PENDING,
+    CaseStatus.M2_DOCUMENTS_OPTIONAL,
+    CaseStatus.M2_SLOT_PENDING,
+}
+
+
+def _case_status(case) -> CaseStatus | None:
+    try:
+        return case.status if isinstance(case.status, CaseStatus) else CaseStatus(str(case.status))
+    except (TypeError, ValueError):
+        return None
 
 
 def _bound_type(case_id: int, document_type: str) -> str:
@@ -29,7 +44,7 @@ def _parse_bound_type(value: str) -> tuple[int, str] | None:
         case_id = int(case_raw)
     except ValueError:
         return None
-    if case_id <= 0 or document_type not in legacy_documents._DOCUMENT_TYPE_CODES:
+    if case_id <= 0 or document_type not in _DOCUMENT_TYPE_CODES:
         return None
     return case_id, document_type
 
@@ -65,8 +80,8 @@ async def _render_bound_chooser(
         (f"Загрузить: {title}", _bound_type(case.id, code))
         for title, code in legacy_documents.TYPES
     ]
-    status = legacy_documents._case_status(case)
-    if case.route == "M2" and status in legacy_documents._M2_CAN_SKIP_STATUSES:
+    status = _case_status(case)
+    if str(case.route or "").upper() == "M2" and status in _M2_CAN_SKIP_STATUSES:
         items.append(("Продолжить без документов", f"doc_skip_m2:v2:{int(case.id)}"))
     items.extend(
         [
@@ -77,7 +92,7 @@ async def _render_bound_chooser(
     )
     requirement = (
         "Для передачи дела юридической команде обязательно загрузите актуальный ДДУ."
-        if case.route == "M1"
+        if str(case.route or "").upper() == "M1"
         else "Для консультации документы необязательны, но помогут юристу подготовиться."
     )
     await callback.message.edit_text(
@@ -101,8 +116,8 @@ async def safe_generic_upload_entry(
     state: FSMContext,
     db,
 ):
-    # This raw callback is navigation only. The freshly rendered type buttons
-    # carry the current case id and become the first provenance-bearing action.
+    # Raw callback is navigation only. Freshly rendered type buttons carry the
+    # exact current case id and become the first provenance-bearing action.
     await _render_bound_chooser(callback, state, db)
 
 
@@ -121,8 +136,8 @@ async def bound_document_type_choice(
     value = str(callback.data or "")
     parsed = _parse_bound_type(value)
     if parsed is None:
-        # Every legacy/unbound type selector is treated as stale provenance. It
-        # may refresh the current chooser, but never arms waiting_file directly.
+        # Every legacy/unbound type selector is stale provenance. It may refresh
+        # the current chooser but never arms waiting_file directly.
         await _render_bound_chooser(
             callback,
             state,
