@@ -4,7 +4,6 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.lawyer import assigned_case, assert_case_snapshot
-from app.api.lawyer_m1_enforcement import router as enforcement_router
 from app.db.session import get_db
 from app.domain.cases.m1_claim_service import M1ClaimService
 from app.domain.cases.sla_service import CaseSLAError, CaseSLAService
@@ -12,7 +11,6 @@ from app.domain.notifications.notification_engine import NotificationEngine
 from app.security.lawyer_access import require_lawyer_actor
 
 router = APIRouter(prefix="/lawyer", tags=["lawyer-m1-claim"])
-router.include_router(enforcement_router)
 
 
 def _snapshot(payload: dict | None) -> tuple[str | None, object | None, object | None]:
