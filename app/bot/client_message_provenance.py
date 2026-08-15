@@ -25,8 +25,8 @@ async def _current_case(event, db):
     return user, case
 
 
-async def _recover(event, state, text: str) -> None:
-    if state is not None:
+async def _recover(event, state, text: str, *, clear: bool = True) -> None:
+    if state is not None and clear:
         try:
             await state.clear()
         except Exception:
@@ -51,6 +51,64 @@ async def _recover(event, state, text: str) -> None:
             await event.answer(text, reply_markup=markup)
     except (TelegramBadRequest, TelegramNetworkError, TelegramServerError):
         logger.warning("Telegram не показал recovery переписки")
+
+
+async def _preserve_text_after_target_change(
+    event: Message,
+    state,
+    *,
+    current_case,
+) -> None:
+    """Keep the just-entered text as a draft without retargeting it implicitly."""
+
+    from app.bot.screens.messages import MessageStates, _draft_review_text
+
+    text = str(event.text or "").strip()
+    if not text:
+        await _recover(
+            event,
+            state,
+            "Активное дело изменилось. Пустой текст не сохранён и не отправлен.",
+            clear=False,
+        )
+        return
+
+    await state.update_data(
+        draft_text=text,
+        source_message_id=int(event.message_id),
+        client_message_recovery_case_id=(
+            int(current_case.id) if current_case is not None else None
+        ),
+    )
+    await state.set_state(MessageStates.confirming_message)
+    data = await state.get_data()
+
+    buttons: list[tuple[str, str]] = []
+    if current_case is not None:
+        buttons.append(
+            (
+                f"➡️ Перенести черновик в {current_case.case_number}",
+                f"message_retarget_current:v2:{int(current_case.id)}",
+            )
+        )
+    else:
+        buttons.append(("🆕 Подготовить новое обращение", "message_retarget_new_confirm"))
+    buttons.extend(
+        [
+            ("↩️ Проверить сохранённый черновик", "message_review_return"),
+            ("📁 Моё дело", "my_case_open"),
+            ("✖️ Отменить черновик", "message_discard_confirm"),
+        ]
+    )
+
+    preview = _draft_review_text(data)
+    await event.answer(
+        "⚠️ Пока вы вводили сообщение, активное дело изменилось.\n\n"
+        "Текст сохранён как черновик и НЕ отправлен в другое обращение. "
+        "Если хотите использовать его в актуальном деле, перенесите черновик отдельной кнопкой, затем ещё раз проверьте его и нажмите «Отправить вопрос».\n\n"
+        + preview,
+        reply_markup=one(*buttons),
+    )
 
 
 class ClientMessageProvenanceMiddleware:
@@ -84,11 +142,7 @@ class ClientMessageProvenanceMiddleware:
             return await handler(event, data)
 
         if db is None:
-            await _recover(
-                event,
-                state,
-                "Не удалось подтвердить дело для этого сообщения. Текст не отправлен команде.",
-            )
+            await _preserve_text_after_target_change(event, state, current_case=None)
             return None
 
         try:
@@ -97,19 +151,15 @@ class ClientMessageProvenanceMiddleware:
         except Exception:
             logger.exception("Не удалось проверить provenance клиентского сообщения")
             await db.rollback()
-            await _recover(
-                event,
-                state,
-                "Не удалось безопасно проверить текущее дело. Текст не отправлен команде.",
-            )
+            await _preserve_text_after_target_change(event, state, current_case=None)
             return None
 
         if expected_case_id <= 0 or case is None or int(case.id) != expected_case_id:
             await db.rollback()
-            await _recover(
+            await _preserve_text_after_target_change(
                 event,
                 state,
-                "ℹ️ Пока вы готовили сообщение, активное дело изменилось. Текст не был записан в другое обращение и остался видимым в вашем чате. Откройте актуальную переписку и отправьте его туда после проверки.",
+                current_case=case,
             )
             return None
 
