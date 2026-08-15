@@ -14,6 +14,8 @@ from app.domain.cases.client_case_scope import (
     CLIENT_COMPLETED_CASE_STATUSES,
     latest_completed_strict_m1_case_for_user,
 )
+from app.domain.consultations.consultation_intake import ConsultationDescriptionRequired
+from app.domain.consultations.slot_service import SlotUnavailableError
 from app.domain.payments.client_payment_reconciliation import (
     ACTIVE_LINK_STATUSES,
     ClientPaymentReconciliationService,
@@ -31,6 +33,11 @@ logger = logging.getLogger(__name__)
 # are reconciled to durable case/payment state before legacy renderers run.
 router.include_router(m1_stale_view_guard_router)
 _COMPLETED_VALUES = {str(status) for status in CLIENT_COMPLETED_CASE_STATUSES}
+_M1_CURRENT_STAGE_BY_CODE = {
+    PaymentCode.M1_INITIAL_PAYMENT.value: CaseStatus.M1_WAITING_PAYMENT_30000,
+    PaymentCode.M1_COURT_PAYMENT.value: CaseStatus.M1_WAITING_PAYMENT_70000,
+    PaymentCode.M1_SUCCESS_FEE.value: CaseStatus.M1_WAITING_SUCCESS_FEE,
+}
 
 
 def _case_is_completed(case) -> bool:
@@ -88,9 +95,18 @@ def _is_active_m2_link(payment, case) -> bool:
     return bool(
         payment
         and case
-        and payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT
-        and payment.status in ACTIVE_LINK_STATUSES
-        and str(case.route or "") == RouteCode.M2.value
+        and str(payment.payment_code) == PaymentCode.M2_CONSULTATION_PAYMENT.value
+        and str(payment.status) in {str(item) for item in ACTIVE_LINK_STATUSES}
+        and str(case.route or "").upper() == RouteCode.M2.value
+    )
+
+
+def _m1_payment_matches_current_stage(payment, case) -> bool:
+    expected = _M1_CURRENT_STAGE_BY_CODE.get(str(payment.payment_code))
+    return bool(
+        expected is not None
+        and str(case.route or "").upper() == RouteCode.M1.value
+        and str(case.status) == expected.value
     )
 
 
@@ -98,6 +114,12 @@ def _m2_stale_link_keyboard(case):
     items = []
     if str(case.status) == CaseStatus.M2_CONSULTATION_BOOKED.value:
         items.append(("👨‍⚖ Текущая запись", "consultation_booked_open"))
+    elif str(case.status) in {
+        CaseStatus.M2_SLOT_PENDING.value,
+        CaseStatus.M2_DOCUMENTS_OPTIONAL.value,
+        CaseStatus.M2_DESCRIPTION_PENDING.value,
+    }:
+        items.append(("📅 Выбрать актуальное время", "consult_booking_start"))
     items.extend(
         [
             ("📁 Обновить Моё дело", "my_case_open"),
@@ -151,33 +173,84 @@ async def _reconcile_m2_payment_view(callback: CallbackQuery, db, payment, case)
     return None, None, False
 
 
+async def _render_hold_lost(callback: CallbackQuery, error: Exception) -> None:
+    await callback.message.edit_text(
+        f"⏳ {error}\n\n"
+        "Старая ссылка не открыта. Вопрос и документы сохранены — выберите новое свободное время.",
+        reply_markup=one(
+            ("📅 Выбрать дату и время", "consult_booking_start"),
+            ("📁 Моё дело", "my_case_open"),
+            ("✉️ Написать команде", "message_create"),
+            ("🏠 Главная", "nav_home"),
+        ),
+    )
+
+
 @router.callback_query(lambda c: c.data == "payments_open")
 async def guard_active_m2_payment_list(callback: CallbackQuery, db):
-    """Synchronize active M2 links before the client sees the payment list."""
+    """Reconcile and materialize the exact current M2 payment before list render.
+
+    A client must be able to leave the reservation screen and later resume from
+    My Case / Payments without depending on a historical raw `consult_pay`
+    callback. Creating the internal obligation is safe here only after the exact
+    live consultation hold has been validated by PaymentService.
+    """
 
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     case = await ctx.case_service.get_active_case_for_user(user.id)
-    if case is None or str(case.route or "") != RouteCode.M2.value:
+    if case is None or str(case.route or "").upper() != RouteCode.M2.value:
         await payment_screen.payments(callback, db)
         return
 
-    payments = await PaymentService(db).list_case_payments(case.id)
+    service = PaymentService(db)
+    payments = await service.list_case_payments(case.id)
     active_links = [
         payment
         for payment in payments
-        if payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT
-        and payment.status in ACTIVE_LINK_STATUSES
+        if str(payment.payment_code) == PaymentCode.M2_CONSULTATION_PAYMENT.value
+        and str(payment.status) in {str(item) for item in ACTIVE_LINK_STATUSES}
     ]
     try:
-        service = ClientPaymentReconciliationService(db)
+        reconciler = ClientPaymentReconciliationService(db)
         for payment in active_links:
-            await service.reconcile(
+            await reconciler.reconcile(
                 payment_id=int(payment.id),
                 case_id=int(case.id),
             )
-        if active_links:
+
+        # Re-read status through the same non-expiring session. If a valid hold
+        # is still awaiting payment, ensure its exact reservation has a Payment
+        # row even when the user left the original Telegram screen before
+        # pressing the old raw consult_pay button.
+        if (
+            not payments_disabled()
+            and str(case.status) == CaseStatus.M2_PAYMENT_PENDING.value
+        ):
+            await service.get_or_create_payment(
+                case=case,
+                payment_code=PaymentCode.M2_CONSULTATION_PAYMENT,
+            )
+        if active_links or str(case.status) == CaseStatus.M2_PAYMENT_PENDING.value:
             await db.commit()
+    except SlotUnavailableError as error:
+        # PaymentService intentionally restores SLOT_PENDING before raising.
+        # Persist that cleanup instead of rolling the client back into the same
+        # dead hold.
+        await db.commit()
+        await _render_hold_lost(callback, error)
+        return
+    except ConsultationDescriptionRequired as error:
+        await db.rollback()
+        await callback.message.edit_text(
+            f"📝 {error}\n\nОплата не открыта. Сначала сохраните вопрос для юриста.",
+            reply_markup=one(
+                ("📝 Описать вопрос", "consult_subject_start"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
     except (LookupError, ValueError) as error:
         await db.rollback()
         logger.warning(
@@ -196,9 +269,41 @@ async def guard_active_m2_payment_list(callback: CallbackQuery, db):
     await payment_screen.payments(callback, db)
 
 
+@router.callback_query(lambda c: c.data == "consult_pay")
+async def legacy_consult_pay_is_navigation(callback: CallbackQuery, db):
+    """Historical unbound pay buttons never create a provider operation online."""
+
+    if payments_disabled():
+        # In no-payment mode this callback is not financial: the canonical
+        # handler confirms the exact current held slot under domain checks.
+        await payment_screen.consult_pay(callback, db)
+        return
+
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    case = await ctx.case_service.get_active_case_for_user(user.id)
+    if case is not None and str(case.route or "").upper() != RouteCode.M2.value:
+        await db.rollback()
+        await callback.message.edit_text(
+            "Эта старая кнопка относится к консультации, но сейчас активно другое дело. Платёж и новая запись не создавались.",
+            reply_markup=one(
+                ("📁 Моё дело", "my_case_open"),
+                ("💳 Актуальные оплаты", "payments_open"),
+                ("✉️ Написать команде", "message_create"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    # Use the current Payments entry point. It reconciles the reservation and
+    # creates only the internal exact obligation; the provider link is opened
+    # later by a concrete pay_open:<payment_id> callback.
+    await guard_active_m2_payment_list(callback, db)
+
+
 @router.callback_query(lambda c: bool(c.data) and c.data.startswith("pay_open:"))
 async def guard_archived_payment_open(callback: CallbackQuery, db):
-    """Keep completed payments read-only and active M2 links reservation-bound."""
+    """Open a provider URL only for an exact payment that still matches the case."""
 
     payment_id = _payment_id(callback)
     if payment_id is None:
@@ -224,8 +329,8 @@ async def guard_archived_payment_open(callback: CallbackQuery, db):
     if payment is None or case is None:
         return
     if (
-        payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT
-        and payment.status == PaymentStatus.EXPIRED
+        str(payment.payment_code) == PaymentCode.M2_CONSULTATION_PAYMENT.value
+        and str(payment.status) == PaymentStatus.EXPIRED.value
     ):
         if str(case.status) == CaseStatus.M2_CONSULTATION_BOOKED.value:
             text = (
@@ -242,6 +347,79 @@ async def guard_archived_payment_open(callback: CallbackQuery, db):
             reply_markup=_m2_stale_link_keyboard(case),
         )
         return
+
+    payment_status = str(payment.status)
+    active_payment = payment_status in {
+        PaymentStatus.PENDING.value,
+        PaymentStatus.WAITING_CONFIRMATION.value,
+    }
+    is_m2 = str(payment.payment_code) == PaymentCode.M2_CONSULTATION_PAYMENT.value
+    exact_context = is_m2 or _m1_payment_matches_current_stage(payment, case)
+
+    if active_payment and not exact_context:
+        await db.rollback()
+        await callback.message.edit_text(
+            "ℹ️ Эта платёжная запись относится к предыдущему этапу. Сохранённая ссылка скрыта и не будет открыта из старого сообщения.\n\n"
+            "Финансовый статус не изменён. Откройте актуальные оплаты текущего дела.",
+            reply_markup=one(
+                ("💳 Актуальные оплаты", "payments_open"),
+                ("📁 Моё дело", "my_case_open"),
+                ("✉️ Написать команде", "message_create"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    if active_payment and payments_disabled():
+        await db.rollback()
+        await callback.message.edit_text(
+            f"💳 {payment.title}\n\n"
+            f"Сумма: {payment_screen.money(payment.amount)}\n"
+            f"Статус: {payment_screen.client_payment_status_label(payment)}\n\n"
+            "Онлайн-оплата сейчас отключена. Ссылка провайдера не создаётся; команда изменит этап только после проверки фактического поступления.",
+            reply_markup=one(
+                ("💳 Все оплаты", "payments_open"),
+                ("📁 Моё дело", "my_case_open"),
+                ("✉️ Написать команде", "message_create"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    if active_payment and exact_context and not payment.payment_url:
+        try:
+            payment = await PaymentService(db).create_payment_link(payment)
+            await db.commit()
+        except (RuntimeError, ValueError) as error:
+            await db.rollback()
+            await callback.message.edit_text(
+                f"Ссылка оплаты пока не открыта: {error}\n\n"
+                "Платёжное обязательство и юридический этап сохранены. Повторите через «Оплаты» или напишите команде.",
+                reply_markup=one(
+                    ("💳 Все оплаты", "payments_open"),
+                    ("✉️ Написать команде", "message_create"),
+                    ("📁 Моё дело", "my_case_open"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+            )
+            return
+        except Exception:
+            await db.rollback()
+            logger.exception(
+                "Exact client payment link creation failed payment_id=%s case_id=%s",
+                payment.id,
+                case.id,
+            )
+            await callback.message.edit_text(
+                "Платёжный сервис временно недоступен. Старая ссылка не использована, данные дела сохранены.",
+                reply_markup=one(
+                    ("💳 Все оплаты", "payments_open"),
+                    ("✉️ Написать команде", "message_create"),
+                    ("📁 Моё дело", "my_case_open"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+            )
+            return
 
     await payment_screen.open_payment(callback, db)
 
@@ -287,8 +465,8 @@ async def guard_archived_fake_success(callback: CallbackQuery, db):
         if payment is None or case is None:
             return
         if (
-            payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT
-            and payment.status == PaymentStatus.EXPIRED
+            str(payment.payment_code) == PaymentCode.M2_CONSULTATION_PAYMENT.value
+            and str(payment.status) == PaymentStatus.EXPIRED.value
         ):
             await callback.message.edit_text(
                 "⏳ Тестовая кнопка относится к устаревшему резерву. Платёж не подтверждён и запись не изменена.",
