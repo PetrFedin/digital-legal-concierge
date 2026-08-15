@@ -101,6 +101,39 @@ async def protected_payment_review_ui(
     return HTMLResponse(PAYMENT_REVIEW_CENTER_HTML)
 
 
+@router.get("/admin/technical-cases/ui")
+async def retired_technical_cases_ui(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    """Retire the old technical-case destination into the canonical Workdesk.
+
+    Process Integrity and historical bookmarks may still point here. Do not
+    create a second troubleshooting cabinet: authenticate the admin, preserve a
+    valid case deep-link and redirect to the one operational control surface.
+    """
+
+    try:
+        await _admin(request, db, x_admin_token)
+    except DocumentAccessError as error:
+        if error.status_code == 401:
+            return RedirectResponse(url="/login", status_code=303)
+        raise
+
+    raw_case_id = str(request.query_params.get("case_id") or "").strip()
+    try:
+        case_id = int(raw_case_id) if raw_case_id else None
+    except ValueError:
+        case_id = None
+    target = (
+        f"/admin/workdesk/ui?case_id={case_id}"
+        if case_id is not None and case_id > 0
+        else "/admin/workdesk/ui"
+    )
+    return RedirectResponse(url=target, status_code=303)
+
+
 @router.get("/admin/sla/ui", response_class=HTMLResponse)
 async def protected_sla_ui(
     request: Request,
