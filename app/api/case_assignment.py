@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.case_assignment_repair import router as case_assignment_repair_router
+from app.api.m1_internal_payment_recovery import router as m1_internal_payment_recovery_router
 from app.api.m2_payment_reservation_repair import router as m2_payment_reservation_repair_router
 from app.api.refund_resolution_guard import router as refund_resolution_guard_router
 from app.api.staff_ui_guards import router as staff_ui_guards_router
@@ -23,6 +24,7 @@ router = APIRouter(tags=["admin", "case-assignment"])
 assignment_router = APIRouter(prefix="/admin/case-assignment")
 router.include_router(staff_ui_guards_router)
 router.include_router(workdesk_integrity_guard_router)
+router.include_router(m1_internal_payment_recovery_router)
 router.include_router(m2_payment_reservation_repair_router)
 router.include_router(refund_resolution_guard_router)
 router.include_router(case_assignment_repair_router)
