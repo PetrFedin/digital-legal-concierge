@@ -283,6 +283,7 @@ async def run_bot() -> None:
                     retry_delay,
                 )
                 await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, max_retry_delay)
             except asyncio.CancelledError:
                 logger.info("Остановка Telegram-бота.")
                 raise
