@@ -24,8 +24,9 @@ def install_client_wording() -> None:
 
     from app.bot.client_case_view import CLIENT_ACTIONS, ClientAction
     from app.bot.keyboards import one
-    from app.bot.screens import calculator, document_action_center, my_case, payments
+    from app.bot.screens import calculator, document_action_center, documents, my_case, payments
     from app.config import settings
+    from app.domain.payments.mode import payments_disabled
     from app.domain.statuses.case_statuses import CaseStatus
 
     my_case._document_detail = document_detail_for_client
@@ -79,11 +80,42 @@ def install_client_wording() -> None:
         "pay_success_fee",
         "Оплатите рассчитанный процент от фактически взысканной суммы. После подтверждения финансовый этап завершается.",
     )
-    CLIENT_ACTIONS["M2_PAYMENT_PENDING"] = ClientAction(
-        "Перейти к оплате консультации",
-        "consult_pay",
-        "Оплатите консультацию для выбранного времени. Если резерв времени уже истёк, система вернёт вас к выбору актуального слота.",
-    )
+    if payments_disabled():
+        CLIENT_ACTIONS["M2_PAYMENT_PENDING"] = ClientAction(
+            "Подтвердить выбранное время",
+            "consult_pay",
+            "Онлайн-оплата для этого маршрута отключена. Подтвердите только актуальный удерживаемый слот; если резерв истёк, бот вернёт к выбору времени.",
+        )
+    else:
+        CLIENT_ACTIONS["M2_PAYMENT_PENDING"] = ClientAction(
+            "Открыть оплату консультации",
+            "payments_open",
+            "Откройте платёж, привязанный к текущему резерву. Старая ссылка другого слота не будет показана.",
+        )
+
+    # The legacy document screen is still a live entry point. Keep its primary
+    # M2 confirmation action aligned with My Case/action-center so new screens do
+    # not emit raw online consult_pay callbacks. Historical messages remain
+    # backward-compatible through payment_archive_guard.
+    original_after_documents_buttons = documents._after_documents_buttons
+
+    def route_aware_after_documents_buttons(case):
+        buttons = list(original_after_documents_buttons(case))
+        if documents._case_status(case) != CaseStatus.M2_PAYMENT_PENDING:
+            return tuple(buttons)
+        primary = (
+            ("Подтвердить выбранное время", "consult_pay")
+            if payments_disabled()
+            else ("💳 Открыть актуальную оплату", "payments_open")
+        )
+        result = [primary]
+        for label, callback in buttons:
+            if callback == "consult_pay":
+                continue
+            result.append((label, callback))
+        return tuple(result)
+
+    documents._after_documents_buttons = route_aware_after_documents_buttons
 
     document_action_center._STATUS_LABELS["ON_REVIEW"] = "передан юридической команде"
 
@@ -103,8 +135,8 @@ def install_client_wording() -> None:
             result.append((label, callback))
         return result
 
-    def next_action_with_real_review_boundary(case, documents):
-        counts = document_action_center._counts(documents)
+    def next_action_with_real_review_boundary(case, documents_list):
+        counts = document_action_center._counts(documents_list)
         status = document_action_center._case_status(case)
         if (
             status == CaseStatus.M1_DOCUMENTS_RECEIVED
@@ -119,7 +151,7 @@ def install_client_wording() -> None:
                 "отправлять эти файлы не нужно.",
                 [("🔄 Проверить статус", "documents_open")],
             )
-        text, buttons = original_next_action(case, documents)
+        text, buttons = original_next_action(case, documents_list)
         return text, bind_document_mutations(case, buttons)
 
     document_action_center._next_action = next_action_with_real_review_boundary
