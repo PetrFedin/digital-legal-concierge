@@ -9,10 +9,13 @@ from app.config import settings
 from app.db.session import get_db
 from app.domain.cases.case_timeline import get_client_visible_status
 from app.domain.cases.m1_internal_payment_recovery import M1InternalPaymentRecoveryService
+from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models.admin_user import AdminUser
 from app.models.case import Case
+from app.models.consultation import Consultation
+from app.models.consultation_slot import ConsultationSlot
 from app.models.lawyer import Lawyer
 from app.models.payment import Payment
 from app.models.user import User
@@ -30,6 +33,10 @@ _TERMINAL_CASE_STATUSES = {
     CaseStatus.M1_CLOSED.value,
     CaseStatus.M2_CLOSED.value,
     CaseStatus.ARCHIVED.value,
+}
+_M2_CLIENT_OPEN_PAYMENT_STATUSES = {
+    PaymentStatus.PENDING.value,
+    PaymentStatus.WAITING_CONFIRMATION.value,
 }
 
 
@@ -159,9 +166,6 @@ async def _add_declined_refunds(db: AsyncSession, items: list[dict]) -> None:
 
 
 async def _add_stuck_internal_paid_stages(db: AsyncSession, items: list[dict]) -> None:
-    source_statuses = tuple(plan.source.value for plan in M1InternalPaymentRecoveryService.__dict__.get("RECOVERY_PLANS", {}).values())
-    # RECOVERY_PLANS is module-level by design; use the public resolver below so
-    # this guard stays correct even if the plan table changes representation.
     source_statuses = (
         CaseStatus.M1_PAYMENT_30000_RECEIVED.value,
         CaseStatus.M1_PAYMENT_70000_RECEIVED.value,
@@ -314,6 +318,124 @@ async def _add_stuck_money_received(db: AsyncSession, items: list[dict]) -> None
         _append_issue(items, case, user, issue)
 
 
+async def _add_m2_payment_reservation_integrity(
+    db: AsyncSession,
+    items: list[dict],
+) -> None:
+    """Expose stale provider-link risk before the client clicks Telegram."""
+
+    rows = list(
+        (
+            await db.execute(
+                select(Payment, Case, User)
+                .join(Case, Case.id == Payment.case_id)
+                .join(User, User.id == Case.client_id)
+                .where(Payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT.value)
+                .where(Payment.status.in_(tuple(_M2_CLIENT_OPEN_PAYMENT_STATUSES)))
+                .where(Case.status.notin_(tuple(_TERMINAL_CASE_STATUSES)))
+                .order_by(Payment.created_at.asc(), Payment.id.asc())
+                .limit(1000)
+            )
+        ).all()
+    )
+    if not rows:
+        return
+
+    cases: dict[int, tuple[Case, User]] = {}
+    payments_by_case: dict[int, list[Payment]] = {}
+    for payment, case, user in rows:
+        case_id = int(case.id)
+        cases[case_id] = (case, user)
+        payments_by_case.setdefault(case_id, []).append(payment)
+
+    case_ids = list(cases)
+    consultation_rows = list(
+        (
+            await db.execute(
+                select(Consultation)
+                .where(Consultation.case_id.in_(case_ids))
+                .order_by(Consultation.case_id.asc(), Consultation.created_at.asc(), Consultation.id.asc())
+            )
+        ).scalars().all()
+    )
+    latest_consultation: dict[int, Consultation] = {}
+    for consultation in consultation_rows:
+        latest_consultation[int(consultation.case_id)] = consultation
+
+    slot_ids = {
+        int(consultation.slot_id)
+        for consultation in latest_consultation.values()
+        if consultation.slot_id is not None
+    }
+    slots: dict[int, ConsultationSlot] = {}
+    if slot_ids:
+        slot_rows = list(
+            (
+                await db.execute(
+                    select(ConsultationSlot).where(ConsultationSlot.id.in_(slot_ids))
+                )
+            ).scalars().all()
+        )
+        slots = {int(slot.id): slot for slot in slot_rows}
+
+    for case_id, case_payments in payments_by_case.items():
+        case, user = cases[case_id]
+        if str(case.status) != CaseStatus.M2_PAYMENT_PENDING.value:
+            for payment in case_payments:
+                _append_issue(
+                    items,
+                    case,
+                    user,
+                    {
+                        "code": f"m2_live_payment_outside_payment_stage_{int(payment.id)}",
+                        "severity": "critical",
+                        "title": "У M2 осталась активная платёжная ссылка вне этапа оплаты",
+                        "detail": (
+                            f"Платёж #{payment.id} остаётся {payment.status}, хотя дело находится в "
+                            f"{get_client_visible_status(str(case.status))}. Клиентский guard скроет старую ссылку, "
+                            "но финансовую запись нужно разобрать, чтобы она не оставалась доступной у провайдера."
+                        ),
+                        "action_label": "Проверить платёж",
+                        "action_href": f"/admin/payment-reviews/ui?case_id={case_id}&payment_id={int(payment.id)}",
+                        "action_kind": None,
+                    },
+                )
+            continue
+
+        consultation = latest_consultation.get(case_id)
+        slot = (
+            slots.get(int(consultation.slot_id))
+            if consultation is not None and consultation.slot_id is not None
+            else None
+        )
+        if consultation is None or slot is None:
+            # Base integrity already explains the missing consultation/held slot.
+            continue
+
+        expected_key = f"consultation:{int(consultation.id)}:slot:{int(slot.id)}"
+        for payment in case_payments:
+            if str(payment.reservation_key or "") == expected_key:
+                continue
+            _append_issue(
+                items,
+                case,
+                user,
+                {
+                    "code": f"m2_payment_reservation_mismatch_{int(payment.id)}",
+                    "severity": "critical",
+                    "title": "Платёж M2 привязан не к текущему резерву консультации",
+                    "detail": (
+                        f"Платёж #{payment.id}: reservation_key={payment.reservation_key or 'пусто'}, "
+                        f"ожидается {expected_key}. Такой provider-link нельзя считать текущей оплатой "
+                        "этого слота; клиентский Telegram-контур уже блокирует его при открытии."
+                    ),
+                    "action_label": "Разобрать платёж",
+                    "action_href": f"/admin/payment-reviews/ui?case_id={case_id}&payment_id={int(payment.id)}",
+                    "action_kind": None,
+                },
+            )
+
+
 @router.get("/admin/workdesk/integrity")
 async def workdesk_integrity_guard(
     request: Request,
@@ -335,6 +457,7 @@ async def workdesk_integrity_guard(
     await _add_stuck_internal_paid_stages(db, items)
     await _add_unreachable_assignees(db, items)
     await _add_stuck_money_received(db, items)
+    await _add_m2_payment_reservation_integrity(db, items)
     items.sort(
         key=lambda item: (
             0 if item.get("severity") == "critical" else 1,
