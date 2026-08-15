@@ -24,7 +24,14 @@ def install_client_wording() -> None:
 
     from app.bot.client_case_view import CLIENT_ACTIONS, ClientAction
     from app.bot.keyboards import one
-    from app.bot.screens import calculator, document_action_center, documents, my_case, payments
+    from app.bot.screens import (
+        calculator,
+        consultation_intake as consultation_intake_screen,
+        document_action_center,
+        documents,
+        my_case,
+        payments,
+    )
     from app.config import settings
     from app.domain.payments.mode import payments_disabled
     from app.domain.statuses.case_statuses import CaseStatus
@@ -93,29 +100,50 @@ def install_client_wording() -> None:
             "Откройте платёж, привязанный к текущему резерву. Старая ссылка другого слота не будет показана.",
         )
 
+    # New live slot-selection keyboards should not emit the historical unbound
+    # online consult_pay callback. Keep the callback only in no-payment mode,
+    # where it is a guarded confirmation of the exact current held slot.
+    if not getattr(consultation_intake_screen, "_route_aware_payment_cta_installed", False):
+        original_consultation_one = consultation_intake_screen.one
+
+        def route_aware_consultation_keyboard(*buttons):
+            routed = []
+            for label, callback in buttons:
+                if callback == "consult_pay" and not payments_disabled():
+                    callback = "payments_open"
+                    if str(label).strip().startswith("💳"):
+                        label = "💳 Открыть актуальную оплату"
+                routed.append((label, callback))
+            return original_consultation_one(*routed)
+
+        consultation_intake_screen.one = route_aware_consultation_keyboard
+        consultation_intake_screen._route_aware_payment_cta_installed = True
+
     # The legacy document screen is still a live entry point. Keep its primary
     # M2 confirmation action aligned with My Case/action-center so new screens do
     # not emit raw online consult_pay callbacks. Historical messages remain
     # backward-compatible through payment_archive_guard.
-    original_after_documents_buttons = documents._after_documents_buttons
+    if not getattr(documents, "_route_aware_payment_cta_installed", False):
+        original_after_documents_buttons = documents._after_documents_buttons
 
-    def route_aware_after_documents_buttons(case):
-        buttons = list(original_after_documents_buttons(case))
-        if documents._case_status(case) != CaseStatus.M2_PAYMENT_PENDING:
-            return tuple(buttons)
-        primary = (
-            ("Подтвердить выбранное время", "consult_pay")
-            if payments_disabled()
-            else ("💳 Открыть актуальную оплату", "payments_open")
-        )
-        result = [primary]
-        for label, callback in buttons:
-            if callback == "consult_pay":
-                continue
-            result.append((label, callback))
-        return tuple(result)
+        def route_aware_after_documents_buttons(case):
+            buttons = list(original_after_documents_buttons(case))
+            if documents._case_status(case) != CaseStatus.M2_PAYMENT_PENDING:
+                return tuple(buttons)
+            primary = (
+                ("Подтвердить выбранное время", "consult_pay")
+                if payments_disabled()
+                else ("💳 Открыть актуальную оплату", "payments_open")
+            )
+            result = [primary]
+            for label, callback in buttons:
+                if callback == "consult_pay":
+                    continue
+                result.append((label, callback))
+            return tuple(result)
 
-    documents._after_documents_buttons = route_aware_after_documents_buttons
+        documents._after_documents_buttons = route_aware_after_documents_buttons
+        documents._route_aware_payment_cta_installed = True
 
     document_action_center._STATUS_LABELS["ON_REVIEW"] = "передан юридической команде"
 
