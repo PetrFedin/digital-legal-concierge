@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.case_assignment_repair import router as case_assignment_repair_router
 from app.api.m2_payment_reservation_repair import router as m2_payment_reservation_repair_router
+from app.api.refund_resolution_guard import router as refund_resolution_guard_router
 from app.api.staff_ui_guards import router as staff_ui_guards_router
 from app.api.workdesk_integrity_guard import router as workdesk_integrity_guard_router
 from app.config import settings
@@ -15,13 +16,15 @@ from app.security.document_access import resolve_document_actor
 
 
 # Keep an unprefixed composite router because it is mounted before payment-review
-# and SLA routers in app.main. The assignment subrouter preserves all historical
-# /admin/case-assignment URLs while the early staff guards own their exact UI URLs.
+# and refund/SLA routers in app.main. The assignment subrouter preserves all
+# historical /admin/case-assignment URLs while the early staff guards own their
+# exact canonical UI and recovery URLs.
 router = APIRouter(tags=["admin", "case-assignment"])
 assignment_router = APIRouter(prefix="/admin/case-assignment")
 router.include_router(staff_ui_guards_router)
 router.include_router(workdesk_integrity_guard_router)
 router.include_router(m2_payment_reservation_repair_router)
+router.include_router(refund_resolution_guard_router)
 router.include_router(case_assignment_repair_router)
 
 
