@@ -10,7 +10,9 @@ from app.domain.cases.sla_service import CaseSLAError, CaseSLAService
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.security.lawyer_access import require_lawyer_actor
 
-router = APIRouter(tags=["lawyer-m1-enforcement"])
+# This router is mounted directly in app.main. Own the staff namespace here so
+# the endpoint cannot also appear as an accidental public-looking /cases/... URL.
+router = APIRouter(prefix="/lawyer", tags=["lawyer-m1-enforcement"])
 
 
 @router.post("/cases/{case_id}/enforcement/money-received")
