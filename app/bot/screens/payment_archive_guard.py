@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from aiogram import Router
 from aiogram.types import CallbackQuery
 
@@ -12,16 +14,21 @@ from app.domain.cases.client_case_scope import (
     CLIENT_COMPLETED_CASE_STATUSES,
     latest_completed_strict_m1_case_for_user,
 )
+from app.domain.payments.client_payment_reconciliation import (
+    ACTIVE_LINK_STATUSES,
+    ClientPaymentReconciliationService,
+)
 from app.domain.payments.mode import payments_disabled
 from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
-from app.domain.statuses.case_statuses import CaseStatus
+from app.domain.statuses.case_statuses import CaseStatus, RouteCode
 from app.domain.statuses.payment_statuses import PaymentStatus
 
 router = Router()
-# payment_archive_guard is mounted before legacy m1_stages in bot.py. Stale
-# informational callbacks live here so old POA/court buttons are reconciled to
-# the actual case state before the historical view handlers can render them.
+logger = logging.getLogger(__name__)
+# payment_archive_guard is mounted before legacy m1_stages/payments in bot.py.
+# Stale informational and payment callbacks live here so old Telegram controls
+# are reconciled to durable case/payment state before legacy renderers run.
 router.include_router(m1_stale_view_guard_router)
 _COMPLETED_VALUES = {str(status) for status in CLIENT_COMPLETED_CASE_STATUSES}
 
@@ -77,9 +84,121 @@ def _payment_id(callback: CallbackQuery) -> int | None:
         return None
 
 
+def _is_active_m2_link(payment, case) -> bool:
+    return bool(
+        payment
+        and case
+        and payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT
+        and payment.status in ACTIVE_LINK_STATUSES
+        and str(case.route or "") == RouteCode.M2.value
+    )
+
+
+def _m2_stale_link_keyboard(case):
+    items = []
+    if str(case.status) == CaseStatus.M2_CONSULTATION_BOOKED.value:
+        items.append(("👨‍⚖ Текущая запись", "consultation_booked_open"))
+    items.extend(
+        [
+            ("📁 Обновить Моё дело", "my_case_open"),
+            ("💳 Все оплаты", "payments_open"),
+            ("✉️ Написать команде", "message_create"),
+            ("🏠 Главная", "nav_home"),
+        ]
+    )
+    return one(*items)
+
+
+async def _render_m2_reconciliation_failure(callback: CallbackQuery) -> None:
+    await callback.message.edit_text(
+        "⚠️ Не удалось безопасно проверить актуальность ссылки оплаты.\n\n"
+        "Переход к платёжному провайдеру скрыт: бот не будет показывать старую ссылку, пока не сверит её с текущей записью. Данные дела и деньги не изменены.\n\n"
+        "Обновите «Моё дело» или напишите команде.",
+        reply_markup=one(
+            ("📁 Обновить Моё дело", "my_case_open"),
+            ("✉️ Написать команде", "message_create"),
+            ("🏠 Главная", "nav_home"),
+        ),
+    )
+
+
+async def _reconcile_m2_payment_view(callback: CallbackQuery, db, payment, case):
+    if not _is_active_m2_link(payment, case):
+        return payment, case, False
+    try:
+        payment, case, changed = await ClientPaymentReconciliationService(db).reconcile(
+            payment_id=int(payment.id),
+            case_id=int(case.id),
+        )
+        await db.commit()
+        return payment, case, changed
+    except (LookupError, ValueError) as error:
+        await db.rollback()
+        logger.warning(
+            "M2 payment view reconciliation rejected payment_id=%s case_id=%s: %s",
+            getattr(payment, "id", None),
+            getattr(case, "id", None),
+            error,
+        )
+    except Exception:
+        await db.rollback()
+        logger.exception(
+            "M2 payment view reconciliation failed payment_id=%s case_id=%s",
+            getattr(payment, "id", None),
+            getattr(case, "id", None),
+        )
+    await _render_m2_reconciliation_failure(callback)
+    return None, None, False
+
+
+@router.callback_query(lambda c: c.data == "payments_open")
+async def guard_active_m2_payment_list(callback: CallbackQuery, db):
+    """Synchronize active M2 links before the client sees the payment list."""
+
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    case = await ctx.case_service.get_active_case_for_user(user.id)
+    if case is None or str(case.route or "") != RouteCode.M2.value:
+        await payment_screen.payments(callback, db)
+        return
+
+    payments = await PaymentService(db).list_case_payments(case.id)
+    active_links = [
+        payment
+        for payment in payments
+        if payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT
+        and payment.status in ACTIVE_LINK_STATUSES
+    ]
+    try:
+        service = ClientPaymentReconciliationService(db)
+        for payment in active_links:
+            await service.reconcile(
+                payment_id=int(payment.id),
+                case_id=int(case.id),
+            )
+        if active_links:
+            await db.commit()
+    except (LookupError, ValueError) as error:
+        await db.rollback()
+        logger.warning(
+            "M2 payment list reconciliation rejected case_id=%s: %s",
+            case.id,
+            error,
+        )
+        await _render_m2_reconciliation_failure(callback)
+        return
+    except Exception:
+        await db.rollback()
+        logger.exception("M2 payment list reconciliation failed case_id=%s", case.id)
+        await _render_m2_reconciliation_failure(callback)
+        return
+
+    await payment_screen.payments(callback, db)
+
+
 @router.callback_query(lambda c: bool(c.data) and c.data.startswith("pay_open:"))
 async def guard_archived_payment_open(callback: CallbackQuery, db):
-    """Keep completed-case payment details strictly read-only."""
+    """Keep completed payments read-only and active M2 links reservation-bound."""
 
     payment_id = _payment_id(callback)
     if payment_id is None:
@@ -89,14 +208,42 @@ async def guard_archived_payment_open(callback: CallbackQuery, db):
     payment, case = await payment_screen.get_owned_payment(callback, db, payment_id)
     if not payment or not case:
         return
-    if not _case_is_completed(case):
-        await payment_screen.open_payment(callback, db)
+    if _case_is_completed(case):
+        await callback.message.edit_text(
+            _archive_payment_text(payment),
+            reply_markup=_archive_keyboard(),
+        )
         return
 
-    await callback.message.edit_text(
-        _archive_payment_text(payment),
-        reply_markup=_archive_keyboard(),
+    payment, case, _changed = await _reconcile_m2_payment_view(
+        callback,
+        db,
+        payment,
+        case,
     )
+    if payment is None or case is None:
+        return
+    if (
+        payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT
+        and payment.status == PaymentStatus.EXPIRED
+    ):
+        if str(case.status) == CaseStatus.M2_CONSULTATION_BOOKED.value:
+            text = (
+                "⏳ Эта старая ссылка оплаты больше не действует.\n\n"
+                "✅ Текущая подтверждённая консультация сохранена. Старый платёж не меняет её дату, слот или статус."
+            )
+        else:
+            text = (
+                "⏳ Эта ссылка оплаты больше не соответствует текущему резерву консультации.\n\n"
+                "Переход к провайдеру скрыт. Вопрос и документы сохранены; откройте актуальное дело и продолжите с текущего шага."
+            )
+        await callback.message.edit_text(
+            text,
+            reply_markup=_m2_stale_link_keyboard(case),
+        )
+        return
+
+    await payment_screen.open_payment(callback, db)
 
 
 @router.callback_query(lambda c: bool(c.data) and c.data.startswith("pay_fake_success:"))
@@ -131,6 +278,23 @@ async def guard_archived_fake_success(callback: CallbackQuery, db):
     if not payment or not case:
         return
     if not _case_is_completed(case):
+        payment, case, _changed = await _reconcile_m2_payment_view(
+            callback,
+            db,
+            payment,
+            case,
+        )
+        if payment is None or case is None:
+            return
+        if (
+            payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT
+            and payment.status == PaymentStatus.EXPIRED
+        ):
+            await callback.message.edit_text(
+                "⏳ Тестовая кнопка относится к устаревшему резерву. Платёж не подтверждён и запись не изменена.",
+                reply_markup=_m2_stale_link_keyboard(case),
+            )
+            return
         await payment_screen.fake(callback, db)
         return
 
