@@ -71,10 +71,10 @@ async def _recover(event, state, text: str) -> None:
 class ConsultationDescriptionProvenanceMiddleware:
     """Bind free-text M2 description input to its exact case and consultation.
 
-    A raw Telegram entry button can be historical. More importantly, there can
-    be minutes between opening the form and sending the text. The FSM snapshot
-    prevents a message started for one consultation from being stored in a newer
-    active M2 case after a route/booking recovery occurred in another tab/device.
+    Entry callbacks are allowed to create/recover the canonical M2 intake first;
+    only after that guarded handler succeeds do we snapshot the exact case and
+    consultation. The later free-text message is accepted only while that same
+    business context is still active.
     """
 
     async def __call__(self, handler, event, data):
@@ -82,35 +82,18 @@ class ConsultationDescriptionProvenanceMiddleware:
         db = data.get("db")
 
         if isinstance(event, CallbackQuery) and str(event.data or "") in _DESCRIPTION_ENTRY_CALLBACKS:
+            # The first consultation legitimately has no M2 context before the
+            # intake handler runs. Never make provenance protection itself block
+            # creation of the canonical draft.
+            result = await handler(event, data)
             if db is None or state is None:
-                await _recover(
-                    event,
-                    state,
-                    "Не удалось безопасно открыть форму вопроса. Ничего не изменено.",
-                )
-                return None
+                return result
             try:
                 _user, case, consultation = await _current_context(event, db)
-            except Exception:
-                logger.exception("Не удалось определить M2-контекст перед вводом вопроса")
-                await db.rollback()
-                await _recover(
-                    event,
-                    state,
-                    "Не удалось проверить текущее консультационное обращение. Ничего не изменено.",
-                )
-                return None
-            if case is None or consultation is None:
-                await db.rollback()
-                await _recover(
-                    event,
-                    state,
-                    "Активная консультация не найдена. Старый экран не создаёт новое обращение автоматически.",
-                )
-                return None
-
-            result = await handler(event, data)
-            try:
+                if case is None or consultation is None:
+                    # The underlying handler may have refused creation because a
+                    # different active route exists. Do not attach a fake snapshot.
+                    return result
                 await state.update_data(
                     consult_description_case_id=int(case.id),
                     consult_description_id=int(consultation.id),
