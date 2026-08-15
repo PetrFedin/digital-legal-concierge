@@ -8,6 +8,8 @@ from sqlalchemy import select
 
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
+from app.domain.statuses.case_statuses import CaseStatus
+from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.models.consultation import Consultation
 
 logger = logging.getLogger(__name__)
@@ -25,6 +27,8 @@ _PROVENANCE_KEYS = (
     "consult_booking_id",
     "consult_booking_message_id",
 )
+_PRIMARY_BOOKING_TOKENS = ("slot", "day", "time")
+_ADDITIONAL_BOOKING_TOKENS = ("date", "calendar", "book")
 
 
 def _looks_like_initial_booking_callback(value: str) -> bool:
@@ -33,15 +37,29 @@ def _looks_like_initial_booking_callback(value: str) -> bool:
         return False
     if data.startswith(_BOUND_OTHER_FLOWS):
         return False
+    if data == "consult_pay":
+        # Online payment is handled by the exact-payment guard; no-payment mode
+        # performs its own current-hold verification.
+        return False
     if not data.startswith("consult_"):
         return False
     lowered = data.lower()
-    return any(token in lowered for token in ("slot", "day", "time"))
+    return any(
+        token in lowered
+        for token in (_PRIMARY_BOOKING_TOKENS + _ADDITIONAL_BOOKING_TOKENS)
+    )
 
 
 def _looks_like_slot_choice(value: str) -> bool:
     data = str(value or "").lower()
     return "slot" in data and any(char.isdigit() for char in data)
+
+
+def _business_status(value, enum_type):
+    try:
+        return value if isinstance(value, enum_type) else enum_type(str(value))
+    except (TypeError, ValueError):
+        return None
 
 
 async def _current_context(event: CallbackQuery, db):
@@ -94,12 +112,13 @@ async def _recover(event: CallbackQuery, state, text: str) -> None:
 
 
 class ConsultationBookingProvenanceMiddleware:
-    """Keep historical raw slot keyboards from acting on a newer M2 case.
+    """Keep historical raw calendar keyboards from acting on a newer M2 case.
 
-    The existing cancellation/reschedule flows already carry consultation/slot
-    identifiers and are excluded. Initial calendar screens historically use raw
-    slot/day callbacks, so the middleware binds them to the current M2 case,
-    latest consultation and the Telegram message that rendered the calendar.
+    Initial date/time callbacks historically contain no case id, so every live
+    calendar is bound to the exact case, consultation and Telegram message that
+    rendered it. The snapshot is retired only after the business state proves
+    that slot selection actually succeeded; a failed slot race can therefore
+    render a fresh calendar without making that recovery screen unusable.
     """
 
     async def __call__(self, handler, event, data):
@@ -173,19 +192,54 @@ class ConsultationBookingProvenanceMiddleware:
             return None
 
         result = await handler(event, data)
-        if _looks_like_slot_choice(value):
-            # A slot click is a one-shot mutation boundary. The underlying slot
-            # service still performs its own availability/hold checks; clearing
-            # this snapshot prevents a rapid second click from reusing the same
-            # historical calendar after the first business action completed.
-            try:
+        if not _looks_like_slot_choice(value):
+            return result
+
+        try:
+            _user, current_case, current_consultation = await _current_context(event, db)
+            case_status = (
+                _business_status(current_case.status, CaseStatus)
+                if current_case is not None
+                else None
+            )
+            consultation_status = (
+                _business_status(current_consultation.status, ConsultationStatus)
+                if current_consultation is not None
+                else None
+            )
+            selection_committed = bool(
+                current_case is not None
+                and current_consultation is not None
+                and int(current_case.id) == expected_case_id
+                and int(current_consultation.id) == expected_consultation_id
+                and (
+                    case_status == CaseStatus.M2_PAYMENT_PENDING
+                    or consultation_status == ConsultationStatus.BOOKED
+                )
+            )
+            if selection_committed:
                 await state.update_data(
                     consult_booking_case_id=None,
                     consult_booking_id=None,
                     consult_booking_message_id=None,
                 )
-            except Exception:
-                logger.warning("Не удалось очистить использованный slot provenance")
+            else:
+                # The domain handler may have lost a race for the slot and
+                # rendered a fresh calendar in the same message. Keep/refresh
+                # the provenance so that recovery calendar remains usable.
+                await state.update_data(
+                    consult_booking_case_id=(
+                        int(current_case.id) if current_case is not None else expected_case_id
+                    ),
+                    consult_booking_id=(
+                        int(current_consultation.id)
+                        if current_consultation is not None
+                        else expected_consultation_id
+                    ),
+                    consult_booking_message_id=current_message_id,
+                )
+        except Exception:
+            logger.warning("Не удалось обновить slot provenance после выбора", exc_info=True)
         return result
 
 
