@@ -14,7 +14,19 @@ def test_lawyer_ui_shells_are_server_side_authenticated():
     assert '@router.get("/lawyer/consultation-desk/ui"' in guard
     assert "resolve_document_actor" in guard
     assert "settings.admin_session_cookie" in guard
-    assert "actor.role != ROLE_LAWYER" in guard
+    assert "allowed_roles=frozenset({ROLE_LAWYER})" in guard
+
+
+def test_shared_schedule_shell_requires_a_usable_staff_identity():
+    guard = read("app/api/staff_ui_shell_guard.py")
+    main = read("app/main.py")
+
+    assert '@router.get("/consultation-slots/ui"' in guard
+    assert "SLOTS_HTML" in guard
+    assert "allowed_roles=frozenset({ROLE_LAWYER, ROLE_ADMIN, ROLE_SUPERADMIN})" in guard
+    assert main.index('(\"initial_setup_wizard\", initial_setup_wizard_router)') < main.index(
+        '(\"consultation_slots\", consultation_slots_router)'
+    )
 
 
 def test_anonymous_lawyer_ui_goes_to_login_and_incomplete_staff_to_landing():
