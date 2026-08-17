@@ -50,6 +50,12 @@ async def _admin_ui_or_login(
     except DocumentAccessError as error:
         if error.status_code == 401:
             return None
+        if error.status_code in {403, 409}:
+            return StaffLandingProblem(str(error.detail))
+        raise
+    except HTTPException as error:
+        if error.status_code in {403, 409}:
+            return StaffLandingProblem(str(error.detail))
         raise
 
 
@@ -106,6 +112,16 @@ h1{{margin:0 0 8px;font-size:24px}}p{{line-height:1.55}}.detail{{background:var(
 </body>
 </html>
 """
+
+
+def _legacy_admin_ui_recovery(actor):
+    """Route old admin-only UI bookmarks without trapping another staff role."""
+
+    if actor is None:
+        return RedirectResponse(url="/login", status_code=303)
+    if isinstance(actor, StaffLandingProblem):
+        return RedirectResponse(url="/admin-ui", status_code=303)
+    return None
 
 
 @router.get("/health")
@@ -207,8 +223,9 @@ async def setup_ui(
     x_admin_token: str | None = Header(default=None),
 ):
     actor = await _admin_ui_or_login(request, db, x_admin_token)
-    if actor is None:
-        return RedirectResponse(url="/login", status_code=303)
+    recovery = _legacy_admin_ui_recovery(actor)
+    if recovery is not None:
+        return recovery
     return RedirectResponse(url="/settings-ui", status_code=303)
 
 
@@ -236,8 +253,9 @@ async def install_wizard_ui_guard(
     x_admin_token: str | None = Header(default=None),
 ):
     actor = await _admin_ui_or_login(request, db, x_admin_token)
-    if actor is None:
-        return RedirectResponse(url="/login", status_code=303)
+    recovery = _legacy_admin_ui_recovery(actor)
+    if recovery is not None:
+        return recovery
     return RedirectResponse(url="/diagnostic-center/ui", status_code=303)
 
 
@@ -267,8 +285,9 @@ async def launch_assistant_ui_guard(
     x_admin_token: str | None = Header(default=None),
 ):
     actor = await _admin_ui_or_login(request, db, x_admin_token)
-    if actor is None:
-        return RedirectResponse(url="/login", status_code=303)
+    recovery = _legacy_admin_ui_recovery(actor)
+    if recovery is not None:
+        return recovery
     return RedirectResponse(url="/admin/workdesk/ui", status_code=303)
 
 
