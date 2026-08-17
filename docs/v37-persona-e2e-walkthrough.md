@@ -83,6 +83,7 @@ Severity:
 | Manual full scheduler | Restricted to personal MFA superadmin and audited | OK |
 | Legacy technical/admin pages | Canonical redirects reduce parallel/demo control surfaces | OK |
 | Process contradiction | `/admin/workdesk/integrity` surfaces critical/warning contradictions and safe deep links | OK |
+| Staff account has only a non-product role or incomplete lawyer link | Canonical landing now shows an explicit access-setup screen with safe logout instead of raw JSON 403/409; it does not invent permissions or assignment | **P1 found and fixed** |
 
 ## Lawyer walkthrough
 
@@ -90,7 +91,8 @@ Severity:
 | --- | --- | --- |
 | Login before this audit pass | Password login created a valid lawyer session, then redirected every non-superadmin user to `/admin-ui`; the early `/admin-ui` guard accepted only admin/superadmin, so a lawyer could hit HTTP 403 immediately after successful login | **P0 found** |
 | Login after fix | `/admin-ui` is now a role-aware staff landing: admin/superadmin -> Workdesk, lawyer -> Lawyer Workspace | **FIXED** in commit `53053f41a6488fc8e3e423def02fc4ebac665bb2` |
-| Regression protection | Static contract added for role-aware login landing | **ADDED** in commit `206de67c4e64a4132aa000f8d2269f05537665d5` |
+| Incomplete/legacy lawyer account after login | Missing/inactive/unlinked lawyer business profile now produces a human-readable setup prerequisite and logout recovery instead of a dead-end JSON error; permissions remain fail-closed | **FIXED** in commit `2192339d6038d0c5c479f29307e966e59956655f` |
+| Regression protection | Static contracts cover role-aware login and incomplete staff landing recovery | **UPDATED** in commit `6154d96c5622cd884b6f2421e8759b6225f4e384` |
 | Lawyer workspace HTML | Earlier contract-aware route protects `/lawyer/workspace/ui` before returning the HTML shell | OK |
 | M1 ownership | M1 cards/actions use real assignment | OK |
 | M2 ownership | M2 cards are rebuilt from consultation-slot ownership, not fake M1 assignment | OK |
@@ -109,14 +111,15 @@ Severity:
 - Admin assignment and lawyer responsibility are not treated as the same concept for M2.
 - Financial receipt, legal facts and document review are staff-owned facts; client buttons only request/report client-side actions.
 - Closed cases are archives, not re-openable mutation surfaces.
+- Unsupported staff roles or incomplete lawyer linkage do not gain fallback permissions merely to make the UI open.
 
 ## Remaining gaps / next priority
 
-1. **Execute CI on the branch head.** The repository CI currently triggers on `main` pushes and pull requests to `main`; direct feature-branch pushes alone do not produce a CI run. Until a PR/staging run exists, no green-test claim is valid.
+1. **Execute real CI after restoring GitHub Actions runners.** A real pull-request workflow attempt exists, but jobs did not start because GitHub reported an account billing/spending-limit problem before runner allocation. That is infrastructure-blocked, not a test result.
 2. **Live Telegram walkthrough.** Static guards are extensive, but a real bot session is still required to validate message-edit limits, callback age, Redis FSM continuity, Telegram network retries and visual density on mobile.
 3. **Live payment-provider walkthrough.** Provider webhook ordering, late/duplicate callbacks, refunds and real reconciliation require staging credentials/provider callbacks.
-4. **`Назад` UX.** Current global recovery is safe but not a true navigation history. Implement a bounded logical navigation stack or explicit per-screen back targets without weakening stale-action guards.
-5. **Non-MVP staff roles.** `operator`/`tester` role constants exist, while the production product surfaces are intentionally client/admin/lawyer/superadmin oriented. Either formalize their permitted landing/read-only scope or prevent accidental creation/use as product users.
+4. **`Назад` UX.** Current global recovery is safe but not a true navigation history. Implement a bounded logical navigation stack or explicit per-screen back targets without weakening stale-action guards. Calculator steps already use explicit safe back callbacks.
+5. **Non-MVP staff roles.** `operator`/`tester` role constants still exist and can be assigned as technical roles. Their standalone landing is now fail-closed and recoverable, but product policy should ultimately either formalize a read-only scope or prevent standalone assignment.
 6. **Staging persona script.** Run one seeded case through every normal and exceptional transition with three separate accounts (client/admin/lawyer), capturing screenshots and resulting DB/status/audit evidence.
 
 ## Release rule
