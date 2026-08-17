@@ -34,8 +34,14 @@ async def consultation_outcomes_ui_guard(
     except DocumentAccessError as error:
         if error.status_code == 401:
             return RedirectResponse(url="/login", status_code=303)
+        if error.status_code in {403, 409}:
+            return RedirectResponse(url="/admin-ui", status_code=303)
+        raise
+    except HTTPException as error:
+        if error.status_code in {403, 409}:
+            return RedirectResponse(url="/admin-ui", status_code=303)
         raise
     if actor.role not in {ROLE_ADMIN, ROLE_SUPERADMIN}:
-        raise HTTPException(status_code=403, detail="Доступ только для администратора")
+        return RedirectResponse(url="/admin-ui", status_code=303)
     html = _inject_client_no_show_ui(OUTCOMES_HTML)
     return HTMLResponse(inject_legacy_outcome_ui(html))
