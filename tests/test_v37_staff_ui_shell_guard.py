@@ -37,14 +37,26 @@ def test_anonymous_lawyer_ui_goes_to_login_and_incomplete_staff_to_landing():
     assert "error.status_code in {403, 409}" in guard
 
 
-def test_guard_reuses_guided_workspace_and_consultation_patches():
+def test_guard_renders_full_composite_workspace_not_base_template():
     guard = read("app/api/staff_ui_shell_guard.py")
+    contract = read("app/api/contract_workspace_ui.py")
+    rejection = read("app/api/lawyer_workspace_rejection_ui.py")
+    consultation = read("app/api/lawyer_consultation_decision_guard.py")
 
-    assert "WORKSPACE_HTML" in guard
-    assert "CONSULTATION_DESK_HTML" in guard
-    assert "_WORKSPACE_DEEP_LINK_PATCH" in guard
-    assert "_CONSULTATION_DRAFT_PATCH" in guard
-    assert "_inject_patch" in guard
+    assert "contract_aware_workspace_html" in guard
+    assert "guarded_consultation_desk_html" in guard
+    assert "return HTMLResponse(contract_aware_workspace_html())" in guard
+    assert "return HTMLResponse(guarded_consultation_desk_html())" in guard
+
+    # Composite workspace must still contain all guided business patches that
+    # would otherwise be hidden by the early auth route's precedence.
+    assert "_WORKSPACE_DEEP_LINK_PATCH" in rejection
+    assert "_M1_REJECTION_PATCH" in rejection
+    assert "_M1_POA_PATCH" in rejection
+    assert "_COURT_DECISION_PATCH" in rejection
+    assert "_CONTRACT_WORKSPACE_PATCH" in contract
+    assert "_CONSULTATION_DRAFT_PATCH" in consultation
+    assert "ALLOWED_COMPLETION_DECISIONS" in consultation
 
 
 def test_staff_shell_guard_is_mounted_before_legacy_staff_routers():
@@ -54,9 +66,12 @@ def test_staff_shell_guard_is_mounted_before_legacy_staff_routers():
 
     assert "router.include_router(staff_ui_shell_guard_router)" in operator_guard
     assert "router.include_router(operator_guard_router)" in initial_setup
-    assert main.index('(\"initial_setup_wizard\", initial_setup_wizard_router)') < main.index(
-        '(\"guided_lawyer_ui\", guided_lawyer_ui_router)'
-    )
+    initial = main.index('(\"initial_setup_wizard\", initial_setup_wizard_router)')
+    assert initial < main.index('(\"guided_lawyer_ui\", guided_lawyer_ui_router)')
+    assert initial < main.index('(\"lawyer_workspace_rejection_ui\", lawyer_workspace_rejection_ui_router)')
+    assert initial < main.index('(\"contract_workspace_ui\", contract_workspace_ui_router)')
+    assert initial < main.index('(\"lawyer_workspace\", lawyer_workspace_router)')
+    assert initial < main.index('(\"lawyer_consultation_desk\", lawyer_consultation_desk_router)')
 
 
 def test_operator_hub_recovers_incomplete_or_unsupported_staff():
