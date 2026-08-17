@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.access_role_guard import router as access_role_guard_router
 from app.api.consultation_outcomes_ui_guard import router as consultation_outcomes_ui_guard_router
 from app.api.operator_guard import router as operator_guard_router
 from app.api.workdesk_integrity_guard import router as workdesk_integrity_guard_router
@@ -273,6 +274,7 @@ async def launch_assistant_ui_guard(
 
 # Mounted before legacy staff/workdesk/readiness routers in app.main. Exact
 # production endpoints below own the authenticated entrypoints.
+router.include_router(access_role_guard_router)
 router.include_router(operator_guard_router)
 router.include_router(consultation_outcomes_ui_guard_router)
 router.include_router(workdesk_integrity_guard_router)
