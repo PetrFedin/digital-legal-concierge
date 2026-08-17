@@ -5,6 +5,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.refund_resolution_guard import router as refund_resolution_guard_router
+from app.api.staff_ui_shell_guard import router as staff_ui_shell_guard_router
 from app.config import settings
 from app.db.session import get_db
 from app.security.access_control import ROLE_ADMIN, ROLE_LAWYER, ROLE_SUPERADMIN
@@ -73,12 +74,21 @@ async def operator_guard(
     except DocumentAccessError as error:
         if error.status_code == 401:
             return RedirectResponse(url="/login", status_code=303)
+        if error.status_code in {403, 409}:
+            return RedirectResponse(url="/admin-ui", status_code=303)
+        raise
+    except HTTPException as error:
+        if error.status_code in {403, 409}:
+            return RedirectResponse(url="/admin-ui", status_code=303)
         raise
     if actor.role not in {ROLE_LAWYER, ROLE_ADMIN, ROLE_SUPERADMIN}:
-        raise HTTPException(status_code=403, detail="Доступ только для сотрудников")
+        return RedirectResponse(url="/admin-ui", status_code=303)
     return HTMLResponse(_hub_html(actor.role))
 
 
-# operator_guard is mounted by initial_setup_wizard before the legacy refund
-# router. Keep the M2 refund lifecycle override in this early staff layer.
+# operator_guard is mounted by initial_setup_wizard before the legacy staff
+# routers. Keep staff HTML shell authentication and M2 refund lifecycle guards
+# in this early layer so an unauthenticated or incomplete account never falls
+# through to a legacy client-side-only page.
+router.include_router(staff_ui_shell_guard_router)
 router.include_router(refund_resolution_guard_router)
