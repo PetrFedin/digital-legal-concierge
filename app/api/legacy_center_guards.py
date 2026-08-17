@@ -21,6 +21,10 @@ async def _actor(request: Request, db: AsyncSession, header_token: str | None):
     return await resolve_document_actor(db, _token(request, header_token))
 
 
+def _role_recovery() -> RedirectResponse:
+    return RedirectResponse(url="/admin-ui", status_code=303)
+
+
 @router.get("/final-qa/status")
 async def final_qa_status_guard(
     request: Request,
@@ -52,9 +56,15 @@ async def final_qa_ui_guard(
     except DocumentAccessError as error:
         if error.status_code == 401:
             return RedirectResponse(url="/login", status_code=303)
+        if error.status_code in {403, 409}:
+            return _role_recovery()
+        raise
+    except HTTPException as error:
+        if error.status_code in {403, 409}:
+            return _role_recovery()
         raise
     if actor.role not in {ROLE_ADMIN, ROLE_SUPERADMIN}:
-        raise HTTPException(status_code=403, detail="Доступ только для администратора")
+        return _role_recovery()
     return RedirectResponse(url="/admin/workdesk/ui", status_code=303)
 
 
@@ -69,7 +79,13 @@ async def retention_ui_guard(
     except DocumentAccessError as error:
         if error.status_code == 401:
             return RedirectResponse(url="/login", status_code=303)
+        if error.status_code in {403, 409}:
+            return _role_recovery()
+        raise
+    except HTTPException as error:
+        if error.status_code in {403, 409}:
+            return _role_recovery()
         raise
     if actor.role != ROLE_SUPERADMIN:
-        raise HTTPException(status_code=403, detail="Доступ только для суперадминистратора")
+        return _role_recovery()
     return HTMLResponse(RETENTION_HTML)
