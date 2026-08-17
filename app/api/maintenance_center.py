@@ -57,6 +57,12 @@ async def maintenance_ui(
     except DocumentAccessError as error:
         if error.status_code == 401:
             return RedirectResponse(url="/login", status_code=303)
+        if error.status_code in {403, 409}:
+            return RedirectResponse(url="/admin-ui", status_code=303)
+        raise
+    except HTTPException as error:
+        if error.status_code in {403, 409}:
+            return RedirectResponse(url="/admin-ui", status_code=303)
         raise
     return RedirectResponse(url="/admin/workdesk/ui", status_code=303)
 
