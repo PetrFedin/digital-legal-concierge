@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.web_admin import _case_row
 from app.api.workdesk import CASE_ACTION_TASKS, _render_case_action_html
 from app.api.workdesk_ui import WORKDESK_HTML
 from app.config import settings
 from app.db.session import get_db
+from app.domain.cases.assignment_policy import AUTO_ASSIGNMENT_REQUIRED_STATUS_VALUES
+from app.models.case import Case
 from app.security.access_control import ROLE_ADMIN, ROLE_SUPERADMIN
 from app.security.document_access import DocumentAccessError, resolve_document_actor
 
@@ -77,6 +83,47 @@ async def _admin_ui_gate(
     if actor.role not in {ROLE_ADMIN, ROLE_SUPERADMIN}:
         return RedirectResponse(url="/admin-ui", status_code=303)
     return actor
+
+
+@router.get("/admin/work-queues/unassigned")
+async def guarded_unassigned_work_queue(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    """Show only cases where product policy actually requires M1 assignment.
+
+    The legacy generic queue treated every active unassigned case as staff work,
+    including client-owned pre-document M1 steps and M2 consultations whose
+    lawyer is chosen by the booked slot. The dashboard count already used the
+    correct policy; this exact early route makes the list match the count and
+    prevents a misleading "Назначить юриста" action on cases that must not be
+    manually assigned yet.
+    """
+
+    gate = await _admin_ui_gate(request, db, x_admin_token)
+    if isinstance(gate, RedirectResponse):
+        return gate
+    cases = list(
+        (
+            await db.execute(
+                select(Case)
+                .where(Case.assigned_lawyer_id.is_(None))
+                .where(Case.status.in_(AUTO_ASSIGNMENT_REQUIRED_STATUS_VALUES))
+                .order_by(Case.created_at.asc(), Case.id.asc())
+                .limit(200)
+            )
+        ).scalars().all()
+    )
+    return {
+        "queue": "unassigned",
+        "count": len(cases),
+        "items": [
+            _case_row(case, queue="unassigned", lawyer_name=None)
+            for case in cases
+        ],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 @router.get("/admin/workdesk/ui", response_class=HTMLResponse)
