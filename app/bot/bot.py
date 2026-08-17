@@ -55,6 +55,7 @@ from app.bot.screens import (
     m1_stages,
     messages,
     my_case,
+    navigation_history_guard,
     no_payment,
     no_payment_legal,
     payment_archive_guard,
@@ -182,8 +183,11 @@ def build_dispatcher() -> Dispatcher:
 
     # Order is a business invariant. Provenance-bearing/exact-case guards must
     # see historical Telegram callbacks before the legacy action handlers can
-    # mutate a case, payment, document or appointment.
+    # mutate a case, payment, document or appointment. The navigation-history
+    # guard is first only for idempotent/read-only screen callbacks and global
+    # Home/Back/Cancel; it never replays a business mutation.
     for router in [
+        navigation_history_guard.router,
         common.router,
         post_calculation.router,
         calculator_unknown_data_guard.router,
