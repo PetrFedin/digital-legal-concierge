@@ -5,13 +5,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.consultation_slots import SLOTS_HTML
-from app.api.guided_lawyer_ui import (
-    _CONSULTATION_DRAFT_PATCH,
-    _WORKSPACE_DEEP_LINK_PATCH,
-    _inject_patch,
-)
-from app.api.lawyer_consultation_desk import CONSULTATION_DESK_HTML
-from app.api.lawyer_workspace import WORKSPACE_HTML
+from app.api.contract_workspace_ui import contract_aware_workspace_html
+from app.api.lawyer_consultation_decision_guard import guarded_consultation_desk_html
 from app.config import settings
 from app.db.session import get_db
 from app.security.access_control import ROLE_ADMIN, ROLE_LAWYER, ROLE_SUPERADMIN
@@ -89,19 +84,13 @@ def _gate_response(actor):
     return None
 
 
-async def _guarded_lawyer_html(
-    *,
+async def _lawyer_gate(
     request: Request,
     db: AsyncSession,
-    x_admin_token: str | None,
-    html: str,
-    patch: str,
+    header_token: str | None,
 ):
-    actor = await _require_lawyer_ui_actor(request, db, x_admin_token)
-    redirect = _gate_response(actor)
-    if redirect is not None:
-        return redirect
-    return HTMLResponse(_inject_patch(html, patch))
+    actor = await _require_lawyer_ui_actor(request, db, header_token)
+    return _gate_response(actor)
 
 
 @router.get("/lawyer/workspace/ui", response_class=HTMLResponse)
@@ -110,15 +99,19 @@ async def guarded_lawyer_workspace_ui(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    """Authenticate the lawyer before returning the workspace HTML shell."""
+    """Authenticate first, then render the full composite lawyer workspace.
 
-    return await _guarded_lawyer_html(
-        request=request,
-        db=db,
-        x_admin_token=x_admin_token,
-        html=WORKSPACE_HTML,
-        patch=_WORKSPACE_DEEP_LINK_PATCH,
-    )
+    The protected shell must preserve every business patch already present on
+    the effective lawyer UI: M2 slot responsibility/deep-linking, M1 rejection,
+    POA receipt, court evidence and the contract center primary action. Serving
+    only the base WORKSPACE_HTML here would silently remove those actions because
+    this early route intentionally wins FastAPI route precedence.
+    """
+
+    redirect = await _lawyer_gate(request, db, x_admin_token)
+    if redirect is not None:
+        return redirect
+    return HTMLResponse(contract_aware_workspace_html())
 
 
 @router.get("/lawyer/consultation-desk/ui", response_class=HTMLResponse)
@@ -127,15 +120,12 @@ async def guarded_consultation_desk_ui(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    """Authenticate the lawyer before returning consultation working UI."""
+    """Authenticate first, then keep draft + deterministic decision guards."""
 
-    return await _guarded_lawyer_html(
-        request=request,
-        db=db,
-        x_admin_token=x_admin_token,
-        html=CONSULTATION_DESK_HTML,
-        patch=_CONSULTATION_DRAFT_PATCH,
-    )
+    redirect = await _lawyer_gate(request, db, x_admin_token)
+    if redirect is not None:
+        return redirect
+    return HTMLResponse(guarded_consultation_desk_html())
 
 
 @router.get("/consultation-slots/ui", response_class=HTMLResponse)
