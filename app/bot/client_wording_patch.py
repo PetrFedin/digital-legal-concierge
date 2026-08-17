@@ -31,6 +31,7 @@ def install_client_wording() -> None:
         documents,
         my_case,
         payments,
+        service_contract,
     )
     from app.config import settings
     from app.domain.payments.mode import payments_disabled
@@ -144,6 +145,33 @@ def install_client_wording() -> None:
 
         documents._after_documents_buttons = route_aware_after_documents_buttons
         documents._route_aware_payment_cta_installed = True
+
+    # Contract screens are one of the places where the approved UX explicitly
+    # requires a Back action. Add it presentation-side without touching any
+    # contract/payment transition. The navigation guard replays only read-only
+    # screen callbacks, so Back can never reconfirm a version or recreate money.
+    if not getattr(service_contract, "_logical_back_button_installed", False):
+        original_contract_show = service_contract._show
+
+        async def contract_show_with_back(callback, text, *, buttons):
+            items = list(buttons)
+            callbacks = [str(item[1]) for item in items]
+            if "nav_back" not in callbacks:
+                back_button = ("⬅️ Назад", "nav_back")
+                try:
+                    home_index = callbacks.index("nav_home")
+                except ValueError:
+                    items.append(back_button)
+                else:
+                    items.insert(home_index, back_button)
+            return await original_contract_show(
+                callback,
+                text,
+                buttons=tuple(items),
+            )
+
+        service_contract._show = contract_show_with_back
+        service_contract._logical_back_button_installed = True
 
     document_action_center._STATUS_LABELS["ON_REVIEW"] = "передан юридической команде"
 
