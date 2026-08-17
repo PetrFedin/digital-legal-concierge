@@ -5,6 +5,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.consultation_slots import SLOTS_HTML
+from app.api.contract_center import CONTRACT_CENTER_HTML
 from app.api.contract_workspace_ui import contract_aware_workspace_html
 from app.api.document_access_portal import DOCUMENT_ACCESS_HTML
 from app.api.lawyer_consultation_decision_guard import guarded_consultation_desk_html
@@ -94,6 +95,19 @@ async def _lawyer_gate(
     return _gate_response(actor)
 
 
+async def _staff_shell(
+    request: Request,
+    db: AsyncSession,
+    header_token: str | None,
+    html: str,
+):
+    actor = await _require_staff_ui_actor(request, db, header_token)
+    redirect = _gate_response(actor)
+    if redirect is not None:
+        return redirect
+    return HTMLResponse(html)
+
+
 @router.get("/lawyer/workspace/ui", response_class=HTMLResponse)
 async def guarded_lawyer_workspace_ui(
     request: Request,
@@ -137,11 +151,7 @@ async def guarded_consultation_slots_ui(
 ):
     """Open the shared schedule only after a usable staff identity is resolved."""
 
-    actor = await _require_staff_ui_actor(request, db, x_admin_token)
-    redirect = _gate_response(actor)
-    if redirect is not None:
-        return redirect
-    return HTMLResponse(SLOTS_HTML)
+    return await _staff_shell(request, db, x_admin_token, SLOTS_HTML)
 
 
 @router.get("/document-access/ui", response_class=HTMLResponse)
@@ -159,11 +169,24 @@ async def guarded_document_access_portal_ui(
     the existing document authorization rules or changing case_id deep links.
     """
 
-    actor = await _require_staff_ui_actor(request, db, x_admin_token)
-    redirect = _gate_response(actor)
-    if redirect is not None:
-        return redirect
-    return HTMLResponse(DOCUMENT_ACCESS_HTML)
+    return await _staff_shell(request, db, x_admin_token, DOCUMENT_ACCESS_HTML)
+
+
+@router.get("/contracts/ui", response_class=HTMLResponse)
+async def guarded_contract_center_ui(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    """Give old/direct contract bookmarks the same guided staff recovery.
+
+    Contract APIs still enforce exact case responsibility and M1 stage rules.
+    This shell guard only prevents an expired/wrong-role staff session from being
+    misreported as a generic fresh-login problem and keeps the visible contract
+    center on the canonical staff recovery path.
+    """
+
+    return await _staff_shell(request, db, x_admin_token, CONTRACT_CENTER_HTML)
 
 
 __all__ = ["router"]
