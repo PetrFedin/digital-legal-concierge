@@ -29,6 +29,22 @@ def test_shared_schedule_shell_requires_a_usable_staff_identity():
     )
 
 
+def test_document_access_portal_shell_is_server_side_staff_guarded():
+    guard = read("app/api/staff_ui_shell_guard.py")
+    portal = read("app/api/document_access_portal.py")
+    main = read("app/main.py")
+
+    assert '@router.get("/document-access/ui"' in guard
+    assert "DOCUMENT_ACCESS_HTML" in guard
+    assert "actor = await _require_staff_ui_actor(request, db, x_admin_token)" in guard
+    assert "return HTMLResponse(DOCUMENT_ACCESS_HTML)" in guard
+    assert "async def document_access_ui():" in portal
+    assert "return HTMLResponse(DOCUMENT_ACCESS_HTML)" in portal
+    assert main.index('(\"initial_setup_wizard\", initial_setup_wizard_router)') < main.index(
+        '(\"document_access_portal\", document_access_portal_router)'
+    )
+
+
 def test_anonymous_lawyer_ui_goes_to_login_and_incomplete_staff_to_landing():
     guard = read("app/api/staff_ui_shell_guard.py")
 
@@ -72,6 +88,7 @@ def test_staff_shell_guard_is_mounted_before_legacy_staff_routers():
     assert initial < main.index('(\"contract_workspace_ui\", contract_workspace_ui_router)')
     assert initial < main.index('(\"lawyer_workspace\", lawyer_workspace_router)')
     assert initial < main.index('(\"lawyer_consultation_desk\", lawyer_consultation_desk_router)')
+    assert initial < main.index('(\"document_access_portal\", document_access_portal_router)')
 
 
 def test_operator_hub_recovers_incomplete_or_unsupported_staff():
