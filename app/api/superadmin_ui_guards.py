@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.access_management import ACCESS_HTML
 from app.api.audit_center import AUDIT_CENTER_HTML
+from app.api.recovery_center import recovery_ui as legacy_recovery_ui
 from app.api.retention_center import RETENTION_HTML
 from app.api.security_event_center import SECURITY_EVENT_HTML
 from app.config import settings
@@ -96,6 +97,24 @@ async def protected_retention_ui(
     """Protect legal-hold/deletion controls before their HTML is returned."""
 
     return await _superadmin_html(request, db, x_admin_token, RETENTION_HTML)
+
+
+@router.get("/recovery-center/ui", response_class=HTMLResponse)
+async def protected_recovery_center_ui(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    """Protect high-impact recovery controls and keep their existing UI intact."""
+
+    gate = await _superadmin_gate(request, db, x_admin_token)
+    if isinstance(gate, RedirectResponse):
+        return gate
+    return await legacy_recovery_ui(
+        request=request,
+        db=db,
+        x_admin_token=_token(request, x_admin_token),
+    )
 
 
 __all__ = ["router"]
