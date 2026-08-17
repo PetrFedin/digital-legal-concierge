@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.consultation_slots import SLOTS_HTML
 from app.api.contract_workspace_ui import contract_aware_workspace_html
+from app.api.document_access_portal import DOCUMENT_ACCESS_HTML
 from app.api.lawyer_consultation_decision_guard import guarded_consultation_desk_html
 from app.config import settings
 from app.db.session import get_db
@@ -141,6 +142,28 @@ async def guarded_consultation_slots_ui(
     if redirect is not None:
         return redirect
     return HTMLResponse(SLOTS_HTML)
+
+
+@router.get("/document-access/ui", response_class=HTMLResponse)
+async def guarded_document_access_portal_ui(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    """Authenticate staff before returning the protected-materials HTML shell.
+
+    The document APIs already enforce per-case M1/M2 responsibility and one-time
+    download grants. The historical portal shell, however, was returned before
+    any server-side staff check and only discovered session/role problems in
+    JavaScript. This exact early route closes that UI boundary without weakening
+    the existing document authorization rules or changing case_id deep links.
+    """
+
+    actor = await _require_staff_ui_actor(request, db, x_admin_token)
+    redirect = _gate_response(actor)
+    if redirect is not None:
+        return redirect
+    return HTMLResponse(DOCUMENT_ACCESS_HTML)
 
 
 __all__ = ["router"]
