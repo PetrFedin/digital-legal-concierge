@@ -8,6 +8,7 @@ from app.api.backup_center_guard import router as backup_center_guard_router
 from app.api.refund_resolution_guard import router as refund_resolution_guard_router
 from app.api.staff_ui_guards import router as staff_ui_guards_router
 from app.api.staff_ui_shell_guard import router as staff_ui_shell_guard_router
+from app.api.superadmin_ui_guards import router as superadmin_ui_guards_router
 from app.api.workdesk_ui_guard import router as workdesk_ui_guard_router
 from app.config import settings
 from app.db.session import get_db
@@ -90,10 +91,11 @@ async def operator_guard(
 
 
 # operator_guard is mounted by initial_setup_wizard before the legacy staff
-# routers. Keep staff HTML shell authentication, Workdesk deep links, backup
-# authorization and M2 refund lifecycle guards in this early layer so stale
-# bookmarks never fall through to a client-side-only or unauthenticated surface.
+# routers. Keep staff/superadmin HTML shell authentication, Workdesk deep links,
+# backup authorization and M2 refund lifecycle guards in this early layer so
+# stale bookmarks never fall through to a client-side-only or raw-error surface.
 router.include_router(backup_center_guard_router)
+router.include_router(superadmin_ui_guards_router)
 router.include_router(workdesk_ui_guard_router)
 router.include_router(staff_ui_shell_guard_router)
 router.include_router(staff_ui_guards_router)
