@@ -26,6 +26,7 @@ _CALCULATOR_FIELDS = frozenset(
         "actual_transfer_date",
     }
 )
+_NAV_DATA_PREFIX = "_client_nav_"
 
 
 def is_calculator_state(value: str | None) -> bool:
@@ -126,9 +127,13 @@ class CalculatorDraftNavigationMiddleware:
         result = await handler(event, data)
 
         if should_restore:
-            # A navigation handler may clear the context. Restore only the
-            # calculator snapshot and keep state=None so arbitrary user text on
-            # the home screen is never consumed by a stale calculator handler.
+            # A navigation handler may clear the context. Restore calculator
+            # answers, but keep the post-navigation breadcrumb metadata so a
+            # Back click cannot resurrect the same breadcrumb forever.
+            post_navigation_data = dict(await state.get_data())
+            for key, value in post_navigation_data.items():
+                if str(key).startswith(_NAV_DATA_PREFIX):
+                    current_data[key] = value
             await state.set_state(None)
             await state.set_data(current_data)
         return result
