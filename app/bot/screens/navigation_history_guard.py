@@ -6,7 +6,6 @@ from aiogram.types import CallbackQuery
 
 from app.bot.screens import (
     common,
-    consultation_booking_ui,
     consultation_results,
     documents,
     history,
@@ -32,7 +31,6 @@ _REPLAY_SAFE = frozenset(
         "payments_open",
         "case_history_open",
         "message_history",
-        "consultation_booked_open",
         "consultation_result_open",
         "contract_open",
     }
@@ -132,9 +130,6 @@ async def _render_target(
         return True
     if target == "message_history":
         await messages.message_history(callback, db, state)
-        return True
-    if target == "consultation_booked_open":
-        await consultation_booking_ui.consultation_action_center(callback, db)
         return True
     if target == "consultation_result_open":
         await consultation_results.consultation_result_open(callback, db)
@@ -262,15 +257,6 @@ async def logical_message_history(callback: CallbackQuery, db, state: FSMContext
     return await _record_after(
         lambda: messages.message_history(callback, db, state),
         "message_history",
-        state=state,
-    )
-
-
-@router.callback_query(lambda c: c.data == "consultation_booked_open")
-async def logical_consultation(callback: CallbackQuery, db, state: FSMContext):
-    return await _record_after(
-        lambda: consultation_booking_ui.consultation_action_center(callback, db),
-        "consultation_booked_open",
         state=state,
     )
 
