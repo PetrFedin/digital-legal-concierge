@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.consultation_slots import SLOTS_HTML
 from app.api.guided_lawyer_ui import (
     _CONSULTATION_DRAFT_PATCH,
     _WORKSPACE_DEEP_LINK_PATCH,
@@ -13,7 +14,7 @@ from app.api.lawyer_consultation_desk import CONSULTATION_DESK_HTML
 from app.api.lawyer_workspace import WORKSPACE_HTML
 from app.config import settings
 from app.db.session import get_db
-from app.security.access_control import ROLE_LAWYER
+from app.security.access_control import ROLE_ADMIN, ROLE_LAWYER, ROLE_SUPERADMIN
 from app.security.document_access import DocumentAccessError, resolve_document_actor
 
 router = APIRouter(tags=["staff-ui-shell-guard"])
@@ -23,10 +24,12 @@ def _effective_token(request: Request, header_token: str | None) -> str | None:
     return header_token or request.cookies.get(settings.admin_session_cookie)
 
 
-async def _require_lawyer_ui_actor(
+async def _require_ui_actor(
     request: Request,
     db: AsyncSession,
     header_token: str | None,
+    *,
+    allowed_roles: frozenset[str],
 ):
     token = _effective_token(request, header_token)
     try:
@@ -47,9 +50,43 @@ async def _require_lawyer_ui_actor(
             return "staff_landing"
         raise
 
-    if actor.role != ROLE_LAWYER:
+    if actor.role not in allowed_roles:
         return "staff_landing"
     return actor
+
+
+async def _require_lawyer_ui_actor(
+    request: Request,
+    db: AsyncSession,
+    header_token: str | None,
+):
+    return await _require_ui_actor(
+        request,
+        db,
+        header_token,
+        allowed_roles=frozenset({ROLE_LAWYER}),
+    )
+
+
+async def _require_staff_ui_actor(
+    request: Request,
+    db: AsyncSession,
+    header_token: str | None,
+):
+    return await _require_ui_actor(
+        request,
+        db,
+        header_token,
+        allowed_roles=frozenset({ROLE_LAWYER, ROLE_ADMIN, ROLE_SUPERADMIN}),
+    )
+
+
+def _gate_response(actor):
+    if actor is None:
+        return RedirectResponse(url="/login", status_code=303)
+    if actor == "staff_landing":
+        return RedirectResponse(url="/admin-ui", status_code=303)
+    return None
 
 
 async def _guarded_lawyer_html(
@@ -61,10 +98,9 @@ async def _guarded_lawyer_html(
     patch: str,
 ):
     actor = await _require_lawyer_ui_actor(request, db, x_admin_token)
-    if actor is None:
-        return RedirectResponse(url="/login", status_code=303)
-    if actor == "staff_landing":
-        return RedirectResponse(url="/admin-ui", status_code=303)
+    redirect = _gate_response(actor)
+    if redirect is not None:
+        return redirect
     return HTMLResponse(_inject_patch(html, patch))
 
 
@@ -100,6 +136,21 @@ async def guarded_consultation_desk_ui(
         html=CONSULTATION_DESK_HTML,
         patch=_CONSULTATION_DRAFT_PATCH,
     )
+
+
+@router.get("/consultation-slots/ui", response_class=HTMLResponse)
+async def guarded_consultation_slots_ui(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    """Open the shared schedule only after a usable staff identity is resolved."""
+
+    actor = await _require_staff_ui_actor(request, db, x_admin_token)
+    redirect = _gate_response(actor)
+    if redirect is not None:
+        return redirect
+    return HTMLResponse(SLOTS_HTML)
 
 
 __all__ = ["router"]
