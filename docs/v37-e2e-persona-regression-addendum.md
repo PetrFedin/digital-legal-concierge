@@ -35,6 +35,7 @@ Status legend:
 | A-030 | Wrong role or incomplete staff linkage opens guarded staff UI | Fail-closed recovery goes to canonical `/admin-ui` staff landing rather than raw JSON 403/409 | FIXED_V37 / LIVE_REQUIRED |
 | A-031 | Wrong role opens Settings or Diagnostic UI | Canonical staff recovery is shown; expired session goes to Login | FIXED_V37 / LIVE_REQUIRED |
 | A-032 | Wrong role opens consultation-outcome control | Canonical staff recovery is shown while legacy outcome-repair injection remains intact for a valid admin | FIXED_V37 / LIVE_REQUIRED |
+| A-033 | Click `активных дел` metric on Workdesk | Opens a real all-active queue; it no longer incorrectly routes to `Без юриста`. M2 rows remain slot-owned and client-owned pre-assignment M1 rows do not recommend assignment | FIXED_V37 / LIVE_REQUIRED |
 
 ## Lawyer regressions
 
