@@ -84,6 +84,34 @@ async def _search(db: AsyncSession, query: str) -> dict:
             )
         ).scalars().all()
     )
+
+    # Searching by a person's name/Telegram/phone used to end at a client row
+    # with no route into the actual work. Pull that client's cases into the same
+    # result set and remember the newest one for a one-click Workdesk handoff.
+    latest_case_by_client: dict[int, int] = {}
+    if users:
+        client_ids = [int(item.id) for item in users]
+        related_cases = list(
+            (
+                await db.execute(
+                    select(Case)
+                    .where(Case.client_id.in_(client_ids))
+                    .order_by(Case.updated_at.desc(), Case.id.desc())
+                    .limit(80)
+                )
+            ).scalars().all()
+        )
+        for item in related_cases:
+            latest_case_by_client.setdefault(int(item.client_id), int(item.id))
+        merged = {int(item.id): item for item in cases}
+        for item in related_cases:
+            merged.setdefault(int(item.id), item)
+        cases = sorted(
+            merged.values(),
+            key=lambda item: (item.updated_at, item.id),
+            reverse=True,
+        )[:20]
+
     documents = list(
         (
             await db.execute(
@@ -150,6 +178,7 @@ async def _search(db: AsyncSession, query: str) -> dict:
                     "full_name": item.full_name,
                     "phone": item.phone,
                     "email": item.email,
+                    "latest_case_id": latest_case_by_client.get(int(item.id)),
                 }
                 for item in users
             ],
@@ -222,6 +251,8 @@ def _rows(
             if case_id > 0:
                 href = f"{target_prefix}{case_id}"
                 action = f'<td><a class="mini" href="{escape(href, quote=True)}">Открыть</a></td>'
+            else:
+                action = "<td><span class='muted'>Нет дела</span></td>"
         rows.append(f"<tr>{cells}{action}</tr>")
     return "".join(rows)
 
@@ -238,6 +269,12 @@ async def search_ui(
     except DocumentAccessError as error:
         if error.status_code == 401:
             return RedirectResponse(url="/login?next=/search-center/ui", status_code=303)
+        if error.status_code in {403, 409}:
+            return RedirectResponse(url="/admin-ui", status_code=303)
+        raise
+    except HTTPException as error:
+        if error.status_code in {403, 409}:
+            return RedirectResponse(url="/admin-ui", status_code=303)
         raise
     data = await _search(db, q)
     results = data["results"]
@@ -246,11 +283,11 @@ async def search_ui(
     html = f"""
 <!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Поиск — Digital Legal Concierge</title><style>
-:root{{--bg:#f4f6fa;--card:#fff;--ink:#172033;--muted:#667085;--line:#e4e7ec;--blue:#3157d5;--shadow:0 10px 28px rgba(16,24,40,.06)}}*{{box-sizing:border-box}}body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;margin:0;background:var(--bg);color:var(--ink)}}header{{background:linear-gradient(135deg,#111827,#26334f);color:#fff;padding:18px 22px}}.head,main{{max-width:1240px;margin:auto}}.head{{display:flex;justify-content:space-between;gap:12px;align-items:center}}header h1{{margin:0 0 4px;font-size:22px}}header p{{margin:0;color:#d0d5dd;font-size:13px}}main{{padding:20px;display:grid;gap:13px}}.card{{background:var(--card);border:1px solid var(--line);border-radius:15px;padding:15px;box-shadow:var(--shadow);overflow:auto}}form{{display:flex;gap:8px}}input{{min-width:0;flex:1;padding:11px;border:1px solid #d0d5dd;border-radius:10px;font:inherit}}button,.button,.mini{{border:0;border-radius:9px;padding:9px 12px;background:var(--blue);color:#fff;text-decoration:none;font-weight:750;cursor:pointer}}.button.secondary{{background:#475467}}.mini{{display:inline-block;padding:6px 9px;font-size:12px}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;max-width:340px;overflow-wrap:anywhere}}th{{color:var(--muted);font-size:11px;text-transform:uppercase}}h2{{font-size:17px;margin:0 0 10px}}.privacy{{color:var(--muted);font-size:12px;line-height:1.45}}@media(max-width:620px){{.head,form{{align-items:stretch;flex-direction:column}}main{{padding:12px}}.button,button{{text-align:center}}}}
+:root{{--bg:#f4f6fa;--card:#fff;--ink:#172033;--muted:#667085;--line:#e4e7ec;--blue:#3157d5;--shadow:0 10px 28px rgba(16,24,40,.06)}}*{{box-sizing:border-box}}body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;margin:0;background:var(--bg);color:var(--ink)}}header{{background:linear-gradient(135deg,#111827,#26334f);color:#fff;padding:18px 22px}}.head,main{{max-width:1240px;margin:auto}}.head{{display:flex;justify-content:space-between;gap:12px;align-items:center}}header h1{{margin:0 0 4px;font-size:22px}}header p{{margin:0;color:#d0d5dd;font-size:13px}}main{{padding:20px;display:grid;gap:13px}}.card{{background:var(--card);border:1px solid var(--line);border-radius:15px;padding:15px;box-shadow:var(--shadow);overflow:auto}}form{{display:flex;gap:8px}}input{{min-width:0;flex:1;padding:11px;border:1px solid #d0d5dd;border-radius:10px;font:inherit}}button,.button,.mini{{border:0;border-radius:9px;padding:9px 12px;background:var(--blue);color:#fff;text-decoration:none;font-weight:750;cursor:pointer}}.button.secondary{{background:#475467}}.mini{{display:inline-block;padding:6px 9px;font-size:12px}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;max-width:340px;overflow-wrap:anywhere}}th{{color:var(--muted);font-size:11px;text-transform:uppercase}}h2{{font-size:17px;margin:0 0 10px}}.privacy,.muted{{color:var(--muted);font-size:12px;line-height:1.45}}@media(max-width:620px){{.head,form{{align-items:stretch;flex-direction:column}}main{{padding:12px}}.button,button{{text-align:center}}}}
 </style></head><body><header><div class="head"><div><h1>🔎 Поиск по рабочей базе</h1><p>Только для администратора: дела, клиенты, документы, платежи и переписка.</p></div><a class="button secondary" href="/admin/workdesk/ui">Рабочий стол</a></div></header><main>
-<section class="card"><form method="get" action="/search-center/ui"><input name="q" maxlength="{MAX_QUERY_LENGTH}" value="{escape(query, quote=True)}" placeholder="Номер дела, ФИО, Telegram, файл, платёж или фрагмент сообщения"><button type="submit">Найти</button></form><p class="privacy">Результаты содержат клиентские данные. Не передавайте этот экран вне юридической команды. Поиск ограничен 20 результатами на тип.</p></section>
+<section class="card"><form method="get" action="/search-center/ui"><input name="q" maxlength="{MAX_QUERY_LENGTH}" value="{escape(query, quote=True)}" placeholder="Номер дела, ФИО, Telegram, файл, платёж или фрагмент сообщения"><button type="submit">Найти</button></form><p class="privacy">Результаты содержат клиентские данные. Поиск по клиенту сразу показывает связанные дела и ведёт в Workdesk. Не передавайте этот экран вне юридической команды. Поиск ограничен 20 результатами на тип.</p></section>
 <section class="card"><h2>Дела</h2><table><tr><th>ID</th><th>Номер</th><th>Маршрут</th><th>Статус</th><th>Клиент</th><th></th></tr>{_rows(results['cases'], ['id','case_number','route','status','client_id'], case_field='id', target_prefix='/admin/workdesk/ui?case_id=')}</table></section>
-<section class="card"><h2>Клиенты</h2><table><tr><th>ID</th><th>Telegram ID</th><th>Username</th><th>ФИО</th><th>Телефон</th><th>Email</th></tr>{_rows(results['clients'], ['id','telegram_id','username','full_name','phone','email'])}</table></section>
+<section class="card"><h2>Клиенты</h2><table><tr><th>ID</th><th>Telegram ID</th><th>Username</th><th>ФИО</th><th>Телефон</th><th>Email</th><th></th></tr>{_rows(results['clients'], ['id','telegram_id','username','full_name','phone','email'], case_field='latest_case_id', target_prefix='/admin/workdesk/ui?case_id=')}</table></section>
 <section class="card"><h2>Документы</h2><table><tr><th>ID</th><th>Дело</th><th>Название</th><th>Файл</th><th>Статус</th><th>Версия</th><th></th></tr>{_rows(results['documents'], ['id','case_id','title','file_name','status','version'], case_field='case_id', target_prefix='/document-access/ui?case_id=')}</table></section>
 <section class="card"><h2>Оплаты</h2><table><tr><th>ID</th><th>Дело</th><th>Название</th><th>Сумма</th><th>Статус</th><th>Код</th><th></th></tr>{_rows(results['payments'], ['id','case_id','title','amount','status','payment_code'], case_field='case_id', target_prefix='/admin/workdesk/ui?case_id=')}</table></section>
 <section class="card"><h2>Сообщения</h2><table><tr><th>ID</th><th>Дело</th><th>Отправитель</th><th>Текст</th><th>Прочитано</th><th></th></tr>{_rows(results['messages'], ['id','case_id','sender_type','text','is_read'], case_field='case_id', target_prefix='/message-center/ui?case_id=')}</table></section>
