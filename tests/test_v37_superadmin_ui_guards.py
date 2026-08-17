@@ -13,9 +13,11 @@ def test_superadmin_guard_protects_sensitive_html_shells():
     assert '@router.get("/audit-center/ui"' in guard
     assert '@router.get("/security-events/ui"' in guard
     assert '@router.get("/retention/ui"' in guard
+    assert '@router.get("/recovery-center/ui"' in guard
     assert "AUDIT_CENTER_HTML" in guard
     assert "SECURITY_EVENT_HTML" in guard
     assert "RETENTION_HTML" in guard
+    assert "legacy_recovery_ui" in guard
     assert "resolve_document_actor" in guard
     assert "actor.role != ROLE_SUPERADMIN" in guard
 
@@ -41,6 +43,7 @@ def test_superadmin_guards_are_mounted_before_sensitive_legacy_centers():
     assert initial < main.index('(\"audit_center\", audit_center_router)')
     assert initial < main.index('(\"security_event_center\", security_event_center_router)')
     assert initial < main.index('(\"retention_center\", retention_center_router)')
+    assert initial < main.index('(\"recovery_center\", recovery_center_router)')
 
 
 def test_retention_ui_no_longer_relies_only_on_client_side_auth():
@@ -52,3 +55,13 @@ def test_retention_ui_no_longer_relies_only_on_client_side_auth():
     assert "async def retention_ui():" in retention
     assert "return HTMLResponse(RETENTION_HTML)" in retention
     assert '@router.get("/retention/ui"' in guard
+
+
+def test_recovery_ui_role_mismatch_is_handled_before_legacy_route():
+    recovery = read("app/api/recovery_center.py")
+    guard = read("app/api/superadmin_ui_guards.py")
+
+    assert "async def recovery_ui(" in recovery
+    assert "legacy_recovery_ui" in guard
+    assert '@router.get("/recovery-center/ui"' in guard
+    assert "gate = await _superadmin_gate(request, db, x_admin_token)" in guard
