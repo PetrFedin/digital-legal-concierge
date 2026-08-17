@@ -29,6 +29,8 @@ from app.security.document_access import DocumentAccessError, resolve_document_a
 
 router = APIRouter(tags=["workdesk-ui-guard"])
 
+_CLOSED_CASE_STATUSES = ("M1_CLOSED", "M2_CLOSED", "ARCHIVED")
+
 _WORKDESK_DEEP_LINK_BOOT = r"""
 const _workdeskOpenCase=openCase;
 openCase=async function(id){
@@ -64,6 +66,12 @@ closeCase=function(){
 
 _M1_SLA_SHORTCUT = r"""slaShortcut=d.case.lawyer_id?`<a class="button secondary" href="/admin/workdesk/cases/${id}/action/sla">SLA</a>`:`<button class="secondary" onclick="assign(${id},this)">Назначить перед SLA</button>`"""
 _ROUTE_AWARE_SLA_SHORTCUT = r"""slaShortcut=d.case.route==='M2'?`<span class="muted">Ответственный M2 определяется выбранным слотом; M1 SLA здесь не назначается вручную.</span>`:d.case.lawyer_id?`<a class="button secondary" href="/admin/workdesk/cases/${id}/action/sla">SLA</a>`:`<button class="secondary" onclick="assign(${id},this)">Назначить перед SLA</button>`"""
+_TITLES_SOURCE = "const titles={unassigned:'Дела без юриста',documents:'Документы на проверке',consultations:'Консультации сегодня',overdue:'Просроченные действия'};"
+_TITLES_TARGET = "const titles={active:'Все активные дела',unassigned:'Дела без юриста',documents:'Документы на проверке',consultations:'Консультации сегодня',overdue:'Просроченные действия'};"
+_ACTIVE_METRIC_SOURCE = r"""<button class="metric" onclick="openQueue('unassigned',document.querySelector('[data-v=unassigned]'))"><b>${d.cases?.active||0}</b><span>активных дел</span></button>"""
+_ACTIVE_METRIC_TARGET = r"""<button class="metric" onclick="openQueue('active',null)"><b>${d.cases?.active||0}</b><span>активных дел</span></button>"""
+_QACTION_SOURCE = "function qaction(x){if(queue==='unassigned')"
+_QACTION_TARGET = "function qaction(x){if(queue==='active')return'';if(queue==='unassigned')"
 
 
 def guided_workdesk_html() -> str:
@@ -71,11 +79,20 @@ def guided_workdesk_html() -> str:
 
     html = WORKDESK_HTML
     marker = "boot();"
-    if html.count(marker) != 1:
-        raise RuntimeError("Workdesk template contract changed: boot marker is not unique")
-    if html.count(_M1_SLA_SHORTCUT) != 1:
-        raise RuntimeError("Workdesk template contract changed: SLA shortcut marker is not unique")
+    required = {
+        marker: "boot marker",
+        _M1_SLA_SHORTCUT: "SLA shortcut marker",
+        _TITLES_SOURCE: "queue title marker",
+        _ACTIVE_METRIC_SOURCE: "active metric marker",
+        _QACTION_SOURCE: "queue action marker",
+    }
+    for source, label in required.items():
+        if html.count(source) != 1:
+            raise RuntimeError(f"Workdesk template contract changed: {label} is not unique")
     html = html.replace(_M1_SLA_SHORTCUT, _ROUTE_AWARE_SLA_SHORTCUT, 1)
+    html = html.replace(_TITLES_SOURCE, _TITLES_TARGET, 1)
+    html = html.replace(_ACTIVE_METRIC_SOURCE, _ACTIVE_METRIC_TARGET, 1)
+    html = html.replace(_QACTION_SOURCE, _QACTION_TARGET, 1)
     return html.replace(marker, _WORKDESK_DEEP_LINK_BOOT, 1)
 
 
@@ -106,6 +123,17 @@ async def _admin_ui_gate(
     return actor
 
 
+async def _lawyer_names(db: AsyncSession, lawyer_ids: set[int]) -> dict[int, str]:
+    if not lawyer_ids:
+        return {}
+    lawyers = list(
+        (
+            await db.execute(select(Lawyer).where(Lawyer.id.in_(lawyer_ids)))
+        ).scalars().all()
+    )
+    return {int(item.id): item.full_name for item in lawyers}
+
+
 async def _m2_responsibility_by_case(
     db: AsyncSession,
     cases: list[Case],
@@ -119,14 +147,7 @@ async def _m2_responsibility_by_case(
         for lawyer_id in responsibility.values()
         if lawyer_id is not None
     }
-    names: dict[int, str] = {}
-    if lawyer_ids:
-        lawyers = list(
-            (
-                await db.execute(select(Lawyer).where(Lawyer.id.in_(lawyer_ids)))
-            ).scalars().all()
-        )
-        names = {int(item.id): item.full_name for item in lawyers}
+    names = await _lawyer_names(db, lawyer_ids)
     return {
         int(case.id): (
             int(responsibility[int(case.id)])
@@ -141,13 +162,77 @@ async def _m2_responsibility_by_case(
 
 
 async def _load_cases(db: AsyncSession, case_ids: list[int]) -> list[Case]:
-    if not case_ids:
+    normalized = [case_id for case_id in case_ids if case_id > 0]
+    if not normalized:
         return []
     return list(
         (
-            await db.execute(select(Case).where(Case.id.in_(case_ids)))
+            await db.execute(select(Case).where(Case.id.in_(normalized)))
         ).scalars().all()
     )
+
+
+@router.get("/admin/work-queues/active")
+async def guarded_active_work_queue(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    """Make the active-case metric open the cases it actually counts."""
+
+    gate = await _admin_ui_gate(request, db, x_admin_token)
+    if isinstance(gate, RedirectResponse):
+        return gate
+    cases = list(
+        (
+            await db.execute(
+                select(Case)
+                .where(Case.status.notin_(_CLOSED_CASE_STATUSES))
+                .order_by(Case.updated_at.desc(), Case.id.desc())
+                .limit(200)
+            )
+        ).scalars().all()
+    )
+    m1_lawyer_ids = {
+        int(case.assigned_lawyer_id)
+        for case in cases
+        if str(case.route or "") != "M2" and case.assigned_lawyer_id is not None
+    }
+    m1_names = await _lawyer_names(db, m1_lawyer_ids)
+    m2_owners = await _m2_responsibility_by_case(db, cases)
+    assignment_statuses = set(AUTO_ASSIGNMENT_REQUIRED_STATUS_VALUES)
+    items: list[dict[str, object]] = []
+    for case in cases:
+        if str(case.route or "") == "M2":
+            lawyer_id, lawyer_name = m2_owners.get(
+                int(case.id),
+                (None, "Определится по выбранному слоту"),
+            )
+            row = _case_row(case, queue="active", lawyer_name=lawyer_name)
+            row["lawyer_id"] = lawyer_id
+            row["next_action"] = case.next_action or (
+                "Проверить актуальное состояние консультации"
+                if lawyer_id is not None
+                else "Ожидать выбора клиентом даты и времени"
+            )
+        else:
+            row = _case_row(
+                case,
+                queue="active",
+                lawyer_name=m1_names.get(int(case.assigned_lawyer_id or 0)),
+            )
+            if (
+                case.assigned_lawyer_id is None
+                and str(case.status) not in assignment_statuses
+            ):
+                row["next_action"] = case.next_action or "Ожидать следующий шаг клиента"
+        items.append(row)
+    return {
+        "queue": "active",
+        "count": len(items),
+        "items": items,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 @router.get("/admin/work-queues/unassigned")
