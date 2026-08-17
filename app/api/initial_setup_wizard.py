@@ -13,7 +13,7 @@ from app.api.workdesk_integrity_guard import router as workdesk_integrity_guard_
 from app.config import settings
 from app.db.session import get_db
 from app.domain.payments.mode import payment_mode_valid
-from app.security.access_control import ROLE_ADMIN, ROLE_SUPERADMIN
+from app.security.access_control import ROLE_ADMIN, ROLE_LAWYER, ROLE_SUPERADMIN
 from app.security.document_access import DocumentAccessError, resolve_document_actor
 from app.security.keyring import security_key_status
 
@@ -39,6 +39,19 @@ async def _admin_ui_or_login(
 ):
     try:
         return await _require_admin(request, db, header_token)
+    except DocumentAccessError as error:
+        if error.status_code == 401:
+            return None
+        raise
+
+
+async def _staff_ui_or_login(
+    request: Request,
+    db: AsyncSession,
+    header_token: str | None,
+):
+    try:
+        return await resolve_document_actor(db, _token(request, header_token))
     except DocumentAccessError as error:
         if error.status_code == 401:
             return None
@@ -104,10 +117,14 @@ async def legacy_admin_ui_guard(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    actor = await _admin_ui_or_login(request, db, x_admin_token)
+    actor = await _staff_ui_or_login(request, db, x_admin_token)
     if actor is None:
         return RedirectResponse(url="/login", status_code=303)
-    return RedirectResponse(url="/admin/workdesk/ui", status_code=303)
+    if actor.role in {ROLE_ADMIN, ROLE_SUPERADMIN}:
+        return RedirectResponse(url="/admin/workdesk/ui", status_code=303)
+    if actor.role == ROLE_LAWYER:
+        return RedirectResponse(url="/lawyer/workspace/ui", status_code=303)
+    raise HTTPException(status_code=403, detail="Для роли не настроен рабочий кабинет")
 
 
 @router.get("/initial-setup-wizard/status")
