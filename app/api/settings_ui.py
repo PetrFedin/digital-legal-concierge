@@ -47,6 +47,16 @@ def _redirect_notice(text: str) -> RedirectResponse:
     )
 
 
+def _auth_recovery(error: DocumentAccessError | HTTPException) -> RedirectResponse | None:
+    """Keep staff configuration pages fail-closed without raw JSON dead ends."""
+
+    if error.status_code == 401:
+        return RedirectResponse(url="/login?next=/settings-ui", status_code=303)
+    if error.status_code in {403, 409}:
+        return RedirectResponse(url="/admin-ui", status_code=303)
+    return None
+
+
 @router.get("/settings-ui", response_class=HTMLResponse)
 async def settings_ui(
     request: Request,
@@ -56,9 +66,10 @@ async def settings_ui(
 ):
     try:
         await _admin(request, db, x_admin_token)
-    except DocumentAccessError as error:
-        if error.status_code == 401:
-            return RedirectResponse(url="/login?next=/settings-ui", status_code=303)
+    except (DocumentAccessError, HTTPException) as error:
+        recovery = _auth_recovery(error)
+        if recovery is not None:
+            return recovery
         raise
 
     items = await SettingsService(db).list_settings()
@@ -115,9 +126,10 @@ async def settings_update(
 ):
     try:
         actor = await _admin(request, db, x_admin_token)
-    except DocumentAccessError as error:
-        if error.status_code == 401:
-            return RedirectResponse(url="/login?next=/settings-ui", status_code=303)
+    except (DocumentAccessError, HTTPException) as error:
+        recovery = _auth_recovery(error)
+        if recovery is not None:
+            return recovery
         raise
     try:
         await SettingsService(db).set_value(
