@@ -36,3 +36,21 @@ def test_anonymous_staff_landing_recovers_to_login():
 
     assert "if actor is None:" in block
     assert 'url="/login"' in block
+
+
+def test_unsupported_or_incomplete_staff_profile_has_recovery_screen():
+    guard = read("app/api/initial_setup_wizard.py")
+    helper = guard.split("async def _staff_ui_or_login", 1)[1].split(
+        '@router.get("/health")', 1
+    )[0]
+    block = guard.split('@router.get("/admin-ui")', 1)[1].split(
+        '@router.get("/initial-setup-wizard/status")', 1
+    )[0]
+
+    assert 'error.reason == "role_denied"' in helper
+    assert "StaffLandingProblem" in helper
+    assert "error.status_code in {403, 409}" in helper
+    assert "isinstance(actor, StaffLandingProblem)" in block
+    assert "Нужно настроить рабочий доступ" in guard
+    assert 'action="/logout"' in guard
+    assert "не назначает права автоматически" in guard
