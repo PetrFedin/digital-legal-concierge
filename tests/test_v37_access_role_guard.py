@@ -47,6 +47,6 @@ def test_access_role_guard_is_mounted_before_legacy_access_management_router():
 
     assert "access_role_guard_router" in initial
     assert "router.include_router(access_role_guard_router)" in initial
-    assert main.index('(\"initial_setup_wizard\", initial_setup_wizard_router)') < main.index(
-        '(\"access_management\", access_management_router)'
+    assert main.index('("initial_setup_wizard", initial_setup_wizard_router)') < main.index(
+        '("access_management", access_management_router)'
     )
