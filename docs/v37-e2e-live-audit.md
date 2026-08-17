@@ -57,6 +57,9 @@ the mutation boundary. Historical raw callbacks are navigation/recovery only.
 
 ## Lawyer/staff invariants
 
+- A successful personal lawyer login must have a reachable product landing. The
+  canonical `/admin-ui` compatibility landing is role-aware: admin/superadmin ->
+  `/admin/workdesk/ui`, lawyer -> `/lawyer/workspace/ui`.
 - Lawyer M1 ownership follows the actual assignment; M2 ownership follows the
   consultation slot.
 - Document review UI is server-side protected before staff HTML is returned.
@@ -83,6 +86,13 @@ the mutation boundary. Historical raw callbacks are navigation/recovery only.
 ## Verification status
 
 Static regression contracts are being added next to each hardened boundary.
-The repository test suite has **not** been claimed green in this workstream; the
-previous local test attempt could not reach GitHub because of DNS/network
-resolution. A fresh CI/local run is still required before release sign-off.
+A persona-level source walkthrough is recorded in
+`docs/v37-persona-e2e-walkthrough.md`.
+
+A real GitHub Actions attempt now exists for the current v37 head via the open
+PR, but the jobs did **not** start: GitHub Actions returned an account-level
+billing/spending-limit failure before allocating a runner. `CI`, `Deployment
+Readiness` and `Reproducible Dependencies` therefore cannot be treated as either
+application-test failures or successful checks. The local environment also
+cannot resolve `github.com`, so a fresh executable CI/local run is still required
+before release sign-off.
