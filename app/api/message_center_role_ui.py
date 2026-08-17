@@ -49,5 +49,7 @@ async def role_safe_message_center_ui(
     except HTTPException as exc:
         if exc.status_code == 401:
             return RedirectResponse(url="/login", status_code=303)
+        if exc.status_code in {403, 409}:
+            return RedirectResponse(url="/admin-ui", status_code=303)
         raise
     return HTMLResponse(role_safe_message_center_html())
