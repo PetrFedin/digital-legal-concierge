@@ -39,6 +39,29 @@ def install_client_wording() -> None:
 
     my_case._document_detail = document_detail_for_client
 
+    # `Моё дело` is the main client cabinet, not a terminal dialog. Keep the
+    # primary action first, but expose the approved global Back affordance just
+    # before Home. The navigation guard resolves the previous read-only screen
+    # and never replays business mutations.
+    if not getattr(my_case, "_logical_back_button_installed", False):
+        original_case_buttons = my_case._case_buttons
+
+        def case_buttons_with_back(view):
+            items = list(original_case_buttons(view))
+            callbacks = [str(item[1]) for item in items]
+            if "nav_back" not in callbacks:
+                back_button = ("⬅️ Назад", "nav_back")
+                try:
+                    home_index = callbacks.index("nav_home")
+                except ValueError:
+                    items.append(back_button)
+                else:
+                    items.insert(home_index, back_button)
+            return items
+
+        my_case._case_buttons = case_buttons_with_back
+        my_case._logical_back_button_installed = True
+
     # Calculator result historically exposed three unbound mutating callbacks.
     # They do not contain case_id, so an old Telegram message could otherwise be
     # clicked after a new case was created. The current result has one navigation
