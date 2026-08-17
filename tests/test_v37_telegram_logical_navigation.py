@@ -94,3 +94,14 @@ def test_contract_presentation_adds_visible_back_without_changing_contract_trans
     assert "service_contract._show = contract_show_with_back" in patch
     assert "confirm_service_contract(" in contract
     assert "contract_show_with_back" not in contract
+
+
+def test_active_my_case_keeps_primary_action_first_and_adds_back_before_home():
+    patch = read("app/bot/client_wording_patch.py")
+
+    assert "original_case_buttons = my_case._case_buttons" in patch
+    assert "items = list(original_case_buttons(view))" in patch
+    assert 'back_button = ("⬅️ Назад", "nav_back")' in patch
+    assert 'home_index = callbacks.index("nav_home")' in patch
+    assert "items.insert(home_index, back_button)" in patch
+    assert "my_case._case_buttons = case_buttons_with_back" in patch
