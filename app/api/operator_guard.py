@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.refund_resolution_guard import router as refund_resolution_guard_router
 from app.api.staff_ui_guards import router as staff_ui_guards_router
 from app.api.staff_ui_shell_guard import router as staff_ui_shell_guard_router
+from app.api.workdesk_ui_guard import router as workdesk_ui_guard_router
 from app.config import settings
 from app.db.session import get_db
 from app.security.access_control import ROLE_ADMIN, ROLE_LAWYER, ROLE_SUPERADMIN
@@ -88,9 +89,10 @@ async def operator_guard(
 
 
 # operator_guard is mounted by initial_setup_wizard before the legacy staff
-# routers. Keep staff HTML shell authentication and M2 refund lifecycle guards
-# in this early layer so an unauthenticated or incomplete account never falls
-# through to a legacy client-side-only page.
+# routers. Keep staff HTML shell authentication, Workdesk deep links and M2
+# refund lifecycle guards in this early layer so stale bookmarks never fall
+# through to a client-side-only page or an unrelated dashboard.
+router.include_router(workdesk_ui_guard_router)
 router.include_router(staff_ui_shell_guard_router)
 router.include_router(staff_ui_guards_router)
 router.include_router(refund_resolution_guard_router)
