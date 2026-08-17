@@ -5,6 +5,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.refund_resolution_guard import router as refund_resolution_guard_router
+from app.api.staff_ui_guards import router as staff_ui_guards_router
 from app.api.staff_ui_shell_guard import router as staff_ui_shell_guard_router
 from app.config import settings
 from app.db.session import get_db
@@ -91,4 +92,5 @@ async def operator_guard(
 # in this early layer so an unauthenticated or incomplete account never falls
 # through to a legacy client-side-only page.
 router.include_router(staff_ui_shell_guard_router)
+router.include_router(staff_ui_guards_router)
 router.include_router(refund_resolution_guard_router)
