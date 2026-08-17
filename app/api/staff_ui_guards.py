@@ -5,6 +5,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.document_review import REVIEW_HTML
+from app.api.health_center import health_center_ui as legacy_health_center_ui
 from app.api.payment_review_center import PAYMENT_REVIEW_CENTER_HTML
 from app.api.sla_center import SLA_CENTER_HTML
 from app.config import settings
@@ -185,4 +186,22 @@ async def protected_document_review_ui(
         x_admin_token,
         REVIEW_HTML,
         staff=True,
+    )
+
+
+@router.get("/health-center/ui", response_class=HTMLResponse)
+async def protected_health_center_ui(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    """Keep operational health checks on the admin recovery path, not raw 403."""
+
+    gate = await _staff_gate(request, db, x_admin_token)
+    if isinstance(gate, RedirectResponse):
+        return gate
+    return await legacy_health_center_ui(
+        request=request,
+        db=db,
+        x_admin_token=x_admin_token,
     )
