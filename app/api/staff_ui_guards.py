@@ -41,6 +41,34 @@ async def _staff(request: Request, db: AsyncSession, header_token: str | None):
     return actor
 
 
+async def _staff_gate(
+    request: Request,
+    db: AsyncSession,
+    header_token: str | None,
+    *,
+    staff: bool = False,
+):
+    """Resolve a UI actor without exposing raw JSON authorization dead ends."""
+
+    try:
+        actor = (
+            await _staff(request, db, header_token)
+            if staff
+            else await _admin(request, db, header_token)
+        )
+    except DocumentAccessError as error:
+        if error.status_code == 401:
+            return RedirectResponse(url="/login", status_code=303)
+        if error.status_code in {403, 409}:
+            return RedirectResponse(url="/admin-ui", status_code=303)
+        raise
+    except HTTPException as error:
+        if error.status_code in {403, 409}:
+            return RedirectResponse(url="/admin-ui", status_code=303)
+        raise
+    return actor
+
+
 async def _guarded_html(
     request: Request,
     db: AsyncSession,
@@ -49,15 +77,14 @@ async def _guarded_html(
     *,
     staff: bool = False,
 ):
-    try:
-        if staff:
-            await _staff(request, db, header_token)
-        else:
-            await _admin(request, db, header_token)
-    except DocumentAccessError as error:
-        if error.status_code == 401:
-            return RedirectResponse(url="/login", status_code=303)
-        raise
+    gate = await _staff_gate(
+        request,
+        db,
+        header_token,
+        staff=staff,
+    )
+    if isinstance(gate, RedirectResponse):
+        return gate
     return HTMLResponse(html)
 
 
@@ -67,12 +94,9 @@ async def protected_payment_review_ui(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    try:
-        await _admin(request, db, x_admin_token)
-    except DocumentAccessError as error:
-        if error.status_code == 401:
-            return RedirectResponse(url="/login", status_code=303)
-        raise
+    gate = await _staff_gate(request, db, x_admin_token)
+    if isinstance(gate, RedirectResponse):
+        return gate
 
     # Process Integrity can point to a PENDING M2 provider link that is stale but
     # has not received money. Such a record is intentionally absent from the
@@ -114,12 +138,9 @@ async def retired_technical_cases_ui(
     valid case deep-link and redirect to the one operational control surface.
     """
 
-    try:
-        await _admin(request, db, x_admin_token)
-    except DocumentAccessError as error:
-        if error.status_code == 401:
-            return RedirectResponse(url="/login", status_code=303)
-        raise
+    gate = await _staff_gate(request, db, x_admin_token)
+    if isinstance(gate, RedirectResponse):
+        return gate
 
     raw_case_id = str(request.query_params.get("case_id") or "").strip()
     try:
