@@ -65,3 +65,27 @@ def test_real_bearer_api_clients_keep_existing_transport_contract():
     assert "return token if decode_access_token(token) else None" in security
     assert "if explicit_bearer:" in security
     assert "return await call_next(request)" in security
+
+
+def test_sensitive_staff_surfaces_are_never_browser_cacheable():
+    security = read("app/security/http_security.py")
+
+    # These paths contain client/legal/payment data or privileged operational
+    # controls and must not fall outside the global no-store boundary merely
+    # because their historical route did not begin with /admin.
+    for prefix in (
+        "/document-access",
+        "/contracts",
+        "/message-center",
+        "/consultation-slots",
+        "/search-center",
+        "/audit",
+        "/retention",
+        "/recovery",
+        "/settings-ui",
+        "/diagnostic-center",
+    ):
+        assert f'"{prefix}"' in security
+
+    assert 'response.headers["Cache-Control"] = "no-store, max-age=0"' in security
+    assert 'response.headers["Pragma"] = "no-cache"' in security
