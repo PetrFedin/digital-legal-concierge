@@ -26,6 +26,7 @@ from app.security.document_access import DocumentAccessError, resolve_document_a
 router = APIRouter(tags=["access-role-guard"])
 
 PRODUCT_WORKSPACE_ROLES = frozenset({ROLE_ADMIN, ROLE_SUPERADMIN, ROLE_LAWYER})
+STAFF_LANDING = "staff_landing"
 
 
 def _token(request: Request, header_token: str | None) -> str | None:
@@ -85,12 +86,15 @@ async def _require_superadmin_ui(
     except DocumentAccessError as error:
         if error.status_code == 401:
             return None
+        if error.status_code in {403, 409}:
+            return STAFF_LANDING
+        raise
+    except HTTPException as error:
+        if error.status_code in {403, 409}:
+            return STAFF_LANDING
         raise
     if actor.role != ROLE_SUPERADMIN:
-        raise HTTPException(
-            status_code=403,
-            detail="Управление пользователями доступно только суперадминистратору",
-        )
+        return STAFF_LANDING
     return actor
 
 
@@ -158,6 +162,8 @@ async def access_ui_guard(
     actor = await _require_superadmin_ui(request, db, x_admin_token)
     if actor is None:
         return RedirectResponse(url="/login", status_code=303)
+    if actor == STAFF_LANDING:
+        return RedirectResponse(url="/admin-ui", status_code=303)
     conflicts = await _historical_role_conflicts(db)
     return HTMLResponse(_guarded_access_html(conflicts))
 
