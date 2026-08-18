@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 from dataclasses import dataclass
 from decimal import Decimal
-from uuid import uuid4
 
 import httpx
 
@@ -16,6 +16,19 @@ class PaymentProviderResult:
     provider_payment_id: str
     payment_url: str
     raw: dict | None = None
+
+
+def payment_idempotence_key(payment_id: int) -> str:
+    """Stable 64-char provider key for one internal Payment across retries.
+
+    Include the application environment so staging/prod databases cannot collide
+    if they ever point at the same provider account and reuse small integer IDs.
+    The internal Payment id changes only when the application intentionally
+    creates a new attempt after a terminal previous attempt.
+    """
+
+    raw = f"digital-legal-concierge:{settings.app_env}:payment:{int(payment_id)}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 class BasePaymentProvider:
@@ -62,7 +75,9 @@ class FakePaymentProvider(BasePaymentProvider):
         title: str,
         metadata: dict,
     ) -> PaymentProviderResult:
-        provider_payment_id = str(uuid4())
+        # Even local/test should model the production idempotency contract: the
+        # same internal Payment always maps to the same provider-side operation.
+        provider_payment_id = f"fake-{payment_idempotence_key(payment_id)[:32]}"
         return PaymentProviderResult(
             provider="fake",
             provider_payment_id=provider_payment_id,
@@ -119,7 +134,9 @@ class YooKassaPaymentProvider(BasePaymentProvider):
         }
         headers = {
             "Authorization": self._authorization_header(),
-            "Idempotence-Key": str(uuid4()),
+            # Retry/network races for the same internal Payment must resolve to
+            # the same YooKassa operation, not create a second charge link.
+            "Idempotence-Key": payment_idempotence_key(payment_id),
             "Content-Type": "application/json",
         }
         async with httpx.AsyncClient(timeout=20) as client:
