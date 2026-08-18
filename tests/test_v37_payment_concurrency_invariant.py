@@ -45,6 +45,24 @@ def test_provider_creation_uses_stable_internal_payment_idempotence_key():
     assert "uuid4" not in providers
 
 
+def test_incomplete_yookassa_create_response_fails_before_internal_waiting_state_can_be_saved():
+    providers = read("app/domain/payments/providers.py")
+    service = read("app/domain/payments/payment_service.py")
+
+    assert 'provider_payment_id = str(data.get("id") or "").strip()' in providers
+    assert 'payment_url = str(confirmation.get("confirmation_url") or "").strip()' in providers
+    assert "if not provider_payment_id or not payment_url:" in providers
+    assert "Платёжный провайдер вернул неполный ответ" in providers
+    assert "повтор с тем же idempotency key безопасно восстановит операцию" in providers
+
+    link_block = service.split("async def create_payment_link", 1)[1].split(
+        "async def mark_paid", 1
+    )[0]
+    result_call = link_block.index("result = await provider.create_payment(")
+    waiting_state = link_block.index("payment.status = PaymentStatus.WAITING_CONFIRMATION")
+    assert result_call < waiting_state
+
+
 def test_payment_migration_enforces_one_active_case_code_and_provider_operation():
     migration = read("migrations/versions/20260819_0016_payment_idempotency_invariants.py")
 
