@@ -9,7 +9,7 @@ from app.bot.screens import (
     consultation_results,
     documents,
     history,
-    messages,
+    message_history_guard,
     my_case,
     payments,
     service_contract,
@@ -129,7 +129,7 @@ async def _render_target(
         await history.case_history(callback, db)
         return True
     if target == "message_history":
-        await messages.message_history(callback, db, state)
+        await message_history_guard.present_message_history(callback, db, state)
         return True
     if target == "consultation_result_open":
         await consultation_results.consultation_result_open(callback, db)
@@ -253,12 +253,25 @@ async def logical_case_history(callback: CallbackQuery, db, state: FSMContext):
 @router.callback_query(lambda c: c.data == "message_history")
 async def logical_message_history(callback: CallbackQuery, db, state: FSMContext):
     if await common._has_unsent_message_draft(state):
-        return await messages.message_history(callback, db, state)
+        return await message_history_guard.present_message_history(callback, db, state)
     return await _record_after(
-        lambda: messages.message_history(callback, db, state),
+        lambda: message_history_guard.present_message_history(callback, db, state),
         "message_history",
         state=state,
     )
+
+
+@router.callback_query(
+    lambda c: bool(c.data) and c.data.startswith("message_history:")
+)
+async def logical_message_history_page(
+    callback: CallbackQuery,
+    db,
+    state: FSMContext,
+):
+    """Keep pagination on the same logical screen and the same stable DB path."""
+
+    return await message_history_guard.present_message_history(callback, db, state)
 
 
 @router.callback_query(lambda c: c.data == "consultation_result_open")
