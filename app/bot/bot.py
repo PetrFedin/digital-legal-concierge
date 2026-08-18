@@ -63,6 +63,7 @@ from app.bot.screens import (
     payments,
     poa_handoff,
     post_calculation,
+    reply_menu_direct,
     service_contract,
     telegram_safety_composite,
 )
@@ -187,12 +188,13 @@ def build_dispatcher() -> Dispatcher:
     # see historical Telegram callbacks before the legacy action handlers can
     # mutate a case, payment, document or appointment. The navigation-history
     # guard is first only for idempotent/read-only screen callbacks and global
-    # Home/Back/Cancel; it never replays a business mutation. The calculator
-    # active-case recovery router owns only calc_start and delegates every normal
-    # state to the historical handler; it exists to break NEW/CALCULATOR_STARTED
-    # recovery loops before calculator.router sees the callback.
+    # Home/Back/Cancel; it never replays a business mutation. reply_menu_direct
+    # owns only the persistent `Моё дело` message and therefore must precede the
+    # old common trampoline handler. The calculator active-case recovery router
+    # owns only calc_start and delegates normal states to calculator.router.
     for router in [
         navigation_history_guard.router,
+        reply_menu_direct.router,
         common.router,
         post_calculation.router,
         calculator_active_case_recovery.router,
