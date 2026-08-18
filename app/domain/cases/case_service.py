@@ -50,6 +50,44 @@ class CaseService:
         )
         return result.scalars().first()
 
+    async def get_or_create_active_case_for_user(
+        self,
+        client: User,
+        *,
+        route: str | None = None,
+        status: str | CaseStatus = CaseStatus.NEW,
+        title: str | None = None,
+    ) -> Case:
+        """Serialize the one-active-case invariant on the client row.
+
+        Telegram retries and two independent entry points can arrive in separate
+        transactions at almost the same time. A plain read-then-create allows
+        both transactions to observe "no case" and create parallel M1/M2 cases.
+        Lock the stable client row before checking. A database partial unique
+        index remains the final invariant if any other code path bypasses this
+        helper.
+        """
+
+        locked_client = (
+            await self.db.execute(
+                select(User)
+                .where(User.id == int(client.id))
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if locked_client is None:
+            raise LookupError("Клиент не найден")
+
+        case = await self.get_active_case_for_user(int(client.id))
+        if case is not None:
+            return case
+        return await self.create_case(
+            client=locked_client,
+            route=route,
+            status=status,
+            title=title,
+        )
+
     async def create_case(
         self,
         *,
