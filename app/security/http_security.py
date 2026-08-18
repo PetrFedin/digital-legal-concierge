@@ -41,6 +41,8 @@ SENSITIVE_PREFIXES = (
     "/settings-ui",
     "/health-center",
     "/diagnostic-center",
+    "/initial-setup-wizard",
+    "/launch-check",
     "/final-handover",
     "/final-qa",
     "/go-live",
