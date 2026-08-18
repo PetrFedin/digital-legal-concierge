@@ -54,16 +54,18 @@ class SlotService:
         return f"consultation:{int(consultation_id)}:slot:{int(slot_id)}"
 
     async def release_expired_holds(self) -> int:
-        """Release expired M2 holds, expire their links and restore slot choice.
+        """Release only holds that are still expired after row-lock revalidation.
 
-        A provider callback locks Payment first and then attempts consultation/
-        slot changes. We follow the same leading lock for matching active payment
-        rows before mutating consultation/slot/case state, which keeps a late
-        provider callback serialized with the expiry reconciliation.
+        The first query is intentionally only a candidate scan. A payment
+        webhook can confirm a hold between that scan and cleanup. We therefore
+        follow the provider's leading Payment lock order for matching active
+        links, then lock/re-read the candidate Slot rows and mutate only rows
+        that are *still* ``held`` and expired. A stale cleanup snapshot can never
+        turn a newly ``booked`` slot back into ``available``.
         """
 
         now = datetime.now(timezone.utc)
-        expired = (
+        candidates = (
             await self.db.execute(
                 select(
                     ConsultationSlot.id,
@@ -82,31 +84,23 @@ class SlotService:
                 .order_by(ConsultationSlot.id.asc())
             )
         ).all()
-        if not expired:
+        if not candidates:
             return 0
 
-        slot_ids = [int(row.id) for row in expired]
-        consultation_ids = [
-            int(row.consultation_id)
-            for row in expired
-            if row.consultation_id is not None
-        ]
-        case_ids = sorted(
-            {
-                int(row.case_id)
-                for row in expired
-                if row.case_id is not None
-            }
-        )
+        candidate_by_slot = {int(row.id): row for row in candidates}
         reservation_by_slot: dict[int, str] = {}
         case_by_reservation: dict[str, int] = {}
-        for row in expired:
+        for row in candidates:
             if row.consultation_id is None or row.case_id is None:
                 continue
             key = self._reservation_key(int(row.consultation_id), int(row.id))
             reservation_by_slot[int(row.id)] = key
             case_by_reservation[key] = int(row.case_id)
 
+        # Match webhook lock ordering. If a successful webhook already won and
+        # committed, its payment is no longer active; the later slot recheck will
+        # also see ``booked`` and skip it. If cleanup wins this lock, the webhook
+        # waits and later sees EXPIRED/review state instead of resurrecting it.
         payment_ids_by_case: dict[int, list[int]] = {}
         if case_by_reservation:
             payment_rows = list(
@@ -155,6 +149,46 @@ class SlotService:
                     ),
                 )
 
+        candidate_ids = sorted(candidate_by_slot)
+        locked_slots = list(
+            (
+                await self.db.execute(
+                    select(ConsultationSlot)
+                    .where(
+                        ConsultationSlot.id.in_(candidate_ids),
+                        ConsultationSlot.status == "held",
+                        ConsultationSlot.hold_expires_at.is_not(None),
+                        ConsultationSlot.hold_expires_at < now,
+                    )
+                    .order_by(ConsultationSlot.id.asc())
+                    .with_for_update()
+                )
+            ).scalars().all()
+        )
+        if not locked_slots:
+            # Provider/no-payment booking won the race after the candidate scan.
+            # Active stale links may already have been expired above, but no slot
+            # or consultation is reopened from an obsolete snapshot.
+            await self.db.flush()
+            return 0
+
+        actual_slot_ids = [int(slot.id) for slot in locked_slots]
+        expired = [candidate_by_slot[slot_id] for slot_id in actual_slot_ids]
+        consultation_ids = sorted(
+            {
+                int(row.consultation_id)
+                for row in expired
+                if row.consultation_id is not None
+            }
+        )
+        case_ids = sorted(
+            {
+                int(row.case_id)
+                for row in expired
+                if row.case_id is not None
+            }
+        )
+
         if consultation_ids:
             await self.db.execute(
                 self._bulk(
@@ -177,10 +211,17 @@ class SlotService:
                 )
             )
 
+        # Keep the state predicate even though rows are locked. It documents and
+        # enforces that a booked row is never a valid expiry target.
         await self.db.execute(
             self._bulk(
                 update(ConsultationSlot)
-                .where(ConsultationSlot.id.in_(slot_ids))
+                .where(
+                    ConsultationSlot.id.in_(actual_slot_ids),
+                    ConsultationSlot.status == "held",
+                    ConsultationSlot.hold_expires_at.is_not(None),
+                    ConsultationSlot.hold_expires_at < now,
+                )
                 .values(
                     status="available",
                     hold_expires_at=None,
@@ -254,7 +295,7 @@ class SlotService:
             )
 
         await self.db.flush()
-        return len(slot_ids)
+        return len(actual_slot_ids)
 
     async def get_available_slots(
         self,
