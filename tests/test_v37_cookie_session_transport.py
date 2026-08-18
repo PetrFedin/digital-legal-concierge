@@ -84,6 +84,8 @@ def test_sensitive_staff_surfaces_are_never_browser_cacheable():
         "/recovery",
         "/settings-ui",
         "/diagnostic-center",
+        "/initial-setup-wizard",
+        "/launch-check",
     ):
         assert f'"{prefix}"' in security
 
