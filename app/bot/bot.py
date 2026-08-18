@@ -60,6 +60,7 @@ from app.bot.screens import (
     no_payment,
     no_payment_legal,
     payment_archive_guard,
+    payment_received_money_guard,
     payments,
     poa_handoff,
     post_calculation,
@@ -185,13 +186,12 @@ def build_dispatcher() -> Dispatcher:
     dispatcher.callback_query.middleware(CallbackAcknowledgeMiddleware())
 
     # Order is a business invariant. Provenance-bearing/exact-case guards must
-    # see historical Telegram callbacks before the legacy action handlers can
-    # mutate a case, payment, document or appointment. The navigation-history
-    # guard is first only for idempotent/read-only screen callbacks and global
-    # Home/Back/Cancel; it never replays a business mutation. reply_menu_direct
-    # owns only the persistent `Моё дело` message and therefore must precede the
-    # old common trampoline handler. The calculator active-case recovery router
-    # owns only calc_start and delegates normal states to calculator.router.
+    # see historical Telegram callbacks before legacy handlers can mutate a
+    # case, payment, document or appointment. navigation_history_guard owns only
+    # replay-safe/read-only screens. reply_menu_direct owns the persistent menu
+    # before old trampoline handlers. payment_received_money_guard is before the
+    # archive/payment routers so received money under review can never send the
+    # client into another slot/payment loop.
     for router in [
         navigation_history_guard.router,
         reply_menu_direct.router,
@@ -214,6 +214,7 @@ def build_dispatcher() -> Dispatcher:
         telegram_safety_composite.router,
         consultation_intake.router,
         no_payment.router,
+        payment_received_money_guard.router,
         payment_archive_guard.router,
         payments.router,
         consultations.router,
