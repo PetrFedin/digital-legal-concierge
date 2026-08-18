@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.active_case_integrity_guard import router as active_case_integrity_guard_router
 from app.api.backup_center_guard import router as backup_center_guard_router
 from app.api.refund_resolution_guard import router as refund_resolution_guard_router
 from app.api.staff_ui_guards import router as staff_ui_guards_router
@@ -94,6 +95,10 @@ async def operator_guard(
 # routers. Keep staff/superadmin HTML shell authentication, Workdesk deep links,
 # backup authorization and M2 refund lifecycle guards in this early layer so
 # stale bookmarks never fall through to a client-side-only or raw-error surface.
+# The active-case integrity route must be registered before the historical
+# Workdesk integrity route: it reuses the full existing audit and adds the hard
+# one-active-case-per-client invariant without dropping older checks.
+router.include_router(active_case_integrity_guard_router)
 router.include_router(backup_center_guard_router)
 router.include_router(superadmin_ui_guards_router)
 router.include_router(workdesk_ui_guard_router)
