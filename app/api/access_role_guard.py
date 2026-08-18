@@ -47,6 +47,24 @@ def _validate_product_workspace_role(payload: dict, *, required: bool) -> None:
             ),
         )
 
+    # Product workspaces intentionally have different responsibility models:
+    # admin operates queues/financial controls, lawyer owns legal facts and case
+    # actions. Combining those product roles in one personal account makes the
+    # canonical landing and authorization actor ambiguous (admin precedence can
+    # silently hide the lawyer workspace). Keep technical roles additive, but
+    # require separate personal accounts for admin and lawyer responsibilities.
+    if ROLE_LAWYER in roles and (
+        ROLE_ADMIN in roles or ROLE_SUPERADMIN in roles
+    ):
+        raise HTTPException(
+            400,
+            (
+                "Нельзя совмещать роли «Администратор/Суперадминистратор» и «Юрист» "
+                "в одной рабочей учётной записи. Создайте отдельные персональные учётные "
+                "записи для административной и юридической ответственности."
+            ),
+        )
+
 
 async def _require_superadmin_ui(
     request: Request,
@@ -72,8 +90,9 @@ def _guarded_access_html() -> str:
     note = (
         '<p class="muted"><b>Базовая рабочая роль обязательна.</b> '
         '«Оператор» и «Тестировщик» можно использовать только как дополнительные технические роли '
-        'вместе с «Администратор» или «Юрист». Так сотрудник не останется без рабочего кабинета после входа.'
-        '</p>'
+        'вместе с «Администратор» или «Юрист». Административную и юридическую ответственность '
+        'не совмещайте в одной учётной записи: для роли юриста используйте отдельный персональный вход. '
+        'Так маршрутизация кабинетов и аудит действий остаются однозначными.'</n        '</p>'
     )
     anchor = '<p class="muted">Для каждого суперадминистратора MFA обязательна и настраивается при первом входе.</p>'
     return ACCESS_HTML.replace(anchor, note + anchor)
