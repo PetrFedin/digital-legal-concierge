@@ -33,6 +33,7 @@ from app.bot.draft_protection import (
 from app.bot.lease import TelegramPollingLease
 from app.bot.screens import (
     calculator,
+    calculator_active_case_recovery,
     calculator_unknown_data_guard,
     common,
     consent_decision_guard,
@@ -156,6 +157,7 @@ def build_fsm_storage() -> BaseStorage:
 
 def build_dispatcher() -> Dispatcher:
     install_client_wording()
+    calculator_active_case_recovery.install_active_case_recovery_actions()
     dispatcher = Dispatcher(storage=build_fsm_storage())
     dispatcher.update.middleware(DbMiddleware())
     flood_control = FloodControlMiddleware()
@@ -185,11 +187,15 @@ def build_dispatcher() -> Dispatcher:
     # see historical Telegram callbacks before the legacy action handlers can
     # mutate a case, payment, document or appointment. The navigation-history
     # guard is first only for idempotent/read-only screen callbacks and global
-    # Home/Back/Cancel; it never replays a business mutation.
+    # Home/Back/Cancel; it never replays a business mutation. The calculator
+    # active-case recovery router owns only calc_start and delegates every normal
+    # state to the historical handler; it exists to break NEW/CALCULATOR_STARTED
+    # recovery loops before calculator.router sees the callback.
     for router in [
         navigation_history_guard.router,
         common.router,
         post_calculation.router,
+        calculator_active_case_recovery.router,
         calculator_unknown_data_guard.router,
         calculator.router,
         my_case.router,
