@@ -159,9 +159,10 @@ async def direct_reply_message_history(message: Message, state: FSMContext, db):
         )
         return
 
+    case_id = int(case.id)
     service = MessageService(db)
     try:
-        dialog = await service.list_case_messages(case.id, limit=100)
+        dialog = await service.list_case_messages(case_id, limit=100)
         text, page, total_pages = messages._format_dialog(
             dialog,
             0,
@@ -173,6 +174,7 @@ async def direct_reply_message_history(message: Message, state: FSMContext, db):
             for item in page_messages
             if item.sender_type == "lawyer"
         )
+        # Do not touch the ORM Case after rollback: AsyncSession may expire it.
         await db.rollback()
     except Exception:
         await db.rollback()
@@ -197,7 +199,7 @@ async def direct_reply_message_history(message: Message, state: FSMContext, db):
     if visible_team_ids and not read_only:
         try:
             await service.mark_lawyer_messages_read(
-                case.id,
+                case_id,
                 message_ids=visible_team_ids,
             )
             await db.commit()
