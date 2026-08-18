@@ -59,6 +59,44 @@ def test_contract_center_shell_uses_guided_staff_recovery_before_legacy_route():
     )
 
 
+def test_sensitive_admin_action_shells_require_personal_admin_before_html():
+    guard = read("app/api/staff_ui_shell_guard.py")
+
+    assert "async def _require_admin_ui_actor" in guard
+    assert "allowed_roles=frozenset({ROLE_ADMIN, ROLE_SUPERADMIN})" in guard
+    assert "async def _admin_shell" in guard
+    assert '@router.get("/admin/payment-reviews/ui"' in guard
+    assert "PAYMENT_REVIEW_CENTER_HTML" in guard
+    assert '@router.get("/admin/refunds/ui"' in guard
+    assert "REFUND_UI" in guard
+    assert '@router.get("/admin/sla/ui"' in guard
+    assert "SLA_CENTER_HTML" in guard
+
+
+def test_sensitive_admin_shell_guards_win_route_precedence():
+    main = read("app/main.py")
+    initial = main.index('(\"initial_setup_wizard\", initial_setup_wizard_router)')
+
+    assert initial < main.index('(\"guided_refund_center\", guided_refund_center_router)')
+    assert initial < main.index('(\"refund_center\", refund_center_router)')
+    assert initial < main.index('(\"payment_review_center\", payment_review_center_router)')
+    assert initial < main.index('(\"sla_center\", sla_center_router)')
+
+
+def test_admin_action_shells_preserve_hardened_business_templates():
+    guard = read("app/api/staff_ui_shell_guard.py")
+    guided_refund = read("app/api/guided_refund_center.py")
+    payment_review = read("app/api/payment_review_center.py")
+    sla = read("app/api/sla_center.py")
+
+    assert "REFUND_UI" in guided_refund
+    assert "PAYMENT_REVIEW_CENTER_HTML" in payment_review
+    assert "SLA_CENTER_HTML" in sla
+    assert "return await _admin_shell(request, db, x_admin_token, REFUND_UI)" in guard
+    assert "PAYMENT_REVIEW_CENTER_HTML," in guard
+    assert "return await _admin_shell(request, db, x_admin_token, SLA_CENTER_HTML)" in guard
+
+
 def test_anonymous_lawyer_ui_goes_to_login_and_incomplete_staff_to_landing():
     guard = read("app/api/staff_ui_shell_guard.py")
 
