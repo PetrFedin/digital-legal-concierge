@@ -7,8 +7,10 @@ from aiogram.types import Message
 from app.bot.client_case_view import load_client_case_view
 from app.bot.context import BotContextService
 from app.bot.keyboards import main_menu, one
-from app.bot.screens import common, document_action_center, my_case
+from app.bot.screens import common, document_action_center, messages, my_case
+from app.domain.cases.client_case_scope import latest_completed_case_for_user
 from app.domain.documents.document_service import DocumentService
+from app.domain.messages.message_service import MessageService
 
 router = Router()
 
@@ -22,13 +24,7 @@ async def _active_message_case(message: Message, db):
 
 @router.message(lambda m: m.text in {"📁 Мое дело", "📁 Моё дело"})
 async def direct_reply_my_case(message: Message, state: FSMContext, db):
-    """Open the client cabinet immediately from the persistent reply keyboard.
-
-    The old reply-menu handler rendered a trampoline with another `Моё дело`
-    callback, forcing a second tap. Reuse the existing shared case view and the
-    same My Case action-button builder instead of duplicating legal/payment
-    decision logic or fabricating a CallbackQuery.
-    """
+    """Open the client cabinet immediately from the persistent reply keyboard."""
 
     if await common._guard_message_draft(message, state):
         return
@@ -48,9 +44,6 @@ async def direct_reply_my_case(message: Message, state: FSMContext, db):
         view = await load_client_case_view(db, case)
         markup = one(*my_case._case_buttons(view))
     else:
-        # Completed/no-case presentation already comes from the shared Home
-        # presenter. Its primary action points to the archived result when one
-        # exists and otherwise offers calculation/legal-help entry.
         markup = main_menu(
             case_exists,
             completed_case=completed_case,
@@ -63,12 +56,7 @@ async def direct_reply_my_case(message: Message, state: FSMContext, db):
 
 @router.message(lambda m: m.text == "📄 Документы")
 async def direct_reply_documents(message: Message, state: FSMContext, db):
-    """Open the real document action center without an extra callback tap.
-
-    Mutation eligibility stays in document_action_center._next_action, including
-    the runtime v2 case-bound handoff callbacks installed by client_wording_patch.
-    This handler only adapts that same presentation to Message.answer().
-    """
+    """Open the real document action center without an extra callback tap."""
 
     if await common._guard_message_draft(message, state):
         return
@@ -139,6 +127,126 @@ async def direct_reply_documents(message: Message, state: FSMContext, db):
         "АКТУАЛЬНЫЕ ДОКУМЕНТЫ\n"
         f"{preview}",
         reply_markup=one(*buttons),
+    )
+
+
+@router.message(lambda m: m.text == "💬 Переписка")
+async def direct_reply_message_history(message: Message, state: FSMContext, db):
+    """Show the first real dialog page and mark only displayed team replies read."""
+
+    if await common._guard_message_draft(message, state):
+        return
+    await state.clear()
+    user, case = await _active_message_case(message, db)
+    read_only = False
+    if case is None:
+        case = await latest_completed_case_for_user(db, user_id=user.id)
+        read_only = case is not None
+    if case is None:
+        await db.commit()
+        await message.answer(
+            "💬 История переписки появится после создания обращения.\n\n"
+            "Начните с предварительного расчёта или откройте связь с юридической командой.",
+            reply_markup=one(
+                ("🧮 Рассчитать неустойку", "calc_start"),
+                ("💬 Связаться с юристом", "contact_lawyer"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    service = MessageService(db)
+    try:
+        dialog = await service.list_case_messages(case.id, limit=100)
+        text, page, total_pages = messages._format_dialog(
+            dialog,
+            0,
+            read_only=read_only,
+        )
+        page_messages, _, _ = messages._history_slice(dialog, page)
+        visible_team_ids = tuple(
+            int(item.id)
+            for item in page_messages
+            if item.sender_type == "lawyer"
+        )
+        await db.rollback()
+    except Exception:
+        await db.rollback()
+        await message.answer(
+            "Не удалось загрузить переписку. Данные не изменены.",
+            reply_markup=one(
+                ("🔄 Повторить", "message_history:0"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    await message.answer(
+        text,
+        reply_markup=messages._history_keyboard(
+            page,
+            total_pages,
+            read_only=read_only,
+        ),
+    )
+    if visible_team_ids and not read_only:
+        try:
+            await service.mark_lawyer_messages_read(
+                case.id,
+                message_ids=visible_team_ids,
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+
+
+@router.message(lambda m: m.text == "✉️ Новый вопрос")
+async def direct_reply_new_question(message: Message, state: FSMContext, db):
+    """Start a case-bound draft immediately when the active reply menu asks for it."""
+
+    if await common._guard_message_draft(message, state):
+        return
+    user, case = await _active_message_case(message, db)
+    if case is None:
+        completed = await latest_completed_case_for_user(db, user_id=user.id)
+        await state.clear()
+        await db.commit()
+        if completed is not None:
+            await message.answer(
+                "🔒 Завершённое обращение не принимает новые сообщения.\n\n"
+                "Архив остаётся без изменений. Если вопрос новый, создайте отдельное обращение явно.",
+                reply_markup=one(
+                    ("💬 Архив переписки", "message_history"),
+                    ("📁 Итог обращения", "my_case_open"),
+                    ("🆕 Создать новое обращение", "message_new_request"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+            )
+            return
+        await message.answer(
+            "✉️ Активного дела сейчас нет.\n\n"
+            "Новый вопрос не создаст обращение автоматически. Подтвердите новый запрос отдельным действием.",
+            reply_markup=one(
+                ("🆕 Создать новое обращение", "message_new_request"),
+                ("🧮 Рассчитать неустойку", "calc_start"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    await state.clear()
+    await state.update_data(
+        case_id=int(case.id),
+        case_number=str(case.case_number),
+        new_request_confirmed=False,
+    )
+    await state.set_state(messages.MessageStates.choosing_category)
+    data = await state.get_data()
+    await db.commit()
+    await message.answer(
+        messages._category_prompt(data),
+        reply_markup=one(*messages._category_buttons()),
     )
 
 
