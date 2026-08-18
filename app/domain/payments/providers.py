@@ -19,13 +19,7 @@ class PaymentProviderResult:
 
 
 def payment_idempotence_key(payment_id: int) -> str:
-    """Stable 64-char provider key for one internal Payment across retries.
-
-    Include the application environment so staging/prod databases cannot collide
-    if they ever point at the same provider account and reuse small integer IDs.
-    The internal Payment id changes only when the application intentionally
-    creates a new attempt after a terminal previous attempt.
-    """
+    """Stable 64-char provider key for one internal Payment across retries."""
 
     raw = f"digital-legal-concierge:{settings.app_env}:payment:{int(payment_id)}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -75,8 +69,6 @@ class FakePaymentProvider(BasePaymentProvider):
         title: str,
         metadata: dict,
     ) -> PaymentProviderResult:
-        # Even local/test should model the production idempotency contract: the
-        # same internal Payment always maps to the same provider-side operation.
         provider_payment_id = f"fake-{payment_idempotence_key(payment_id)[:32]}"
         return PaymentProviderResult(
             provider="fake",
@@ -134,8 +126,6 @@ class YooKassaPaymentProvider(BasePaymentProvider):
         }
         headers = {
             "Authorization": self._authorization_header(),
-            # Retry/network races for the same internal Payment must resolve to
-            # the same YooKassa operation, not create a second charge link.
             "Idempotence-Key": payment_idempotence_key(payment_id),
             "Content-Type": "application/json",
         }
@@ -147,11 +137,21 @@ class YooKassaPaymentProvider(BasePaymentProvider):
             )
             response.raise_for_status()
             data = response.json()
+
+        provider_payment_id = str(data.get("id") or "").strip()
         confirmation = data.get("confirmation") or {}
+        payment_url = str(confirmation.get("confirmation_url") or "").strip()
+        if not provider_payment_id or not payment_url:
+            raise RuntimeError(
+                "Платёжный провайдер вернул неполный ответ: отсутствует идентификатор "
+                "операции или ссылка подтверждения. Внутренний платёж не будет переведён "
+                "в ожидание оплаты; повтор с тем же idempotency key безопасно восстановит операцию."
+            )
+
         return PaymentProviderResult(
             provider="yookassa",
-            provider_payment_id=data.get("id", ""),
-            payment_url=confirmation.get("confirmation_url", ""),
+            provider_payment_id=provider_payment_id,
+            payment_url=payment_url,
             raw=data,
         )
 
