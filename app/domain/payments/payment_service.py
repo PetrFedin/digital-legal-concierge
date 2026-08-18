@@ -73,6 +73,60 @@ class PaymentService:
     def _money(value: object) -> Decimal:
         return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
+    async def _received_payment_conflict(
+        self,
+        *,
+        case: Case,
+        payment_code: str,
+        reservation_key: str | None,
+    ) -> Payment | None:
+        """Find money states that must be resolved before asking for more money.
+
+        M1 stage payments are one-off, so any already received/protected money for
+        the same code blocks a new automatic attempt. M2 may have later paid
+        follow-up consultations in the same Case; an old normal PAID reservation
+        therefore blocks only the same/legacy-ambiguous reservation. Received
+        money still under review/refund resolution blocks every new M2 charge
+        until the administrator resolves it.
+        """
+
+        protected_statuses = {
+            PaymentStatus.PAID,
+            PaymentStatus.PAID_REVIEW,
+            PaymentStatus.REFUND_PENDING,
+            PaymentStatus.REFUND_DECLINED,
+        }
+        rows = list(
+            (
+                await self.db.execute(
+                    select(Payment)
+                    .where(
+                        Payment.case_id == case.id,
+                        Payment.payment_code == payment_code,
+                        Payment.status.in_(tuple(protected_statuses)),
+                    )
+                    .order_by(Payment.created_at.desc(), Payment.id.desc())
+                )
+            ).scalars().all()
+        )
+        for existing in rows:
+            if payment_code != PaymentCode.M2_CONSULTATION_PAYMENT:
+                return existing
+            status = PaymentStatus(str(existing.status))
+            if status in {
+                PaymentStatus.PAID_REVIEW,
+                PaymentStatus.REFUND_PENDING,
+                PaymentStatus.REFUND_DECLINED,
+            }:
+                return existing
+            if status == PaymentStatus.PAID and (
+                not reservation_key
+                or not existing.reservation_key
+                or existing.reservation_key == reservation_key
+            ):
+                return existing
+        return None
+
     async def _restore_m2_slot_selection_after_hold_loss(
         self,
         *,
@@ -163,13 +217,7 @@ class PaymentService:
         payment_code: str,
         amount: Decimal | None = None,
     ):
-        """Return one active payment attempt for a case stage under concurrency.
-
-        A Telegram retry, double click or two staff/client entry points can reach
-        payment creation in separate transactions. Serialize on the stable Case
-        row, then re-read the active payment. Migration 0016 is the database
-        backstop for paths that ever bypass this service.
-        """
+        """Return one active payment attempt for a case stage under concurrency."""
 
         case_id = int(case.id)
         locked_case = (
@@ -190,9 +238,20 @@ class PaymentService:
                 case=case,
                 reservation_key=reservation_key,
             )
-            # The partial unique active-payment index must see the old M2 link as
-            # EXPIRED before a replacement for the new reservation is inserted.
             await self.db.flush()
+
+        received_conflict = await self._received_payment_conflict(
+            case=case,
+            payment_code=payment_code,
+            reservation_key=reservation_key,
+        )
+        if received_conflict is not None:
+            raise ValueError(
+                "Повторная оплата заблокирована: по этому этапу уже есть полученные деньги "
+                f"или незавершённая финансовая сверка (платёж #{received_conflict.id}, "
+                f"статус {received_conflict.status}). Сначала завершите сверку/возврат; "
+                "клиент не должен платить повторно, пока предыдущие деньги не разобраны."
+            )
 
         query = select(Payment).where(
             Payment.case_id == case.id,
