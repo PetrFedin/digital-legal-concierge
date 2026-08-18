@@ -14,8 +14,15 @@ from app.api.payment_review_center import PAYMENT_REVIEW_CENTER_HTML
 from app.api.sla_center import SLA_CENTER_HTML
 from app.config import settings
 from app.db.session import get_db
-from app.security.access_control import ROLE_ADMIN, ROLE_LAWYER, ROLE_SUPERADMIN
+from app.security.access_control import (
+    ROLE_ADMIN,
+    ROLE_LAWYER,
+    ROLE_SUPERADMIN,
+    decode_access_token,
+)
 from app.security.document_access import DocumentAccessError, resolve_document_actor
+from app.security.http_security import BROWSER_SESSION_SENTINEL
+from app.security.token_revocation import is_token_revoked
 
 router = APIRouter(tags=["staff-ui-shell-guard"])
 
@@ -135,6 +142,36 @@ async def _admin_shell(
     if redirect is not None:
         return redirect
     return HTMLResponse(html)
+
+
+@router.get("/auth/session")
+async def browser_auth_session(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return staff identity metadata without exposing the bearer credential.
+
+    Legacy staff JavaScript still expects a truthy `api_token` field before it
+    starts loading a screen. The value below is deliberately not a credential:
+    RequestOriginGuardMiddleware recognises the sentinel, validates ambient
+    same-origin cookie requests, and injects the real HttpOnly session only into
+    the internal ASGI header scope. This lets old screens keep their API helper
+    shape without making the bearer token readable by browser JavaScript.
+    """
+
+    token = request.cookies.get(settings.admin_session_cookie)
+    payload = decode_access_token(token)
+    if not payload or await is_token_revoked(db, token):
+        raise HTTPException(status_code=401, detail="Требуется вход")
+    return {
+        "authenticated": True,
+        "username": payload.get("username"),
+        "role": payload.get("role"),
+        "roles": payload.get("roles", [payload.get("role")]),
+        "mfa_verified": bool(payload.get("mfa")),
+        "api_token": BROWSER_SESSION_SENTINEL,
+        "session_transport": "httponly_cookie",
+    }
 
 
 @router.get("/lawyer/workspace/ui", response_class=HTMLResponse)
