@@ -163,6 +163,26 @@ class PaymentService:
         payment_code: str,
         amount: Decimal | None = None,
     ):
+        """Return one active payment attempt for a case stage under concurrency.
+
+        A Telegram retry, double click or two staff/client entry points can reach
+        payment creation in separate transactions. Serialize on the stable Case
+        row, then re-read the active payment. Migration 0016 is the database
+        backstop for paths that ever bypass this service.
+        """
+
+        case_id = int(case.id)
+        locked_case = (
+            await self.db.execute(
+                select(Case)
+                .where(Case.id == case_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if locked_case is None:
+            raise LookupError("Дело не найдено")
+        case = locked_case
+
         reservation_key = None
         if payment_code == PaymentCode.M2_CONSULTATION_PAYMENT:
             reservation_key = await self._prepare_consultation_payment_context(case)
@@ -170,6 +190,9 @@ class PaymentService:
                 case=case,
                 reservation_key=reservation_key,
             )
+            # The partial unique active-payment index must see the old M2 link as
+            # EXPIRED before a replacement for the new reservation is inserted.
+            await self.db.flush()
 
         query = select(Payment).where(
             Payment.case_id == case.id,
