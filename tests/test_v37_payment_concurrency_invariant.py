@@ -26,12 +26,30 @@ def test_payment_service_serializes_active_attempt_creation_on_case_row():
 def test_m2_old_active_link_is_flushed_expired_before_replacement_insert():
     service = read("app/domain/payments/payment_service.py")
     block = service.split("if payment_code == PaymentCode.M2_CONSULTATION_PAYMENT:", 1)[1].split(
-        "query = select(Payment)", 1
+        "received_conflict =", 1
     )[0]
 
     assert "_expire_stale_consultation_payments" in block
     assert "await self.db.flush()" in block
-    assert "partial unique active-payment index" in block
+
+
+def test_received_money_review_blocks_second_charge_but_old_paid_m2_followup_can_be_distinct():
+    service = read("app/domain/payments/payment_service.py")
+    helper = service.split("async def _received_payment_conflict", 1)[1].split(
+        "async def _restore_m2_slot_selection_after_hold_loss", 1
+    )[0]
+    create = service.split("async def get_or_create_payment", 1)[1].split(
+        "async def success_fee_quote_for_case", 1
+    )[0]
+
+    assert "PaymentStatus.PAID_REVIEW" in helper
+    assert "PaymentStatus.REFUND_PENDING" in helper
+    assert "PaymentStatus.REFUND_DECLINED" in helper
+    assert "payment_code != PaymentCode.M2_CONSULTATION_PAYMENT" in helper
+    assert "existing.reservation_key == reservation_key" in helper
+    assert "received_conflict = await self._received_payment_conflict" in create
+    assert "Повторная оплата заблокирована" in create
+    assert "клиент не должен платить повторно" in create
 
 
 def test_provider_creation_uses_stable_internal_payment_idempotence_key():
@@ -61,6 +79,15 @@ def test_incomplete_yookassa_create_response_fails_before_internal_waiting_state
     result_call = link_block.index("result = await provider.create_payment(")
     waiting_state = link_block.index("payment.status = PaymentStatus.WAITING_CONFIRMATION")
     assert result_call < waiting_state
+
+
+def test_webhook_processing_already_locks_payment_row_for_duplicate_provider_events():
+    webhook = read("app/domain/payments/payment_webhook_service.py")
+
+    assert "async def _lock_payment" in webhook
+    assert ".with_for_update()" in webhook
+    assert "payment = await self._lock_payment(payment.id)" in webhook
+    assert "if payment.status == PaymentStatus.PAID:" in webhook
 
 
 def test_payment_migration_enforces_one_active_case_code_and_provider_operation():
