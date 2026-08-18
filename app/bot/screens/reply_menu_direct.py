@@ -9,8 +9,12 @@ from app.bot.context import BotContextService
 from app.bot.keyboards import main_menu, one
 from app.bot.screens import common, document_action_center, messages, my_case
 from app.domain.cases.client_case_scope import latest_completed_case_for_user
+from app.domain.consultations.consultation_intake import consultation_description_ready
+from app.domain.consultations.consultation_service import ConsultationService
 from app.domain.documents.document_service import DocumentService
 from app.domain.messages.message_service import MessageService
+from app.domain.statuses.case_statuses import RouteCode
+from app.domain.statuses.consultation_statuses import ConsultationStatus
 
 router = Router()
 
@@ -247,6 +251,71 @@ async def direct_reply_new_question(message: Message, state: FSMContext, db):
     await message.answer(
         messages._category_prompt(data),
         reply_markup=one(*messages._category_buttons()),
+    )
+
+
+@router.message(lambda m: m.text == "💬 Связаться с юристом")
+async def direct_reply_contact_lawyer(message: Message, state: FSMContext, db):
+    """Open route-aware legal help directly without creating a consultation yet."""
+
+    if await common._guard_message_draft(message, state):
+        return
+    await state.clear()
+    _user, case = await _active_message_case(message, db)
+
+    if case is not None and str(case.route or "") != RouteCode.M2.value:
+        await db.commit()
+        await message.answer(
+            "💬 Связаться с юридической командой\n\n"
+            "У вас уже есть активное дело. Напишите по нему или откройте переписку — "
+            "отдельная консультация не заменит и не скроет текущее дело.",
+            reply_markup=one(
+                ("✉️ Написать по текущему делу", "message_create"),
+                ("🗂 Открыть переписку", "message_history"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    if case is not None:
+        consultation = await ConsultationService(db).get_current_for_case(case.id)
+        if consultation and consultation.status == ConsultationStatus.BOOKED:
+            primary = (
+                "👨‍⚖ Открыть подтверждённую запись",
+                "consultation_booked_open",
+            )
+        elif consultation and consultation_description_ready(consultation):
+            primary = ("📅 Продолжить: выбрать время", "consult_booking_start")
+        else:
+            primary = ("📝 Продолжить: описать вопрос", "consult_subject_start")
+        await db.commit()
+        await message.answer(
+            "💬 Юридическая консультация\n\n"
+            "Продолжите сохранённый этап консультации либо напишите команде по обращению.",
+            reply_markup=one(
+                primary,
+                ("✉️ Написать сообщение", "message_create"),
+                ("🗂 Открыть переписку", "message_history"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    # First legal-help entry is presentation-only. M2 case/consultation creation
+    # still happens behind the explicit consult_subject_start action, where the
+    # serialized one-active-case invariant and ActiveCaseRouteConflict apply.
+    await db.commit()
+    await message.answer(
+        "💬 Юридическая консультация\n\n"
+        "Сначала опишите ситуацию и конкретный вопрос. После этого можно "
+        "добавить документы и выбрать свободное время.",
+        reply_markup=one(
+            ("▶️ Начать: описать вопрос", "consult_subject_start"),
+            ("🧮 Рассчитать неустойку", "calc_start"),
+            ("🏠 Главная", "nav_home"),
+        ),
     )
 
 
