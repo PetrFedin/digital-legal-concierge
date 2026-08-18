@@ -81,6 +81,22 @@ def test_persistent_new_question_binds_draft_to_active_case_and_never_auto_reope
     assert "messages._category_buttons()" in direct
 
 
+def test_persistent_legal_help_is_route_aware_and_presentation_only_until_explicit_m2_start():
+    direct = read("app/bot/screens/reply_menu_direct.py")
+
+    assert '@router.message(lambda m: m.text == "💬 Связаться с юристом")' in direct
+    assert 'str(case.route or "") != RouteCode.M2.value' in direct
+    assert "отдельная консультация не заменит и не скроет текущее дело" in direct
+    assert "ConsultationService(db).get_current_for_case(case.id)" in direct
+    assert "consultation.status == ConsultationStatus.BOOKED" in direct
+    assert "consultation_description_ready(consultation)" in direct
+    assert '("📅 Продолжить: выбрать время", "consult_booking_start")' in direct
+    assert '("📝 Продолжить: описать вопрос", "consult_subject_start")' in direct
+    assert "First legal-help entry is presentation-only" in direct
+    assert "M2 case/consultation creation" in direct
+    assert '("▶️ Начать: описать вопрос", "consult_subject_start")' in direct
+
+
 def test_direct_reply_router_precedes_old_common_trampolines():
     bot = read("app/bot/bot.py")
     common = read("app/bot/screens/common.py")
@@ -93,3 +109,4 @@ def test_direct_reply_router_precedes_old_common_trampolines():
     assert 'reply_markup=one(\n            ("📄 Открыть документы", "documents_open")' in common
     assert 'reply_markup=one(\n            ("💬 Открыть переписку", "message_history")' in common
     assert 'reply_markup=one(\n            ("✉️ Задать вопрос", "message_create")' in common
+    assert 'reply_markup=one(\n            ("💬 Открыть связь с юристом", "contact_lawyer")' in common
