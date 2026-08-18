@@ -55,13 +55,16 @@ def test_access_role_guard_covers_create_and_role_update():
     assert "legacy_update_user" in guard
 
 
-def test_access_management_ui_is_server_side_superadmin_guarded():
+def test_access_management_ui_is_server_side_superadmin_guarded_and_recoverable():
     guard = read("app/api/access_role_guard.py")
 
     assert '@router.get("/access/ui"' in guard
     assert "resolve_document_actor" in guard
     assert "actor.role != ROLE_SUPERADMIN" in guard
+    assert "return STAFF_LANDING" in guard
+    assert "error.status_code in {403, 409}" in guard
     assert 'url="/login"' in guard
+    assert 'url="/admin-ui"' in guard
     assert "Базовая рабочая роль обязательна" in guard
 
 
