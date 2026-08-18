@@ -20,6 +20,16 @@ def test_access_role_guard_requires_product_workspace_role():
     assert "дополнительными техническими ролями" in guard
 
 
+def test_access_role_guard_rejects_conflicting_admin_and_lawyer_responsibility():
+    guard = read("app/api/access_role_guard.py")
+
+    assert "ROLE_LAWYER in roles" in guard
+    assert "ROLE_ADMIN in roles or ROLE_SUPERADMIN in roles" in guard
+    assert "Нельзя совмещать роли" in guard
+    assert "отдельные персональные учётные" in guard
+    assert "Административную и юридическую ответственность" in guard
+
+
 def test_access_role_guard_covers_create_and_role_update():
     guard = read("app/api/access_role_guard.py")
 
