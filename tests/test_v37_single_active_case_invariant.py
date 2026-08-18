@@ -46,8 +46,32 @@ def test_database_migration_enforces_partial_unique_active_case_index():
     assert 'kwargs["sqlite_where"] = predicate' in migration
 
 
+def test_database_migration_enforces_one_live_consultation_per_case():
+    migration = read(
+        "migrations/versions/20260819_0015_one_active_consultation_per_case.py"
+    )
+
+    assert 'revision = "20260819_0015"' in migration
+    assert 'down_revision = "20260819_0014"' in migration
+    assert 'INDEX_NAME = "uq_consultations_one_active_per_case"' in migration
+    for terminal in (
+        "DONE",
+        "CLIENT_NO_SHOW",
+        "LAWYER_NO_SHOW",
+        "CANCELLED",
+        "RESCHEDULED",
+        "CLOSED",
+    ):
+        assert terminal in migration
+    assert "SELECT case_id, COUNT(*) AS active_count" in migration
+    assert "HAVING COUNT(*) > 1" in migration
+    assert "will not cancel or close appointments automatically" in migration
+    assert 'unique=True' in migration
+
+
 def test_workdesk_integrity_surfaces_historical_duplicate_active_cases():
     guard = read("app/api/active_case_integrity_guard.py")
+    base_integrity = read("app/api/workdesk_integrity.py")
     operator = read("app/api/operator_guard.py")
     initial = read("app/api/initial_setup_wizard.py")
 
@@ -58,6 +82,12 @@ def test_workdesk_integrity_surfaces_historical_duplicate_active_cases():
     assert "Ничего не закрывайте автоматически" in guard
     assert 'result["duplicate_active_client_count"] = len(conflicts)' in guard
     assert "router.include_router(active_case_integrity_guard_router)" in operator
+
+    # The existing audit already treats multiple live consultation contexts as a
+    # critical operational contradiction; migration 0015 makes that invariant
+    # impossible for newly written data.
+    assert "multiple_active_consultations" in base_integrity
+    assert "У одного M2-дела несколько активных консультаций" in base_integrity
 
     # initial_setup mounts operator_guard before its historical integrity guard;
     # inside operator_guard the new exact route is therefore effective first.
