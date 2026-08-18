@@ -58,14 +58,17 @@ class ConsultationIntakeService:
         self.notifications = NotificationEngine(db)
 
     async def get_or_create_case(self, client):
-        case = await self.cases.get_active_case_for_user(client.id)
-        if case is None:
-            return await self.cases.create_case(
-                client=client,
-                route=RouteCode.M2,
-                status=CaseStatus.M2_DESCRIPTION_PENDING,
-                title="Юридическая консультация",
-            )
+        # Serialize creation on the stable client row. If a concurrent calculator
+        # or another M2 entry already created an active case while this request
+        # was waiting, this returns that exact case instead of creating a second
+        # active request. Route/status validation below then either resumes the
+        # same M2 context or fails closed on a route conflict.
+        case = await self.cases.get_or_create_active_case_for_user(
+            client,
+            route=RouteCode.M2,
+            status=CaseStatus.M2_DESCRIPTION_PENDING,
+            title="Юридическая консультация",
+        )
 
         status = normalized_case_status(case)
         if str(case.route or "") == RouteCode.M2.value and status in M2_INTAKE_CASE_STATUSES:
