@@ -23,11 +23,25 @@ def test_access_role_guard_requires_product_workspace_role():
 def test_access_role_guard_rejects_conflicting_admin_and_lawyer_responsibility():
     guard = read("app/api/access_role_guard.py")
 
+    assert "def _has_product_role_conflict" in guard
     assert "ROLE_LAWYER in roles" in guard
     assert "ROLE_ADMIN in roles or ROLE_SUPERADMIN in roles" in guard
+    assert "_has_product_role_conflict(roles)" in guard
     assert "Нельзя совмещать роли" in guard
     assert "отдельные персональные учётные" in guard
     assert "Административную и юридическую ответственность" in guard
+
+
+def test_historical_mixed_roles_are_visible_without_automatic_permission_mutation():
+    guard = read("app/api/access_role_guard.py")
+
+    assert "async def _historical_role_conflicts" in guard
+    assert "select(AdminUser).order_by(AdminUser.id.asc())" in guard
+    assert "_has_product_role_conflict(normalize_roles(user.role))" in guard
+    assert "⚠️ Требуется разделить конфликтующие роли" in guard
+    assert "Система не меняет эти исторические записи автоматически" in guard
+    assert "conflicts = await _historical_role_conflicts(db)" in guard
+    assert "_guarded_access_html(conflicts)" in guard
 
 
 def test_access_role_guard_covers_create_and_role_update():
