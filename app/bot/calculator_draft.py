@@ -7,6 +7,7 @@ from app.bot.states import CalculatorStates
 
 DRAFT_MARKER = "_calculator_draft_saved"
 DRAFT_LAST_STATE = "_calculator_draft_last_state"
+CALCULATOR_CASE_ID = "calculator_case_id"
 _CALCULATOR_STATE_PREFIX = f"{CalculatorStates.__name__}:"
 _NAV_CALLBACKS = frozenset({"nav_home", "nav_cancel", "nav_back"})
 _NAV_MESSAGES = frozenset(
@@ -34,7 +35,14 @@ def is_calculator_state(value: str | None) -> bool:
 
 
 def has_meaningful_calculator_data(data: dict) -> bool:
-    return any(key in data and data.get(key) not in (None, "") for key in _CALCULATOR_FIELDS)
+    # The case binding itself is meaningful even before the first answer. If a
+    # client opens the calculator and immediately goes Home, losing case_id
+    # would orphan CALCULATOR_STARTED and the next click could create a second
+    # matter for the same draft.
+    return bool(data.get(CALCULATOR_CASE_ID)) or any(
+        key in data and data.get(key) not in (None, "")
+        for key in _CALCULATOR_FIELDS
+    )
 
 
 def has_saved_calculator_draft(data: dict) -> bool:
@@ -102,10 +110,9 @@ class CalculatorDraftNavigationMiddleware:
 
     Global Home/Cancel handlers intentionally clear unrelated FSM flows. The UX
     contract for the calculator is different: leaving the form pauses it and
-    must not delete already entered values. We snapshot only calculator data,
-    let the normal navigation handler render the canonical home screen, then
-    restore the draft with no active FSM state. The next ``calc_start`` resumes
-    at the first incomplete step.
+    must not delete already entered values. We snapshot calculator answers and
+    the exact Case binding, let the normal navigation handler render the
+    canonical home screen, then restore the draft with no active FSM state.
     """
 
     async def __call__(self, handler, event, data):
@@ -118,7 +125,10 @@ class CalculatorDraftNavigationMiddleware:
         should_restore = (
             is_calculator_state(current_state)
             or has_saved_calculator_draft(current_data)
-        ) and (is_calculator_state(current_state) or has_meaningful_calculator_data(current_data))
+        ) and (
+            is_calculator_state(current_state)
+            or has_meaningful_calculator_data(current_data)
+        )
         if should_restore:
             current_data[DRAFT_MARKER] = True
             if current_state:
@@ -128,8 +138,8 @@ class CalculatorDraftNavigationMiddleware:
 
         if should_restore:
             # A navigation handler may clear the context. Restore calculator
-            # answers, but keep the post-navigation breadcrumb metadata so a
-            # Back click cannot resurrect the same breadcrumb forever.
+            # answers and exact case_id, but keep post-navigation breadcrumb
+            # metadata so Back cannot resurrect the same breadcrumb forever.
             post_navigation_data = dict(await state.get_data())
             for key, value in post_navigation_data.items():
                 if str(key).startswith(_NAV_DATA_PREFIX):
@@ -140,6 +150,7 @@ class CalculatorDraftNavigationMiddleware:
 
 
 __all__ = [
+    "CALCULATOR_CASE_ID",
     "CalculatorDraftNavigationMiddleware",
     "DRAFT_LAST_STATE",
     "DRAFT_MARKER",
