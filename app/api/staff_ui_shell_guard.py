@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,15 +14,8 @@ from app.api.payment_review_center import PAYMENT_REVIEW_CENTER_HTML
 from app.api.sla_center import SLA_CENTER_HTML
 from app.config import settings
 from app.db.session import get_db
-from app.security.access_control import (
-    ROLE_ADMIN,
-    ROLE_LAWYER,
-    ROLE_SUPERADMIN,
-    decode_access_token,
-)
+from app.security.access_control import ROLE_ADMIN, ROLE_LAWYER, ROLE_SUPERADMIN
 from app.security.document_access import DocumentAccessError, resolve_document_actor
-from app.security.http_security import BROWSER_SESSION_SENTINEL
-from app.security.token_revocation import is_token_revoked
 
 router = APIRouter(tags=["staff-ui-shell-guard"])
 
@@ -44,16 +37,16 @@ async def _require_ui_actor(
     except DocumentAccessError as error:
         if error.status_code == 401:
             return None
-        # The canonical staff landing already explains unsupported roles and
-        # other account prerequisites. Do not expose a raw JSON 403 from a UI
-        # shell before the employee can even reach a recovery action.
+        # The canonical staff landing explains unsupported roles and account
+        # prerequisites. Keep the shell fail-closed without returning raw JSON.
         if error.status_code in {403, 409}:
             return "staff_landing"
         raise
-    except HTTPException as error:
-        # A valid lawyer session can still have a missing/inactive/unlinked
-        # Lawyer business profile. Keep this fail-closed but human-readable.
-        if error.status_code in {403, 409}:
+    except Exception as error:
+        # resolve_document_actor may surface FastAPI HTTPException from profile
+        # prerequisites. Avoid importing/duplicating auth internals here.
+        status_code = getattr(error, "status_code", None)
+        if status_code in {403, 409}:
             return "staff_landing"
         raise
 
@@ -144,50 +137,13 @@ async def _admin_shell(
     return HTMLResponse(html)
 
 
-@router.get("/auth/session")
-async def browser_auth_session(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-):
-    """Return staff identity metadata without exposing the bearer credential.
-
-    Legacy staff JavaScript still expects a truthy `api_token` field before it
-    starts loading a screen. The value below is deliberately not a credential:
-    RequestOriginGuardMiddleware recognises the sentinel, validates ambient
-    same-origin cookie requests, and injects the real HttpOnly session only into
-    the internal ASGI header scope. This lets old screens keep their API helper
-    shape without making the bearer token readable by browser JavaScript.
-    """
-
-    token = request.cookies.get(settings.admin_session_cookie)
-    payload = decode_access_token(token)
-    if not payload or await is_token_revoked(db, token):
-        raise HTTPException(status_code=401, detail="Требуется вход")
-    return {
-        "authenticated": True,
-        "username": payload.get("username"),
-        "role": payload.get("role"),
-        "roles": payload.get("roles", [payload.get("role")]),
-        "mfa_verified": bool(payload.get("mfa")),
-        "api_token": BROWSER_SESSION_SENTINEL,
-        "session_transport": "httponly_cookie",
-    }
-
-
 @router.get("/lawyer/workspace/ui", response_class=HTMLResponse)
 async def guarded_lawyer_workspace_ui(
     request: Request,
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    """Authenticate first, then render the full composite lawyer workspace.
-
-    The protected shell must preserve every business patch already present on
-    the effective lawyer UI: M2 slot responsibility/deep-linking, M1 rejection,
-    POA receipt, court evidence and the contract center primary action. Serving
-    only the base WORKSPACE_HTML here would silently remove those actions because
-    this early route intentionally wins FastAPI route precedence.
-    """
+    """Authenticate first, then render the full composite lawyer workspace."""
 
     redirect = await _lawyer_gate(request, db, x_admin_token)
     if redirect is not None:
@@ -215,8 +171,6 @@ async def guarded_consultation_slots_ui(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    """Open the shared schedule only after a usable staff identity is resolved."""
-
     return await _staff_shell(request, db, x_admin_token, SLOTS_HTML)
 
 
@@ -226,15 +180,6 @@ async def guarded_document_access_portal_ui(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    """Authenticate staff before returning the protected-materials HTML shell.
-
-    The document APIs already enforce per-case M1/M2 responsibility and one-time
-    download grants. The historical portal shell, however, was returned before
-    any server-side staff check and only discovered session/role problems in
-    JavaScript. This exact early route closes that UI boundary without weakening
-    the existing document authorization rules or changing case_id deep links.
-    """
-
     return await _staff_shell(request, db, x_admin_token, DOCUMENT_ACCESS_HTML)
 
 
@@ -244,14 +189,6 @@ async def guarded_contract_center_ui(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    """Give old/direct contract bookmarks the same guided staff recovery.
-
-    Contract APIs still enforce exact case responsibility and M1 stage rules.
-    This shell guard only prevents an expired/wrong-role staff session from being
-    misreported as a generic fresh-login problem and keeps the visible contract
-    center on the canonical staff recovery path.
-    """
-
     return await _staff_shell(request, db, x_admin_token, CONTRACT_CENTER_HTML)
 
 
@@ -261,8 +198,6 @@ async def guarded_payment_review_center_ui(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    """Do not expose the sensitive payment-review shell before admin auth."""
-
     return await _admin_shell(
         request,
         db,
@@ -277,8 +212,6 @@ async def guarded_refund_center_ui(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    """Keep refund operations on the guided UI behind a personal admin session."""
-
     return await _admin_shell(request, db, x_admin_token, REFUND_UI)
 
 
@@ -288,8 +221,6 @@ async def guarded_sla_center_ui(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    """Require admin identity before returning SLA/action-plan client data."""
-
     return await _admin_shell(request, db, x_admin_token, SLA_CENTER_HTML)
 
 
