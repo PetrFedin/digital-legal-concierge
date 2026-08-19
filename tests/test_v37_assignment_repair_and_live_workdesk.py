@@ -8,19 +8,17 @@ def read(path: str) -> str:
 
 
 def test_live_workdesk_is_owned_by_explicit_product_router():
-    implementation = read("app/api/assignment_queue.py")
     assignment_product = read("app/api/assignment_queue_product.py")
     workdesk_product = read("app/api/workdesk_product.py")
+    runtime_ui = read("app/api/workdesk_runtime_ui.py")
     main = read("app/main.py")
 
-    assert "from app.api.workdesk_integrity import inject_workdesk_integrity" in implementation
-    ui = implementation.split('@router.get("/admin/workdesk/ui"', 1)[1].split(
-        '@router.get("/admin/workdesk/cases/{case_id}/responsibility")', 1
-    )[0]
-    assert "inject_workdesk_integrity(html)" in ui
     assert '"/admin/workdesk/ui"' in workdesk_product
-    assert "guided_workdesk_ui" in workdesk_product
+    assert "workdesk_runtime_ui" in workdesk_product
     assert '"/admin/workdesk/ui"' not in assignment_product
+    assert "_append_body_extensions" in runtime_ui
+    assert "_WORKDESK_PRODUCT_EXTENSION" in runtime_ui
+    assert "inject_workdesk_integrity" not in runtime_ui
     assert "assignment_queue_router" not in main
     assert "workdesk_router" not in main
     assert '("assignment_queue_product", assignment_queue_product_router)' in main
@@ -62,14 +60,13 @@ def test_repair_availability_counter_excludes_fully_loaded_lawyers():
 
 
 def test_workdesk_assign_button_routes_existing_assignee_to_repair_endpoint():
-    source = read("app/api/assignment_queue.py")
+    runtime_ui = read("app/api/workdesk_runtime_ui.py")
 
-    patch = source.split('_WORKDESK_RESPONSIBILITY_PATCH = r"""', 1)[1].split('"""', 1)[0]
-    assert "const originalAssign=assign" in patch
-    assert "if(!currentLawyer)return originalAssign(id,b)" in patch
-    assert "/repair-unreachable" in patch
-    assert "expected_lawyer_id:currentLawyer" in patch
-    assert "expected_status:snapshot.case.status" in patch
+    assert "const originalAssign=assign" in runtime_ui
+    assert "if(!currentLawyer)return originalAssign(id,b)" in runtime_ui
+    assert "/repair-unreachable" in runtime_ui
+    assert "expected_lawyer_id:currentLawyer" in runtime_ui
+    assert "expected_status:snapshot.case.status" in runtime_ui
 
 
 def test_case_assignment_composite_router_mounts_repair_before_legacy_assignment_routes():
