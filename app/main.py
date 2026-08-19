@@ -18,7 +18,6 @@ from app.api.case_assignment import router as case_assignment_router
 from app.api.consultation_outcomes_product import router as consultation_outcomes_product_router
 from app.api.consultation_slots import router as consultation_slots_router
 from app.api.contract_center import router as contract_center_router
-from app.api.contract_workspace_ui import router as contract_workspace_ui_router
 from app.api.diagnostic_center import router as diagnostic_center_router
 from app.api.document_access_portal import router as document_access_portal_router
 from app.api.document_access_product import router as document_access_product_router
@@ -26,7 +25,6 @@ from app.api.exports import router as exports_router
 from app.api.final_handover_center import router as final_handover_center_router
 from app.api.final_qa_center import router as final_qa_center_router
 from app.api.go_live_center import router as go_live_center_router
-from app.api.guided_lawyer_ui import router as guided_lawyer_ui_router
 from app.api.handover import router as handover_router
 from app.api.health_center import router as health_center_router
 from app.api.initial_setup_wizard import router as initial_setup_wizard_router
@@ -34,11 +32,9 @@ from app.api.install_wizard import router as install_wizard_router
 from app.api.integration_center import router as integration_center_router
 from app.api.launch_assistant import router as launch_assistant_router
 from app.api.lawyer import router as lawyer_router
-from app.api.lawyer_consultation_desk import router as lawyer_consultation_desk_router
 from app.api.lawyer_m1_claim import router as lawyer_m1_claim_router
 from app.api.lawyer_m1_enforcement import router as lawyer_m1_enforcement_router
-from app.api.lawyer_workspace import router as lawyer_workspace_router
-from app.api.lawyer_workspace_rejection_ui import router as lawyer_workspace_rejection_ui_router
+from app.api.lawyer_product import router as lawyer_product_router
 from app.api.maintenance_center import router as maintenance_center_router
 from app.api.message_center_product import router as message_center_product_router
 from app.api.message_center_role_ui import router as message_center_role_ui_router
@@ -169,14 +165,10 @@ def create_app():
         ("payment_safety_guard", payment_safety_guard_router),
         ("payment_webhooks", payment_router),
         ("contract_center", contract_center_router),
-        ("contract_workspace_ui", contract_workspace_ui_router),
-        ("lawyer_workspace_rejection_ui", lawyer_workspace_rejection_ui_router),
-        ("guided_lawyer_ui", guided_lawyer_ui_router),
+        ("lawyer_product", lawyer_product_router),
         ("lawyer", lawyer_router),
         ("lawyer_m1_claim", lawyer_m1_claim_router),
         ("lawyer_m1_enforcement", lawyer_m1_enforcement_router),
-        ("lawyer_workspace", lawyer_workspace_router),
-        ("lawyer_consultation_desk", lawyer_consultation_desk_router),
         ("document_access_product", document_access_product_router),
         ("document_access_portal", document_access_portal_router),
         ("runtime", runtime_router),
