@@ -27,7 +27,6 @@ from app.api.final_handover_center import router as final_handover_center_router
 from app.api.final_qa_center import router as final_qa_center_router
 from app.api.go_live_center import router as go_live_center_router
 from app.api.guided_lawyer_ui import router as guided_lawyer_ui_router
-from app.api.guided_message_center import router as guided_message_center_router
 from app.api.handover import router as handover_router
 from app.api.health_center import router as health_center_router
 from app.api.initial_setup_wizard import router as initial_setup_wizard_router
@@ -41,7 +40,7 @@ from app.api.lawyer_m1_enforcement import router as lawyer_m1_enforcement_router
 from app.api.lawyer_workspace import router as lawyer_workspace_router
 from app.api.lawyer_workspace_rejection_ui import router as lawyer_workspace_rejection_ui_router
 from app.api.maintenance_center import router as maintenance_center_router
-from app.api.message_center import router as message_center_router
+from app.api.message_center_product import router as message_center_product_router
 from app.api.message_center_role_ui import router as message_center_role_ui_router
 from app.api.mfa import router as mfa_router
 from app.api.monitoring_center import router as monitoring_center_router
@@ -140,8 +139,7 @@ def create_app():
         ("acceptance_center", acceptance_center_router),
         ("search_center", search_center_router),
         ("message_center_role_ui", message_center_role_ui_router),
-        ("guided_message_center", guided_message_center_router),
-        ("message_center", message_center_router),
+        ("message_center_product", message_center_product_router),
         ("audit_center", audit_center_router),
         ("security_event_center", security_event_center_router),
         ("notification_center", notification_center_router),
