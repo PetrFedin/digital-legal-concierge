@@ -147,10 +147,12 @@ async def _render_m2_reconciliation_failure(callback: CallbackQuery) -> None:
 async def _reconcile_m2_payment_view(callback: CallbackQuery, db, payment, case):
     if not _is_active_m2_link(payment, case):
         return payment, case, False
+    payment_id = int(payment.id)
+    case_id = int(case.id)
     try:
         payment, case, changed = await ClientPaymentReconciliationService(db).reconcile(
-            payment_id=int(payment.id),
-            case_id=int(case.id),
+            payment_id=payment_id,
+            case_id=case_id,
         )
         await db.commit()
         return payment, case, changed
@@ -158,16 +160,16 @@ async def _reconcile_m2_payment_view(callback: CallbackQuery, db, payment, case)
         await db.rollback()
         logger.warning(
             "M2 payment view reconciliation rejected payment_id=%s case_id=%s: %s",
-            getattr(payment, "id", None),
-            getattr(case, "id", None),
+            payment_id,
+            case_id,
             error,
         )
     except Exception:
         await db.rollback()
         logger.exception(
             "M2 payment view reconciliation failed payment_id=%s case_id=%s",
-            getattr(payment, "id", None),
-            getattr(case, "id", None),
+            payment_id,
+            case_id,
         )
     await _render_m2_reconciliation_failure(callback)
     return None, None, False
@@ -203,8 +205,9 @@ async def guard_active_m2_payment_list(callback: CallbackQuery, db):
         await payment_screen.payments(callback, db)
         return
 
+    case_id = int(case.id)
     service = PaymentService(db)
-    payments = await service.list_case_payments(case.id)
+    payments = await service.list_case_payments(case_id)
     active_links = [
         payment
         for payment in payments
@@ -216,7 +219,7 @@ async def guard_active_m2_payment_list(callback: CallbackQuery, db):
         for payment in active_links:
             await reconciler.reconcile(
                 payment_id=int(payment.id),
-                case_id=int(case.id),
+                case_id=case_id,
             )
 
         # Re-read status through the same non-expiring session. If a valid hold
@@ -255,14 +258,14 @@ async def guard_active_m2_payment_list(callback: CallbackQuery, db):
         await db.rollback()
         logger.warning(
             "M2 payment list reconciliation rejected case_id=%s: %s",
-            case.id,
+            case_id,
             error,
         )
         await _render_m2_reconciliation_failure(callback)
         return
     except Exception:
         await db.rollback()
-        logger.exception("M2 payment list reconciliation failed case_id=%s", case.id)
+        logger.exception("M2 payment list reconciliation failed case_id=%s", case_id)
         await _render_m2_reconciliation_failure(callback)
         return
 
@@ -371,12 +374,17 @@ async def guard_archived_payment_open(callback: CallbackQuery, db):
         return
 
     if active_payment and payments_disabled():
-        await db.rollback()
-        await callback.message.edit_text(
+        # Presentation helpers read Payment ORM fields. Materialize the complete
+        # client text before rollback releases/invalidates the current identity map.
+        disabled_text = (
             f"💳 {payment.title}\n\n"
             f"Сумма: {payment_screen.money(payment.amount)}\n"
             f"Статус: {payment_screen.client_payment_status_label(payment)}\n\n"
-            "Онлайн-оплата сейчас отключена. Ссылка провайдера не создаётся; команда изменит этап только после проверки фактического поступления.",
+            "Онлайн-оплата сейчас отключена. Ссылка провайдера не создаётся; команда изменит этап только после проверки фактического поступления."
+        )
+        await db.rollback()
+        await callback.message.edit_text(
+            disabled_text,
             reply_markup=one(
                 ("💳 Все оплаты", "payments_open"),
                 ("📁 Моё дело", "my_case_open"),
@@ -387,6 +395,8 @@ async def guard_archived_payment_open(callback: CallbackQuery, db):
         return
 
     if active_payment and exact_context and not payment.payment_url:
+        payment_row_id = int(payment.id)
+        case_row_id = int(case.id)
         try:
             payment = await PaymentService(db).create_payment_link(payment)
             await db.commit()
@@ -407,8 +417,8 @@ async def guard_archived_payment_open(callback: CallbackQuery, db):
             await db.rollback()
             logger.exception(
                 "Exact client payment link creation failed payment_id=%s case_id=%s",
-                payment.id,
-                case.id,
+                payment_row_id,
+                case_row_id,
             )
             await callback.message.edit_text(
                 "Платёжный сервис временно недоступен. Старая ссылка не использована, данные дела сохранены.",
