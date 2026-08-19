@@ -104,6 +104,10 @@ class ConsentDecisionService:
                 "Версия текста согласия из этой кнопки больше не распознаётся. Откройте согласие заново."
             )
 
+        # CallbackQuery.id is the idempotency identity of the legal decision.
+        # Replay of that exact callback must return the same evidence even though
+        # the Case status has already advanced. A different stale callback must
+        # never manufacture a second acceptance/decline event.
         existing = await self._existing_evidence(
             client_id=int(client_id),
             source_callback_id=callback_id,
@@ -153,7 +157,9 @@ class ConsentDecisionService:
             return ConsentDecisionResult(
                 case,
                 normalized,
-                "route_not_selected" if normalized == CONSENT_ACCEPT else "declined",
+                "route_not_selected"
+                if normalized == CONSENT_ACCEPT
+                else "stale_other",
                 False,
             )
         if status != CaseStatus.CLIENT_DECISION:
