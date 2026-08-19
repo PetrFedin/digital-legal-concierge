@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from sqlalchemy import select
 
 from app.domain.cases.case_history import add_case_history_event
@@ -59,10 +61,12 @@ class PaymentWebhookService:
         provider_payload: dict | None,
         actor_type: str = "payment_provider",
         actor_id: int | None = None,
+        occurred_at: datetime | None = None,
     ) -> Payment:
         transition = PaymentLifecycleService.transition(
             payment,
             to_status=PaymentStatus.PAID_REVIEW,
+            occurred_at=occurred_at,
         )
         await add_case_history_event(
             self.db,
@@ -75,6 +79,9 @@ class PaymentWebhookService:
                 "payment_id": payment.id,
                 "payment_code": payment.payment_code,
                 "status": transition.new_status.value,
+                "money_received_at": (
+                    payment.paid_at.isoformat() if payment.paid_at else None
+                ),
                 "reason": reason,
                 "payload": provider_payload or {},
             },
@@ -104,12 +111,14 @@ class PaymentWebhookService:
         provider_payload: dict | None,
         actor_type: str,
         actor_id: int | None,
+        occurred_at: datetime | None = None,
     ) -> Payment:
         """Preserve money truth without resurrecting an obsolete M1 stage."""
 
         transition = PaymentLifecycleService.transition(
             payment,
             to_status=PaymentStatus.REFUND_PENDING,
+            occurred_at=occurred_at,
         )
         await add_case_history_event(
             self.db,
@@ -127,6 +136,9 @@ class PaymentWebhookService:
                 "payment_id": payment.id,
                 "payment_code": payment.payment_code,
                 "payment_status": transition.new_status.value,
+                "money_received_at": (
+                    payment.paid_at.isoformat() if payment.paid_at else None
+                ),
                 "expected_case_status": expected_status.value,
                 "case_status_preserved": str(case.status),
                 "case_route_preserved": case.route,
@@ -185,9 +197,13 @@ class PaymentWebhookService:
         actor_type: str = "payment_provider",
         actor_id: int | None = None,
         processed_action: str = "PAYMENT_WEBHOOK_PROCESSED",
+        occurred_at: datetime | None = None,
     ):
         """Apply a verified successful payment through the canonical state machine.
 
+        ``occurred_at`` is the provider business timestamp when the provider can
+        prove it (for YooKassa this is ``captured_at``). If unavailable, the
+        lifecycle service deliberately falls back to our UTC processing time.
         Provider webhooks use the defaults. A controlled offline confirmation may
         provide an admin actor and a distinct audit action while still using the
         exact same payment/case transition logic.
@@ -210,6 +226,7 @@ class PaymentWebhookService:
                     provider_payload=provider_payload,
                     actor_type=actor_type,
                     actor_id=actor_id,
+                    occurred_at=occurred_at,
                 )
 
             consultation_service = ConsultationService(self.db)
@@ -223,6 +240,7 @@ class PaymentWebhookService:
                     provider_payload=provider_payload,
                     actor_type=actor_type,
                     actor_id=actor_id,
+                    occurred_at=occurred_at,
                 )
 
             if payment.status == PaymentStatus.PAID:
@@ -246,6 +264,7 @@ class PaymentWebhookService:
                     provider_payload=provider_payload,
                     actor_type=actor_type,
                     actor_id=actor_id,
+                    occurred_at=occurred_at,
                 )
 
             expected_reservation_key = PaymentService.consultation_reservation_key(
@@ -263,6 +282,7 @@ class PaymentWebhookService:
                     provider_payload=provider_payload,
                     actor_type=actor_type,
                     actor_id=actor_id,
+                    occurred_at=occurred_at,
                 )
 
             try:
@@ -278,6 +298,7 @@ class PaymentWebhookService:
                     provider_payload=provider_payload,
                     actor_type=actor_type,
                     actor_id=actor_id,
+                    occurred_at=occurred_at,
                 )
 
             await self.payments.mark_paid(
@@ -285,6 +306,7 @@ class PaymentWebhookService:
                 case=case,
                 actor_type=actor_type,
                 actor_id=actor_id,
+                occurred_at=occurred_at,
             )
             if case.status != CaseStatus.M2_CONSULTATION_BOOKED:
                 await self.cases.change_status(
@@ -323,6 +345,7 @@ class PaymentWebhookService:
                     provider_payload=provider_payload,
                     actor_type=actor_type,
                     actor_id=actor_id,
+                    occurred_at=occurred_at,
                 )
 
             await self.payments.mark_paid(
@@ -330,6 +353,7 @@ class PaymentWebhookService:
                 case=case,
                 actor_type=actor_type,
                 actor_id=actor_id,
+                occurred_at=occurred_at,
             )
             mapping = {
                 PaymentCode.M1_INITIAL_PAYMENT: [
@@ -376,6 +400,9 @@ class PaymentWebhookService:
             new_value={
                 "payment_id": payment.id,
                 "payment_code": payment.payment_code,
+                "money_received_at": (
+                    payment.paid_at.isoformat() if payment.paid_at else None
+                ),
                 "payload": provider_payload or {},
             },
         )
