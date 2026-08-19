@@ -37,14 +37,17 @@ def test_nested_m1_stale_router_is_not_attached_twice_to_aiogram_dispatcher():
     assert "m1_stale_view_guard.router," not in bot
 
 
-def test_workdesk_enhanced_integrity_endpoint_is_live_via_early_composite():
+def test_workdesk_enhanced_integrity_endpoint_has_one_live_product_owner():
+    product = read("app/api/workdesk_integrity_product.py")
+    timeline = read("app/api/workdesk_timeline.py")
     assignment = read("app/api/case_assignment.py")
+    main = read("app/main.py")
 
-    assert "workdesk_integrity_guard_router" in assignment
-    assert "router.include_router(workdesk_integrity_guard_router)" in assignment
-    assert assignment.index("router.include_router(workdesk_integrity_guard_router)") < assignment.index(
-        "router.include_router(case_assignment_repair_router)"
-    )
+    assert '"/admin/workdesk/integrity"' in product
+    assert "workdesk_integrity_guard" in product
+    assert "router.include_router(workdesk_integrity_router)" not in timeline
+    assert "workdesk_integrity_guard_router" not in assignment
+    assert '("workdesk_integrity_product", workdesk_integrity_product_router)' in main
 
 
 def test_m2_payments_screen_can_materialize_current_reservation_without_raw_pay_button():
