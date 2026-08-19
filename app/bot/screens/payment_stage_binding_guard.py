@@ -89,6 +89,61 @@ async def _current_case(callback: CallbackQuery, db):
     return ctx, user, case
 
 
+def _exact_payment_presentation(*, payment, case_number: str, title: str):
+    """Snapshot all ORM-backed payment presentation before transaction release."""
+
+    payment_status = str(payment.status)
+    status_label = payment_screen.client_payment_status_label(payment)
+    status_note = payment_screen.client_payment_status_note(payment)
+    amount_text = payment_screen.money(payment.amount)
+    lines = [
+        f"💳 {title}",
+        "",
+        f"Дело № {case_number}",
+        f"Сумма: {amount_text}",
+        f"Статус: {status_label}",
+    ]
+    if status_note:
+        lines.extend(["", status_note])
+
+    if payments_disabled() and payment_status in _OPENABLE_PAYMENT_STATUSES:
+        lines.extend(
+            [
+                "",
+                "Онлайн-оплата сейчас отключена. Команда изменит этап только после проверки фактического поступления.",
+            ]
+        )
+        markup = one(
+            ("💳 Все оплаты", "payments_open"),
+            ("✉️ Написать команде", "message_create"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        )
+    elif payment_status in _OPENABLE_PAYMENT_STATUSES:
+        lines.extend(
+            [
+                "",
+                "Переход по ссылке не меняет юридический этап. Следующий этап откроется только после серверного подтверждения фактической оплаты.",
+            ]
+        )
+        # The keyboard reads payment_url/status/id. Build it while ORM state is
+        # still live; Telegram network I/O happens only after the DB boundary.
+        markup = payment_screen.payment_keyboard(payment)
+    else:
+        lines.extend(
+            [
+                "",
+                "Этот платёж уже не находится в состоянии ожидания оплаты. Доступно только актуальное состояние записи.",
+            ]
+        )
+        markup = one(
+            ("💳 Все оплаты", "payments_open"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        )
+    return "\n".join(lines), markup
+
+
 @router.callback_query(lambda c: c.data in _STAGE_BY_ACTION)
 async def legacy_stage_payment_is_confirmation_only(callback: CallbackQuery, db):
     """Turn historical unbound stage buttons into a current-case confirmation.
@@ -138,16 +193,18 @@ async def legacy_stage_payment_is_confirmation_only(callback: CallbackQuery, db)
         )
         return
 
+    case_id = int(case.id)
+    case_number = str(case.case_number)
     await db.rollback()
     await _safe_edit(
         callback,
         f"💳 {title}\n\n"
-        f"Дело № {case.case_number}\n\n"
+        f"Дело № {case_number}\n\n"
         "Следующее действие относится только к этому делу. Бот не создаёт юридический этап и не считает оплату полученной по нажатию кнопки. "
         "Он только откроет уже существующее платёжное обязательство и, если необходимо, запросит ссылку у настроенного провайдера.\n\n"
         "Продолжить?",
         reply_markup=one(
-            ("Перейти к оплате", _bound(int(case.id), payment_code)),
+            ("Перейти к оплате", _bound(case_id, payment_code)),
             ("💳 Все оплаты", "payments_open"),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
@@ -174,6 +231,7 @@ async def open_exact_stage_payment(callback: CallbackQuery, db):
     _action, expected_status, _code, title = _STAGE_BY_CODE[payment_code]
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
+    committed_provider_link = False
     try:
         case = (
             await db.execute(
@@ -206,10 +264,23 @@ async def open_exact_stage_payment(callback: CallbackQuery, db):
             )
 
         payment_status = str(payment.status)
-        if payment_status in _OPENABLE_PAYMENT_STATUSES and not payments_disabled() and not payment.payment_url:
+        if (
+            payment_status in _OPENABLE_PAYMENT_STATUSES
+            and not payments_disabled()
+            and not payment.payment_url
+        ):
             payment = await service.create_payment_link(payment)
             await db.commit()
-        else:
+            committed_provider_link = True
+
+        # Snapshot text and markup before rollback. payment_keyboard itself reads
+        # ORM fields, so it also belongs on this side of the boundary.
+        text, markup = _exact_payment_presentation(
+            payment=payment,
+            case_number=str(case.case_number),
+            title=title,
+        )
+        if not committed_provider_link:
             await db.rollback()
     except (LookupError, ValueError, RuntimeError) as error:
         await db.rollback()
@@ -240,54 +311,7 @@ async def open_exact_stage_payment(callback: CallbackQuery, db):
         )
         return
 
-    payment_status = str(payment.status)
-    status_label = payment_screen.client_payment_status_label(payment)
-    status_note = payment_screen.client_payment_status_note(payment)
-    lines = [
-        f"💳 {title}",
-        "",
-        f"Дело № {case.case_number}",
-        f"Сумма: {payment_screen.money(payment.amount)}",
-        f"Статус: {status_label}",
-    ]
-    if status_note:
-        lines.extend(["", status_note])
-
-    if payments_disabled() and payment_status in _OPENABLE_PAYMENT_STATUSES:
-        lines.extend(
-            [
-                "",
-                "Онлайн-оплата сейчас отключена. Команда изменит этап только после проверки фактического поступления.",
-            ]
-        )
-        markup = one(
-            ("💳 Все оплаты", "payments_open"),
-            ("✉️ Написать команде", "message_create"),
-            ("📁 Моё дело", "my_case_open"),
-            ("🏠 Главная", "nav_home"),
-        )
-    elif payment_status in _OPENABLE_PAYMENT_STATUSES:
-        lines.extend(
-            [
-                "",
-                "Переход по ссылке не меняет юридический этап. Следующий этап откроется только после серверного подтверждения фактической оплаты.",
-            ]
-        )
-        markup = payment_screen.payment_keyboard(payment)
-    else:
-        lines.extend(
-            [
-                "",
-                "Этот платёж уже не находится в состоянии ожидания оплаты. Доступно только актуальное состояние записи.",
-            ]
-        )
-        markup = one(
-            ("💳 Все оплаты", "payments_open"),
-            ("📁 Моё дело", "my_case_open"),
-            ("🏠 Главная", "nav_home"),
-        )
-
-    await _safe_edit(callback, "\n".join(lines), reply_markup=markup)
+    await _safe_edit(callback, text, reply_markup=markup)
 
 
 __all__ = ["router"]
