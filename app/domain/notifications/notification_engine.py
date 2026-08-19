@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.notifications.notification_rules import NOTIFICATION_RULES
+from app.domain.notifications.notification_template_extensions import TEMPLATE_EXTENSIONS
 from app.domain.notifications.notification_templates import TEMPLATES
 from app.models.admin_user import AdminUser
 from app.models.case import Case
@@ -158,7 +159,11 @@ class NotificationEngine:
             return []
 
         payload = payload or {}
-        template = TEMPLATES.get(rule["template"], event_code)
+        template_key = rule["template"]
+        template = TEMPLATE_EXTENSIONS.get(
+            template_key,
+            TEMPLATES.get(template_key, event_code),
+        )
         try:
             text = template.format(**payload)
         except KeyError:
