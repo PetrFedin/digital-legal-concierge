@@ -10,6 +10,11 @@ from aiogram.types import CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select
 
+from app.bot.case_callback_scope import (
+    bound_case_callback,
+    callback_matches_action,
+    resolve_case_callback_scope,
+)
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.config import settings
@@ -251,7 +256,7 @@ async def payments(callback: CallbackQuery, db):
 
     payments_list = await PaymentService(db).list_case_payments(case.id)
     heading = "💳 Оплаты завершённого дела" if completed else "💳 Оплаты"
-    text = heading + "\n\n" + (
+    text = heading + f"\nОбращение № {case.case_number}\n\n" + (
         "По этому делу платежей нет."
         if not payments_list
         else "\n\n".join(payment_summary_line(payment) for payment in payments_list)
@@ -283,20 +288,36 @@ async def payments(callback: CallbackQuery, db):
     await callback.message.edit_text(text, reply_markup=one(*items))
 
 
-@router.callback_query(lambda c: c.data == "pay_start_30000")
+@router.callback_query(lambda c: callback_matches_action(c.data, "pay_start_30000"))
 async def pay_30000(callback: CallbackQuery, db):
-    await start_payment(callback, db, PaymentCode.M1_INITIAL_PAYMENT)
+    await start_payment(
+        callback,
+        db,
+        PaymentCode.M1_INITIAL_PAYMENT,
+        action="pay_start_30000",
+    )
 
 
-@router.callback_query(lambda c: c.data == "consult_pay")
+@router.callback_query(lambda c: callback_matches_action(c.data, "consult_pay"))
 async def consult_pay(callback: CallbackQuery, db):
-    if not payments_disabled():
-        await start_payment(callback, db, PaymentCode.M2_CONSULTATION_PAYMENT)
+    scope = await resolve_case_callback_scope(
+        callback,
+        db,
+        action="consult_pay",
+    )
+    if scope is None:
         return
 
-    ctx = BotContextService(db)
-    user = await ctx.get_user_from_callback(callback)
-    case = await ctx.case_service.get_active_case_for_user(user.id)
+    if not payments_disabled():
+        await start_payment(
+            callback,
+            db,
+            PaymentCode.M2_CONSULTATION_PAYMENT,
+            scope=scope,
+        )
+        return
+
+    ctx, user, case = scope.ctx, scope.user, scope.case
     if not case:
         await callback.message.edit_text(
             "Активная консультация не найдена. Новая запись не создавалась.",
@@ -402,7 +423,8 @@ async def consult_pay(callback: CallbackQuery, db):
     )
     await _present_committed_callback(
         callback,
-        "✅ Консультация подтверждена без онлайн-оплаты.\n\n"
+        "✅ Консультация подтверждена без онлайн-оплаты.\n"
+        f"Обращение № {case.case_number}\n\n"
         f"Дата и время: {date_text}\n\n"
         "Дополнительный платёж не создавался. Вопрос и документы сохранены; "
         "откройте запись, чтобы проверить подготовку и при необходимости перенести или отменить встречу.",
@@ -440,10 +462,26 @@ async def _show_missing_m1_payment_case(callback: CallbackQuery, db, ctx, user) 
     )
 
 
-async def start_payment(callback: CallbackQuery, db, code):
-    ctx = BotContextService(db)
-    user = await ctx.get_user_from_callback(callback)
-    case = await ctx.case_service.get_active_case_for_user(user.id)
+async def start_payment(
+    callback: CallbackQuery,
+    db,
+    code,
+    *,
+    action: str | None = None,
+    scope=None,
+):
+    if scope is None and action:
+        scope = await resolve_case_callback_scope(callback, db, action=action)
+        if scope is None:
+            return
+
+    if scope is None:
+        ctx = BotContextService(db)
+        user = await ctx.get_user_from_callback(callback)
+        case = await ctx.case_service.get_active_case_for_user(user.id)
+    else:
+        ctx, user, case = scope.ctx, scope.user, scope.case
+
     is_m1_payment = code in M1_PAYMENT_EXPECTED_STATUSES
     if not case:
         if is_m1_payment:
@@ -488,7 +526,8 @@ async def start_payment(callback: CallbackQuery, db, code):
             await db.commit()
             await _present_committed_callback(
                 callback,
-                f"💳 {payment.title}\n\n"
+                f"💳 {payment.title}\n"
+                f"Обращение № {case.case_number}\n\n"
                 f"Сумма: {money(payment.amount)}\n\n"
                 "Онлайн-оплата сейчас отключена. Платёж уже зафиксирован в системе как ожидающий; "
                 "команда изменит этап только после проверки фактического поступления денег.",
@@ -552,7 +591,10 @@ async def start_payment(callback: CallbackQuery, db, code):
             "Платёжный сервис временно недоступен. Данные текущего этапа сохранены.",
             reply_markup=(
                 one(
-                    ("🔄 Повторить оплату", "consult_pay"),
+                    (
+                        "🔄 Повторить оплату",
+                        bound_case_callback("consult_pay", case.id),
+                    ),
                     ("📁 Моё дело", "my_case_open"),
                     ("🏠 Главная", "nav_home"),
                 )
@@ -568,18 +610,24 @@ async def start_payment(callback: CallbackQuery, db, code):
 
     if code == PaymentCode.M2_CONSULTATION_PAYMENT:
         text = (
-            f"💳 {payment.title}\n\nСумма: {money(payment.amount)}\n\n"
+            f"💳 {payment.title}\n"
+            f"Обращение № {case.case_number}\n\n"
+            f"Сумма: {money(payment.amount)}\n\n"
             "Вопрос и документы сохранены. После подтверждения оплаты выбранный "
             "слот станет окончательно вашим. Не используйте эту ссылку после выбора другого времени."
         )
     elif code == PaymentCode.M1_INITIAL_PAYMENT:
         text = (
-            f"💳 {payment.title}\n\nСумма: {money(payment.amount)}\n\n"
+            f"💳 {payment.title}\n"
+            f"Обращение № {case.case_number}\n\n"
+            f"Сумма: {money(payment.amount)}\n\n"
             "После подтверждения оплаты система откроет следующий этап — оформление доверенности."
         )
     else:
         text = (
-            f"💳 {payment.title}\n\nСумма: {money(payment.amount)}\n\n"
+            f"💳 {payment.title}\n"
+            f"Обращение № {case.case_number}\n\n"
+            f"Сумма: {money(payment.amount)}\n\n"
             "После подтверждения оплаты система откроет исполнительный этап."
         )
     await _present_committed_callback(
@@ -623,6 +671,7 @@ async def open_payment(callback: CallbackQuery, db):
         )
         await callback.message.edit_text(
             f"💳 {payment.title}\n"
+            f"Обращение № {case.case_number}\n"
             f"Сумма: {money(payment.amount)}\n"
             f"Статус: {payment_status_label(payment.status)}"
             "\n\n⚠️ Деньги поступили, но автоматическое применение платежа остановлено для безопасной сверки."
@@ -634,6 +683,7 @@ async def open_payment(callback: CallbackQuery, db):
     if payment.status == PaymentStatus.REFUND_PENDING and is_booked_m2:
         await callback.message.edit_text(
             f"💳 {payment.title}\n"
+            f"Обращение № {case.case_number}\n"
             f"Сумма: {money(payment.amount)}\n"
             f"Статус: {payment_status_label(payment.status)}\n\n"
             "Возврат этого платежа обрабатывается отдельно от записи на консультацию. "
@@ -645,6 +695,7 @@ async def open_payment(callback: CallbackQuery, db):
     status_note = client_payment_status_note(payment)
     await callback.message.edit_text(
         f"💳 {payment.title}\n"
+        f"Обращение № {case.case_number}\n"
         f"Сумма: {money(payment.amount)}\n"
         f"Статус: {client_payment_status_label(payment)}"
         + (f"\n\n{status_note}" if status_note else ""),
