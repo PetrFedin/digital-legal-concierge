@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
@@ -12,6 +13,9 @@ from app.domain.cases.client_case_scope import (
     latest_completed_case_for_user,
 )
 from app.domain.messages.message_service import MessageService
+from app.presentation_time import format_business_datetime
+
+router = Router()
 
 _COMPLETED_STATUS_VALUES = {str(value) for value in CLIENT_COMPLETED_CASE_STATUSES}
 
@@ -49,6 +53,40 @@ def _with_case_heading(text: str, case_number: str) -> str:
     if not separator:
         return f"{first}\nОбращение № {case_number}"
     return f"{first}\nОбращение № {case_number}\n{rest}"
+
+
+def _format_dialog(
+    dialog,
+    requested_page: int,
+    *,
+    read_only: bool,
+) -> tuple[str, int, int]:
+    """Format message history in the single configured client-facing timezone."""
+
+    page_messages, page, total_pages = messages._history_slice(dialog, requested_page)
+    heading = "💬 Переписка завершённого дела" if read_only else "💬 Переписка по делу"
+    if not page_messages:
+        detail = (
+            "Сообщений в архиве нет."
+            if read_only
+            else "Сообщений пока нет. Вы можете отправить первый вопрос команде."
+        )
+        return f"{heading}\n\n{detail}", page, total_pages
+
+    lines = [
+        heading,
+        f"Страница {page + 1} из {total_pages}. Первая страница — самые новые сообщения.",
+    ]
+    for item in page_messages:
+        author = "Вы" if item.sender_type == "client" else "Команда"
+        created_at = format_business_datetime(item.created_at)
+        body = messages._truncate(item.text, messages.HISTORY_ITEM_TEXT_LIMIT)
+        lines.append(f"{author} · {created_at}\n{body}")
+    return (
+        messages._truncate("\n\n".join(lines), messages.HISTORY_TEXT_LIMIT),
+        page,
+        total_pages,
+    )
 
 
 def _history_keyboard(
@@ -186,7 +224,7 @@ async def present_message_history(
     service = MessageService(db)
     try:
         dialog = await service.list_case_messages(case_id, limit=100)
-        text, page, total_pages = messages._format_dialog(
+        text, page, total_pages = _format_dialog(
             dialog,
             requested_page,
             read_only=read_only,
@@ -243,4 +281,18 @@ async def present_message_history(
             await db.rollback()
 
 
-__all__ = ["present_message_history"]
+@router.callback_query(
+    lambda c: bool(c.data)
+    and (c.data == "message_history" or c.data.startswith("message_history:"))
+)
+async def message_history_guard(
+    callback: CallbackQuery,
+    db,
+    state: FSMContext,
+) -> None:
+    """Own every message-history callback before the legacy messages router."""
+
+    await present_message_history(callback, db, state)
+
+
+__all__ = ["router", "present_message_history"]
