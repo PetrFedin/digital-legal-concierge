@@ -9,8 +9,6 @@ from app.api.assignment_queue import (
     workdesk_case_responsibility,
 )
 from app.api.workdesk import (
-    workdesk_attention,
-    workdesk_case_action,
     workdesk_case_consultation_outcomes,
     workdesk_case_consultations_today,
     workdesk_case_documents,
@@ -18,6 +16,11 @@ from app.api.workdesk import (
 )
 from app.api.workdesk_integrity_guard import workdesk_integrity_guard
 from app.api.workdesk_timeline import workdesk_case_timeline
+from app.api.workdesk_ui_guard import (
+    guarded_active_work_queue,
+    guarded_workdesk_attention,
+    guarded_workdesk_case_action,
+)
 from app.main import create_app
 
 
@@ -54,7 +57,8 @@ def test_workdesk_runtime_has_no_duplicate_method_path_pairs():
 
 def test_workdesk_ui_and_daily_actions_have_explicit_product_owners():
     assert _endpoint("/admin/workdesk/ui") is guided_workdesk_ui
-    assert _endpoint("/admin/workdesk/attention") is workdesk_attention
+    assert _endpoint("/admin/workdesk/attention") is guarded_workdesk_attention
+    assert _endpoint("/admin/work-queues/active") is guarded_active_work_queue
     assert (
         _endpoint("/admin/workdesk/cases/{case_id}/documents")
         is workdesk_case_documents
@@ -70,7 +74,7 @@ def test_workdesk_ui_and_daily_actions_have_explicit_product_owners():
     assert _endpoint("/admin/workdesk/cases/{case_id}/sla") is workdesk_case_sla
     assert (
         _endpoint("/admin/workdesk/cases/{case_id}/action/{task}")
-        is workdesk_case_action
+        is guarded_workdesk_case_action
     )
     assert _endpoint("/admin/workdesk/cases/{case_id}/timeline") is workdesk_case_timeline
     assert _endpoint("/admin/workdesk/integrity") is workdesk_integrity_guard
