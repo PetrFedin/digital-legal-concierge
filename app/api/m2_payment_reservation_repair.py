@@ -70,16 +70,24 @@ async def reconcile_m2_payment_reservation(
                     "Автоматическое изменение не требуется."
                 ),
             )
+        response = {
+            "ok": True,
+            "payment_id": int(payment.id),
+            "payment_status": str(payment.status),
+            "case_id": int(case.id),
+            "case_status": str(case.status),
+            "result": "stale_client_payment_expired",
+        }
         await add_case_history_event(
             db,
             actor_type="admin",
             actor_id=int(actor.account_id),
-            case_id=int(case.id),
+            case_id=response["case_id"],
             action="ADMIN_M2_PAYMENT_RESERVATION_RECONCILED",
             new_value={
-                "payment_id": int(payment.id),
-                "payment_status": str(payment.status),
-                "case_status": str(case.status),
+                "payment_id": response["payment_id"],
+                "payment_status": response["payment_status"],
+                "case_status": response["case_status"],
             },
             comment=comment,
         )
@@ -93,14 +101,7 @@ async def reconcile_m2_payment_reservation(
         await db.rollback()
         raise
 
-    return {
-        "ok": True,
-        "payment_id": int(payment.id),
-        "payment_status": str(payment.status),
-        "case_id": int(case.id),
-        "case_status": str(case.status),
-        "result": "stale_client_payment_expired",
-    }
+    return response
 
 
 @router.get(
