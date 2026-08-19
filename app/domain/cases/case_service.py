@@ -15,6 +15,8 @@ from app.domain.cases.case_transition_policy import (
 from app.domain.cases.sla_service import CaseSLAService
 from app.domain.statuses.case_statuses import CaseStatus, RouteCode
 from app.models.case import Case
+from app.models.case_creation_request import CaseCreationRequest
+from app.models.client_case_context import ClientCaseContext
 from app.models.user import User
 
 
@@ -27,46 +29,153 @@ _CLIENT_DOCUMENT_COLLECTION_STATUSES = {
     CaseStatus.M1_DOCUMENTS_RECEIVED,
     CaseStatus.M1_DOCS_REQUESTED,
 }
+_TERMINAL_CASE_VALUES = {
+    CaseStatus.M1_CLOSED.value,
+    CaseStatus.M2_CLOSED.value,
+    CaseStatus.ARCHIVED.value,
+}
+
+
+class CaseSelectionRequired(RuntimeError):
+    """Raised when a mutating flow cannot determine which client Case it owns."""
 
 
 class CaseService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def get_active_case_for_user(self, user_id: int):
-        result = await self.db.execute(
-            select(Case)
-            .where(Case.client_id == user_id)
-            .where(
-                Case.status.notin_(
-                    [
-                        CaseStatus.M1_CLOSED,
-                        CaseStatus.M2_CLOSED,
-                        CaseStatus.ARCHIVED,
-                    ]
+    async def get_case_for_user(self, *, user_id: int, case_id: int) -> Case | None:
+        return (
+            await self.db.execute(
+                select(Case).where(
+                    Case.id == int(case_id),
+                    Case.client_id == int(user_id),
                 )
             )
-            .order_by(Case.created_at.desc())
-        )
-        return result.scalars().first()
+        ).scalar_one_or_none()
 
-    async def get_or_create_active_case_for_user(
+    async def get_active_cases_for_user(self, user_id: int) -> list[Case]:
+        result = await self.db.execute(
+            select(Case)
+            .where(Case.client_id == int(user_id))
+            .where(Case.status.notin_(_TERMINAL_CASE_VALUES))
+            .order_by(Case.created_at.desc(), Case.id.desc())
+        )
+        return list(result.scalars().all())
+
+    async def get_selected_case_for_user(
         self,
-        client: User,
+        user_id: int,
         *,
+        include_terminal: bool = True,
+    ) -> Case | None:
+        query = (
+            select(Case)
+            .join(
+                ClientCaseContext,
+                ClientCaseContext.selected_case_id == Case.id,
+            )
+            .where(
+                ClientCaseContext.client_id == int(user_id),
+                Case.client_id == int(user_id),
+            )
+        )
+        if not include_terminal:
+            query = query.where(Case.status.notin_(_TERMINAL_CASE_VALUES))
+        return (await self.db.execute(query)).scalar_one_or_none()
+
+    async def _set_selected_case_locked(
+        self,
+        *,
+        client_id: int,
+        case_id: int,
+    ) -> None:
+        context = (
+            await self.db.execute(
+                select(ClientCaseContext)
+                .where(ClientCaseContext.client_id == int(client_id))
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if context is None:
+            context = ClientCaseContext(
+                client_id=int(client_id),
+                selected_case_id=int(case_id),
+            )
+            self.db.add(context)
+        else:
+            context.selected_case_id = int(case_id)
+        await self.db.flush()
+
+    async def select_case_for_user(self, *, user_id: int, case_id: int) -> Case:
+        """Select a Case as the current Telegram cabinet context.
+
+        Selection is navigation state only. It never closes, merges or otherwise
+        changes another active matter belonging to the same client.
+        """
+
+        locked_client = (
+            await self.db.execute(
+                select(User).where(User.id == int(user_id)).with_for_update()
+            )
+        ).scalar_one_or_none()
+        if locked_client is None:
+            raise LookupError("Клиент не найден")
+        case = await self.get_case_for_user(user_id=int(user_id), case_id=int(case_id))
+        if case is None:
+            raise LookupError("Обращение не найдено или принадлежит другому клиенту")
+        await self._set_selected_case_locked(
+            client_id=int(user_id),
+            case_id=int(case.id),
+        )
+        return case
+
+    async def get_active_case_for_user(self, user_id: int) -> Case | None:
+        """Return the active Case selected for the Telegram cabinet.
+
+        Legacy callers historically assumed a client-wide singleton. The
+        selected-case context makes that assumption explicit without forbidding
+        several live matters. If old data has no context yet, the newest active
+        Case becomes the deterministic navigation default.
+        """
+
+        selected = await self.get_selected_case_for_user(
+            int(user_id),
+            include_terminal=False,
+        )
+        if selected is not None:
+            return selected
+        active_cases = await self.get_active_cases_for_user(int(user_id))
+        return active_cases[0] if active_cases else None
+
+    async def create_case_for_operation(
+        self,
+        *,
+        client: User,
+        operation_key: str,
+        purpose: str,
         route: str | None = None,
         status: str | CaseStatus = CaseStatus.NEW,
         title: str | None = None,
     ) -> Case:
-        """Serialize the one-active-case invariant on the client row.
+        """Create exactly one Case for one explicit source operation.
 
-        Telegram retries and two independent entry points can arrive in separate
-        transactions at almost the same time. A plain read-then-create allows
-        both transactions to observe "no case" and create parallel M1/M2 cases.
-        Lock the stable client row before checking. A database partial unique
-        index remains the final invariant if any other code path bypasses this
-        helper.
+        The stable User row is locked only to serialize short creation attempts.
+        The lock does *not* enforce one active Case per client: a different
+        operation_key creates a different Case. The ledger's unique constraint
+        is the database backstop for duplicate Telegram delivery/retries.
         """
+
+        clean_key = str(operation_key or "").strip()
+        clean_purpose = str(purpose or "").strip()
+        if not clean_key:
+            raise ValueError("operation_key обязателен для создания обращения")
+        if len(clean_key) > 255:
+            raise ValueError("operation_key превышает 255 символов")
+        if not clean_purpose:
+            raise ValueError("purpose обязателен для создания обращения")
+        if len(clean_purpose) > 50:
+            raise ValueError("purpose превышает 50 символов")
 
         locked_client = (
             await self.db.execute(
@@ -78,15 +187,95 @@ class CaseService:
         if locked_client is None:
             raise LookupError("Клиент не найден")
 
-        case = await self.get_active_case_for_user(int(client.id))
-        if case is not None:
-            return case
-        return await self.create_case(
+        existing_request = (
+            await self.db.execute(
+                select(CaseCreationRequest).where(
+                    CaseCreationRequest.client_id == int(locked_client.id),
+                    CaseCreationRequest.operation_key == clean_key,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing_request is not None:
+            existing_case = await self.get_case_for_user(
+                user_id=int(locked_client.id),
+                case_id=int(existing_request.case_id),
+            )
+            if existing_case is None:
+                raise RuntimeError(
+                    "Идемпотентная запись создания обращения ссылается на отсутствующее дело"
+                )
+            await self._set_selected_case_locked(
+                client_id=int(locked_client.id),
+                case_id=int(existing_case.id),
+            )
+            return existing_case
+
+        case = await self.create_case(
             client=locked_client,
             route=route,
             status=status,
             title=title,
         )
+        self.db.add(
+            CaseCreationRequest(
+                client_id=int(locked_client.id),
+                operation_key=clean_key,
+                purpose=clean_purpose,
+                case_id=int(case.id),
+            )
+        )
+        await self._set_selected_case_locked(
+            client_id=int(locked_client.id),
+            case_id=int(case.id),
+        )
+        await self.db.flush()
+        return case
+
+    async def get_or_create_active_case_for_user(
+        self,
+        client: User,
+        *,
+        route: str | None = None,
+        status: str | CaseStatus = CaseStatus.NEW,
+        title: str | None = None,
+    ) -> Case:
+        """Compatibility helper for flows that operate on the selected Case.
+
+        New entry points that intentionally create a legal matter must use
+        ``create_case_for_operation`` with source provenance. This helper never
+        imposes a client-wide uniqueness rule; it only reuses the currently
+        selected active Case, or bootstraps one when no active matter exists.
+        """
+
+        selected = await self.get_active_case_for_user(int(client.id))
+        if selected is not None:
+            return selected
+
+        # Serialize only the legacy zero-active bootstrap. Two *different* new
+        # matter entry points must not use this helper.
+        locked_client = (
+            await self.db.execute(
+                select(User)
+                .where(User.id == int(client.id))
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if locked_client is None:
+            raise LookupError("Клиент не найден")
+        selected = await self.get_active_case_for_user(int(locked_client.id))
+        if selected is not None:
+            return selected
+        case = await self.create_case(
+            client=locked_client,
+            route=route,
+            status=status,
+            title=title,
+        )
+        await self._set_selected_case_locked(
+            client_id=int(locked_client.id),
+            case_id=int(case.id),
+        )
+        return case
 
     async def create_case(
         self,
@@ -363,4 +552,9 @@ class CaseService:
         return mapping[normalized]
 
 
-__all__ = ["CaseService", "CaseTransitionError", "generate_case_number"]
+__all__ = [
+    "CaseService",
+    "CaseSelectionRequired",
+    "CaseTransitionError",
+    "generate_case_number",
+]
