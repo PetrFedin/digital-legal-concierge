@@ -60,11 +60,11 @@ def _case_id_from_bound(callback: CallbackQuery, action: str) -> int | None:
     return case_id if case_id > 0 else None
 
 
-async def _current_case_recovery(callback: CallbackQuery, case) -> None:
-    try:
-        status = _status(case)
-    except (TypeError, ValueError):
-        status = None
+async def _current_case_recovery(
+    callback: CallbackQuery,
+    status: CaseStatus | None,
+) -> None:
+    """Render stale-decision recovery using only a pre-boundary status scalar."""
 
     if status is not None and status.value.startswith("M1_"):
         text = (
@@ -244,9 +244,11 @@ async def continue_m1_after_calculation(callback: CallbackQuery, db):
     )
     if result is None:
         return
+    result_status = _status(result.case)
+    result_case_id = int(result.case.id)
     if result.outcome != "m1_consent_required":
         await db.rollback()
-        await _current_case_recovery(callback, result.case)
+        await _current_case_recovery(callback, result_status)
         return
 
     await db.commit()
@@ -258,9 +260,9 @@ async def continue_m1_after_calculation(callback: CallbackQuery, db):
         "Откройте согласие на обработку персональных данных и подтвердите его отдельно. "
         "Только после этого откроется загрузка документов.",
         reply_markup=one(
-            ("📄 Перейти к согласию", _bound("consent_open", int(result.case.id))),
-            ("💬 Вместо этого — консультация", _bound("calc_to_m2", int(result.case.id))),
-            ("Пока ничего не менять", _bound("calc_postpone", int(result.case.id))),
+            ("📄 Перейти к согласию", _bound("consent_open", result_case_id)),
+            ("💬 Вместо этого — консультация", _bound("calc_to_m2", result_case_id)),
+            ("Пока ничего не менять", _bound("calc_postpone", result_case_id)),
             ("🏠 Главная", "nav_home"),
         ),
     )
@@ -280,9 +282,11 @@ async def continue_m2_after_calculation(callback: CallbackQuery, db):
     )
     if result is None:
         return
+    result_status = _status(result.case)
+    result_case_id = int(result.case.id)
     if result.outcome != "m2_intake":
         await db.rollback()
-        await _current_case_recovery(callback, result.case)
+        await _current_case_recovery(callback, result_status)
         return
 
     try:
@@ -290,7 +294,7 @@ async def continue_m2_after_calculation(callback: CallbackQuery, db):
         # If context creation fails, the route choice is rolled back as well so
         # the client is never stranded in M2 without a consultation record.
         context_case, _consultation = await ConsultationIntakeService(db).get_or_create_context(user)
-        if int(context_case.id) != int(result.case.id):
+        if int(context_case.id) != result_case_id:
             raise ActiveCaseRouteConflict(
                 "Активное обращение изменилось во время выбора консультации"
             )
@@ -349,9 +353,10 @@ async def postpone_after_calculation(callback: CallbackQuery, db):
     )
     if result is None:
         return
+    result_status = _status(result.case)
     if result.outcome != "postponed":
         await db.rollback()
-        await _current_case_recovery(callback, result.case)
+        await _current_case_recovery(callback, result_status)
         return
 
     await db.commit()
