@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from sqlalchemy import or_, select
@@ -380,10 +381,12 @@ class PaymentService:
         case: Case,
         actor_type="system",
         actor_id: int | None = None,
+        occurred_at: datetime | None = None,
     ):
         transition = PaymentLifecycleService.transition(
             payment,
             to_status=PaymentStatus.PAID,
+            occurred_at=occurred_at,
         )
         if not transition.changed:
             return payment
@@ -399,6 +402,7 @@ class PaymentService:
                 "code": payment.payment_code,
                 "amount": str(payment.amount),
                 "reservation_key": payment.reservation_key,
+                "occurred_at": transition.occurred_at.isoformat(),
             },
         )
         await self.db.flush()
