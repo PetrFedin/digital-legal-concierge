@@ -23,6 +23,7 @@ from app.models.calculation import Calculation
 from app.models.consultation import Consultation
 from app.models.document import Document
 from app.models.payment import Payment
+from app.presentation_time import format_business_datetime
 
 
 @dataclass(frozen=True)
@@ -274,18 +275,14 @@ def next_action_text(case) -> str:
 def format_consultation_time(consultation: Consultation | None) -> str | None:
     if not consultation or not consultation.scheduled_at:
         return None
-    value = consultation.scheduled_at
-    if value.tzinfo is not None:
-        value = value.astimezone(timezone.utc)
-    return value.strftime("%d.%m.%Y в %H:%M UTC")
+    return format_business_datetime(
+        consultation.scheduled_at,
+        pattern="%d.%m.%Y в %H:%M",
+    )
 
 
 def format_updated_at(value: datetime | None) -> str:
-    if value is None:
-        return "—"
-    if value.tzinfo is not None:
-        value = value.astimezone(timezone.utc)
-    return value.strftime("%d.%m.%Y %H:%M UTC")
+    return format_business_datetime(value, empty="—")
 
 
 def progress_bar(percent: int) -> str:
