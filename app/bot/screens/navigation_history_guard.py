@@ -4,6 +4,8 @@ from aiogram import Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 
+from app.bot.context import BotContextService
+from app.bot.keyboards import one
 from app.bot.screens import (
     common,
     consultation_results,
@@ -194,6 +196,66 @@ async def logical_back(callback: CallbackQuery, db, state: FSMContext):
 
     await my_case.my_case(callback, db)
     await _record(state, "my_case_open")
+
+
+@router.callback_query(
+    lambda c: bool(c.data) and c.data.startswith("my_case_select:v2:")
+)
+async def guarded_case_selection(callback: CallbackQuery, db, state: FSMContext):
+    """Select only a currently active Case owned by this Telegram client.
+
+    The selector renders active Cases, but Telegram messages live longer than
+    database state. A stale/crafted callback must not persist a terminal Case as
+    selected context and later route documents/payments/messages through it.
+    """
+
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    try:
+        parts = str(callback.data or "").split(":")
+        if len(parts) != 3 or parts[0] != "my_case_select" or parts[1] != "v2":
+            raise ValueError("invalid selector callback")
+        case_id = int(parts[2])
+        active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
+        target = next(
+            (item for item in active_cases if int(item.id) == case_id),
+            None,
+        )
+        if target is None:
+            raise LookupError("case is no longer active")
+        case_number = str(target.case_number)
+        await ctx.case_service.select_case_for_user(
+            user_id=int(user.id),
+            case_id=case_id,
+        )
+        await db.commit()
+    except (TypeError, ValueError, LookupError):
+        await db.rollback()
+        await callback.message.edit_text(
+            "Это обращение уже не входит в список активных или кнопка устарела. Контекст дела не изменён.",
+            reply_markup=one(
+                ("📁 Обновить список обращений", "my_cases_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+    except Exception:
+        await db.rollback()
+        await callback.message.edit_text(
+            "Не удалось безопасно переключить обращение. Контекст дела не изменён.",
+            reply_markup=one(
+                ("📁 Обновить список обращений", "my_cases_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    await _reset(state, current="my_case_open")
+    await my_case._render_case(
+        callback,
+        db,
+        notice=f"Выбрано обращение {case_number}.",
+    )
 
 
 @router.callback_query(lambda c: c.data == "my_case_open")
