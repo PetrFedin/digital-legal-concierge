@@ -45,10 +45,37 @@ def test_remaining_compatibility_guards_precede_only_their_historical_surfaces()
         ("case_assignment", "sla_center"),
         ("contract_workspace_ui", "lawyer"),
         ("contract_workspace_ui", "lawyer_workspace"),
-        ("guided_message_center", "message_center"),
     ]
     for early, legacy in required_order:
         assert source.index(f'(\"{early}\",') < source.index(f'(\"{legacy}\",')
+
+
+def test_message_center_has_one_runtime_product_owner():
+    main = MAIN.read_text(encoding="utf-8")
+    product = read("app/api/message_center_product.py")
+
+    assert "from app.api.message_center_product import router as message_center_product_router" in main
+    assert '("message_center_product", message_center_product_router)' in main
+    assert "guided_message_center_router" not in main
+    assert "message_center_router" not in main
+    assert "guided_message_center_status" in product
+    assert "mark_message_read" in product
+
+    routes = create_app().routes
+    for method, path in (
+        ("GET", "/message-center/status"),
+        ("GET", "/message-center/cases/{case_id}/messages"),
+        ("POST", "/message-center/cases/{case_id}/reply"),
+        ("POST", "/message-center/{message_id}/read"),
+        ("GET", "/message-center/ui"),
+    ):
+        owners = [
+            route
+            for route in routes
+            if getattr(route, "path", None) == path
+            and method in (getattr(route, "methods", None) or set())
+        ]
+        assert len(owners) == 1, (method, path, [route.name for route in owners])
 
 
 def test_consultation_outcomes_no_longer_depend_on_router_include_order():
