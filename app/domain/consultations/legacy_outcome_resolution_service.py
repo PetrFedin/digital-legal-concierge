@@ -100,6 +100,7 @@ class LegacyConsultationOutcomeResolutionService:
         consultation.decision = normalized_decision
 
         if normalized_decision == "close":
+            case.close_reason = "M2_LEGACY_OUTCOME_CLOSED"
             await self.cases.change_status(
                 case=case,
                 next_status=CaseStatus.M2_CLOSED,
@@ -136,6 +137,7 @@ class LegacyConsultationOutcomeResolutionService:
                 "consultation_decision": normalized_decision,
                 "case_status": str(case.status),
                 "case_route": case.route,
+                "close_reason": case.close_reason,
                 "next_action": case.next_action,
             },
             comment=normalized_comment,
