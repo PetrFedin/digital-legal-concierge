@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, event
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -96,3 +96,58 @@ class Case(Base, TimestampMixin):
     retention_record = relationship(
         "CaseRetentionRecord", back_populates="case", uselist=False
     )
+
+
+_BUSINESS_CLOSED = {
+    "M1_CLOSED": "M1_COMPLETED",
+    "M2_CLOSED": "M2_COMPLETED",
+}
+_TERMINAL = frozenset({*_BUSINESS_CLOSED, "ARCHIVED"})
+
+
+def _status_value(value: object) -> str:
+    raw = getattr(value, "value", value)
+    return str(raw or "").strip().upper()
+
+
+@event.listens_for(Case.status, "set", active_history=True)
+def _stamp_case_lifecycle_fact(
+    target: Case,
+    value: object,
+    oldvalue: object,
+    _initiator,
+) -> None:
+    """Backstop closure/archive timestamps for every sanctioned status writer.
+
+    CaseService remains the process-state owner. This listener only protects the
+    persisted lifecycle facts from being omitted by a dedicated domain service.
+    More specific services may set ``close_reason`` before assigning the terminal
+    status; the listener preserves that explicit value.
+    """
+
+    new_status = _status_value(value)
+    old_status = _status_value(oldvalue)
+    if not new_status or new_status == old_status:
+        return
+
+    now = datetime.now(timezone.utc)
+    if new_status in _BUSINESS_CLOSED:
+        if target.closed_at is None:
+            target.closed_at = now
+        if not str(target.close_reason or "").strip():
+            target.close_reason = _BUSINESS_CLOSED[new_status]
+    elif new_status == "ARCHIVED":
+        if target.closed_at is None:
+            target.closed_at = now
+        if target.archived_at is None:
+            target.archived_at = now
+        if not str(target.close_reason or "").strip():
+            target.close_reason = "ARCHIVED_LEGACY"
+
+    # Reopening a terminal Case is only permitted through CaseService's forced
+    # recovery policy. When it happens, terminal lifecycle facts must not remain
+    # attached to a live matter.
+    if old_status in _TERMINAL and new_status not in _TERMINAL:
+        target.closed_at = None
+        target.archived_at = None
+        target.close_reason = None
