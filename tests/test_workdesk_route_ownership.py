@@ -21,6 +21,7 @@ from app.api.workdesk_projections import (
 )
 from app.api.workdesk_runtime_ui import workdesk_runtime_ui
 from app.api.workdesk_timeline import workdesk_case_timeline
+from app.api.workdesk_ui_guard import router as retired_workdesk_ui_guard_router
 from app.main import create_app
 
 
@@ -53,6 +54,10 @@ def test_workdesk_runtime_has_no_duplicate_method_path_pairs():
     )
     duplicates = {pair: count for pair, count in pairs.items() if count > 1}
     assert duplicates == {}
+
+
+def test_retired_workdesk_ui_guard_has_no_public_routes():
+    assert retired_workdesk_ui_guard_router.routes == []
 
 
 def test_workdesk_ui_and_daily_actions_have_explicit_product_owners():
