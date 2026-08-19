@@ -7,19 +7,17 @@ def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_existing_staff_ui_guards_are_mounted_in_early_operator_layer():
+def test_staff_ui_helpers_are_not_shadow_route_owners():
+    guard = read("app/api/staff_ui_guards.py")
     operator = read("app/api/operator_guard.py")
-    initial_setup = read("app/api/initial_setup_wizard.py")
-    main = read("app/main.py")
 
-    assert "from app.api.staff_ui_guards import router as staff_ui_guards_router" in operator
-    assert "router.include_router(staff_ui_guards_router)" in operator
-    assert "router.include_router(operator_guard_router)" in initial_setup
-    initial = main.index('(\"initial_setup_wizard\", initial_setup_wizard_router)')
-    assert initial < main.index('(\"payment_review_center\", payment_review_center_router)')
-    assert initial < main.index('(\"sla_center\", sla_center_router)')
-    assert initial < main.index('(\"document_access\", document_access_router)')
-    assert initial < main.index('(\"health_center\", health_center_router)')
+    assert "async def protected_payment_review_ui(" in guard
+    assert "async def protected_sla_ui(" in guard
+    assert "async def protected_document_review_ui(" in guard
+    assert '@router.get("/admin/payment-reviews/ui"' not in guard
+    assert '@router.get("/admin/sla/ui"' not in guard
+    assert '@router.get("/document-access/review/ui"' not in guard
+    assert "staff_ui_guards_router" not in operator
 
 
 def test_staff_ui_gate_redirects_anonymous_and_role_mismatch_without_raw_json_dead_end():
@@ -33,13 +31,21 @@ def test_staff_ui_gate_redirects_anonymous_and_role_mismatch_without_raw_json_de
     assert "error.status_code in {403, 409}" in block
 
 
-def test_protected_staff_shells_use_common_gate():
+def test_protected_staff_shells_are_registered_by_explicit_product_routers():
     guard = read("app/api/staff_ui_guards.py")
+    payment_product = read("app/api/payment_review_product.py")
+    sla_product = read("app/api/sla_product.py")
+    document_product = read("app/api/document_access_product.py")
+    main = read("app/main.py")
 
-    assert '@router.get("/admin/payment-reviews/ui"' in guard
-    assert '@router.get("/admin/sla/ui"' in guard
-    assert '@router.get("/document-access/review/ui"' in guard
-    assert '@router.get("/health-center/ui"' in guard
+    assert "protected_payment_review_ui" in payment_product
+    assert '"/ui"' in payment_product
+    assert "protected_sla_ui" in sla_product
+    assert '"/ui"' in sla_product
+    assert "protected_document_review_ui" in document_product
+    assert '"/review/ui"' in document_product
+    assert '("payment_review_product", payment_review_product_router)' in main
+    assert '("sla_product", sla_product_router)' in main
+    assert '("document_access_product", document_access_product_router)' in main
     assert "gate = await _staff_gate(request, db, x_admin_token)" in guard
-    assert "legacy_health_center_ui" in guard
     assert "staff=True" in guard
