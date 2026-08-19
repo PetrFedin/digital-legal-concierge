@@ -3,7 +3,7 @@ from __future__ import annotations
 from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, Message
 
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
@@ -131,6 +131,136 @@ def _history_keyboard(
         ]
     )
     return one(*buttons)
+
+
+async def _guard_reply_draft(message: Message, state: FSMContext) -> bool:
+    """Preserve an unsent question when an old reply-keyboard button is pressed."""
+
+    data = await state.get_data()
+    if not str(data.get("draft_text") or "").strip():
+        return False
+    await state.set_state(messages.MessageStates.confirming_message)
+    await message.answer(
+        "📝 У вас уже есть неотправленный черновик. Он не удалён.\n\n"
+        + messages._draft_review_text(data),
+        reply_markup=messages._review_markup(),
+    )
+    return True
+
+
+async def _load_reply_history_context(message: Message, db):
+    """Resolve an unambiguous Case for a historical reply-menu navigation."""
+
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_message(message)
+    active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
+    selected_case = await ctx.case_service.get_selected_case_for_user(
+        int(user.id),
+        include_terminal=False,
+    )
+    if selected_case is None and len(active_cases) > 1:
+        return user, None, None, active_cases, False
+
+    case = selected_case or (active_cases[0] if active_cases else None)
+    read_only = False
+    if case is None:
+        case = await latest_completed_case_for_user(db, user_id=int(user.id))
+        read_only = case is not None
+
+    selected_same_case = bool(
+        case is not None
+        and not read_only
+        and (
+            (selected_case is not None and int(selected_case.id) == int(case.id))
+            or (selected_case is None and len(active_cases) == 1)
+        )
+    )
+    return user, case, selected_case, active_cases, selected_same_case
+
+
+async def present_reply_message_history(
+    message: Message,
+    db,
+    state: FSMContext,
+) -> None:
+    """Own historical `💬 Переписка` reply navigation with the v2 Case contract."""
+
+    if await _guard_reply_draft(message, state):
+        return
+    await state.clear()
+
+    _user, case, _selected_case, active_cases, selected_same_case = (
+        await _load_reply_history_context(message, db)
+    )
+    if case is None and len(active_cases) > 1:
+        await db.rollback()
+        await message.answer(
+            "💬 ПЕРЕПИСКА\n\n"
+            "У вас несколько активных обращений. Старая кнопка не содержит номер дела, поэтому переписка не открыта автоматически. Выберите обращение явно.",
+            reply_markup=one(
+                ("📁 Выбрать обращение", "my_cases_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    if case is None:
+        await db.rollback()
+        await message.answer(
+            "💬 История переписки появится после создания обращения.\n\n"
+            "Начните с предварительного расчёта или откройте связь с юридической командой.",
+            reply_markup=one(
+                ("🧮 Рассчитать неустойку", "calc_start"),
+                ("💬 Связаться с юристом", "contact_lawyer"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    case_id = int(case.id)
+    case_number = str(case.case_number)
+    read_only = str(case.status) in _COMPLETED_STATUS_VALUES
+    service = MessageService(db)
+    try:
+        dialog = await service.list_case_messages(case_id, limit=100)
+        text, page, total_pages = _format_dialog(dialog, 0, read_only=read_only)
+        text = _with_case_heading(text, case_number)
+        page_messages, _, _ = messages._history_slice(dialog, page)
+        visible_team_ids = tuple(
+            int(item.id)
+            for item in page_messages
+            if item.sender_type == "lawyer"
+        )
+        markup = _history_keyboard(
+            case_id=case_id,
+            page=page,
+            total_pages=total_pages,
+            read_only=read_only,
+            selected_same_case=selected_same_case,
+        )
+        await db.rollback()
+    except Exception:
+        await db.rollback()
+        await message.answer(
+            "Не удалось загрузить переписку. Данные не изменены.",
+            reply_markup=one(
+                ("🔄 Повторить", f"message_history:v2:{case_id}:0"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    await message.answer(text, reply_markup=markup)
+    if visible_team_ids and not read_only and selected_same_case:
+        try:
+            await service.mark_lawyer_messages_read(
+                case_id,
+                message_ids=visible_team_ids,
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
 
 
 async def present_message_history(
@@ -298,4 +428,15 @@ async def message_history_guard(
     await present_message_history(callback, db, state)
 
 
-__all__ = ["router", "present_message_history"]
+@router.message(lambda m: m.text == "💬 Переписка")
+async def historical_reply_message_history_guard(
+    message: Message,
+    db,
+    state: FSMContext,
+) -> None:
+    """Own historical reply-keyboard history before reply_menu_direct.router."""
+
+    await present_reply_message_history(message, db, state)
+
+
+__all__ = ["router", "present_message_history", "present_reply_message_history"]
