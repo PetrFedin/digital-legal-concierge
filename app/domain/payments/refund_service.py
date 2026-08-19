@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -6,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.consultations.slot_service import SlotService
 from app.domain.notifications.notification_engine import NotificationEngine
+from app.domain.payments.payment_lifecycle import PaymentLifecycleService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
@@ -28,7 +31,6 @@ REFUND_RELEVANT_STATUSES = REFUND_REQUEST_START_STATUSES | REFUND_WORKFLOW_STATU
 
 class ConsultationRefundStateConflict(ValueError):
     """Historical money state conflicts with an apparently active consultation."""
-
 
 
 def as_utc(value: datetime) -> datetime:
@@ -144,7 +146,6 @@ class ConsultationRefundService:
                 "Свяжитесь с администратором."
             )
 
-        old_payment_status = payment.status
         old_consultation = {
             "status": consultation.status,
             "slot_id": consultation.slot_id,
@@ -166,7 +167,10 @@ class ConsultationRefundService:
         consultation.slot_id = None
         consultation.scheduled_at = None
         consultation.status = ConsultationStatus.CANCELLED
-        payment.status = PaymentStatus.REFUND_PENDING
+        transition = PaymentLifecycleService.transition(
+            payment,
+            to_status=PaymentStatus.REFUND_PENDING,
+        )
 
         await add_case_history_event(
             self.db,
@@ -176,13 +180,13 @@ class ConsultationRefundService:
             action="CONSULTATION_CANCELLATION_REQUESTED",
             old_value={
                 "consultation": old_consultation,
-                "payment_status": old_payment_status,
+                "payment_status": transition.old_status.value,
             },
             new_value={
                 "consultation_id": consultation.id,
                 "consultation_status": consultation.status,
                 "payment_id": payment.id,
-                "payment_status": payment.status,
+                "payment_status": transition.new_status.value,
                 "released_slot": slot_snapshot,
                 "reason": (reason or "").strip() or None,
             },
@@ -250,11 +254,14 @@ class ConsultationRefundService:
             raise LookupError("Дело не найдено")
 
         is_consultation = payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT
-        old_status = payment.status
-        payment.status = (
+        target_status = (
             PaymentStatus.REFUNDED
             if normalized_decision == "refunded"
             else PaymentStatus.REFUND_DECLINED
+        )
+        transition = PaymentLifecycleService.transition(
+            payment,
+            to_status=target_status,
         )
         if is_consultation:
             action = (
@@ -285,11 +292,14 @@ class ConsultationRefundService:
             actor_id=actor_id,
             case_id=case.id,
             action=action,
-            old_value={"payment_id": payment.id, "status": old_status},
+            old_value={
+                "payment_id": payment.id,
+                "status": transition.old_status.value,
+            },
             new_value={
                 "payment_id": payment.id,
                 "payment_code": payment.payment_code,
-                "status": payment.status,
+                "status": transition.new_status.value,
                 "decision": normalized_decision,
                 "case_status_preserved": str(case.status),
                 "case_route_preserved": case.route,
