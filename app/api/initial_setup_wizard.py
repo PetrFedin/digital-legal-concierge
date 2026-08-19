@@ -8,9 +8,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.access_role_guard import router as access_role_guard_router
 from app.api.operator_guard import router as operator_guard_router
-from app.api.workdesk_integrity_guard import router as workdesk_integrity_guard_router
 from app.config import settings
 from app.db.session import get_db
 from app.domain.payments.mode import payment_mode_valid
@@ -204,11 +202,9 @@ async def initial_setup_ui(
     )
 
 
-# Remaining compatibility mounts own only unique paths. Consultation outcomes
-# was removed from this container: its complete public vertical is registered by
-# app.api.consultation_outcomes_product in the application assembly.
-router.include_router(access_role_guard_router)
+# Compatibility staff guards still mounted here are temporary, but daily
+# Workdesk integrity and retired access-role shims no longer depend on this
+# setup container. New product endpoints must never be added here.
 router.include_router(operator_guard_router)
-router.include_router(workdesk_integrity_guard_router)
 
 __all__ = ["router"]
