@@ -67,10 +67,10 @@ class Case(Base, TimestampMixin):
 
     client = relationship("User", back_populates="cases")
     lawyer = relationship("Lawyer", back_populates="cases")
-    calculation = relationship(
+    calculations = relationship(
         "Calculation",
         back_populates="case",
-        uselist=False,
+        order_by="Calculation.created_at",
     )
     documents = relationship("Document", back_populates="case")
     payments = relationship("Payment", back_populates="case")
