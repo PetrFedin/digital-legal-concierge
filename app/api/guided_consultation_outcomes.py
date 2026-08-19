@@ -13,6 +13,7 @@ from app.api.consultation_outcomes import (
     actor_id_from_token,
     list_outcome_queue,
     require_admin,
+    router as canonical_outcomes_router,
 )
 from app.config import settings
 from app.db.session import get_db
@@ -34,6 +35,36 @@ router = APIRouter(
     prefix="/admin/consultation-outcomes",
     tags=["guided-consultation-outcomes"],
 )
+
+
+def _retire_canonical_queue_route() -> None:
+    """Retire the old public queue route before application assembly.
+
+    v37 extends the same business queue with CLIENT_NO_SHOW resolution. Keeping
+    both GET handlers and relying on include order made security/product
+    behaviour order-dependent. Until the compatibility module is folded into
+    the canonical file completely, remove the superseded route deterministically
+    and fail closed if the expected route contract changes.
+    """
+
+    target_path = "/admin/consultation-outcomes"
+    matches = [
+        route
+        for route in canonical_outcomes_router.routes
+        if getattr(route, "path", None) == target_path
+        and "GET" in set(getattr(route, "methods", set()) or set())
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(
+            "Consultation outcomes canonical queue route contract changed"
+        )
+    target = matches[0]
+    canonical_outcomes_router.routes[:] = [
+        route for route in canonical_outcomes_router.routes if route is not target
+    ]
+
+
+_retire_canonical_queue_route()
 
 
 async def _client_no_show_rows(db: AsyncSession) -> list[dict[str, object]]:
@@ -60,11 +91,7 @@ async def _client_no_show_rows(db: AsyncSession) -> list[dict[str, object]]:
     ).all()
     result: list[dict[str, object]] = []
     for consultation, case, user, slot, lawyer in rows:
-        starts_at = (
-            slot.starts_at
-            if slot is not None
-            else consultation.scheduled_at
-        )
+        starts_at = slot.starts_at if slot is not None else consultation.scheduled_at
         ends_at = slot.ends_at if slot is not None else None
         if starts_at is not None and ends_at is None:
             ends_at = starts_at + timedelta(hours=1)
