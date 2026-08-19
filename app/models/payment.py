@@ -1,7 +1,9 @@
-from datetime import datetime
+from __future__ import annotations
+
+from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, String
+from sqlalchemy import DateTime, ForeignKey, Numeric, String, event
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -42,3 +44,61 @@ class Payment(Base, TimestampMixin):
     )
 
     case = relationship("Case", back_populates="payments")
+
+
+_RECEIVED_MONEY_STATUSES = frozenset(
+    {
+        "PAID",
+        "PAID_REVIEW",
+        "REFUND_PENDING",
+        "REFUND_DECLINED",
+        "REFUNDED",
+    }
+)
+_LIFECYCLE_TIMESTAMP_FIELDS = {
+    "FAILED": "failed_at",
+    "CANCELLED": "cancelled_at",
+    "REFUNDED": "refunded_at",
+    "EXPIRED": "expired_at",
+}
+
+
+def _status_value(value: object) -> str:
+    """Normalize plain strings and str-backed enums without importing domain code."""
+
+    raw = getattr(value, "value", value)
+    return str(raw or "").strip().upper()
+
+
+@event.listens_for(Payment.status, "set", active_history=True)
+def _stamp_payment_lifecycle_fact(
+    target: Payment,
+    value: object,
+    oldvalue: object,
+    _initiator,
+) -> None:
+    """Persist payment business timestamps at the model invariant boundary.
+
+    Payment status can currently be changed by several domain services (provider
+    webhook handling, review/reconciliation, cancellation/refund, stale-link
+    expiry). The timestamp contract must therefore not depend on every caller
+    remembering to set a second field. This listener is the database-model
+    backstop: once a money/lifecycle fact is observed, its first timestamp is
+    immutable unless a migration/controlled repair explicitly changes it.
+
+    Services may set a provider-supplied exact timestamp before changing status;
+    in that case the listener preserves that value instead of overwriting it.
+    """
+
+    new_status = _status_value(value)
+    previous_status = _status_value(oldvalue)
+    if not new_status or new_status == previous_status:
+        return
+
+    now = datetime.now(timezone.utc)
+    if new_status in _RECEIVED_MONEY_STATUSES and target.paid_at is None:
+        target.paid_at = now
+
+    timestamp_field = _LIFECYCLE_TIMESTAMP_FIELDS.get(new_status)
+    if timestamp_field and getattr(target, timestamp_field, None) is None:
+        setattr(target, timestamp_field, now)
