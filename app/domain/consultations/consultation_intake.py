@@ -57,31 +57,78 @@ class ConsultationIntakeService:
         self.slots = SlotService(db)
         self.notifications = NotificationEngine(db)
 
-    async def get_or_create_case(self, client):
-        # Serialize creation on the stable client row. If a concurrent calculator
-        # or another M2 entry already created an active case while this request
-        # was waiting, this returns that exact case instead of creating a second
-        # active request. Route/status validation below then either resumes the
-        # same M2 context or fails closed on a route conflict.
-        case = await self.cases.get_or_create_active_case_for_user(
-            client,
-            route=RouteCode.M2,
-            status=CaseStatus.M2_DESCRIPTION_PENDING,
-            title="Юридическая консультация",
-        )
+    async def get_or_create_case(
+        self,
+        client,
+        *,
+        case_id: int | None = None,
+        operation_key: str | None = None,
+    ):
+        """Resolve an M2 Case without assuming a client-wide singleton.
+
+        ``case_id`` is used by follow-up actions that already know their legal
+        matter. ``operation_key`` is used only by an explicit *new consultation*
+        action and may create another Case even when the client has other active
+        M1/M2 matters. Calls with neither parameter are compatibility/resume
+        calls and operate on the selected Telegram cabinet Case.
+        """
+
+        if case_id is not None:
+            case = await self.cases.get_case_for_user(
+                user_id=int(client.id),
+                case_id=int(case_id),
+            )
+            if case is None:
+                raise ConsultationIntakeError(
+                    "Консультационное обращение не найдено"
+                )
+        elif operation_key:
+            case = await self.cases.create_case_for_operation(
+                client=client,
+                operation_key=operation_key,
+                purpose="m2_consultation_start",
+                route=RouteCode.M2,
+                status=CaseStatus.M2_DESCRIPTION_PENDING,
+                title="Юридическая консультация",
+            )
+        else:
+            case = await self.cases.get_active_case_for_user(int(client.id))
+            if case is None:
+                # Compatibility bootstrap for legacy entry points. New explicit
+                # M2 entry buttons should always pass operation_key so duplicate
+                # Telegram delivery is source-idempotent.
+                case = await self.cases.get_or_create_active_case_for_user(
+                    client,
+                    route=RouteCode.M2,
+                    status=CaseStatus.M2_DESCRIPTION_PENDING,
+                    title="Юридическая консультация",
+                )
 
         status = normalized_case_status(case)
         if str(case.route or "") == RouteCode.M2.value and status in M2_INTAKE_CASE_STATUSES:
+            await self.cases.select_case_for_user(
+                user_id=int(client.id),
+                case_id=int(case.id),
+            )
             return case
 
         raise ActiveCaseRouteConflict(
-            "У вас уже есть активное дело другого маршрута. "
-            "Напишите юридической команде по текущему делу; новая консультация "
-            "не будет скрывать или заменять его."
+            "Выбранное обращение относится к другому маршруту. "
+            "Откройте нужное дело либо начните новую консультацию отдельным действием."
         )
 
-    async def get_or_create_context(self, client):
-        case = await self.get_or_create_case(client)
+    async def get_or_create_context(
+        self,
+        client,
+        *,
+        case_id: int | None = None,
+        operation_key: str | None = None,
+    ):
+        case = await self.get_or_create_case(
+            client,
+            case_id=case_id,
+            operation_key=operation_key,
+        )
         consultation = await self.consultations.get_or_create_for_case(case)
         return case, consultation
 
