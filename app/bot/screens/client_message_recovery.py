@@ -85,12 +85,16 @@ async def retarget_preserved_draft_to_current_case(
         )
         return
 
+    # rollback() expires ORM state even with expire_on_commit=False. Snapshot all
+    # values needed by FSM/presentation before releasing the read transaction.
+    case_id = int(case.id)
+    case_number = str(case.case_number)
     await db.rollback()
     await state.update_data(
-        case_id=int(case.id),
-        case_number=str(case.case_number),
+        case_id=case_id,
+        case_number=case_number,
         new_request_confirmed=False,
-        client_message_case_id=int(case.id),
+        client_message_case_id=case_id,
         client_message_recovery_case_id=None,
     )
     await state.set_state(messages.MessageStates.confirming_message)
