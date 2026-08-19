@@ -15,6 +15,23 @@ logger = logging.getLogger(__name__)
 _TERMINAL_CASE_VALUES = {"M1_CLOSED", "M2_CLOSED", "ARCHIVED"}
 
 
+def _telegram_id(event) -> int | None:
+    direct = getattr(getattr(event, "from_user", None), "id", None)
+    if direct is not None:
+        return int(direct)
+    for attribute in (
+        "message",
+        "callback_query",
+        "edited_message",
+        "channel_post",
+    ):
+        nested = getattr(event, attribute, None)
+        nested_id = getattr(getattr(nested, "from_user", None), "id", None)
+        if nested_id is not None:
+            return int(nested_id)
+    return None
+
+
 async def record_client_activity(event) -> None:
     """Persist Telegram client activity independently from handler transactions.
 
@@ -24,8 +41,7 @@ async def record_client_activity(event) -> None:
     uses a short independent transaction after each Telegram update.
     """
 
-    telegram_user = getattr(event, "from_user", None)
-    telegram_id = getattr(telegram_user, "id", None)
+    telegram_id = _telegram_id(event)
     if telegram_id is None:
         return
 
@@ -34,7 +50,7 @@ async def record_client_activity(event) -> None:
         async with AsyncSessionLocal() as db:
             user_id = (
                 await db.execute(
-                    select(User.id).where(User.telegram_id == int(telegram_id))
+                    select(User.id).where(User.telegram_id == telegram_id)
                 )
             ).scalar_one_or_none()
             if user_id is None:
