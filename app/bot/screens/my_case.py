@@ -95,7 +95,11 @@ async def _payment_summary(db, case_id: int) -> str:
     return f"Платежей в истории: {len(payments)} · активных действий по оплате нет"
 
 
-def _case_buttons(view) -> list[tuple[str, str]]:
+def _case_buttons(
+    view,
+    *,
+    has_multiple_active_cases: bool = False,
+) -> list[tuple[str, str]]:
     buttons: list[tuple[str, str]] = []
     if view.unread_team_messages:
         buttons.append(
@@ -140,9 +144,11 @@ def _case_buttons(view) -> list[tuple[str, str]]:
         [
             ("🕘 История дела", "case_history_open"),
             ("💬 Связаться с юристом", "contact_lawyer"),
-            ("🏠 Главная", "nav_home"),
         ]
     )
+    if has_multiple_active_cases:
+        buttons.append(("📁 Выбрать другое обращение", "my_cases_open"))
+    buttons.append(("🏠 Главная", "nav_home"))
     return buttons
 
 
@@ -230,7 +236,7 @@ async def _render_completed_case(
 
 
 async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None):
-    _, user, case = await _active_case_context(callback, db)
+    ctx, user, case = await _active_case_context(callback, db)
     if not case:
         completed = await latest_completed_m1_case_for_user(db, user_id=user.id)
         if completed:
@@ -275,6 +281,8 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
         )
         return
 
+    active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
+    has_multiple_active_cases = len(active_cases) > 1
     view = await load_client_case_view(db, case)
     payment_summary = await _payment_summary(db, case.id)
     has_consultation_result = _has_consultation_result(view)
@@ -341,14 +349,23 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
             f"💳 Оплаты: {payment_summary}",
             "",
             f"Обновлено: {format_updated_at(view.updated_at)}",
-            "Первая кнопка ниже — самое актуальное безопасное действие.",
+            (
+                "У вас несколько активных обращений. Номер выше определяет контекст документов, оплат, истории и переписки."
+                if has_multiple_active_cases
+                else "Первая кнопка ниже — самое актуальное безопасное действие."
+            ),
         ]
     )
 
     await _safe_edit(
         callback,
         "\n".join(lines),
-        reply_markup=one(*_case_buttons(view)),
+        reply_markup=one(
+            *_case_buttons(
+                view,
+                has_multiple_active_cases=has_multiple_active_cases,
+            )
+        ),
     )
 
 
@@ -395,7 +412,10 @@ async def next_action(callback: CallbackQuery, db):
         await _render_case(
             callback,
             db,
-            notice="Вы открыли кнопку от другого дела. Показано актуальное состояние.",
+            notice=(
+                "Эта кнопка относится к другому обращению. Действие не выполнено. "
+                "Выберите нужное дело явно, затем откройте его актуальный следующий шаг."
+            ),
         )
         return
     if requested_action_key and requested_action_key != view.action_key:
