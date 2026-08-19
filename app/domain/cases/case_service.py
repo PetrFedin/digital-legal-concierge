@@ -312,6 +312,30 @@ class CaseService:
         await self.db.flush()
         return case
 
+    async def _lock_case_for_transition(self, case: Case) -> Case:
+        """Serialize every legal status mutation on the persisted Case row.
+
+        Callers may have loaded the Case before another worker committed a legal
+        fact. Flush caller-prepared non-status fields, then re-read the row under
+        ``FOR UPDATE`` with ``populate_existing`` so transition validation always
+        runs against the database truth that actually won the race.
+        """
+
+        if getattr(case, "id", None) is None:
+            raise CaseTransitionError("Нельзя изменить статус несохранённого дела")
+        await self.db.flush()
+        locked = (
+            await self.db.execute(
+                select(Case)
+                .where(Case.id == int(case.id))
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if locked is None:
+            raise LookupError("Дело не найдено")
+        return locked
+
     async def _transition(
         self,
         *,
@@ -323,6 +347,7 @@ class CaseService:
         force: bool,
         action: str,
     ) -> tuple[Case, bool]:
+        case = await self._lock_case_for_transition(case)
         source, destination = validate_transition(
             case.status,
             next_status,
@@ -425,6 +450,11 @@ class CaseService:
         comment: str | None = None,
         force: bool = False,
     ):
+        # Client handoff normalization also depends on the current legal state,
+        # so refresh that state under the same row lock before interpreting the
+        # requested target. ``_transition`` intentionally re-locks the same row;
+        # PostgreSQL treats that as a re-entrant lock within this transaction.
+        case = await self._lock_case_for_transition(case)
         next_status, comment = self._normalize_client_document_handoff(
             case=case,
             next_status=next_status,
