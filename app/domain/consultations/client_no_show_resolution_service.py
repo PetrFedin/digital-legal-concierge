@@ -218,6 +218,7 @@ class ClientNoShowResolutionService:
             "decision": consultation.decision,
         }
         consultation.decision = "client_no_show_closed"
+        case.close_reason = "M2_CLIENT_NO_SHOW"
         await self.cases.change_status(
             case=case,
             next_status=CaseStatus.M2_CLOSED,
@@ -239,6 +240,7 @@ class ClientNoShowResolutionService:
                 "consultation_status": str(consultation.status),
                 "case_status": str(case.status),
                 "decision": consultation.decision,
+                "close_reason": case.close_reason,
                 "payment_changed": False,
             },
             comment=normalized_comment,
