@@ -5,7 +5,6 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.document_review import REVIEW_HTML
-from app.api.health_center import health_center_ui as legacy_health_center_ui
 from app.api.payment_review_center import PAYMENT_REVIEW_CENTER_HTML
 from app.api.sla_center import SLA_CENTER_HTML
 from app.config import settings
@@ -89,7 +88,9 @@ async def _guarded_html(
     return HTMLResponse(html)
 
 
-@router.get("/admin/payment-reviews/ui", response_class=HTMLResponse)
+# These two functions are implementation helpers for the explicit product
+# routers. They deliberately have no decorators here: Payment Review and SLA
+# each have one runtime owner in app.api.*_product.
 async def protected_payment_review_ui(
     request: Request,
     db: AsyncSession = Depends(get_db),
@@ -126,18 +127,21 @@ async def protected_payment_review_ui(
     return HTMLResponse(PAYMENT_REVIEW_CENTER_HTML)
 
 
+async def protected_sla_ui(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    return await _guarded_html(request, db, x_admin_token, SLA_CENTER_HTML)
+
+
 @router.get("/admin/technical-cases/ui")
 async def retired_technical_cases_ui(
     request: Request,
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    """Retire the old technical-case destination into the canonical Workdesk.
-
-    Process Integrity and historical bookmarks may still point here. Do not
-    create a second troubleshooting cabinet: authenticate the admin, preserve a
-    valid case deep-link and redirect to the one operational control surface.
-    """
+    """Retire the old technical-case destination into the canonical Workdesk."""
 
     gate = await _staff_gate(request, db, x_admin_token)
     if isinstance(gate, RedirectResponse):
@@ -156,15 +160,6 @@ async def retired_technical_cases_ui(
     return RedirectResponse(url=target, status_code=303)
 
 
-@router.get("/admin/sla/ui", response_class=HTMLResponse)
-async def protected_sla_ui(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    x_admin_token: str | None = Header(default=None),
-):
-    return await _guarded_html(request, db, x_admin_token, SLA_CENTER_HTML)
-
-
 @router.get("/document-access/review/ui", response_class=HTMLResponse)
 async def protected_document_review_ui(
     request: Request,
@@ -173,11 +168,9 @@ async def protected_document_review_ui(
 ):
     """Serve the document decision cabinet only after personal staff auth.
 
-    The underlying /document-access/review APIs were already role-aware, but the
-    historical HTML shell itself was public and only discovered authorization
-    after JavaScript started loading. This early route is mounted before the
-    legacy document-access composite router, so anonymous users are redirected
-    to login without receiving the staff interface.
+    The underlying /document-access/review APIs are role-aware, but the
+    historical HTML shell itself was public. Until the document-access router is
+    consolidated, this compatibility owner authenticates the shell explicitly.
     """
 
     return await _guarded_html(
@@ -189,19 +182,8 @@ async def protected_document_review_ui(
     )
 
 
-@router.get("/health-center/ui", response_class=HTMLResponse)
-async def protected_health_center_ui(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    x_admin_token: str | None = Header(default=None),
-):
-    """Keep operational health checks on the admin recovery path, not raw 403."""
-
-    gate = await _staff_gate(request, db, x_admin_token)
-    if isinstance(gate, RedirectResponse):
-        return gate
-    return await legacy_health_center_ui(
-        request=request,
-        db=db,
-        x_admin_token=x_admin_token,
-    )
+__all__ = [
+    "protected_payment_review_ui",
+    "protected_sla_ui",
+    "router",
+]
