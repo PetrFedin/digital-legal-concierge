@@ -22,6 +22,7 @@ from app.domain.payments.mode import payments_disabled
 from app.domain.statuses.case_statuses import RouteCode
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.models.document import Document
+from app.presentation_time import format_business_datetime
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -151,10 +152,8 @@ def _append_unique(buttons: list[tuple[str, str]], button: tuple[str, str]) -> N
 
 
 def _format_datetime(value) -> str:
-    if not value:
-        return "ещё не выбраны"
     try:
-        return value.strftime("%d.%m.%Y %H:%M")
+        return format_business_datetime(value, empty="ещё не выбраны")
     except (AttributeError, ValueError):
         return "уточняются"
 
