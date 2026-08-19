@@ -7,21 +7,24 @@ def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_live_workdesk_not_shadow_copy_contains_integrity_panel():
-    source = read("app/api/assignment_queue.py")
+def test_live_workdesk_is_owned_by_explicit_product_router():
+    implementation = read("app/api/assignment_queue.py")
+    assignment_product = read("app/api/assignment_queue_product.py")
+    workdesk_product = read("app/api/workdesk_product.py")
     main = read("app/main.py")
 
-    assert "from app.api.workdesk_integrity import inject_workdesk_integrity" in source
-    ui = source.split('@router.get("/admin/workdesk/ui"', 1)[1].split(
+    assert "from app.api.workdesk_integrity import inject_workdesk_integrity" in implementation
+    ui = implementation.split('@router.get("/admin/workdesk/ui"', 1)[1].split(
         '@router.get("/admin/workdesk/cases/{case_id}/responsibility")', 1
     )[0]
     assert "inject_workdesk_integrity(html)" in ui
-    assert main.index('(\"assignment_queue\", assignment_queue_router)') < main.index(
-        '(\"workdesk_timeline\", workdesk_timeline_router)'
-    )
-    assert main.index('(\"assignment_queue\", assignment_queue_router)') < main.index(
-        '(\"workdesk\", workdesk_router)'
-    )
+    assert '"/admin/workdesk/ui"' in workdesk_product
+    assert "guided_workdesk_ui" in workdesk_product
+    assert '"/admin/workdesk/ui"' not in assignment_product
+    assert "assignment_queue_router" not in main
+    assert "workdesk_router" not in main
+    assert '("assignment_queue_product", assignment_queue_product_router)' in main
+    assert '("workdesk_product", workdesk_product_router)' in main
 
 
 def test_unreachable_assignee_repair_is_snapshot_locked_and_not_manual_status_edit():
