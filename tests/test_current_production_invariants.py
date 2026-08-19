@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy import create_engine, select
@@ -12,6 +12,8 @@ from app.bot.case_callback_scope import (
     callback_matches_action,
     parse_bound_case_id,
 )
+from app.domain.payments.payment_lifecycle import PaymentLifecycleService
+from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models import Base
 from app.models.case import Case
 from app.models.payment import Payment
@@ -74,15 +76,19 @@ def test_case_explicit_close_reason_is_preserved() -> None:
     assert case.close_reason == "M2_CLIENT_NO_SHOW"
 
 
-def test_payment_lifecycle_timestamps_are_first_fact_timestamps() -> None:
-    payment = Payment(
+def _payment(status: str = "PENDING") -> Payment:
+    return Payment(
         case_id=1,
         payment_code="TEST",
         title="Test payment",
         amount=Decimal("100.00"),
         currency="RUB",
-        status="PENDING",
+        status=status,
     )
+
+
+def test_payment_lifecycle_timestamps_are_first_fact_timestamps() -> None:
+    payment = _payment()
 
     payment.status = "PAID"
     paid_at = payment.paid_at
@@ -94,6 +100,48 @@ def test_payment_lifecycle_timestamps_are_first_fact_timestamps() -> None:
     payment.status = "REFUNDED"
     assert payment.paid_at == paid_at
     assert payment.refunded_at is not None
+
+
+def test_payment_lifecycle_service_uses_exact_fact_time_and_is_idempotent() -> None:
+    payment = _payment()
+    paid_fact_at = datetime(2026, 8, 19, 10, 15, tzinfo=timezone.utc)
+    refund_fact_at = paid_fact_at + timedelta(days=2)
+
+    paid = PaymentLifecycleService.transition(
+        payment,
+        to_status=PaymentStatus.PAID,
+        occurred_at=paid_fact_at,
+    )
+    assert paid.changed is True
+    assert paid.old_status == PaymentStatus.PENDING
+    assert paid.new_status == PaymentStatus.PAID
+    assert payment.paid_at == paid_fact_at
+
+    pending_refund = PaymentLifecycleService.transition(
+        payment,
+        to_status=PaymentStatus.REFUND_PENDING,
+        occurred_at=paid_fact_at + timedelta(hours=1),
+    )
+    assert pending_refund.changed is True
+    assert payment.paid_at == paid_fact_at
+
+    refunded = PaymentLifecycleService.transition(
+        payment,
+        to_status=PaymentStatus.REFUNDED,
+        occurred_at=refund_fact_at,
+    )
+    assert refunded.changed is True
+    assert payment.refunded_at == refund_fact_at
+    assert payment.paid_at == paid_fact_at
+
+    repeated = PaymentLifecycleService.transition(
+        payment,
+        to_status=PaymentStatus.REFUNDED,
+        occurred_at=refund_fact_at + timedelta(hours=1),
+    )
+    assert repeated.changed is False
+    assert payment.refunded_at == refund_fact_at
+    assert payment.paid_at == paid_fact_at
 
 
 def test_payment_event_ledger_records_creation_and_status_change_in_same_db() -> None:
@@ -135,6 +183,9 @@ def test_payment_event_ledger_records_creation_and_status_change_in_same_db() ->
         assert created[0].status_before is None
         assert created[0].status_after == "PENDING"
 
+        # Direct assignment intentionally exercises the model-level backstop.
+        # Application code is separately forbidden from doing this by
+        # scripts/architecture_check.py.
         payment.status = "PAID"
         session.commit()
 
