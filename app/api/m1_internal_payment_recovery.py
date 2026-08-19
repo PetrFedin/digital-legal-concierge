@@ -78,8 +78,14 @@ async def recover_payment_stage(
             admin_id=int(actor.account_id),
             comment=payload.get("comment") or "",
         )
+        response = {
+            "ok": True,
+            "case_id": int(case.id),
+            "case_status": str(case.status),
+            "target_status": plan.target.value,
+            "payment_id": int(payment.id),
+        }
         await db.commit()
-        await db.refresh(case)
     except LookupError as error:
         await db.rollback()
         raise HTTPException(status_code=404, detail=str(error)) from error
@@ -89,13 +95,7 @@ async def recover_payment_stage(
     except Exception:
         await db.rollback()
         raise
-    return {
-        "ok": True,
-        "case_id": int(case.id),
-        "case_status": str(case.status),
-        "target_status": plan.target.value,
-        "payment_id": int(payment.id),
-    }
+    return response
 
 
 @router.get(
