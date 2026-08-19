@@ -21,7 +21,7 @@ def test_active_metric_opens_matching_active_queue_projection():
 
 
 def test_active_queue_is_real_and_excludes_closed_cases():
-    implementation = read("app/api/workdesk_ui_guard.py")
+    implementation = read("app/api/workdesk_projections.py")
     product = read("app/api/workdesk_product.py")
 
     assert "async def guarded_active_work_queue(" in implementation
@@ -32,9 +32,9 @@ def test_active_queue_is_real_and_excludes_closed_cases():
 
 
 def test_active_queue_does_not_recommend_assignment_for_client_owned_or_m2_states():
-    source = read("app/api/workdesk_ui_guard.py")
+    source = read("app/api/workdesk_projections.py")
     block = source.split("async def guarded_active_work_queue", 1)[1].split(
-        '@router.get("/admin/work-queues/unassigned")', 1
+        "async def guarded_workdesk_attention", 1
     )[0]
 
     assert "AUTO_ASSIGNMENT_REQUIRED_STATUS_VALUES" in block
