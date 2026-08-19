@@ -7,20 +7,29 @@ def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_guided_workdesk_mounts_process_integrity():
-    source = read("app/api/workdesk_timeline.py")
+def test_guided_workdesk_has_one_process_integrity_runtime_owner():
+    timeline = read("app/api/workdesk_timeline.py")
     scanner = read("app/api/workdesk_integrity.py")
     guard = read("app/api/workdesk_integrity_guard.py")
+    product = read("app/api/workdesk_integrity_product.py")
     setup = read("app/api/initial_setup_wizard.py")
-    assert "inject_workdesk_integrity" in source
-    assert "router.include_router(workdesk_integrity_router)" in source
+    assignment = read("app/api/case_assignment.py")
+    main = read("app/main.py")
+
+    assert "inject_workdesk_integrity" in timeline
+    assert "router.include_router(workdesk_integrity_router)" not in timeline
     assert '@router.get("/admin/workdesk/integrity")' in scanner
     assert '@router.get("/admin/workdesk/integrity")' in guard
     assert "m1_contract_confirmation_missing" in scanner
     assert "m2_expired_hold_not_reconciled" in scanner
     assert "m1_money_received_stage_stuck" in guard
     assert "refund_declined_" in guard
-    assert "router.include_router(workdesk_integrity_guard_router)" in setup
+    assert '"/admin/workdesk/integrity"' in product
+    assert "workdesk_integrity_guard" in product
+    assert "from app.api.workdesk_integrity_product import router as workdesk_integrity_product_router" in main
+    assert '("workdesk_integrity_product", workdesk_integrity_product_router)' in main
+    assert "workdesk_integrity_guard_router" not in setup
+    assert "workdesk_integrity_guard_router" not in assignment
 
 
 def test_client_success_fee_callback_cannot_open_business_stage():
@@ -237,14 +246,25 @@ def test_case_assignment_actor_cannot_be_spoofed_from_payload():
     assert "expected_lawyer_id" in source
 
 
-def test_staff_financial_sla_and_lawyer_shells_have_server_side_guards():
+def test_staff_financial_sla_and_lawyer_shells_have_single_product_owners():
     staff = read("app/api/staff_ui_guards.py")
+    payment_product = read("app/api/payment_review_product.py")
+    sla_product = read("app/api/sla_product.py")
     assignment = read("app/api/case_assignment.py")
     lawyer = read("app/api/contract_workspace_ui.py")
-    assert '@router.get("/admin/payment-reviews/ui"' in staff
-    assert '@router.get("/admin/sla/ui"' in staff
-    assert "resolve_document_actor" in staff
-    assert "router.include_router(staff_ui_guards_router)" in assignment
+    main = read("app/main.py")
+
+    assert "async def protected_payment_review_ui(" in staff
+    assert "async def protected_sla_ui(" in staff
+    assert '@router.get("/admin/payment-reviews/ui"' not in staff
+    assert '@router.get("/admin/sla/ui"' not in staff
+    assert "protected_payment_review_ui" in payment_product
+    assert 'router.add_api_route(\n    "/ui",\n    protected_payment_review_ui' in payment_product
+    assert "protected_sla_ui" in sla_product
+    assert 'router.add_api_route("/ui", protected_sla_ui' in sla_product
+    assert "staff_ui_guards_router" not in assignment
+    assert '("payment_review_product", payment_review_product_router)' in main
+    assert '("sla_product", sla_product_router)' in main
     assert '@router.get("/lawyer/ui")' in lawyer
     assert 'RedirectResponse(url="/lawyer/workspace/ui"' in lawyer
     assert '@router.get("/lawyer/consultation-desk/ui"' in lawyer
