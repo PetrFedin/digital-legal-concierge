@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
 from app.domain.consultations.consultation_service import TERMINAL_CONSULTATION_STATUSES
+from app.domain.payments.payment_lifecycle import PaymentLifecycleService
 from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus, RouteCode
@@ -111,8 +112,10 @@ class ClientPaymentReconciliationService:
         if payment.status not in ACTIVE_LINK_STATUSES:
             return
 
-        old_status = payment.status
-        payment.status = PaymentStatus.EXPIRED
+        transition = PaymentLifecycleService.transition(
+            payment,
+            to_status=PaymentStatus.EXPIRED,
+        )
 
         if restore_slot_selection:
             if (
@@ -150,12 +153,12 @@ class ClientPaymentReconciliationService:
             action="CONSULTATION_PAYMENT_LINK_EXPIRED",
             old_value={
                 "payment_id": int(payment.id),
-                "status": str(old_status),
+                "status": transition.old_status.value,
                 "reservation_key": payment.reservation_key,
             },
             new_value={
                 "payment_id": int(payment.id),
-                "status": str(payment.status),
+                "status": transition.new_status.value,
                 "reason": reason,
                 "case_status": str(case.status),
                 "consultation_id": int(consultation.id) if consultation else None,
