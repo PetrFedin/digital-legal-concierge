@@ -2,25 +2,20 @@ from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
-NEW_CASE_REPLY_MENU_BUTTONS = [
-    [KeyboardButton(text="🧮 Рассчитать неустойку")],
-    [KeyboardButton(text="💬 Связаться с юристом")],
-    [KeyboardButton(text="🏠 Главная")],
-]
-
-ACTIVE_CASE_REPLY_MENU_BUTTONS = [
+# Canonical persistent information architecture. Availability is explained by
+# the destination screen instead of hiding stable navigation items as a Case
+# moves through M1/M2. This keeps Telegram muscle memory predictable.
+CANONICAL_REPLY_MENU_BUTTONS = [
+    [KeyboardButton(text="🏠 Главная"), KeyboardButton(text="🧮 Рассчитать неустойку")],
     [KeyboardButton(text="📁 Моё дело"), KeyboardButton(text="📄 Документы")],
-    [KeyboardButton(text="💬 Переписка"), KeyboardButton(text="✉️ Новый вопрос")],
-    [KeyboardButton(text="🏠 Главная")],
+    [KeyboardButton(text="💬 Связаться с юристом")],
 ]
 
-COMPLETED_CASE_REPLY_MENU_BUTTONS = [
-    [KeyboardButton(text="📁 Моё дело"), KeyboardButton(text="🧮 Рассчитать неустойку")],
-    [KeyboardButton(text="🏠 Главная")],
-]
-
-# Compatibility alias for integrations importing the historical constant.
-MAIN_MENU_BUTTONS = NEW_CASE_REPLY_MENU_BUTTONS
+# Compatibility aliases for code/tests that still import historical names.
+NEW_CASE_REPLY_MENU_BUTTONS = CANONICAL_REPLY_MENU_BUTTONS
+ACTIVE_CASE_REPLY_MENU_BUTTONS = CANONICAL_REPLY_MENU_BUTTONS
+COMPLETED_CASE_REPLY_MENU_BUTTONS = CANONICAL_REPLY_MENU_BUTTONS
+MAIN_MENU_BUTTONS = CANONICAL_REPLY_MENU_BUTTONS
 
 
 def reply_main_menu(
@@ -28,20 +23,14 @@ def reply_main_menu(
     *,
     completed_case: bool = False,
 ) -> ReplyKeyboardMarkup:
-    if case_exists:
-        keyboard = ACTIVE_CASE_REPLY_MENU_BUTTONS
-        placeholder = "Дело · документы · переписка"
-    elif completed_case:
-        keyboard = COMPLETED_CASE_REPLY_MENU_BUTTONS
-        placeholder = "Архив дела · новый расчёт"
-    else:
-        keyboard = NEW_CASE_REPLY_MENU_BUTTONS
-        placeholder = "Выберите: расчёт или помощь юриста"
+    # case_exists/completed_case remain in the public function signature because
+    # older callers supply them. The persistent IA itself is deliberately stable.
+    _ = (case_exists, completed_case)
     return ReplyKeyboardMarkup(
-        keyboard=keyboard,
+        keyboard=CANONICAL_REPLY_MENU_BUTTONS,
         resize_keyboard=True,
         is_persistent=True,
-        input_field_placeholder=placeholder,
+        input_field_placeholder="Главная · расчёт · дело · документы · юрист",
     )
 
 
@@ -86,28 +75,25 @@ def main_menu(
         text, callback_data = primary_action
         kb.button(text=text, callback_data=callback_data)
 
-    # Secondary navigation is intentionally compact. Starting a second M2 flow
-    # over an active M1 is forbidden by the domain layer, so the old generic
-    # "Юрист / консультация" shortcut was both redundant and misleading.
+    # Inline actions are contextual; the persistent reply keyboard above is the
+    # stable five-item navigation. These shortcuts focus on the selected Case.
     secondary("📁 Моё дело", "my_case_open")
     secondary("📄 Документы", "documents_open")
-    secondary("💬 Переписка", "message_history")
+    secondary("💬 Связаться с юристом", "contact_lawyer")
 
     show_payments = True if payments_enabled is None else bool(payments_enabled)
     if show_payments:
         secondary("💳 Оплаты", "payments_open")
 
-    secondary("✉️ Новый вопрос", "message_create")
+    secondary("🧮 Новый расчёт", "calc_start")
 
-    # Re-layout after de-duplication. Primary always owns its own row; secondary
-    # actions are grouped by two where possible for a compact Telegram panel.
     secondary_count = 4 + int(show_payments)
     if primary_callback in {
         "my_case_open",
         "documents_open",
-        "message_history",
+        "contact_lawyer",
         "payments_open" if show_payments else "",
-        "message_create",
+        "calc_start",
     }:
         secondary_count -= 1
     row_sizes: list[int] = [1] if primary_action else []
