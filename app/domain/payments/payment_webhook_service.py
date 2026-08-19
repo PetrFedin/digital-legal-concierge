@@ -5,6 +5,7 @@ from app.domain.cases.case_service import CaseService
 from app.domain.consultations.consultation_service import ConsultationService
 from app.domain.consultations.slot_service import SlotUnavailableError
 from app.domain.notifications.notification_engine import NotificationEngine
+from app.domain.payments.payment_lifecycle import PaymentLifecycleService
 from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
@@ -59,19 +60,21 @@ class PaymentWebhookService:
         actor_type: str = "payment_provider",
         actor_id: int | None = None,
     ) -> Payment:
-        old_status = payment.status
-        payment.status = PaymentStatus.PAID_REVIEW
+        transition = PaymentLifecycleService.transition(
+            payment,
+            to_status=PaymentStatus.PAID_REVIEW,
+        )
         await add_case_history_event(
             self.db,
             actor_type=actor_type,
             actor_id=actor_id,
             case_id=case.id,
             action="CONSULTATION_PAYMENT_REVIEW_REQUIRED",
-            old_value={"status": old_status},
+            old_value={"status": transition.old_status.value},
             new_value={
                 "payment_id": payment.id,
                 "payment_code": payment.payment_code,
-                "status": payment.status,
+                "status": transition.new_status.value,
                 "reason": reason,
                 "payload": provider_payload or {},
             },
@@ -104,8 +107,10 @@ class PaymentWebhookService:
     ) -> Payment:
         """Preserve money truth without resurrecting an obsolete M1 stage."""
 
-        old_status = payment.status
-        payment.status = PaymentStatus.REFUND_PENDING
+        transition = PaymentLifecycleService.transition(
+            payment,
+            to_status=PaymentStatus.REFUND_PENDING,
+        )
         await add_case_history_event(
             self.db,
             actor_type=actor_type,
@@ -114,14 +119,14 @@ class PaymentWebhookService:
             action="M1_STALE_PAYMENT_REFUND_REQUIRED",
             old_value={
                 "payment_id": payment.id,
-                "payment_status": old_status,
+                "payment_status": transition.old_status.value,
                 "case_status": str(case.status),
                 "case_route": case.route,
             },
             new_value={
                 "payment_id": payment.id,
                 "payment_code": payment.payment_code,
-                "payment_status": payment.status,
+                "payment_status": transition.new_status.value,
                 "expected_case_status": expected_status.value,
                 "case_status_preserved": str(case.status),
                 "case_route_preserved": case.route,
@@ -412,15 +417,17 @@ class PaymentWebhookService:
         }:
             return payment
 
-        old = payment.status
-        payment.status = PaymentStatus.FAILED
+        transition = PaymentLifecycleService.transition(
+            payment,
+            to_status=PaymentStatus.FAILED,
+        )
         await add_case_history_event(
             self.db,
             actor_type="payment_provider",
             actor_id=None,
             case_id=case.id,
             action="PAYMENT_FAILED",
-            old_value={"status": old},
+            old_value={"status": transition.old_status.value},
             new_value={
                 "payment_id": payment.id,
                 "payment_code": payment.payment_code,
