@@ -6,8 +6,8 @@ from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
-from sqlalchemy import select
 
+from app.bot.calculator_draft import CALCULATOR_CASE_ID
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.states import CalculatorStates
@@ -16,7 +16,6 @@ from app.domain.consultations.consultation_intake import (
     ConsultationIntakeService,
 )
 from app.domain.statuses.case_statuses import CaseStatus
-from app.models.user import User
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -56,10 +55,11 @@ async def atomic_unknown_data_to_consultation(
     action = str(callback.data or "")
     expected_state = _EXPECTED_FSM[action]
     current_state = await state.get_state()
-    if current_state != expected_state:
-        # Inline keyboards remain clickable forever. Without the exact calculator
-        # FSM step, this historical raw callback has no provenance and therefore
-        # cannot authorize a route mutation.
+    data = await state.get_data()
+    case_id = int(data.get(CALCULATOR_CASE_ID) or 0)
+    if current_state != expected_state or case_id <= 0:
+        # Inline keyboards remain clickable forever. Without the exact FSM step
+        # and bound Case id, an old callback cannot authorize a route mutation.
         await db.rollback()
         await _safe_edit(
             callback,
@@ -76,30 +76,22 @@ async def atomic_unknown_data_to_consultation(
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     try:
-        # Serialize all no-data fallbacks per client. This covers the initial
-        # state where the calculator legitimately has no Case row yet and
-        # prevents two rapid callbacks from manufacturing duplicate cases.
-        locked_user = (
-            await db.execute(
-                select(User).where(User.id == int(user.id)).with_for_update()
-            )
-        ).scalar_one_or_none()
-        if locked_user is None:
-            raise LookupError("Пользователь не найден")
-
-        case = await ctx.case_service.get_active_case_for_user(user.id)
+        case = await ctx.case_service.get_case_for_user(
+            user_id=int(user.id),
+            case_id=case_id,
+        )
         if case is None:
-            case = await ctx.case_service.create_case(
-                client=locked_user,
-                status=CaseStatus.NEW,
+            raise LookupError("Обращение расчёта не найдено")
+        current_status = _status(case)
+        if current_status not in _ALLOWED_SOURCE_STATUSES:
+            raise ActiveCaseRouteConflict(
+                "За время расчёта это обращение перешло на другой этап"
             )
-        else:
-            current_status = _status(case)
-            if current_status not in _ALLOWED_SOURCE_STATUSES:
-                raise ActiveCaseRouteConflict(
-                    "За время расчёта активное дело перешло на другой этап"
-                )
 
+        await ctx.case_service.select_case_for_user(
+            user_id=int(user.id),
+            case_id=int(case.id),
+        )
         reason = (
             "Клиент не знает стоимость объекта и выбрал консультацию"
             if action == "calc_unknown_price"
@@ -111,10 +103,13 @@ async def atomic_unknown_data_to_consultation(
             actor_id=user.id,
             reason=reason,
         )
-        context_case, consultation = await ConsultationIntakeService(db).get_or_create_context(user)
+        context_case, consultation = await ConsultationIntakeService(db).get_or_create_context(
+            user,
+            case_id=int(case.id),
+        )
         if int(context_case.id) != int(case.id):
             raise ActiveCaseRouteConflict(
-                "Активное обращение изменилось во время перехода к консультации"
+                "Выбранное обращение изменилось во время перехода к консультации"
             )
         await db.commit()
     except (LookupError, ActiveCaseRouteConflict, ValueError) as error:
@@ -122,7 +117,7 @@ async def atomic_unknown_data_to_consultation(
         await _safe_edit(
             callback,
             f"Переход к консультации не выполнен: {error}.\n\n"
-            "Расчёт и текущее дело не переводились вручную. Откройте актуальное состояние перед повтором.",
+            "Расчёт и другое дело не изменялись. Откройте актуальное состояние перед повтором.",
             reply_markup=one(
                 ("📁 Моё дело", "my_case_open"),
                 ("✉️ Написать команде", "message_create"),
@@ -155,7 +150,7 @@ async def atomic_unknown_data_to_consultation(
         callback,
         "💬 Открыта консультация\n\n"
         "Автоматический расчёт без этих данных был бы ненадёжным, поэтому мы не подставляли значения и не создавали фиктивный результат. "
-        "Консультационное обращение создано один раз; оплата и время ещё не выбирались.\n\n"
+        "Консультация относится именно к этому обращению; оплата и время ещё не выбирались.\n\n"
         "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
         "Опишите вопрос для юриста. После этого можно добавить документы и выбрать время.",
         reply_markup=one(
