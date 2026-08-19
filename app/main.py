@@ -15,7 +15,7 @@ from app.api.backup_center import router as backup_center_router
 from app.api.backup_manager import router as backup_manager_router
 from app.api.calculator_builder import router as calculator_builder_router
 from app.api.case_assignment import router as case_assignment_router
-from app.api.consultation_outcomes import router as consultation_outcomes_router
+from app.api.consultation_outcomes_product import router as consultation_outcomes_product_router
 from app.api.consultation_slots import router as consultation_slots_router
 from app.api.contract_center import router as contract_center_router
 from app.api.contract_workspace_ui import router as contract_workspace_ui_router
@@ -26,7 +26,6 @@ from app.api.exports import router as exports_router
 from app.api.final_handover_center import router as final_handover_center_router
 from app.api.final_qa_center import router as final_qa_center_router
 from app.api.go_live_center import router as go_live_center_router
-from app.api.guided_consultation_outcomes import router as guided_consultation_outcomes_router
 from app.api.guided_lawyer_ui import router as guided_lawyer_ui_router
 from app.api.guided_message_center import router as guided_message_center_router
 from app.api.guided_refund_center import router as guided_refund_center_router
@@ -156,8 +155,7 @@ def create_app():
         ("refund_center", refund_center_router),
         ("retention_center", retention_center_router),
         ("payment_review_center", payment_review_center_router),
-        ("guided_consultation_outcomes", guided_consultation_outcomes_router),
-        ("consultation_outcomes", consultation_outcomes_router),
+        ("consultation_outcomes_product", consultation_outcomes_product_router),
         ("sla_center", sla_center_router),
         ("security", security_router),
         ("launch_assistant", launch_assistant_router),
