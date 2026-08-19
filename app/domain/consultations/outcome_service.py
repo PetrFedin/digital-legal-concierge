@@ -14,6 +14,7 @@ from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
+from app.presentation_time import format_business_datetime
 
 
 class ConsultationOutcomeError(ValueError):
@@ -151,12 +152,13 @@ class ConsultationOutcomeService:
                 comment="Перевод в маршрут М1 по результату консультации",
             )
         elif normalized_decision == "close":
+            case.close_reason = "M2_CONSULTATION_COMPLETED"
             await self.cases.change_status(
                 case=case,
                 next_status=CaseStatus.M2_CLOSED,
                 actor_type="lawyer",
                 actor_id=lawyer_id,
-                    comment="Консультация завершена, обращение закрыто",
+                comment="Консультация завершена, обращение закрыто",
             )
         else:
             await self.cases.change_status(
@@ -164,7 +166,7 @@ class ConsultationOutcomeService:
                 next_status=CaseStatus.M2_CONSULTATION_DONE,
                 actor_type="lawyer",
                 actor_id=lawyer_id,
-                    comment="Результат консультации зафиксирован",
+                comment="Результат консультации зафиксирован",
             )
             case.next_action = (
                 "Назначить следующую консультацию"
@@ -186,6 +188,7 @@ class ConsultationOutcomeService:
                 "decision": normalized_decision,
                 "result": normalized_result,
                 "case_status": case.status,
+                "close_reason": case.close_reason,
                 "next_action": case.next_action,
             },
         )
@@ -419,7 +422,7 @@ class ConsultationOutcomeService:
             case_id=case.id,
             payload={
                 "case_number": case.case_number,
-                "date": new_slot.starts_at.strftime("%d.%m.%Y %H:%M"),
+                "date": format_business_datetime(new_slot.starts_at),
             },
             dedupe_key=(
                 f"consultation:{consultation.id}:lawyer-no-show-rebook:{new_slot.id}"
