@@ -13,6 +13,7 @@ from app.domain.consultations.consultation_intake import (
 )
 from app.domain.consultations.consultation_service import ConsultationService
 from app.domain.consultations.slot_service import SlotUnavailableError
+from app.domain.payments.payment_lifecycle import PaymentLifecycleService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.payments.providers import get_payment_provider
 from app.domain.statuses.case_statuses import CaseStatus, RouteCode
@@ -190,8 +191,10 @@ class PaymentService:
             )
         )
         for payment in result.scalars().all():
-            old_status = payment.status
-            payment.status = PaymentStatus.EXPIRED
+            transition = PaymentLifecycleService.transition(
+                payment,
+                to_status=PaymentStatus.EXPIRED,
+            )
             await add_case_history_event(
                 self.db,
                 actor_type="system",
@@ -200,11 +203,11 @@ class PaymentService:
                 action="CONSULTATION_PAYMENT_LINK_EXPIRED",
                 old_value={
                     "payment_id": payment.id,
-                    "status": old_status,
+                    "status": transition.old_status.value,
                     "reservation_key": payment.reservation_key,
                 },
                 new_value={
-                    "status": payment.status,
+                    "status": transition.new_status.value,
                     "reservation_key": reservation_key,
                 },
                 comment="Ссылка устарела после изменения или повторного выбора слота",
@@ -363,7 +366,10 @@ class PaymentService:
             payment.provider = result.provider
             payment.provider_payment_id = result.provider_payment_id
             payment.payment_url = result.payment_url
-            payment.status = PaymentStatus.WAITING_CONFIRMATION
+            PaymentLifecycleService.transition(
+                payment,
+                to_status=PaymentStatus.WAITING_CONFIRMATION,
+            )
             await self.db.flush()
         return payment
 
@@ -375,17 +381,19 @@ class PaymentService:
         actor_type="system",
         actor_id: int | None = None,
     ):
-        if payment.status == PaymentStatus.PAID:
+        transition = PaymentLifecycleService.transition(
+            payment,
+            to_status=PaymentStatus.PAID,
+        )
+        if not transition.changed:
             return payment
-        old = payment.status
-        payment.status = PaymentStatus.PAID
         await add_case_history_event(
             self.db,
             actor_type=actor_type,
             actor_id=actor_id,
             case_id=case.id,
             action="PAYMENT_PAID",
-            old_value={"status": old},
+            old_value={"status": transition.old_status.value},
             new_value={
                 "payment_id": payment.id,
                 "code": payment.payment_code,
