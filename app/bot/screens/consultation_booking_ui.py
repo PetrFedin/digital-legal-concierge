@@ -194,12 +194,18 @@ async def consultation_action_center(callback: CallbackQuery, db):
 
     if not case:
         completed_m2 = await latest_completed_strict_m2_case_for_user(db, user_id=user.id)
+        completed_case_number = (
+            str(completed_m2.case_number) if completed_m2 is not None else None
+        )
+        # Rollback ends the read transaction. Never touch ORM instances after
+        # this boundary: AsyncSession may expire them and implicit refresh is not
+        # safe in presentation code.
         await db.rollback()
-        if completed_m2:
+        if completed_case_number:
             await _safe_edit(
                 callback,
                 "🔒 КОНСУЛЬТАЦИЯ ЗАВЕРШЕНА\n\n"
-                f"Дело {completed_m2.case_number} уже находится в архиве. "
+                f"Дело {completed_case_number} уже находится в архиве. "
                 "Эта старая кнопка не создаёт новую запись, не меняет время и не открывает редактирование закрытого дела.\n\n"
                 "Откройте итог консультации или нужный раздел архива.",
                 reply_markup=one(
@@ -229,7 +235,7 @@ async def consultation_action_center(callback: CallbackQuery, db):
         await _safe_edit(
             callback,
             "👨‍⚖ КОНСУЛЬТАЦИЯ\n\n"
-            "У вас уже есть активное дело по другому маршруту. Отдельную M2-консультацию сейчас не создаю, чтобы не разделять историю и документы.\n\n"
+            "Выбранное обращение относится к другому маршруту. Эта старая кнопка не создаёт отдельную консультацию и не меняет выбранное дело.\n\n"
             "Продолжите текущее дело или напишите юридической команде.",
             reply_markup=one(
                 ("✉️ Написать команде", "message_create"),
@@ -263,22 +269,30 @@ async def consultation_action_center(callback: CallbackQuery, db):
             )
         ).scalars().all()
     )
-    active_documents = [
-        item for item in documents if normalize_document_status(item.status) != "ARCHIVED"
-    ]
+    active_document_count = sum(
+        1
+        for item in documents
+        if normalize_document_status(item.status) != "ARCHIVED"
+    )
+
+    # Snapshot every value used by the renderer before rollback. This is the
+    # canonical rule for AsyncSession read views: no ORM instance crosses a
+    # commit/rollback boundary unless it has already been converted to scalars.
+    description_ready = consultation_description_ready(consultation)
+    status_value = str(consultation.status)
+    status = normalized_consultation_status(status_value)
+    scheduled_at = consultation.scheduled_at
     await db.rollback()
 
-    description_ready = consultation_description_ready(consultation)
-    status = normalized_consultation_status(consultation.status)
     primary, next_step = consultation_primary_action(
         status=status,
         description_ready=description_ready,
-        active_document_count=len(active_documents),
+        active_document_count=active_document_count,
     )
     stage, progress_hint = consultation_progress(
         status=status,
         description_ready=description_ready,
-        active_document_count=len(active_documents),
+        active_document_count=active_document_count,
     )
     progress_bar = consultation_progress_bar(stage)
 
@@ -294,8 +308,8 @@ async def consultation_action_center(callback: CallbackQuery, db):
     _append_unique(buttons, ("🏠 Главная", "nav_home"))
 
     document_summary = (
-        f"добавлено {len(active_documents)}"
-        if active_documents
+        f"добавлено {active_document_count}"
+        if active_document_count
         else "не добавлены · необязательно"
     )
     confirmation_summary = (
@@ -313,8 +327,8 @@ async def consultation_action_center(callback: CallbackQuery, db):
         "👨‍⚖ КОНСУЛЬТАЦИЯ\n\n"
         f"ПРОГРЕСС\n{progress_bar}\n{progress_hint}\n\n"
         "СЕЙЧАС\n"
-        f"{consultation_status_label(consultation.status)}\n"
-        f"Дата и время: {_format_datetime(consultation.scheduled_at)}\n\n"
+        f"{consultation_status_label(status_value)}\n"
+        f"Дата и время: {_format_datetime(scheduled_at)}\n\n"
         "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
         f"{next_step}\n\n"
         "ПОДГОТОВКА\n"
