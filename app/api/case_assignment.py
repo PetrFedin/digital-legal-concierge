@@ -6,9 +6,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.case_assignment_repair import router as case_assignment_repair_router
 from app.api.m1_internal_payment_recovery import router as m1_internal_payment_recovery_router
 from app.api.m2_payment_reservation_repair import router as m2_payment_reservation_repair_router
-from app.api.refund_resolution_guard import router as refund_resolution_guard_router
-from app.api.staff_ui_guards import router as staff_ui_guards_router
-from app.api.workdesk_integrity_guard import router as workdesk_integrity_guard_router
 from app.config import settings
 from app.db.session import get_db
 from app.domain.cases.assignment_service import CaseAssignmentService
@@ -16,17 +13,13 @@ from app.security.access_control import ROLE_ADMIN, ROLE_SUPERADMIN
 from app.security.document_access import resolve_document_actor
 
 
-# Keep an unprefixed composite router because it is mounted before payment-review
-# and refund/SLA routers in app.main. The assignment subrouter preserves all
-# historical /admin/case-assignment URLs while the early staff guards own their
-# exact canonical UI and recovery URLs.
+# Assignment owns assignment and the still-local recovery endpoints only. Staff
+# UI guards, refunds and Workdesk integrity have canonical/product owners and
+# must not be re-mounted here merely to win FastAPI include order.
 router = APIRouter(tags=["admin", "case-assignment"])
 assignment_router = APIRouter(prefix="/admin/case-assignment")
-router.include_router(staff_ui_guards_router)
-router.include_router(workdesk_integrity_guard_router)
 router.include_router(m1_internal_payment_recovery_router)
 router.include_router(m2_payment_reservation_repair_router)
-router.include_router(refund_resolution_guard_router)
 router.include_router(case_assignment_repair_router)
 
 
@@ -97,6 +90,16 @@ async def assign_case(
             allow_overload=allow_overload,
             **assignment_kwargs,
         )
+        response = {
+            "ok": True,
+            "case_id": int(case.id),
+            "assigned_lawyer_id": (
+                int(case.assigned_lawyer_id)
+                if case.assigned_lawyer_id is not None
+                else None
+            ),
+            "actor_id": int(actor.account_id),
+        }
         await db.commit()
     except LookupError as error:
         await db.rollback()
@@ -108,12 +111,7 @@ async def assign_case(
         await db.rollback()
         raise
 
-    return {
-        "ok": True,
-        "case_id": case.id,
-        "assigned_lawyer_id": case.assigned_lawyer_id,
-        "actor_id": int(actor.account_id),
-    }
+    return response
 
 
 @assignment_router.post("/cases/{case_id}/unassign")
@@ -134,6 +132,16 @@ async def unassign_case(
             actor_id=int(actor.account_id),
             comment=comment,
         )
+        response = {
+            "ok": True,
+            "case_id": int(case.id),
+            "assigned_lawyer_id": (
+                int(case.assigned_lawyer_id)
+                if case.assigned_lawyer_id is not None
+                else None
+            ),
+            "actor_id": int(actor.account_id),
+        }
         await db.commit()
     except LookupError as error:
         await db.rollback()
@@ -145,12 +153,7 @@ async def unassign_case(
         await db.rollback()
         raise
 
-    return {
-        "ok": True,
-        "case_id": case.id,
-        "assigned_lawyer_id": case.assigned_lawyer_id,
-        "actor_id": int(actor.account_id),
-    }
+    return response
 
 
 router.include_router(assignment_router)
