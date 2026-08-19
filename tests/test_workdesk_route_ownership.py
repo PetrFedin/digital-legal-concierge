@@ -14,13 +14,13 @@ from app.api.workdesk import (
     workdesk_case_sla,
 )
 from app.api.workdesk_integrity_guard import workdesk_integrity_guard
-from app.api.workdesk_runtime_ui import workdesk_runtime_ui
-from app.api.workdesk_timeline import workdesk_case_timeline
-from app.api.workdesk_ui_guard import (
+from app.api.workdesk_projections import (
     guarded_active_work_queue,
     guarded_workdesk_attention,
     guarded_workdesk_case_action,
 )
+from app.api.workdesk_runtime_ui import workdesk_runtime_ui
+from app.api.workdesk_timeline import workdesk_case_timeline
 from app.main import create_app
 
 
