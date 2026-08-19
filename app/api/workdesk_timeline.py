@@ -207,16 +207,12 @@ from app.api import technical_case_recovery as technical_case_recovery  # noqa: 
 from app.api.m1_internal_payment_recovery import (  # noqa: E402
     router as m1_internal_payment_recovery_router,
 )
-from app.api.workdesk_integrity import (  # noqa: E402
-    inject_workdesk_integrity,
-    router as workdesk_integrity_router,
-)
+from app.api.workdesk_integrity import inject_workdesk_integrity  # noqa: E402
 
 technical_case_recovery.WORKDESK_HTML = inject_workdesk_integrity(
     technical_case_recovery.WORKDESK_HTML
 )
-# The hardened integrity endpoint is mounted earlier by initial_setup_wizard.
-# Keep only M1 proof-bound recovery here, before the legacy workdesk routes.
+# Workdesk integrity has one public owner in workdesk_integrity_product. This
+# module keeps only the HTML projection helper plus recovery/timeline routes.
 router.include_router(m1_internal_payment_recovery_router)
-router.include_router(workdesk_integrity_router)
 router.include_router(technical_case_recovery.router)
