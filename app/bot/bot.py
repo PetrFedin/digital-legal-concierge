@@ -15,6 +15,7 @@ from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.types import BotCommand, BotCommandScopeDefault, CallbackQuery, Message
 
 from app.bot.calculator_draft import CalculatorDraftNavigationMiddleware
+from app.bot.client_activity import record_client_activity
 from app.bot.client_message_provenance import ClientMessageProvenanceMiddleware
 from app.bot.client_wording_patch import install_client_wording
 from app.bot.consultation_booking_provenance import ConsultationBookingProvenanceMiddleware
@@ -81,9 +82,16 @@ class PollingExitedError(RuntimeError):
 
 class DbMiddleware:
     async def __call__(self, handler, event, data):
-        async with AsyncSessionLocal() as db:
-            data["db"] = db
-            return await handler(event, data)
+        try:
+            async with AsyncSessionLocal() as db:
+                data["db"] = db
+                return await handler(event, data)
+        finally:
+            # Activity is deliberately written in its own short transaction after
+            # the handler DB session closes. It therefore cannot accidentally
+            # commit unfinished legal/payment state and survives read-only
+            # handler rollbacks used by presentation screens.
+            await record_client_activity(event)
 
 
 class FloodControlMiddleware:
