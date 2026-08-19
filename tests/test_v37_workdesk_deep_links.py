@@ -28,7 +28,7 @@ def test_workdesk_open_and_close_keep_url_in_sync():
 def test_workdesk_ui_and_action_shells_are_server_side_admin_guarded():
     runtime_ui = read("app/api/workdesk_runtime_ui.py")
     product = read("app/api/workdesk_product.py")
-    guard_helpers = read("app/api/workdesk_ui_guard.py")
+    projections = read("app/api/workdesk_projections.py")
 
     assert "async def workdesk_runtime_ui(" in runtime_ui
     assert "resolve_document_actor" in runtime_ui
@@ -38,7 +38,8 @@ def test_workdesk_ui_and_action_shells_are_server_side_admin_guarded():
     assert '"/admin/workdesk/ui"' in product
     assert '"/admin/workdesk/cases/{case_id}/action/{task}"' in product
     assert "guarded_workdesk_case_action" in product
-    assert "resolve_document_actor" in guard_helpers
+    assert "resolve_document_actor" in projections
+    assert "async def guarded_workdesk_case_action(" in projections
 
 
 def test_workdesk_has_product_owner_not_guard_precedence():
