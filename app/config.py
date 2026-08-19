@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     run_bot: bool = False
     run_scheduler: bool = False
 
+    # Client/staff presentation. Persisted datetimes stay in UTC; this setting is
+    # the single outward-facing business timezone for Telegram, staff UI and
+    # notifications unless a future approved scope introduces per-user zones.
+    business_timezone: str = "Europe/Moscow"
+    business_timezone_label: str = "МСК"
+
     # Container/bootstrap policy. Production defaults are supplied by
     # .env.production.example; local development may opt into demo data.
     bootstrap_admin: bool = True
