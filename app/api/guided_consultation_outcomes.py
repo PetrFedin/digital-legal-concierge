@@ -13,7 +13,6 @@ from app.api.consultation_outcomes import (
     actor_id_from_token,
     list_outcome_queue,
     require_admin,
-    router as canonical_outcomes_router,
 )
 from app.config import settings
 from app.db.session import get_db
@@ -31,40 +30,13 @@ from app.models.user import User
 from app.security.access_control import ROLE_ADMIN, ROLE_SUPERADMIN
 from app.security.document_access import DocumentAccessError, resolve_document_actor
 
+# Compatibility implementation router. The application no longer relies on
+# importing this module to mutate another router. Runtime ownership is assembled
+# explicitly by consultation_outcomes_product.router.
 router = APIRouter(
     prefix="/admin/consultation-outcomes",
     tags=["guided-consultation-outcomes"],
 )
-
-
-def _retire_canonical_queue_route() -> None:
-    """Retire the old public queue route before application assembly.
-
-    v37 extends the same business queue with CLIENT_NO_SHOW resolution. Keeping
-    both GET handlers and relying on include order made security/product
-    behaviour order-dependent. Until the compatibility module is folded into
-    the canonical file completely, remove the superseded route deterministically
-    and fail closed if the expected route contract changes.
-    """
-
-    target_path = "/admin/consultation-outcomes"
-    matches = [
-        route
-        for route in canonical_outcomes_router.routes
-        if getattr(route, "path", None) == target_path
-        and "GET" in set(getattr(route, "methods", set()) or set())
-    ]
-    if len(matches) != 1:
-        raise RuntimeError(
-            "Consultation outcomes canonical queue route contract changed"
-        )
-    target = matches[0]
-    canonical_outcomes_router.routes[:] = [
-        route for route in canonical_outcomes_router.routes if route is not target
-    ]
-
-
-_retire_canonical_queue_route()
 
 
 async def _client_no_show_rows(db: AsyncSession) -> list[dict[str, object]]:
@@ -278,3 +250,13 @@ async def guided_consultation_outcomes_ui(
     if actor.role not in {ROLE_ADMIN, ROLE_SUPERADMIN}:
         raise HTTPException(status_code=403, detail="Доступ только для администратора")
     return HTMLResponse(_inject_client_no_show_ui(OUTCOMES_HTML))
+
+
+__all__ = [
+    "_client_no_show_rows",
+    "_inject_client_no_show_ui",
+    "close_after_client_no_show",
+    "guided_outcome_queue",
+    "rebook_after_client_no_show",
+    "router",
+]
