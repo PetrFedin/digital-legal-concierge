@@ -51,13 +51,17 @@ def test_client_wording_uses_real_document_review_boundary_and_explicit_payments
     assert "Оплатить финальный процент" in source
 
 
-def test_legacy_operator_and_admin_cabinet_are_shadowed_by_authenticated_entrypoints():
+def test_operator_has_one_canonical_authenticated_owner_and_guard_is_compat_only():
     setup = read("app/api/initial_setup_wizard.py")
     guard = read("app/api/operator_guard.py")
+    operator = read("app/api/operator.py")
     main = read("app/main.py")
+
+    assert '@router.get("/operator"' in operator
+    assert "resolve_document_actor" in operator
+    assert '@router.get("/operator"' not in guard
+    assert "compatibility" in guard.lower()
     assert "router.include_router(operator_guard_router)" in setup
-    assert "resolve_document_actor" in guard
-    assert '@router.get("/operator")' in guard
     assert '@router.get("/admin-ui")' in setup
     assert 'RedirectResponse(url="/admin/workdesk/ui"' in setup
     assert main.index('(\"initial_setup_wizard\", initial_setup_wizard_router)') < main.index(
@@ -76,12 +80,16 @@ def test_recovery_changes_only_explicit_locked_rows():
 
 def test_lawyer_no_show_refund_leaves_no_booked_case_or_blocked_slot():
     source = read("app/domain/consultations/no_show_resolution_service.py")
+    block = source.split("async def route_lawyer_no_show_to_refund", 1)[1]
+
     assert "CaseStatus.M2_CONSULTATION_DONE" in source
-    assert "consultation.status = ConsultationStatus.CANCELLED" in source
-    assert "payment.status = PaymentStatus.REFUND_PENDING" in source
-    assert 'slot.status = "available"' in source
-    assert "_advance_refund_case" in source
-    assert ".with_for_update()" in source
+    assert "consultation.status = ConsultationStatus.CANCELLED" in block
+    assert "PaymentLifecycleService.transition(" in block
+    assert "to_status=PaymentStatus.REFUND_PENDING" in block
+    assert "payment.status = PaymentStatus.REFUND_PENDING" not in block
+    assert 'slot.status = "available"' in block
+    assert "_advance_refund_case" in block
+    assert ".with_for_update()" in block
 
 
 def test_m2_refund_closes_only_after_real_resolution_and_decline_is_retryable():
@@ -100,20 +108,26 @@ def test_m2_refund_closes_only_after_real_resolution_and_decline_is_retryable():
     assert "router.include_router(refund_resolution_guard_router)" in operator
 
 
-def test_m2_outcomes_and_legacy_resolution_are_server_guarded():
+def test_m2_outcomes_have_one_product_owner_and_legacy_resolution_stays_guarded():
     setup = read("app/api/initial_setup_wizard.py")
-    outcomes_guard = read("app/api/consultation_outcomes_ui_guard.py")
+    product = read("app/api/consultation_outcomes_product.py")
+    retired_guard = read("app/api/consultation_outcomes_ui_guard.py")
     legacy = read("app/api/legacy_consultation_outcome_guard.py")
     service = read("app/domain/consultations/legacy_outcome_resolution_service.py")
-    assert "resolve_document_actor" in outcomes_guard
-    assert '@router.get("/admin/consultation-outcomes/ui"' in outcomes_guard
-    assert "router.include_router(legacy_consultation_outcome_router)" in outcomes_guard
+
+    assert 'prefix="/admin/consultation-outcomes"' in product
+    assert '@router.get("/ui"' in product
+    assert "resolve_document_actor" in product
+    assert "legacy_outcome_queue" in product
+    assert "resolve_legacy_outcome" in product
+    assert "@router." not in retired_guard
+    assert "router.add_api_route" not in retired_guard
+    assert "consultation_outcomes_ui_guard_router" not in setup
     assert '@router.get("/admin/consultation-outcomes/legacy")' in legacy
     assert '@router.post("/admin/consultation-outcomes/{consultation_id}/legacy/resolve")' in legacy
     assert 'VALID_DECISIONS = frozenset({"close", "to_m1", "follow_up"})' in service
     assert 'current_decision != "other"' in service
     assert "CONSULTATION_LEGACY_OUTCOME_RESOLVED" in service
-    assert "router.include_router(consultation_outcomes_ui_guard_router)" in setup
 
 
 def test_public_health_ready_and_launch_check_do_not_expose_infrastructure():
@@ -196,7 +210,9 @@ def test_expired_m2_hold_expires_exact_old_payment_and_writes_history():
     assert "PaymentCode.M2_CONSULTATION_PAYMENT" in release
     assert "PaymentStatus.PENDING" in release
     assert "PaymentStatus.WAITING_CONFIRMATION" in release
-    assert "payment.status = PaymentStatus.EXPIRED" in release
+    assert "PaymentLifecycleService.transition(" in release
+    assert "to_status=PaymentStatus.EXPIRED" in release
+    assert "payment.status = PaymentStatus.EXPIRED" not in release
     assert 'action="CONSULTATION_PAYMENT_LINK_EXPIRED"' in release
     assert 'action="CONSULTATION_SLOT_HOLD_EXPIRED"' in release
     assert "CaseStatus.M2_SLOT_PENDING" in release
