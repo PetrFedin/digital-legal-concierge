@@ -11,6 +11,7 @@ from aiogram.exceptions import (
 from aiogram.types import CallbackQuery
 from sqlalchemy import select
 
+from app.bot.case_callback_scope import bound_case_callback
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.domain.cases.client_case_scope import latest_completed_strict_m2_case_for_user
@@ -278,6 +279,8 @@ async def consultation_action_center(callback: CallbackQuery, db):
     # Snapshot every value used by the renderer before rollback. This is the
     # canonical rule for AsyncSession read views: no ORM instance crosses a
     # commit/rollback boundary unless it has already been converted to scalars.
+    case_id = int(case.id)
+    case_number = str(case.case_number)
     description_ready = consultation_description_ready(consultation)
     status_value = str(consultation.status)
     status = normalized_consultation_status(status_value)
@@ -289,6 +292,11 @@ async def consultation_action_center(callback: CallbackQuery, db):
         description_ready=description_ready,
         active_document_count=active_document_count,
     )
+    if primary[1] == "consult_pay":
+        primary = (
+            primary[0],
+            bound_case_callback("consult_pay", case_id),
+        )
     stage, progress_hint = consultation_progress(
         status=status,
         description_ready=description_ready,
@@ -324,7 +332,8 @@ async def consultation_action_center(callback: CallbackQuery, db):
 
     await _safe_edit(
         callback,
-        "👨‍⚖ КОНСУЛЬТАЦИЯ\n\n"
+        "👨‍⚖ КОНСУЛЬТАЦИЯ\n"
+        f"Обращение № {case_number}\n\n"
         f"ПРОГРЕСС\n{progress_bar}\n{progress_hint}\n\n"
         "СЕЙЧАС\n"
         f"{consultation_status_label(status_value)}\n"
