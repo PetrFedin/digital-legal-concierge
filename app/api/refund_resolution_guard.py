@@ -10,6 +10,7 @@ from app.config import settings
 from app.db.session import get_db
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
+from app.domain.payments.payment_lifecycle import PaymentLifecycleService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.payments.refund_service import ConsultationRefundService
 from app.domain.statuses.case_statuses import CaseStatus
@@ -126,6 +127,13 @@ async def resolve_refund_guard(
                 decision=decision,
                 comment=comment,
             )
+        response = {
+            "ok": True,
+            "payment_id": int(payment.id),
+            "case_id": int(payment.case_id),
+            "status": str(payment.status),
+            "case_status": str(case.status),
+        }
         await db.commit()
     except LookupError as error:
         await db.rollback()
@@ -136,13 +144,7 @@ async def resolve_refund_guard(
     except Exception:
         await db.rollback()
         raise
-    return {
-        "ok": True,
-        "payment_id": payment.id,
-        "case_id": payment.case_id,
-        "status": payment.status,
-        "case_status": str(case.status),
-    }
+    return response
 
 
 @router.get("/admin/refunds/declined")
@@ -225,21 +227,24 @@ async def retry_declined_refund(
         if case is None:
             raise LookupError("Дело не найдено")
         if payment.status == PaymentStatus.REFUND_PENDING:
-            await db.commit()
-            return {
+            response = {
                 "ok": True,
                 "payment_id": int(payment.id),
                 "case_id": int(case.id),
                 "status": str(payment.status),
                 "case_status": str(case.status),
             }
+            await db.commit()
+            return response
         if payment.status != PaymentStatus.REFUND_DECLINED:
             raise ValueError(
                 "Повторно открыть можно только возврат со статусом REFUND_DECLINED"
             )
 
-        old_status = str(payment.status)
-        payment.status = PaymentStatus.REFUND_PENDING
+        transition = PaymentLifecycleService.transition(
+            payment,
+            to_status=PaymentStatus.REFUND_PENDING,
+        )
         if str(case.status) == CaseStatus.M2_CONSULTATION_DONE.value:
             case.next_action = (
                 "Повторный возврат открыт: выполнить фактическую операцию у провайдера и зафиксировать результат"
@@ -255,14 +260,24 @@ async def retry_declined_refund(
             actor_id=int(actor.account_id),
             case_id=case.id,
             action=action,
-            old_value={"payment_id": payment.id, "status": old_status},
+            old_value={
+                "payment_id": payment.id,
+                "status": transition.old_status.value,
+            },
             new_value={
                 "payment_id": payment.id,
-                "status": str(payment.status),
+                "status": transition.new_status.value,
                 "case_status_preserved": str(case.status),
             },
             comment=comment,
         )
+        response = {
+            "ok": True,
+            "payment_id": int(payment.id),
+            "case_id": int(case.id),
+            "status": transition.new_status.value,
+            "case_status": str(case.status),
+        }
         await db.commit()
     except LookupError as error:
         await db.rollback()
@@ -273,13 +288,7 @@ async def retry_declined_refund(
     except Exception:
         await db.rollback()
         raise
-    return {
-        "ok": True,
-        "payment_id": int(payment.id),
-        "case_id": int(case.id),
-        "status": str(payment.status),
-        "case_status": str(case.status),
-    }
+    return response
 
 
 _REFUND_RETRY_UI_PATCH = r"""
