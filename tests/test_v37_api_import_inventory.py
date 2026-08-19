@@ -34,7 +34,7 @@ def test_every_app_api_module_imported_by_main_physically_exists():
     assert sorted(missing) == []
 
 
-def test_early_guard_routers_precede_historical_surfaces():
+def test_remaining_compatibility_guards_precede_only_their_historical_surfaces():
     source = MAIN.read_text(encoding="utf-8")
     required_order = [
         ("initial_setup_wizard", "admin"),
@@ -43,12 +43,20 @@ def test_early_guard_routers_precede_historical_surfaces():
         ("case_assignment", "sla_center"),
         ("contract_workspace_ui", "lawyer"),
         ("contract_workspace_ui", "lawyer_workspace"),
-        ("guided_consultation_outcomes", "consultation_outcomes"),
         ("guided_message_center", "message_center"),
         ("guided_refund_center", "refund_center"),
     ]
     for early, legacy in required_order:
         assert source.index(f'(\"{early}\",') < source.index(f'(\"{legacy}\",')
+
+
+def test_consultation_outcomes_no_longer_depend_on_router_include_order():
+    source = MAIN.read_text(encoding="utf-8")
+
+    assert "from app.api.consultation_outcomes_product import router as consultation_outcomes_product_router" in source
+    assert '("consultation_outcomes_product", consultation_outcomes_product_router)' in source
+    assert "guided_consultation_outcomes_router" not in source
+    assert "consultation_outcomes_ui_guard_router" not in source
 
 
 def test_public_app_level_health_ready_are_shadowed_by_early_minimal_routes():
