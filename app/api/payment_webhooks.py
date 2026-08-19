@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import html
 import json
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 import httpx
@@ -74,6 +75,26 @@ def decimal_amount(value) -> Decimal:
         raise HTTPException(409, "Некорректная сумма в ответе провайдера") from error
 
 
+def parse_provider_datetime(value: object) -> datetime | None:
+    """Parse an external ISO-8601 fact time without trusting host timezone.
+
+    Missing or malformed provider timestamps are not invented. Callers pass
+    ``None`` to the lifecycle service, which then records our UTC processing
+    time as the explicit fallback business timestamp.
+    """
+
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def validate_verified_yookassa_payment(payment: Payment, verified: dict) -> None:
     if verified.get("id") != payment.provider_payment_id:
         raise HTTPException(409, "Идентификатор платежа провайдера не совпадает")
@@ -131,6 +152,7 @@ def yookassa_payload_summary(payload: dict, verified: dict | None = None) -> dic
             "paid": bool(verified.get("paid")),
             "amount": str(verified_amount.get("value") or "")[:32],
             "currency": str(verified_amount.get("currency") or "")[:10],
+            "captured_at": str(verified.get("captured_at") or "")[:64],
         }
     return result
 
@@ -296,14 +318,15 @@ async def fake_payment_webhook(
             status="PROCESSED",
             response_code=200,
         )
-        await db.commit()
-        return {
+        response = {
             "ok": True,
-            "payment_id": payment.id,
-            "status": payment.status,
-            "case_status": case.status,
+            "payment_id": int(payment.id),
+            "status": str(payment.status),
+            "case_status": str(case.status),
             "duplicate": False,
         }
+        await db.commit()
+        return response
     except HTTPException as error:
         await mark_event_failure(
             db,
@@ -359,12 +382,12 @@ async def fake_payment_success(payment_id: int, db: AsyncSession = Depends(get_d
         case=case,
         provider_payload={"source": "fake_payment_page"},
     )
-    await db.commit()
     status_text = (
         "Оплата подтверждена. Вернитесь в Telegram-бот."
-        if payment.status == "PAID"
+        if str(payment.status) == "PAID"
         else "Оплата получена и передана администратору на проверку."
     )
+    await db.commit()
     return HTMLResponse(
         "<!doctype html><html lang='ru'><meta charset='utf-8'>"
         "<body style='font-family:Arial;max-width:640px;margin:40px auto'>"
@@ -476,6 +499,7 @@ async def yookassa_payment_webhook(
                 payment=payment,
                 case=case,
                 provider_payload=summary,
+                occurred_at=parse_provider_datetime(verified.get("captured_at")),
             )
             ledger_status = "PROCESSED"
         elif verified_status == "canceled":
@@ -494,21 +518,23 @@ async def yookassa_payment_webhook(
             status=ledger_status,
             response_code=200,
         )
-        await db.commit()
         if ledger_status == "IGNORED":
-            return {
+            response = {
                 "ok": True,
                 "ignored": True,
-                "status": verified_status,
+                "status": str(verified_status or ""),
                 "duplicate": False,
             }
-        return {
-            "ok": True,
-            "payment_id": payment.id,
-            "payment_status": payment.status,
-            "case_status": case.status,
-            "duplicate": False,
-        }
+        else:
+            response = {
+                "ok": True,
+                "payment_id": int(payment.id),
+                "payment_status": str(payment.status),
+                "case_status": str(case.status),
+                "duplicate": False,
+            }
+        await db.commit()
+        return response
     except HTTPException as error:
         terminal = error.status_code in {400, 401, 403, 409}
         await mark_event_failure(
