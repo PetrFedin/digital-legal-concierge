@@ -5,7 +5,6 @@ from collections import Counter
 from app.api.assignment_queue import (
     actionable_unassigned_queue,
     consultation_queue_with_slot_lawyer,
-    guided_workdesk_ui,
     workdesk_case_responsibility,
 )
 from app.api.workdesk import (
@@ -15,6 +14,7 @@ from app.api.workdesk import (
     workdesk_case_sla,
 )
 from app.api.workdesk_integrity_guard import workdesk_integrity_guard
+from app.api.workdesk_runtime_ui import workdesk_runtime_ui
 from app.api.workdesk_timeline import workdesk_case_timeline
 from app.api.workdesk_ui_guard import (
     guarded_active_work_queue,
@@ -56,7 +56,7 @@ def test_workdesk_runtime_has_no_duplicate_method_path_pairs():
 
 
 def test_workdesk_ui_and_daily_actions_have_explicit_product_owners():
-    assert _endpoint("/admin/workdesk/ui") is guided_workdesk_ui
+    assert _endpoint("/admin/workdesk/ui") is workdesk_runtime_ui
     assert _endpoint("/admin/workdesk/attention") is guarded_workdesk_attention
     assert _endpoint("/admin/work-queues/active") is guarded_active_work_queue
     assert (
