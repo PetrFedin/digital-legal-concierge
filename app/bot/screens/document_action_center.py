@@ -293,7 +293,8 @@ async def _render_home(callback: CallbackQuery, state: FSMContext, db) -> None:
 
     await _safe_present(
         callback,
-        "📄 ДОКУМЕНТЫ\n\n"
+        "📄 ДОКУМЕНТЫ\n"
+        f"Обращение № {case.case_number}\n\n"
         "СЕЙЧАС\n"
         f"{summary}\n\n"
         "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
@@ -360,7 +361,8 @@ async def exact_replacement_document_list(
     )
     await _safe_present(
         callback,
-        "📋 АКТУАЛЬНЫЕ ДОКУМЕНТЫ\n\n"
+        "📋 АКТУАЛЬНЫЕ ДОКУМЕНТЫ\n"
+        f"Обращение № {case.case_number}\n\n"
         "СЕЙЧАС\nЮрист запросил исправление одного или нескольких файлов.\n\n"
         "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
         "Выберите конкретный документ ниже. Каждая кнопка привязана к точному document_id и версии; устаревший запрос будет заблокирован перед загрузкой файла.\n\n"
@@ -479,7 +481,8 @@ async def direct_document_reupload(
     comment = _short(document.lawyer_comment or "Загрузите исправленную версию файла.")
     await _safe_present(
         callback,
-        "🔁 НОВАЯ ВЕРСИЯ ДОКУМЕНТА\n\n"
+        "🔁 НОВАЯ ВЕРСИЯ ДОКУМЕНТА\n"
+        f"Обращение № {case.case_number}\n\n"
         "СЕЙЧАС\n"
         f"Юрист попросил заменить «{document.title}», версия {document.version}.\n"
         f"Что исправить: {comment}\n\n"
