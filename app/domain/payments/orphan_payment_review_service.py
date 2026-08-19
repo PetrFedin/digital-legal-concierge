@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.notifications.notification_engine import NotificationEngine
+from app.domain.payments.payment_lifecycle import PaymentLifecycleService
 from app.domain.payments.payment_review_service import PaymentReviewService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.payment_statuses import PaymentStatus
@@ -99,8 +100,10 @@ class OrphanPaymentReviewService:
                 "чтобы не обойти проверку брони."
             )
 
-        old_status = payment.status
-        payment.status = PaymentStatus.REFUND_PENDING
+        transition = PaymentLifecycleService.transition(
+            payment,
+            to_status=PaymentStatus.REFUND_PENDING,
+        )
         await add_case_history_event(
             self.db,
             actor_type="admin",
@@ -109,14 +112,14 @@ class OrphanPaymentReviewService:
             action="CONSULTATION_PAYMENT_REVIEW_RESOLVED",
             old_value={
                 "payment_id": payment.id,
-                "payment_status": old_status,
+                "payment_status": transition.old_status.value,
                 "reservation_key": payment.reservation_key,
                 "case_status": case.status,
                 "case_next_action": case.next_action,
             },
             new_value={
                 "payment_id": payment.id,
-                "payment_status": payment.status,
+                "payment_status": transition.new_status.value,
                 "consultation_id": None,
                 "orphan_consultation_id": linked_consultation_id,
                 "orphan_slot_id": linked_slot_id,
