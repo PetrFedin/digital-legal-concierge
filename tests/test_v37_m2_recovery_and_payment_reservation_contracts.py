@@ -45,7 +45,8 @@ def test_stale_current_hold_returns_m2_to_slot_selection_without_resurrecting_bo
     source = read("app/domain/payments/client_payment_reconciliation.py")
 
     expire = source.split("async def _expire", 1)[1].split("async def reconcile", 1)[0]
-    assert "payment.status = PaymentStatus.EXPIRED" in expire
+    assert "PaymentLifecycleService.transition" in expire
+    assert "to_status=PaymentStatus.EXPIRED" in expire
     assert 'slot.status = "available"' in expire
     assert "consultation.slot_id = None" in expire
     assert "consultation.lawyer_id = None" in expire
