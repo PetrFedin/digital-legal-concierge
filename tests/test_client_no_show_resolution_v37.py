@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import inspect
 
+from app.api.consultation_outcomes_product import consultation_outcomes_ui
 from app.api.guided_consultation_outcomes import (
     _CLIENT_NO_SHOW_UI_PATCH,
     _client_no_show_rows,
     close_after_client_no_show,
-    guided_consultation_outcomes_ui,
     guided_outcome_queue,
     rebook_after_client_no_show,
 )
@@ -26,9 +26,9 @@ def _first_endpoint(path: str, method: str = "GET"):
     return None
 
 
-def test_guided_client_no_show_queue_and_ui_win_route_precedence():
+def test_client_no_show_paths_have_one_product_router_owner():
     assert _first_endpoint("/admin/consultation-outcomes") is guided_outcome_queue
-    assert _first_endpoint("/admin/consultation-outcomes/ui") is guided_consultation_outcomes_ui
+    assert _first_endpoint("/admin/consultation-outcomes/ui") is consultation_outcomes_ui
     assert (
         _first_endpoint(
             "/admin/consultation-outcomes/{consultation_id}/client-no-show/rebook",
