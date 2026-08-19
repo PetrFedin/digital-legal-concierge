@@ -77,8 +77,9 @@ def test_incomplete_yookassa_create_response_fails_before_internal_waiting_state
         "async def mark_paid", 1
     )[0]
     result_call = link_block.index("result = await provider.create_payment(")
-    waiting_state = link_block.index("payment.status = PaymentStatus.WAITING_CONFIRMATION")
-    assert result_call < waiting_state
+    waiting_transition = link_block.index("to_status=PaymentStatus.WAITING_CONFIRMATION")
+    assert "PaymentLifecycleService.transition" in link_block
+    assert result_call < waiting_transition
 
 
 def test_webhook_processing_already_locks_payment_row_for_duplicate_provider_events():
