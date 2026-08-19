@@ -5,6 +5,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 
 from app.bot.calculator_draft import (
+    CALCULATOR_CASE_ID,
     draft_step_label,
     has_saved_calculator_draft,
 )
@@ -40,9 +41,12 @@ def install_active_case_recovery_actions() -> None:
 async def _show_recoverable_calculation(
     callback: CallbackQuery,
     state: FSMContext,
+    *,
+    case_id: int,
 ) -> None:
     data = await state.get_data()
-    if has_saved_calculator_draft(data):
+    draft_case_id = int(data.get(CALCULATOR_CASE_ID) or 0)
+    if has_saved_calculator_draft(data) and draft_case_id == int(case_id):
         await state.set_state(None)
         await callback.message.edit_text(
             "📝 Незавершённый расчёт восстановлен\n\n"
@@ -59,9 +63,12 @@ async def _show_recoverable_calculation(
         return
 
     # Redis/FSM data may have legitimately expired after a historical crash.
-    # Keep the same Case row and restart only the questionnaire; the result will
-    # be saved into this existing case by CalculatorService.
-    await calculator._start_fresh(callback, state)
+    # Bind the questionnaire to this exact Case before accepting any new input.
+    await calculator._start_fresh(
+        callback,
+        state,
+        case_id=int(case_id),
+    )
 
 
 @router.callback_query(lambda c: c.data == "calc_start")
@@ -79,12 +86,32 @@ async def recover_or_delegate_calc_start(
         and str(case.status) in _RECOVERABLE_CASE_STATUSES
         and str(case.route or "") != "M2"
     ):
-        await _show_recoverable_calculation(callback, state)
+        try:
+            selected = await ctx.case_service.select_case_for_user(
+                user_id=int(user.id),
+                case_id=int(case.id),
+            )
+            selected_id = int(selected.id)
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            await callback.message.edit_text(
+                "⚠️ Не удалось открыть это обращение. Повторите действие из «Моё дело».",
+                reply_markup=one(
+                    ("📁 Моё дело", "my_case_open"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+            )
+            return
+        await _show_recoverable_calculation(
+            callback,
+            state,
+            case_id=selected_id,
+        )
         return
 
-    # Preserve the current normal-path behaviour for no case, saved drafts and
-    # every later M1/M2 stage. This early router exists only to break the
-    # historical NEW/CALCULATOR_STARTED loop.
+    # No recoverable selected Case: the global calculator creates a new matter
+    # using source-operation idempotency. Existing M1/M2 matters stay intact.
     await calculator.calc_start(callback, state, db)
 
 
