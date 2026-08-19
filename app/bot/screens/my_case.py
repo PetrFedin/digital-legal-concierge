@@ -4,6 +4,7 @@ from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery
 
+from app.bot.case_callback_scope import bind_payment_case_action
 from app.bot.client_case_view import (
     client_action_for,
     format_updated_at,
@@ -460,7 +461,10 @@ async def next_action(callback: CallbackQuery, db):
         callback,
         f"▶️ {action.label}\n\n{action.description}",
         reply_markup=one(
-            (action.label, action.callback),
+            (
+                action.label,
+                bind_payment_case_action(action.callback, view.case_id),
+            ),
             ("↩️ Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         ),
