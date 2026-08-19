@@ -1,48 +1,65 @@
 """Single runtime owner for the existing daily Workdesk surface.
 
-Historically ``workdesk_ui_guard`` had to be mounted before ``workdesk`` so its
-hardened UI won the duplicate ``GET /admin/workdesk/ui`` route. Daily staff
-operations must not depend on FastAPI include order. This router owns the
-already-shipped Workdesk API and UI paths while reusing the current business
-handlers; no new Workdesk capability is introduced.
+The legacy ``workdesk`` and ``assignment_queue`` modules remain implementation
+libraries. Their routers are deliberately not mounted by application assembly.
+This module registers the existing Workdesk read/action screens exactly once and
+uses the personally-authenticated guided UI implementation already shipped for
+M1/M2 operations. No new Workdesk capability is introduced.
 """
 
 from fastapi import APIRouter
 
+from app.api.assignment_queue import guided_workdesk_ui
 from app.api.workdesk import (
-    case_action_history,
-    cleanup_integrity_history,
-    list_workdesk_cases,
-    update_case,
-    workdesk_filters,
+    workdesk_attention,
+    workdesk_case_action,
+    workdesk_case_consultation_outcomes,
+    workdesk_case_consultations_today,
+    workdesk_case_documents,
+    workdesk_case_sla,
 )
-from app.api.workdesk_ui_guard import protected_workdesk_ui
 
-router = APIRouter(prefix="/admin/workdesk", tags=["admin", "workdesk"])
+router = APIRouter(tags=["admin", "workdesk"])
 
-router.add_api_route("", list_workdesk_cases, methods=["GET"], name="list_workdesk_cases")
-router.add_api_route("/filters", workdesk_filters, methods=["GET"], name="workdesk_filters")
 router.add_api_route(
-    "/cases/{case_id}/action-history",
-    case_action_history,
+    "/admin/workdesk/attention",
+    workdesk_attention,
     methods=["GET"],
-    name="case_action_history",
+    name="workdesk_attention",
 )
 router.add_api_route(
-    "/cases/{case_id}",
-    update_case,
-    methods=["PATCH"],
-    name="update_case",
-)
-router.add_api_route(
-    "/cases/{case_id}/cleanup-integrity-history",
-    cleanup_integrity_history,
+    "/admin/workdesk/cases/{case_id}/documents",
+    workdesk_case_documents,
     methods=["GET"],
-    name="cleanup_integrity_history",
+    name="workdesk_case_documents",
 )
 router.add_api_route(
-    "/ui",
-    protected_workdesk_ui,
+    "/admin/workdesk/cases/{case_id}/consultation-outcomes",
+    workdesk_case_consultation_outcomes,
+    methods=["GET"],
+    name="workdesk_case_consultation_outcomes",
+)
+router.add_api_route(
+    "/admin/workdesk/cases/{case_id}/consultations-today",
+    workdesk_case_consultations_today,
+    methods=["GET"],
+    name="workdesk_case_consultations_today",
+)
+router.add_api_route(
+    "/admin/workdesk/cases/{case_id}/sla",
+    workdesk_case_sla,
+    methods=["GET"],
+    name="workdesk_case_sla",
+)
+router.add_api_route(
+    "/admin/workdesk/cases/{case_id}/action/{task}",
+    workdesk_case_action,
+    methods=["GET"],
+    name="workdesk_case_action",
+)
+router.add_api_route(
+    "/admin/workdesk/ui",
+    guided_workdesk_ui,
     methods=["GET"],
     name="workdesk_ui",
 )
