@@ -7,6 +7,7 @@ from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
 from app.domain.consultations.slot_service import SlotService, SlotUnavailableError
 from app.domain.notifications.notification_engine import NotificationEngine
+from app.domain.payments.payment_lifecycle import PaymentLifecycleService
 from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
@@ -258,7 +259,7 @@ class PaymentReviewService:
         if origin_status in INACTIVE_REVIEW_ORIGIN_STATUSES:
             raise PaymentReviewResolutionError(
                 "Деньги поступили по ранее закрытой или истёкшей ссылке. "
-                "Такой платёж нельзя привязать к уже подтверждённой записи; "
+                "Такой платёж нельзя привязать к уже подтверждённой записью; "
                 "используйте контролируемый возврат."
             )
         if consultation.status != ConsultationStatus.BOOKED:
@@ -285,7 +286,10 @@ class PaymentReviewService:
             "reservation_key": payment.reservation_key,
             "review_origin_status": origin_status,
         }
-        payment.status = PaymentStatus.PAID
+        PaymentLifecycleService.transition(
+            payment,
+            to_status=PaymentStatus.PAID,
+        )
         payment.reservation_key = PaymentService.consultation_reservation_key(
             consultation.id,
             slot.id,
@@ -406,7 +410,10 @@ class PaymentReviewService:
         consultation.lawyer_id = slot.lawyer_id
         consultation.scheduled_at = slot.starts_at
         consultation.status = ConsultationStatus.BOOKED
-        payment.status = PaymentStatus.PAID
+        PaymentLifecycleService.transition(
+            payment,
+            to_status=PaymentStatus.PAID,
+        )
         payment.reservation_key = PaymentService.consultation_reservation_key(
             consultation.id,
             slot.id,
@@ -513,7 +520,10 @@ class PaymentReviewService:
             if not case_context_preserved:
                 case.next_action = "Обработать возврат полученного платежа"
 
-        payment.status = PaymentStatus.REFUND_PENDING
+        PaymentLifecycleService.transition(
+            payment,
+            to_status=PaymentStatus.REFUND_PENDING,
+        )
 
         await self._record_resolution(
             payment=payment,
