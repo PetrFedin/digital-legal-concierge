@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from aiogram import Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
 
-from app.bot.client_case_view import load_client_case_view
+from app.bot.client_case_view import load_client_case_view, route_label
 from app.bot.context import BotContextService
 from app.bot.keyboards import main_menu, one
 from app.bot.screens import common, document_action_center, messages, my_case
+from app.domain.cases.case_timeline import get_client_visible_status
 from app.domain.cases.client_case_scope import latest_completed_case_for_user
 from app.domain.consultations.consultation_intake import consultation_description_ready
 from app.domain.consultations.consultation_service import ConsultationService
@@ -19,22 +20,99 @@ from app.domain.statuses.consultation_statuses import ConsultationStatus
 router = Router()
 
 
-async def _active_message_case(message: Message, db):
+async def _message_context(message: Message, db):
     ctx = BotContextService(db)
     user = await ctx.get_user_from_message(message)
     case = await ctx.case_service.get_active_case_for_user(user.id)
+    return ctx, user, case
+
+
+async def _active_message_case(message: Message, db):
+    _ctx, user, case = await _message_context(message, db)
     return user, case
+
+
+def _matter_label(case) -> str:
+    status = get_client_visible_status(case.status)
+    service = route_label(case.route)
+    return f"{case.case_number} · {service} · {status}"
+
+
+async def _matter_selector_text(user, db) -> tuple[str, list[tuple[str, str]]]:
+    ctx = BotContextService(db)
+    active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
+    buttons: list[tuple[str, str]] = []
+    lines = [
+        "📁 МОИ ОБРАЩЕНИЯ",
+        "",
+        "У вас несколько активных обращений. Выберите нужное — документы, переписка, оплаты и действия дальше будут относиться именно к нему.",
+        "",
+    ]
+    for item in active_cases:
+        lines.append(f"• {_matter_label(item)}")
+        buttons.append(
+            (
+                f"📁 {item.case_number} · {route_label(item.route)}",
+                f"my_case_select:v2:{int(item.id)}",
+            )
+        )
+    buttons.extend(
+        [
+            ("🧮 Новый расчёт / новое обращение", "calc_start"),
+            ("🏠 Главная", "nav_home"),
+        ]
+    )
+    return "\n".join(lines), buttons
+
+
+@router.message(lambda m: m.text == "🧮 Рассчитать неустойку")
+async def direct_reply_calculator(message: Message, state: FSMContext, db):
+    """Calculator is always available and creates a separate matter explicitly."""
+
+    if await common._guard_message_draft(message, state):
+        return
+    await state.clear()
+    ctx, user, _selected = await _message_context(message, db)
+    active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
+    await db.commit()
+    if active_cases:
+        await message.answer(
+            "🧮 НОВЫЙ РАСЧЁТ\n\n"
+            "Расчёт доступен независимо от уже открытых дел. Если вы продолжите, будет создано отдельное обращение; существующие M1/M2 дела, документы и статусы не изменятся.\n\n"
+            f"Сейчас активных обращений: {len(active_cases)}.",
+            reply_markup=one(
+                ("▶️ Начать новый расчёт", "calc_start"),
+                ("📁 Выбрать текущее дело", "my_cases_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+    await message.answer(
+        "🧮 ПРЕДВАРИТЕЛЬНЫЙ РАСЧЁТ\n\n"
+        "Ответьте на несколько вопросов о ДДУ. Расчёт предварительный и не является юридическим заключением.",
+        reply_markup=one(
+            ("▶️ Начать расчёт", "calc_start"),
+            ("🏠 Главная", "nav_home"),
+        ),
+    )
 
 
 @router.message(lambda m: m.text in {"📁 Мое дело", "📁 Моё дело"})
 async def direct_reply_my_case(message: Message, state: FSMContext, db):
-    """Open the client cabinet immediately from the persistent reply keyboard."""
+    """Open one Case directly or show a deterministic selector for several."""
 
     if await common._guard_message_draft(message, state):
         return
     await state.clear()
 
-    _user, case = await _active_message_case(message, db)
+    ctx, user, case = await _message_context(message, db)
+    active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
+    if len(active_cases) > 1:
+        text, buttons = await _matter_selector_text(user, db)
+        await db.commit()
+        await message.answer(text, reply_markup=one(*buttons))
+        return
+
     text, case_exists, completed_case, primary_action = await common._home_text(
         db,
         message,
@@ -58,6 +136,51 @@ async def direct_reply_my_case(message: Message, state: FSMContext, db):
     await message.answer(text, reply_markup=markup)
 
 
+@router.callback_query(lambda c: c.data == "my_cases_open")
+async def open_case_selector(callback: CallbackQuery, db):
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
+    if len(active_cases) <= 1:
+        await db.commit()
+        await my_case._render_case(callback, db)
+        return
+    text, buttons = await _matter_selector_text(user, db)
+    await db.commit()
+    await callback.message.edit_text(text, reply_markup=one(*buttons))
+
+
+@router.callback_query(
+    lambda c: bool(c.data) and c.data.startswith("my_case_select:v2:")
+)
+async def select_client_case(callback: CallbackQuery, db):
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    try:
+        case_id = int(str(callback.data).split(":", 2)[2])
+        selected = await ctx.case_service.select_case_for_user(
+            user_id=int(user.id),
+            case_id=case_id,
+        )
+        case_number = str(selected.case_number)
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        await callback.message.edit_text(
+            "Не удалось выбрать это обращение. Оно могло быть закрыто, удалено или относиться к другой учётной записи.",
+            reply_markup=one(
+                ("📁 Обновить список обращений", "my_cases_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+    await my_case._render_case(
+        callback,
+        db,
+        notice=f"Выбрано обращение {case_number}.",
+    )
+
+
 @router.message(lambda m: m.text == "📄 Документы")
 async def direct_reply_documents(message: Message, state: FSMContext, db):
     """Open the real document action center without an extra callback tap."""
@@ -70,8 +193,7 @@ async def direct_reply_documents(message: Message, state: FSMContext, db):
         await db.commit()
         await message.answer(
             "📄 ДОКУМЕНТЫ\n\n"
-            "Активное дело уже завершено или отсутствует. Старая кнопка нижнего меню "
-            "не создаёт новое обращение и не загружает файл в другой кейс.",
+            "Выбранного активного обращения сейчас нет. Файл не будет автоматически привязан к другому делу.",
             reply_markup=one(
                 ("📁 Моё дело", "my_case_open"),
                 ("🧮 Новое обращение", "calc_start"),
@@ -80,6 +202,7 @@ async def direct_reply_documents(message: Message, state: FSMContext, db):
         )
         return
 
+    case_number = str(case.case_number)
     all_documents = await DocumentService(db).list_case_documents(case.id)
     documents = document_action_center._active(all_documents)
     archived_count = len(all_documents) - len(documents)
@@ -123,7 +246,8 @@ async def direct_reply_documents(message: Message, state: FSMContext, db):
 
     await db.commit()
     await message.answer(
-        "📄 ДОКУМЕНТЫ\n\n"
+        "📄 ДОКУМЕНТЫ\n"
+        f"Обращение № {case_number}\n\n"
         "СЕЙЧАС\n"
         f"{summary}\n\n"
         "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
@@ -136,7 +260,7 @@ async def direct_reply_documents(message: Message, state: FSMContext, db):
 
 @router.message(lambda m: m.text == "💬 Переписка")
 async def direct_reply_message_history(message: Message, state: FSMContext, db):
-    """Show the first real dialog page and mark only displayed team replies read."""
+    """Compatibility for historical reply keyboards; canonical menu uses Contact Lawyer."""
 
     if await common._guard_message_draft(message, state):
         return
@@ -174,7 +298,6 @@ async def direct_reply_message_history(message: Message, state: FSMContext, db):
             for item in page_messages
             if item.sender_type == "lawyer"
         )
-        # Do not touch the ORM Case after rollback: AsyncSession may expire it.
         await db.rollback()
     except Exception:
         await db.rollback()
@@ -209,7 +332,7 @@ async def direct_reply_message_history(message: Message, state: FSMContext, db):
 
 @router.message(lambda m: m.text == "✉️ Новый вопрос")
 async def direct_reply_new_question(message: Message, state: FSMContext, db):
-    """Start a case-bound draft immediately when the active reply menu asks for it."""
+    """Compatibility for historical keyboards; starts a draft for selected Case."""
 
     if await common._guard_message_draft(message, state):
         return
@@ -231,8 +354,8 @@ async def direct_reply_new_question(message: Message, state: FSMContext, db):
             )
             return
         await message.answer(
-            "✉️ Активного дела сейчас нет.\n\n"
-            "Новый вопрос не создаст обращение автоматически. Подтвердите новый запрос отдельным действием.",
+            "✉️ Выбранного активного дела сейчас нет.\n\n"
+            "Новый вопрос не будет автоматически записан в другое обращение. Подтвердите новый запрос отдельным действием.",
             reply_markup=one(
                 ("🆕 Создать новое обращение", "message_new_request"),
                 ("🧮 Рассчитать неустойку", "calc_start"),
@@ -258,21 +381,29 @@ async def direct_reply_new_question(message: Message, state: FSMContext, db):
 
 @router.message(lambda m: m.text == "💬 Связаться с юристом")
 async def direct_reply_contact_lawyer(message: Message, state: FSMContext, db):
-    """Open route-aware legal help directly without creating a consultation yet."""
+    """Open legal help for the explicitly selected Case, without route mixing."""
 
     if await common._guard_message_draft(message, state):
         return
     await state.clear()
-    _user, case = await _active_message_case(message, db)
+    _ctx, user, case = await _message_context(message, db)
+    active_cases = await _ctx.case_service.get_active_cases_for_user(int(user.id))
+
+    if len(active_cases) > 1 and case is None:
+        text, buttons = await _matter_selector_text(user, db)
+        await db.commit()
+        await message.answer(text, reply_markup=one(*buttons))
+        return
 
     if case is not None and str(case.route or "") != RouteCode.M2.value:
+        case_number = str(case.case_number)
         await db.commit()
         await message.answer(
-            "💬 Связаться с юридической командой\n\n"
-            "У вас уже есть активное дело. Напишите по нему или откройте переписку — "
-            "отдельная консультация не заменит и не скроет текущее дело.",
+            "💬 СВЯЗАТЬСЯ С ЮРИСТОМ\n"
+            f"Обращение № {case_number}\n\n"
+            "Для выбранного M1-дела связь с юристом идёт через переписку этого обращения. Консультационный маршрут не подменяет и не меняет M1.",
             reply_markup=one(
-                ("✉️ Написать по текущему делу", "message_create"),
+                ("✉️ Написать по выбранному делу", "message_create"),
                 ("🗂 Открыть переписку", "message_history"),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
@@ -291,10 +422,12 @@ async def direct_reply_contact_lawyer(message: Message, state: FSMContext, db):
             primary = ("📅 Продолжить: выбрать время", "consult_booking_start")
         else:
             primary = ("📝 Продолжить: описать вопрос", "consult_subject_start")
+        case_number = str(case.case_number)
         await db.commit()
         await message.answer(
-            "💬 Юридическая консультация\n\n"
-            "Продолжите сохранённый этап консультации либо напишите команде по обращению.",
+            "💬 ЮРИДИЧЕСКАЯ КОНСУЛЬТАЦИЯ\n"
+            f"Обращение № {case_number}\n\n"
+            "Продолжите сохранённый этап консультации либо напишите команде по этому обращению.",
             reply_markup=one(
                 primary,
                 ("✉️ Написать сообщение", "message_create"),
@@ -305,14 +438,13 @@ async def direct_reply_contact_lawyer(message: Message, state: FSMContext, db):
         )
         return
 
-    # First legal-help entry is presentation-only. M2 case/consultation creation
-    # still happens behind the explicit consult_subject_start action, where the
-    # serialized one-active-case invariant and ActiveCaseRouteConflict apply.
+    # First legal-help entry is presentation-only. The explicit
+    # consult_subject_start callback creates M2 through source-operation
+    # idempotency, so Telegram redelivery cannot create duplicate Cases.
     await db.commit()
     await message.answer(
-        "💬 Юридическая консультация\n\n"
-        "Сначала опишите ситуацию и конкретный вопрос. После этого можно "
-        "добавить документы и выбрать свободное время.",
+        "💬 ЮРИДИЧЕСКАЯ КОНСУЛЬТАЦИЯ\n\n"
+        "Сначала опишите ситуацию и конкретный вопрос. После этого можно добавить документы и выбрать свободное время.",
         reply_markup=one(
             ("▶️ Начать: описать вопрос", "consult_subject_start"),
             ("🧮 Рассчитать неустойку", "calc_start"),
