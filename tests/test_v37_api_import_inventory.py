@@ -46,7 +46,6 @@ def test_remaining_compatibility_guards_precede_only_their_historical_surfaces()
         ("contract_workspace_ui", "lawyer"),
         ("contract_workspace_ui", "lawyer_workspace"),
         ("guided_message_center", "message_center"),
-        ("guided_refund_center", "refund_center"),
     ]
     for early, legacy in required_order:
         assert source.index(f'(\"{early}\",') < source.index(f'(\"{legacy}\",')
@@ -59,6 +58,36 @@ def test_consultation_outcomes_no_longer_depend_on_router_include_order():
     assert '("consultation_outcomes_product", consultation_outcomes_product_router)' in source
     assert "guided_consultation_outcomes_router" not in source
     assert "consultation_outcomes_ui_guard_router" not in source
+
+
+def test_refunds_have_one_runtime_product_owner():
+    main = MAIN.read_text(encoding="utf-8")
+    operator_guard = read("app/api/operator_guard.py")
+    product = read("app/api/refund_product.py")
+
+    assert "from app.api.refund_product import router as refund_product_router" in main
+    assert '("refund_product", refund_product_router)' in main
+    assert "guided_refund_center_router" not in main
+    assert "refund_center_router" not in main
+    assert "refund_resolution_guard_router" not in operator_guard
+    assert 'prefix="/admin/refunds"' in product
+
+    routes = create_app().routes
+    for method, path in (
+        ("GET", "/admin/refunds"),
+        ("GET", "/admin/refunds/context"),
+        ("GET", "/admin/refunds/declined"),
+        ("GET", "/admin/refunds/ui"),
+        ("POST", "/admin/refunds/{payment_id}/resolve"),
+        ("POST", "/admin/refunds/{payment_id}/retry"),
+    ):
+        owners = [
+            route
+            for route in routes
+            if getattr(route, "path", None) == path
+            and method in (getattr(route, "methods", None) or set())
+        ]
+        assert len(owners) == 1, (method, path, [route.name for route in owners])
 
 
 def test_workdesk_integrity_no_longer_depends_on_initial_setup_mount_order():
