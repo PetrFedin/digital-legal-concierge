@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     business_timezone: str = "Europe/Moscow"
     business_timezone_label: str = "МСК"
 
+    # Approved timeout/re-engagement contract. A reminder is generated once per
+    # stable (Case status, last client action) snapshot; new activity arms the
+    # same stage again without daily spam.
+    client_inactivity_reminders_enabled: bool = True
+    client_inactivity_reminder_hours: int = 24
+
     # Container/bootstrap policy. Production defaults are supplied by
     # .env.production.example; local development may opt into demo data.
     bootstrap_admin: bool = True
