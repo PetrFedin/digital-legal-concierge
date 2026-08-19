@@ -88,9 +88,8 @@ async def _guarded_html(
     return HTMLResponse(html)
 
 
-# These two functions are implementation helpers for the explicit product
-# routers. They deliberately have no decorators here: Payment Review and SLA
-# each have one runtime owner in app.api.*_product.
+# Implementation helpers for explicit product routers. They deliberately have
+# no decorators here; runtime ownership lives in app.api.*_product.
 async def protected_payment_review_ui(
     request: Request,
     db: AsyncSession = Depends(get_db),
@@ -100,10 +99,6 @@ async def protected_payment_review_ui(
     if isinstance(gate, RedirectResponse):
         return gate
 
-    # Process Integrity can point to a PENDING M2 provider link that is stale but
-    # has not received money. Such a record is intentionally absent from the
-    # PAID_REVIEW queue. Route that exact payment to its non-financial
-    # reservation-reconciliation screen instead of opening an empty review page.
     raw_payment_id = str(request.query_params.get("payment_id") or "").strip()
     try:
         payment_id = int(raw_payment_id) if raw_payment_id else None
@@ -135,6 +130,22 @@ async def protected_sla_ui(
     return await _guarded_html(request, db, x_admin_token, SLA_CENTER_HTML)
 
 
+async def protected_document_review_ui(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    """Serve the document decision cabinet only after personal staff auth."""
+
+    return await _guarded_html(
+        request,
+        db,
+        x_admin_token,
+        REVIEW_HTML,
+        staff=True,
+    )
+
+
 @router.get("/admin/technical-cases/ui")
 async def retired_technical_cases_ui(
     request: Request,
@@ -160,29 +171,8 @@ async def retired_technical_cases_ui(
     return RedirectResponse(url=target, status_code=303)
 
 
-@router.get("/document-access/review/ui", response_class=HTMLResponse)
-async def protected_document_review_ui(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    x_admin_token: str | None = Header(default=None),
-):
-    """Serve the document decision cabinet only after personal staff auth.
-
-    The underlying /document-access/review APIs are role-aware, but the
-    historical HTML shell itself was public. Until the document-access router is
-    consolidated, this compatibility owner authenticates the shell explicitly.
-    """
-
-    return await _guarded_html(
-        request,
-        db,
-        x_admin_token,
-        REVIEW_HTML,
-        staff=True,
-    )
-
-
 __all__ = [
+    "protected_document_review_ui",
     "protected_payment_review_ui",
     "protected_sla_ui",
     "router",
