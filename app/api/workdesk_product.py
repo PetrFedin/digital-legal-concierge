@@ -2,19 +2,19 @@
 
 Legacy modules remain implementation libraries and are not mounted by the app.
 The product router owns the shipped Workdesk URLs exactly once and deliberately
-uses the hardened personal-session implementations where browser navigation or
-M2 responsibility require them. No new business capability is introduced.
+uses hardened personal-session implementations where browser navigation or M2
+responsibility require them. No new business capability is introduced.
 """
 
 from fastapi import APIRouter
 
-from app.api.assignment_queue import guided_workdesk_ui
 from app.api.workdesk import (
     workdesk_case_consultation_outcomes,
     workdesk_case_consultations_today,
     workdesk_case_documents,
     workdesk_case_sla,
 )
+from app.api.workdesk_runtime_ui import workdesk_runtime_ui
 from app.api.workdesk_ui_guard import (
     guarded_active_work_queue,
     guarded_workdesk_attention,
@@ -67,7 +67,7 @@ router.add_api_route(
 )
 router.add_api_route(
     "/admin/workdesk/ui",
-    guided_workdesk_ui,
+    workdesk_runtime_ui,
     methods=["GET"],
     name="workdesk_ui",
 )
