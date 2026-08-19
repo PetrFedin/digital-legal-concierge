@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
+from app.domain.consultations.consultation_intake import ConsultationIntakeService
 from app.models.consultation import Consultation
 
 logger = logging.getLogger(__name__)
@@ -69,12 +70,13 @@ async def _recover(event, state, text: str) -> None:
 
 
 class ConsultationDescriptionProvenanceMiddleware:
-    """Bind free-text M2 description input to its exact case and consultation.
+    """Bind M2 description input to its exact Case and Consultation.
 
-    Entry callbacks are allowed to create/recover the canonical M2 intake first;
-    only after that guarded handler succeeds do we snapshot the exact case and
-    consultation. The later free-text message is accepted only while that same
-    business context is still active.
+    If no Case is selected, the first explicit Telegram entry click is also the
+    source-idempotent creation operation for a new M2 matter. If another Case is
+    already selected, this middleware never creates a parallel matter on its
+    own: the canonical route policy decides whether that selected Case may enter
+    or resume M2.
     """
 
     async def __call__(self, handler, event, data):
@@ -82,17 +84,39 @@ class ConsultationDescriptionProvenanceMiddleware:
         db = data.get("db")
 
         if isinstance(event, CallbackQuery) and str(event.data or "") in _DESCRIPTION_ENTRY_CALLBACKS:
-            # The first consultation legitimately has no M2 context before the
-            # intake handler runs. Never make provenance protection itself block
-            # creation of the canonical draft.
+            if db is not None:
+                try:
+                    ctx = BotContextService(db)
+                    user = await ctx.get_user_from_callback(event)
+                    selected = await ctx.case_service.get_active_case_for_user(user.id)
+                    if selected is None:
+                        # A duplicate delivery of this exact callback uses the
+                        # same operation key and resolves to the same Case.
+                        await ConsultationIntakeService(db).get_or_create_context(
+                            user,
+                            operation_key=f"telegram_callback:{event.id}",
+                        )
+                except Exception:
+                    # Keep creation and the underlying screen in one transaction.
+                    # The handler/recovery path will roll back; never leave a
+                    # half-created M2 Case solely because provenance ran first.
+                    logger.exception("Не удалось подготовить идемпотентный M2 context")
+                    await db.rollback()
+                    await _recover(
+                        event,
+                        state,
+                        "Не удалось безопасно открыть консультационное обращение. Новое дело не создано; повторите действие.",
+                    )
+                    return None
+
             result = await handler(event, data)
             if db is None or state is None:
                 return result
             try:
                 _user, case, consultation = await _current_context(event, db)
                 if case is None or consultation is None:
-                    # The underlying handler may have refused creation because a
-                    # different active route exists. Do not attach a fake snapshot.
+                    # The route handler may have refused M2 because the selected
+                    # matter belongs to another route. Never attach fake provenance.
                     return result
                 await state.update_data(
                     consult_description_case_id=int(case.id),
@@ -156,7 +180,7 @@ class ConsultationDescriptionProvenanceMiddleware:
             await _recover(
                 event,
                 state,
-                "ℹ️ Пока вы вводили вопрос, активное консультационное обращение изменилось. Текст не был записан в другое дело. Откройте актуальную форму и отправьте вопрос туда.",
+                "ℹ️ Пока вы вводили вопрос, выбранное консультационное обращение изменилось. Текст не был записан в другое дело. Откройте актуальную форму и отправьте вопрос туда.",
             )
             return None
 
