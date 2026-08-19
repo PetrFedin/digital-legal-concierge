@@ -7,8 +7,15 @@ from types import SimpleNamespace
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.bot.screens.client_message_recovery import (
+    retarget_preserved_draft_to_current_case,
+)
 from app.bot.screens.consultation_booking_ui import consultation_action_center
 from app.bot.screens.message_history_guard import present_message_history
+from app.bot.screens.payment_stage_binding_guard import (
+    legacy_stage_payment_is_confirmation_only,
+)
+from app.bot.screens.post_calculation import continue_m1_after_calculation
 from app.models import Base
 from app.models.case import Case
 from app.models.client_case_context import ClientCaseContext
@@ -47,8 +54,34 @@ class _FakeCallback:
 
 
 class _FakeState:
+    def __init__(self, data: dict | None = None) -> None:
+        self.data = dict(data or {})
+        self.state = None
+
     async def get_data(self):
-        return {}
+        return dict(self.data)
+
+    async def update_data(self, **kwargs):
+        self.data.update(kwargs)
+        return dict(self.data)
+
+    async def set_state(self, state):
+        self.state = state
+
+    async def clear(self):
+        self.data.clear()
+        self.state = None
+
+
+def _callback_values(markup) -> set[str]:
+    if markup is None:
+        return set()
+    return {
+        str(button.callback_data)
+        for row in markup.inline_keyboard
+        for button in row
+        if button.callback_data
+    }
 
 
 def test_completed_m2_action_center_does_not_touch_orm_after_rollback() -> None:
@@ -176,6 +209,133 @@ def test_message_history_snapshots_case_before_rollback_and_binds_read_tracking(
             assert is_read is True
 
         assert case_b_id != case_a_id
+        await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_legacy_payment_confirmation_snapshots_case_before_rollback() -> None:
+    async def scenario() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+        telegram_id = 990000203
+        async with session_factory() as db:
+            user = User(telegram_id=telegram_id, full_name="Payment Boundary")
+            db.add(user)
+            await db.flush()
+            case = Case(
+                case_number="BOUNDARY-PAY-1",
+                client_id=user.id,
+                route="M1",
+                status="M1_WAITING_PAYMENT_30000",
+            )
+            db.add(case)
+            await db.commit()
+            case_id = int(case.id)
+
+        callback = _FakeCallback(telegram_id, data="pay_start_30000")
+        async with session_factory() as db:
+            await legacy_stage_payment_is_confirmation_only(callback, db)
+
+        assert callback.message.text is not None
+        assert "BOUNDARY-PAY-1" in callback.message.text
+        assert (
+            f"pay_stage:v2:{case_id}:M1_INITIAL_PAYMENT"
+            in _callback_values(callback.message.reply_markup)
+        )
+        await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_message_draft_retarget_snapshots_case_before_rollback() -> None:
+    async def scenario() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+        telegram_id = 990000204
+        async with session_factory() as db:
+            user = User(telegram_id=telegram_id, full_name="Draft Boundary")
+            db.add(user)
+            await db.flush()
+            case = Case(
+                case_number="BOUNDARY-DRAFT-1",
+                client_id=user.id,
+                route="M1",
+                status="M1_DOCUMENTS_PENDING",
+            )
+            db.add(case)
+            await db.flush()
+            db.add(
+                ClientCaseContext(
+                    client_id=user.id,
+                    selected_case_id=case.id,
+                )
+            )
+            await db.commit()
+            case_id = int(case.id)
+
+        state = _FakeState(
+            {
+                "draft_text": "Сохранённый вопрос",
+                "source_message_id": 777,
+                "category": "Ход дела",
+                "urgency": "Обычный",
+            }
+        )
+        callback = _FakeCallback(
+            telegram_id,
+            data=f"message_retarget_current:v2:{case_id}",
+        )
+        async with session_factory() as db:
+            await retarget_preserved_draft_to_current_case(callback, state, db)
+
+        assert state.data["case_id"] == case_id
+        assert state.data["case_number"] == "BOUNDARY-DRAFT-1"
+        assert state.data["client_message_case_id"] == case_id
+        assert callback.message.text is not None
+        assert "Сохранённый вопрос" in callback.message.text
+        await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_stale_post_calculation_recovery_uses_status_snapshot_after_rollback() -> None:
+    async def scenario() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+        telegram_id = 990000205
+        async with session_factory() as db:
+            user = User(telegram_id=telegram_id, full_name="Decision Boundary")
+            db.add(user)
+            await db.flush()
+            case = Case(
+                case_number="BOUNDARY-DECISION-1",
+                client_id=user.id,
+                route="M1",
+                status="M1_DOCUMENTS_PENDING",
+            )
+            db.add(case)
+            await db.commit()
+            case_id = int(case.id)
+
+        callback = _FakeCallback(
+            telegram_id,
+            data=f"calc_continue_m1:v2:{case_id}",
+        )
+        async with session_factory() as db:
+            await continue_m1_after_calculation(callback, db)
+
+        assert callback.message.text is not None
+        assert "Ведение дела уже начато" in callback.message.text
         await engine.dispose()
 
     asyncio.run(scenario())
