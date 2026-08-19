@@ -8,7 +8,7 @@ from app.api.acceptance_center import router as acceptance_center_router
 from app.api.access_management import router as access_management_router
 from app.api.admin import router as admin_router
 from app.api.admin_queue_guard import router as admin_queue_guard_router
-from app.api.assignment_queue import router as assignment_queue_router
+from app.api.assignment_queue_product import router as assignment_queue_product_router
 from app.api.audit_center import router as audit_center_router
 from app.api.auth import router as auth_router
 from app.api.backup_center import router as backup_center_router
@@ -67,8 +67,8 @@ from app.api.task_center import router as task_center_router
 from app.api.technical_cases_compat import router as technical_cases_compat_router
 from app.api.template_builder import router as template_builder_router
 from app.api.web_admin import router as web_admin_router
-from app.api.workdesk import router as workdesk_router
 from app.api.workdesk_integrity_product import router as workdesk_integrity_product_router
+from app.api.workdesk_product import router as workdesk_product_router
 from app.api.workdesk_timeline import router as workdesk_timeline_router
 from app.config import settings
 from app.domain.payments.mode import (
@@ -180,10 +180,10 @@ def create_app():
         ("document_access_product", document_access_product_router),
         ("document_access_portal", document_access_portal_router),
         ("runtime", runtime_router),
-        ("assignment_queue", assignment_queue_router),
+        ("assignment_queue_product", assignment_queue_product_router),
         ("workdesk_integrity_product", workdesk_integrity_product_router),
         ("workdesk_timeline", workdesk_timeline_router),
-        ("workdesk", workdesk_router),
+        ("workdesk_product", workdesk_product_router),
         ("web_admin", web_admin_router),
         ("operator", operator_router),
         ("exports", exports_router),
