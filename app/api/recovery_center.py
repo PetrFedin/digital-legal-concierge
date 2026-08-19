@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db.session import get_db
 from app.domain.cases.case_history import add_case_history_event
+from app.domain.payments.payment_lifecycle import PaymentLifecycleService
 from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models.notification import Notification
 from app.models.payment import Payment
@@ -232,8 +233,11 @@ async def expire_waiting_payments(
         ).scalars().all()
     )
     for payment in rows:
-        old_status = str(payment.status)
-        payment.status = PaymentStatus.EXPIRED
+        transition = PaymentLifecycleService.transition(
+            payment,
+            to_status=PaymentStatus.EXPIRED,
+            occurred_at=now,
+        )
         await add_case_history_event(
             db,
             actor_type="admin_user",
@@ -242,10 +246,14 @@ async def expire_waiting_payments(
             action="PAYMENT_EXPIRED_BY_SUPERADMIN_RECOVERY",
             old_value={
                 "payment_id": payment.id,
-                "status": old_status,
+                "status": transition.old_status.value,
                 "expires_at": payment.expires_at.isoformat() if payment.expires_at else None,
             },
-            new_value={"payment_id": payment.id, "status": PaymentStatus.EXPIRED.value},
+            new_value={
+                "payment_id": payment.id,
+                "status": transition.new_status.value,
+                "expired_at": payment.expired_at.isoformat() if payment.expired_at else None,
+            },
             comment="Истёкшая платёжная запись закрыта по явному ID; живые платежи не затрагиваются",
         )
     await db.commit()
