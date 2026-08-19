@@ -270,7 +270,10 @@ async def present_message_history(
         await callback.message.answer(text, reply_markup=markup)
         await callback.answer("Переписка открыта новым сообщением.")
 
-    if visible_team_ids and not read_only:
+    # Read tracking is a mutation. An exact stale page for another active Case
+    # may be displayed safely, but it must not change that Case until the client
+    # explicitly selects it as the cabinet context.
+    if visible_team_ids and not read_only and selected_same_case:
         try:
             await service.mark_lawyer_messages_read(
                 case_id,
