@@ -4,6 +4,7 @@ from aiogram import Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 
+from app.bot.case_callback_scope import bound_case_callback
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.screens import consultation_intake as legacy_intake
@@ -56,20 +57,27 @@ async def route_active_m2_navigation(
 
     if case is None or str(case.route or "").upper() != RouteCode.M2.value:
         # Preserve the canonical entry behaviour for a genuinely new request or
-        # an active M1 case. That handler itself prevents creating an M2 beside M1.
+        # an active M1 case. The intake handler is responsible for explicit new
+        # request creation and never silently mutates the selected Case.
         await legacy_intake.contact_lawyer(callback, db, state)
         return
 
     status = _status(case)
+    case_number = str(case.case_number)
+    case_id = int(case.id)
     await state.clear()
 
     if status == CaseStatus.M2_PAYMENT_PENDING:
         if payments_disabled():
             await _render(
                 callback,
-                "👨‍⚖ КОНСУЛЬТАЦИЯ\n\n"
+                "👨‍⚖ КОНСУЛЬТАЦИЯ\n"
+                f"Обращение № {case_number}\n\n"
                 "Вопрос и время уже выбраны. Онлайн-оплата для этого маршрута отключена; сейчас нужно подтвердить только актуальный удерживаемый слот.",
-                ("✅ Подтвердить выбранное время", "consult_pay"),
+                (
+                    "✅ Подтвердить выбранное время",
+                    bound_case_callback("consult_pay", case_id),
+                ),
                 ("📄 Документы", "documents_open"),
             )
             return
@@ -79,7 +87,8 @@ async def route_active_m2_navigation(
     if status == CaseStatus.M2_CONSULTATION_BOOKED:
         await _render(
             callback,
-            "👨‍⚖ КОНСУЛЬТАЦИЯ ПОДТВЕРЖДЕНА\n\n"
+            "👨‍⚖ КОНСУЛЬТАЦИЯ ПОДТВЕРЖДЕНА\n"
+            f"Обращение № {case_number}\n\n"
             "Новая запись не создаётся. Откройте текущую встречу, чтобы проверить дату, подготовку, документы, перенос или отмену.",
             ("▶️ Открыть текущую запись", "consultation_booked_open"),
             ("📄 Документы", "documents_open"),
@@ -89,7 +98,8 @@ async def route_active_m2_navigation(
     if status == CaseStatus.M2_CONSULTATION_DONE:
         await _render(
             callback,
-            "👨‍⚖ КОНСУЛЬТАЦИЯ ПРОВЕДЕНА\n\n"
+            "👨‍⚖ КОНСУЛЬТАЦИЯ ПРОВЕДЕНА\n"
+            f"Обращение № {case_number}\n\n"
             "Результат уже сохранён. Старый вход «Юридическая помощь» не начинает вторую консультацию поверх текущего решения.",
             ("▶️ Открыть итог консультации", "consultation_result_open"),
             ("🕘 История", "case_history_open"),
@@ -102,7 +112,8 @@ async def route_active_m2_navigation(
     }:
         await _render(
             callback,
-            "👨‍⚖ ПРОДОЛЖИТЬ КОНСУЛЬТАЦИЮ\n\n"
+            "👨‍⚖ ПРОДОЛЖИТЬ КОНСУЛЬТАЦИЮ\n"
+            f"Обращение № {case_number}\n\n"
             "Вопрос сохранён. Следующий шаг — выбрать актуальную дату и время. Документы можно добавить до или после выбора слота.",
             ("▶️ Выбрать дату и время", "consult_booking_start"),
             ("📄 Добавить документы", "documents_open"),
@@ -115,7 +126,8 @@ async def route_active_m2_navigation(
     }:
         await _render(
             callback,
-            "👨‍⚖ ПРОДОЛЖИТЬ КОНСУЛЬТАЦИЮ\n\n"
+            "👨‍⚖ ПРОДОЛЖИТЬ КОНСУЛЬТАЦИЮ\n"
+            f"Обращение № {case_number}\n\n"
             "Сначала сохраните ситуацию и конкретный вопрос для юриста. Уже введённые данные текущего обращения не будут подменены другим делом.",
             ("▶️ Описать вопрос", "consult_subject_start"),
             ("📄 Документы", "documents_open"),
@@ -125,7 +137,8 @@ async def route_active_m2_navigation(
     if status == CaseStatus.M2_TO_M1:
         await _render(
             callback,
-            "↗️ КОНСУЛЬТАЦИЯ ПЕРЕДАНА В M1\n\n"
+            "↗️ КОНСУЛЬТАЦИЯ ПЕРЕДАНА В M1\n"
+            f"Обращение № {case_number}\n\n"
             "Продолжение уже идёт в основном юридическом деле. Новая M2-консультация этой кнопкой не создаётся.",
             ("▶️ Открыть текущее дело", "my_case_open"),
             ("🕘 История", "case_history_open"),
@@ -134,7 +147,8 @@ async def route_active_m2_navigation(
 
     await _render(
         callback,
-        "👨‍⚖ ЮРИДИЧЕСКАЯ ПОМОЩЬ\n\n"
+        "👨‍⚖ ЮРИДИЧЕСКАЯ ПОМОЩЬ\n"
+        f"Обращение № {case_number}\n\n"
         "У обращения уже есть активный контекст, но текущий шаг требует обновления. Новая консультация не создана.",
         ("🔄 Обновить текущее дело", "my_case_open"),
     )
