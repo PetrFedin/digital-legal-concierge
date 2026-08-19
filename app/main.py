@@ -20,8 +20,8 @@ from app.api.consultation_slots import router as consultation_slots_router
 from app.api.contract_center import router as contract_center_router
 from app.api.contract_workspace_ui import router as contract_workspace_ui_router
 from app.api.diagnostic_center import router as diagnostic_center_router
-from app.api.document_access import router as document_access_router
 from app.api.document_access_portal import router as document_access_portal_router
+from app.api.document_access_product import router as document_access_product_router
 from app.api.exports import router as exports_router
 from app.api.final_handover_center import router as final_handover_center_router
 from app.api.final_qa_center import router as final_qa_center_router
@@ -175,7 +175,7 @@ def create_app():
         ("lawyer_m1_enforcement", lawyer_m1_enforcement_router),
         ("lawyer_workspace", lawyer_workspace_router),
         ("lawyer_consultation_desk", lawyer_consultation_desk_router),
-        ("document_access", document_access_router),
+        ("document_access_product", document_access_product_router),
         ("document_access_portal", document_access_portal_router),
         ("runtime", runtime_router),
         ("assignment_queue", assignment_queue_router),
