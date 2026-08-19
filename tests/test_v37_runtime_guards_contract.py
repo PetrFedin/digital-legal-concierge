@@ -94,7 +94,16 @@ def test_lawyer_no_show_refund_leaves_no_booked_case_or_blocked_slot():
 
 def test_m2_refund_closes_only_after_real_resolution_and_decline_is_retryable():
     guard = read("app/api/refund_resolution_guard.py")
+    product = read("app/api/refund_product.py")
     operator = read("app/api/operator_guard.py")
+
+    assert 'prefix="/admin/refunds"' in product
+    assert '"/{payment_id}/resolve"' in product
+    assert "resolve_refund_guard" in product
+    assert '"/declined"' in product
+    assert "declined_refunds" in product
+    assert '"/{payment_id}/retry"' in product
+    assert "retry_declined_refund" in product
     assert '@router.post("/admin/refunds/{payment_id}/resolve")' in guard
     assert 'if decision == "refunded"' in guard
     assert "CaseStatus.M2_CONSULTATION_DONE" in guard
@@ -105,7 +114,7 @@ def test_m2_refund_closes_only_after_real_resolution_and_decline_is_retryable():
     assert "PaymentStatus.REFUND_DECLINED" in retry_block
     assert "PaymentStatus.REFUND_PENDING" in retry_block
     assert "CaseService(db).change_status" not in retry_block
-    assert "router.include_router(refund_resolution_guard_router)" in operator
+    assert "refund_resolution_guard_router" not in operator
 
 
 def test_m2_outcomes_have_one_product_owner_and_legacy_resolution_stays_guarded():
@@ -270,12 +279,13 @@ def test_fake_manual_payment_is_local_test_only_and_never_enabled_by_demo_mode()
 
 def test_workdesk_and_operator_navigation_have_no_self_loop_to_legacy_admin_ui():
     workdesk = read("app/api/assignment_queue.py")
-    operator = read("app/api/operator_guard.py")
+    operator = read("app/api/operator.py")
     assert "legacyAdminLink.href='/consultation-slots/ui'" in workdesk
     assert "legacyAdminLink.textContent='Расписание'" in workdesk
-    assert "Рабочие разделы администратора" in operator
-    assert "/search-center/ui" in operator
-    assert "/consultation-slots/ui" in operator
+    assert "Рабочие разделы показываются в соответствии с вашей ролью." in operator
+    assert "/admin/workdesk/ui" in operator
+    assert "/search-center/ui" not in operator
+    assert "/consultation-slots/ui" not in operator
 
 
 def test_telegram_home_de_duplicates_primary_and_avoids_misleading_parallel_consultation():
