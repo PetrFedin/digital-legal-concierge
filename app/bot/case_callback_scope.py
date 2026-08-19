@@ -74,17 +74,43 @@ def parse_bound_case_id(data: str | None, action: str) -> tuple[bool, int | None
     return False, case_id
 
 
+def _legacy_message_mentions_selected_case(callback: CallbackQuery, selected_case) -> bool:
+    """Recognize a trusted bot-rendered legacy screen with visible Case context.
+
+    During the v2 callback rollout some already-rendered action-center buttons
+    still use the historical raw token. When the client has multiple Cases, such
+    a button is accepted only if the bot message itself visibly contains the
+    exact selected case number. A stale message from another Case therefore
+    fails closed after the client switches context.
+    """
+
+    if selected_case is None:
+        return False
+    case_number = str(getattr(selected_case, "case_number", "") or "").strip()
+    if not case_number:
+        return False
+    message = getattr(callback, "message", None)
+    text = str(getattr(message, "text", "") or getattr(message, "caption", "") or "")
+    return case_number in text
+
+
 async def resolve_case_callback_scope(
     callback: CallbackQuery,
     db,
     *,
     action: str,
+    allow_legacy_message_case_context: bool = False,
 ) -> CaseCallbackScope | None:
     """Resolve a mutation against the explicitly selected active Case.
 
     New callbacks must carry ``:v2:<case_id>``. Historical unbound buttons stay
     usable only while the client has zero/one active Case. With several active
     matters an old unbound mutation is ambiguous and therefore fails closed.
+
+    For a short migration window a caller may opt into trusted message
+    provenance: a raw legacy button is then allowed only when the bot-rendered
+    message visibly names the exact currently selected Case. This keeps old
+    action-center messages usable without ever silently switching Case context.
 
     A bound button never switches the cabinet implicitly: if the client has
     selected another Case since the message was rendered, the mutation is
@@ -108,7 +134,12 @@ async def resolve_case_callback_scope(
     active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
     selected_case = await ctx.case_service.get_active_case_for_user(int(user.id))
 
-    if legacy_unbound and len(active_cases) > 1:
+    legacy_message_bound = bool(
+        legacy_unbound
+        and allow_legacy_message_case_context
+        and _legacy_message_mentions_selected_case(callback, selected_case)
+    )
+    if legacy_unbound and len(active_cases) > 1 and not legacy_message_bound:
         await callback.message.edit_text(
             "Эта старая кнопка не содержит номер обращения, а у вас сейчас несколько активных дел. "
             "Чтобы платёж или другое значимое действие не попало в чужой контекст, оно не выполнено.\n\n"
