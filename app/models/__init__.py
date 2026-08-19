@@ -9,6 +9,7 @@ from app.models.case_retention import CaseRetentionRecord
 from app.models.calculation import Calculation
 from app.models.document import Document
 from app.models.document_access_grant import DocumentAccessGrant
+from app.models.payment_event import PaymentEvent
 from app.models.payment import Payment
 from app.models.payment_webhook_event import PaymentWebhookEvent
 from app.models.consultation import Consultation
