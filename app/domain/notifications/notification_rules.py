@@ -3,6 +3,7 @@ NOTIFICATION_RULES = {
     "LAWYER_ASSIGNED": {"recipients": ["lawyer"], "template": "lawyer_assigned"},
     "STAFF_MESSAGE_REPLIED": {"recipients": ["client"], "template": "staff_message_reply"},
     "CLIENT_MESSAGE_RECEIVED": {"recipients": ["lawyer", "admin"], "template": "client_message_received"},
+    "CLIENT_INACTIVITY_REMINDER": {"recipients": ["client"], "template": "client_inactivity_reminder"},
     "M1_CASE_ACCEPTED": {"recipients": ["client"], "template": "m1_case_accepted"},
     "M1_CONTRACT_PUBLISHED": {"recipients": ["client"], "template": "m1_contract_published"},
     "M1_CASE_REJECTED": {"recipients": ["client", "admin"], "template": "m1_case_rejected"},
