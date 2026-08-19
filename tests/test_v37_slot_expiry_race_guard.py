@@ -49,7 +49,8 @@ def test_expiry_keeps_provider_payment_lock_order_before_slot_recheck():
     payment_for_update = block.index(".with_for_update()", payment_lock)
     slot_lock = block.index("locked_slots = list(", payment_for_update)
     assert payment_lock < payment_for_update < slot_lock
-    assert "PaymentStatus.EXPIRED" in block
+    assert "PaymentLifecycleService.transition" in block
+    assert "to_status=PaymentStatus.EXPIRED" in block
     assert "provider/no-payment booking won the race" in block
 
 
