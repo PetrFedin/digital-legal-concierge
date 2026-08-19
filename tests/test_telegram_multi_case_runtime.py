@@ -35,6 +35,9 @@ class RecordingTelegramSession(AiohttpSession):
         return True
 
 
+_RUNTIME_DISPATCHER = None
+
+
 def _telegram_id() -> int:
     return 7_000_000_000_000 + (uuid.uuid4().int % 1_000_000_000)
 
@@ -162,9 +165,20 @@ async def _case_ids(user_id: int) -> list[int]:
 
 
 def _runtime_dispatcher(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(settings, "app_env", "test")
-    monkeypatch.setattr(settings, "fsm_storage_backend", "memory")
-    return build_dispatcher()
+    """Build the production router graph once.
+
+    aiogram Router instances have a single parent and therefore cannot be
+    attached to a fresh Dispatcher for every test. Unique Telegram user/chat ids
+    isolate FSM state between scenarios while the real production router graph
+    remains mounted exactly once.
+    """
+
+    global _RUNTIME_DISPATCHER
+    if _RUNTIME_DISPATCHER is None:
+        monkeypatch.setattr(settings, "app_env", "test")
+        monkeypatch.setattr(settings, "fsm_storage_backend", "memory")
+        _RUNTIME_DISPATCHER = build_dispatcher()
+    return _RUNTIME_DISPATCHER
 
 
 @pytest.mark.asyncio
@@ -252,7 +266,6 @@ async def test_persistent_calculate_creates_distinct_case_and_replay_is_idempote
             )
             assert request_count == 1
     finally:
-        await dispatcher.storage.close()
         await bot.session.close()
 
 
@@ -309,7 +322,6 @@ async def test_my_case_selector_preserves_context_until_explicit_selection(
             for text in _texts(session)
         )
     finally:
-        await dispatcher.storage.close()
         await bot.session.close()
 
 
@@ -365,7 +377,6 @@ async def test_stale_case_bound_payment_callback_cannot_mutate_other_selected_ca
             for text in _texts(session)
         )
     finally:
-        await dispatcher.storage.close()
         await bot.session.close()
 
 
@@ -423,5 +434,4 @@ async def test_exact_old_case_message_history_is_read_only_until_case_is_selecte
         assert old_case_number in history_text
         assert "Ответ юридической команды по первому обращению" in history_text
     finally:
-        await dispatcher.storage.close()
         await bot.session.close()
