@@ -64,6 +64,7 @@ from app.api.security_event_center import router as security_event_center_router
 from app.api.settings_ui import router as settings_ui_router
 from app.api.sla_product import router as sla_product_router
 from app.api.task_center import router as task_center_router
+from app.api.technical_cases_compat import router as technical_cases_compat_router
 from app.api.template_builder import router as template_builder_router
 from app.api.web_admin import router as web_admin_router
 from app.api.workdesk import router as workdesk_router
@@ -162,6 +163,7 @@ def create_app():
         ("install_wizard", install_wizard_router),
         ("task_center", task_center_router),
         ("settings_ui", settings_ui_router),
+        ("technical_cases_compat", technical_cases_compat_router),
         ("admin_queue_guard", admin_queue_guard_router),
         ("admin", admin_router),
         ("payment_safety_guard", payment_safety_guard_router),
@@ -286,7 +288,6 @@ def create_app():
             ),
             "payment_webhook_secret_ready": payment_webhook_secret_ready,
             "payment_mode_valid": payment_mode_valid(),
-            # Kept for compatibility with deployment scripts and dashboards.
             "payment_provider_configured": payment_mode_valid(),
             "trusted_proxy_config_valid": trusted_proxy_config_valid,
             "trusted_proxy_hop_limit_valid": (
