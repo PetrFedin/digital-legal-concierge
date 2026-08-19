@@ -45,6 +45,13 @@ class Case(Base, TimestampMixin):
         nullable=True,
         index=True,
     )
+    # Client activity is intentionally separate from updated_at: staff work,
+    # scheduler changes and reconciliation must not postpone client re-engagement.
+    last_client_action_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
     sla_due_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
@@ -58,7 +65,12 @@ class Case(Base, TimestampMixin):
     escalation_level: Mapped[int] = mapped_column(Integer, default=0)
     next_action: Mapped[str | None] = mapped_column(String(255), nullable=True)
     internal_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Business closure is distinct from archive/read-only and retention deletion.
+    close_reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
     closed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
     content_deleted_at: Mapped[datetime | None] = mapped_column(
