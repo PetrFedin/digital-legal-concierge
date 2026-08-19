@@ -48,7 +48,7 @@ from app.api.notification_center import router as notification_center_router
 from app.api.operations_center import router as operations_center_router
 from app.api.operator import router as operator_router
 from app.api.ops_guide import router as ops_guide_router
-from app.api.payment_review_center import router as payment_review_center_router
+from app.api.payment_review_product import router as payment_review_product_router
 from app.api.payment_safety_guard import router as payment_safety_guard_router
 from app.api.payment_webhooks import router as payment_router
 from app.api.production_center import router as production_center_router
@@ -62,7 +62,7 @@ from app.api.search_center import router as search_center_router
 from app.api.security import router as security_router
 from app.api.security_event_center import router as security_event_center_router
 from app.api.settings_ui import router as settings_ui_router
-from app.api.sla_center import router as sla_center_router
+from app.api.sla_product import router as sla_product_router
 from app.api.task_center import router as task_center_router
 from app.api.template_builder import router as template_builder_router
 from app.api.web_admin import router as web_admin_router
@@ -151,9 +151,9 @@ def create_app():
         ("case_assignment", case_assignment_router),
         ("refund_product", refund_product_router),
         ("retention_center", retention_center_router),
-        ("payment_review_center", payment_review_center_router),
+        ("payment_review_product", payment_review_product_router),
         ("consultation_outcomes_product", consultation_outcomes_product_router),
-        ("sla_center", sla_center_router),
+        ("sla_product", sla_product_router),
         ("security", security_router),
         ("launch_assistant", launch_assistant_router),
         ("health_center", health_center_router),
