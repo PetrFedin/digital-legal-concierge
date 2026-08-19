@@ -8,6 +8,16 @@ from app.bot.context import BotContextService
 from app.bot.keyboards import one
 
 
+PAYMENT_CASE_BOUND_ACTIONS = frozenset(
+    {
+        "pay_start_30000",
+        "pay_court_70000",
+        "pay_success_fee",
+        "consult_pay",
+    }
+)
+
+
 @dataclass(frozen=True)
 class CaseCallbackScope:
     ctx: BotContextService
@@ -27,6 +37,15 @@ def bound_case_callback(action: str, case_id: int) -> str:
     if case_value <= 0:
         raise ValueError("case_id должен быть положительным")
     return f"{clean_action}:v2:{case_value}"
+
+
+def bind_payment_case_action(action: str, case_id: int) -> str:
+    """Bind known payment mutations while leaving read-only/navigation callbacks intact."""
+
+    clean_action = str(action or "").strip()
+    if clean_action in PAYMENT_CASE_BOUND_ACTIONS:
+        return bound_case_callback(clean_action, case_id)
+    return clean_action
 
 
 def callback_matches_action(data: str | None, action: str) -> bool:
