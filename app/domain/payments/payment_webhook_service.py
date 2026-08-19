@@ -11,6 +11,7 @@ from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models.payment import Payment
+from app.presentation_time import format_business_datetime
 
 
 PROTECTED_RECEIVED_PAYMENT_STATUSES = {
@@ -294,10 +295,9 @@ class PaymentWebhookService:
                 user_id=case.client_id,
                 payload={
                     "case_number": case.case_number,
-                    "date": (
-                        consultation.scheduled_at.strftime("%d.%m.%Y %H:%M")
-                        if consultation.scheduled_at
-                        else "уточняется"
+                    "date": format_business_datetime(
+                        consultation.scheduled_at,
+                        empty="уточняется",
                     ),
                 },
                 dedupe_key=f"{expected_reservation_key}:booked",
@@ -340,6 +340,8 @@ class PaymentWebhookService:
                     CaseStatus.M1_CLOSED,
                 ],
             }
+            if payment.payment_code == PaymentCode.M1_SUCCESS_FEE:
+                case.close_reason = "M1_SUCCESS_FEE_PAID"
             for status in mapping.get(payment.payment_code, []):
                 await self.cases.change_status(
                     case=case,
