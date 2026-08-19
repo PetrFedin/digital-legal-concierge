@@ -8,37 +8,37 @@ def read(path: str) -> str:
 
 
 def test_workdesk_m2_projections_use_effective_slot_responsibility():
-    source = read("app/api/workdesk_ui_guard.py")
+    assignment = read("app/api/assignment_queue.py")
+    assignment_product = read("app/api/assignment_queue_product.py")
+    workdesk_product = read("app/api/workdesk_product.py")
+    guard_helpers = read("app/api/workdesk_ui_guard.py")
 
-    assert "effective_lawyer_ids_for_cases" in source
-    assert "async def _m2_responsibility_by_case" in source
-    assert '@router.get("/admin/work-queues/consultations")' in source
-    assert '@router.get("/admin/workdesk/attention")' in source
-    assert '@router.get("/admin/case-workspace/{case_id}")' in source
-    assert 'str(case.route or "") != "M2"' in source
-    assert 'item["lawyer_id"] = lawyer_id' in source
-    assert 'item["lawyer_name"] = lawyer_name' in source
-    assert 'case_payload["lawyer_id"] = lawyer_id' in source
-    assert 'case_payload["lawyer_name"] = lawyer_name' in source
-
-
-def test_m2_case_workspace_does_not_recommend_generic_case_assignment():
-    source = read("app/api/workdesk_ui_guard.py")
-    block = source.split("async def guarded_case_workspace", 1)[1].split(
-        '@router.get("/admin/workdesk/ui"', 1
-    )[0]
-
-    assert "case.next_action" in block
-    assert "Проверить актуальное состояние консультации" in block
-    assert "Ответственный определится после выбора клиентом времени" in block
-    assert "Назначить ответственного юриста" not in block
+    assert "effective_lawyer_ids_for_cases" in assignment
+    assert "async def _m2_responsibility_by_case" in assignment
+    assert "async def workdesk_case_responsibility" in assignment
+    assert "async def consultation_queue_with_slot_lawyer" in assignment
+    assert '"/admin/workdesk/cases/{case_id}/responsibility"' in assignment_product
+    assert '"/admin/work-queues/consultations"' in assignment_product
+    assert "guarded_workdesk_attention" in workdesk_product
+    assert "_m2_responsibility_by_case" in guard_helpers
 
 
-def test_workdesk_ui_hides_m1_assignment_sla_shortcut_for_m2():
-    source = read("app/api/workdesk_ui_guard.py")
+def test_m2_case_workspace_is_corrected_by_exact_responsibility_projection():
+    runtime_ui = read("app/api/workdesk_runtime_ui.py")
 
-    assert "_M1_SLA_SHORTCUT" in source
-    assert "_ROUTE_AWARE_SLA_SHORTCUT" in source
-    assert "d.case.route==='M2'" in source
-    assert "M1 SLA здесь не назначается вручную" in source
-    assert "html.replace(_M1_SLA_SHORTCUT, _ROUTE_AWARE_SLA_SHORTCUT, 1)" in source
+    assert "responsibility=await api('/admin/workdesk/cases/'+id+'/responsibility')" in runtime_ui
+    assert "if(selected!==id||responsibility.route!=='M2')" in runtime_ui
+    assert "'Юрист консультации'" in runtime_ui
+    assert "'Контроль консультации'" in runtime_ui
+    assert "'Время консультации'" in runtime_ui
+    assert "responsibility.lawyer_name||'будет определён выбранным слотом'" in runtime_ui
+
+
+def test_workdesk_ui_removes_m1_assignment_sla_shortcut_for_m2_without_literal_replacement():
+    runtime_ui = read("app/api/workdesk_runtime_ui.py")
+
+    assert "if(selected!==id||responsibility.route!=='M2')" in runtime_ui
+    assert "if(label==='SLA'||label==='Назначить перед SLA')node.remove()" in runtime_ui
+    assert "_M1_SLA_SHORTCUT" not in runtime_ui
+    assert "_ROUTE_AWARE_SLA_SHORTCUT" not in runtime_ui
+    assert "WORKDESK_HTML.replace(" not in runtime_ui
