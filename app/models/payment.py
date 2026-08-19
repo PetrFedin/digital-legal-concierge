@@ -1,6 +1,7 @@
+from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import ForeignKey, Numeric, String
+from sqlalchemy import DateTime, ForeignKey, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -20,5 +21,24 @@ class Payment(Base, TimestampMixin):
     provider_payment_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     payment_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     reservation_key: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+
+    # These timestamps are business facts, not presentation metadata. updated_at
+    # changes during review/refund/reconciliation and therefore cannot safely be
+    # used as the date money was received or returned.
+    paid_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    failed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cancelled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    refunded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    expired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     case = relationship("Case", back_populates="payments")
