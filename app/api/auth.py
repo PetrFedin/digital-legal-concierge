@@ -229,7 +229,10 @@ async def login(
         session_version=user.session_version,
         mfa_verified=False,
     )
-    response = RedirectResponse(url="/admin-ui", status_code=303)
+    # All staff roles land on the canonical authenticated hub. Role-specific
+    # workspaces are selected there; login no longer depends on an early
+    # /admin-ui shadow route to rescue lawyer sessions.
+    response = RedirectResponse(url="/operator", status_code=303)
     _set_session_cookie(response, token)
     return response
 
