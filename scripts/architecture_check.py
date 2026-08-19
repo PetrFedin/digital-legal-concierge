@@ -20,6 +20,25 @@ def python_files():
     yield from APP.rglob("*.py")
 
 
+def _assignment_targets(node: ast.AST) -> list[ast.expr]:
+    if isinstance(node, ast.Assign):
+        return list(node.targets)
+    if isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+        return [node.target]
+    return []
+
+
+def _root_name(node: ast.AST | None) -> str | None:
+    current = node
+    while isinstance(current, ast.Attribute):
+        current = current.value
+    return current.id if isinstance(current, ast.Name) else None
+
+
+def _contains_name(node: ast.AST, value: str) -> bool:
+    return any(isinstance(item, ast.Name) and item.id == value for item in ast.walk(node))
+
+
 def check_case_status_writes() -> list[str]:
     errors = []
     allowed = APP / "domain" / "cases" / "case_service.py"
@@ -32,13 +51,7 @@ def check_case_status_writes() -> list[str]:
             errors.append(f"{path.relative_to(ROOT)}: syntax error: {error}")
             continue
         for node in ast.walk(tree):
-            targets = []
-            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
-                if isinstance(node, ast.Assign):
-                    targets = node.targets
-                else:
-                    targets = [node.target]
-            for target in targets:
+            for target in _assignment_targets(node):
                 if (
                     isinstance(target, ast.Attribute)
                     and target.attr == "status"
@@ -49,6 +62,52 @@ def check_case_status_writes() -> list[str]:
                         f"{path.relative_to(ROOT)}:{node.lineno}: "
                         "case.status must be changed through CaseService"
                     )
+    return errors
+
+
+def check_payment_status_writes() -> list[str]:
+    """Financial status writes must pass one lifecycle boundary.
+
+    Timestamps, PaymentEvent projection and future reconciliation rules all rely
+    on observing the same transition. Product code therefore may not mutate a
+    Payment status directly or through ``update(Payment).values(status=...)``.
+    Creation-time ``Payment(status=...)`` is intentionally allowed because that
+    is not a transition of an existing financial record.
+    """
+
+    errors: list[str] = []
+    allowed = APP / "domain" / "payments" / "payment_lifecycle.py"
+    for path in python_files():
+        if path == allowed:
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError as error:
+            errors.append(f"{path.relative_to(ROOT)}: syntax error: {error}")
+            continue
+
+        for node in ast.walk(tree):
+            for target in _assignment_targets(node):
+                if not isinstance(target, ast.Attribute) or target.attr != "status":
+                    continue
+                owner = (_root_name(target.value) or "").lower()
+                if "payment" in owner:
+                    errors.append(
+                        f"{path.relative_to(ROOT)}:{node.lineno}: "
+                        "Payment.status must be changed through PaymentLifecycleService"
+                    )
+
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Attribute) or node.func.attr != "values":
+                continue
+            if not any(keyword.arg == "status" for keyword in node.keywords):
+                continue
+            if _contains_name(node.func.value, "Payment"):
+                errors.append(
+                    f"{path.relative_to(ROOT)}:{node.lineno}: "
+                    "bulk Payment status updates must use PaymentLifecycleService"
+                )
     return errors
 
 
@@ -139,6 +198,7 @@ def main() -> None:
     assert_policy_complete()
     errors = [
         *check_case_status_writes(),
+        *check_payment_status_writes(),
         *check_forced_transition_bypasses(),
         *check_dead_bot_callbacks(),
         *check_calculator_clock_boundary(),
