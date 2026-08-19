@@ -104,15 +104,16 @@ def test_message_history_snapshots_case_before_rollback_and_binds_read_tracking(
             user = User(telegram_id=telegram_id, full_name="Boundary Test")
             db.add(user)
             await db.flush()
+            user_id = int(user.id)
             case_a = Case(
                 case_number="BOUNDARY-M1-A",
-                client_id=user.id,
+                client_id=user_id,
                 route="M1",
                 status="M1_DOCUMENTS_PENDING",
             )
             case_b = Case(
                 case_number="BOUNDARY-M2-B",
-                client_id=user.id,
+                client_id=user_id,
                 route="M2",
                 status="M2_DESCRIPTION_PENDING",
             )
@@ -120,7 +121,7 @@ def test_message_history_snapshots_case_before_rollback_and_binds_read_tracking(
             await db.flush()
             db.add(
                 ClientCaseContext(
-                    client_id=user.id,
+                    client_id=user_id,
                     selected_case_id=case_b.id,
                 )
             )
@@ -146,10 +147,10 @@ def test_message_history_snapshots_case_before_rollback_and_binds_read_tracking(
         )
         async with session_factory() as db:
             await present_message_history(callback, db, _FakeState())
-            unread = await db.scalar(
+            is_read = await db.scalar(
                 select(Message.is_read).where(Message.case_id == case_a_id)
             )
-            assert unread is False
+            assert is_read is False
 
         assert callback.message.text is not None
         assert "BOUNDARY-M1-A" in callback.message.text
@@ -158,11 +159,7 @@ def test_message_history_snapshots_case_before_rollback_and_binds_read_tracking(
         # Once the client explicitly selects Case A, the same presentation path
         # can safely mark the visible lawyer message as read after its rollback.
         async with session_factory() as db:
-            context = await db.get(ClientCaseContext, telegram_id - telegram_id + 1)
-            if context is None:
-                user = await db.scalar(select(User).where(User.telegram_id == telegram_id))
-                assert user is not None
-                context = await db.get(ClientCaseContext, int(user.id))
+            context = await db.get(ClientCaseContext, user_id)
             assert context is not None
             context.selected_case_id = case_a_id
             await db.commit()
