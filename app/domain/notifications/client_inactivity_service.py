@@ -43,6 +43,14 @@ _REMINDER_ACTIONS = {
 }
 
 
+def _utc(value: datetime) -> datetime:
+    """Normalize DB datetimes without depending on the application host timezone."""
+
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 class ClientInactivityReminderService:
     """Emit one re-engagement reminder per stable client/stage snapshot."""
 
@@ -54,7 +62,7 @@ class ClientInactivityReminderService:
         if not settings.client_inactivity_reminders_enabled:
             return 0
 
-        current = now or datetime.now(timezone.utc)
+        current = _utc(now or datetime.now(timezone.utc))
         hours = max(1, int(settings.client_inactivity_reminder_hours))
         cutoff = current - timedelta(hours=hours)
         rows = (
@@ -79,7 +87,7 @@ class ClientInactivityReminderService:
             next_action = _REMINDER_ACTIONS.get(status)
             if not next_action or case.last_client_action_at is None:
                 continue
-            anchor = case.last_client_action_at.astimezone(timezone.utc).isoformat()
+            anchor = _utc(case.last_client_action_at).isoformat()
             created = await self.notifications.emit(
                 event_code="CLIENT_INACTIVITY_REMINDER",
                 case_id=case.id,
