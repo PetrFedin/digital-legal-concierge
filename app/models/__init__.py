@@ -2,6 +2,7 @@ from app.models.base import Base
 from app.models.user import User
 from app.models.lawyer import Lawyer
 from app.models.case import Case
+from app.models.client_case_context import ClientCaseContext
 from app.models.case_retention import CaseRetentionRecord
 from app.models.calculation import Calculation
 from app.models.document import Document
