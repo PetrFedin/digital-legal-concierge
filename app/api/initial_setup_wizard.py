@@ -9,7 +9,6 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.access_role_guard import router as access_role_guard_router
-from app.api.consultation_outcomes_ui_guard import router as consultation_outcomes_ui_guard_router
 from app.api.operator_guard import router as operator_guard_router
 from app.api.workdesk_integrity_guard import router as workdesk_integrity_guard_router
 from app.config import settings
@@ -205,12 +204,11 @@ async def initial_setup_ui(
     )
 
 
-# Temporary compatibility mounts. They no longer own /health, /ready,
-# /operator, /admin-ui, /install-wizard or /launch-assistant. Each remaining
-# public path is being consolidated into one canonical module.
+# Remaining compatibility mounts own only unique paths. Consultation outcomes
+# was removed from this container: its complete public vertical is registered by
+# app.api.consultation_outcomes_product in the application assembly.
 router.include_router(access_role_guard_router)
 router.include_router(operator_guard_router)
-router.include_router(consultation_outcomes_ui_guard_router)
 router.include_router(workdesk_integrity_guard_router)
 
 __all__ = ["router"]
