@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from app.main import create_app
+
 ROOT = Path(__file__).resolve().parents[1]
 MAIN = ROOT / "app" / "main.py"
 
@@ -59,13 +61,43 @@ def test_consultation_outcomes_no_longer_depend_on_router_include_order():
     assert "consultation_outcomes_ui_guard_router" not in source
 
 
-def test_public_app_level_health_ready_are_shadowed_by_early_minimal_routes():
+def test_workdesk_integrity_no_longer_depends_on_initial_setup_mount_order():
     main = MAIN.read_text(encoding="utf-8")
     setup = read("app/api/initial_setup_wizard.py")
-    assert '@router.get("/health")' in setup
-    assert '@router.get("/ready")' in setup
-    assert "JSONResponse(status_code=503" in setup
-    assert main.index('(\"initial_setup_wizard\",') < main.index("for _, router in router_specs:")
+    product = read("app/api/workdesk_integrity_product.py")
+
+    assert "from app.api.workdesk_integrity_product import router as workdesk_integrity_product_router" in main
+    assert '("workdesk_integrity_product", workdesk_integrity_product_router)' in main
+    assert "workdesk_integrity_guard_router" not in setup
+    assert '"/admin/workdesk/integrity"' in product
+    assert "workdesk_integrity_guard" in product
+
+
+def test_launch_health_and_ready_each_have_one_runtime_owner():
+    main = MAIN.read_text(encoding="utf-8")
+    setup = read("app/api/initial_setup_wizard.py")
+
+    assert '@router.get("/launch-check")' in setup
+    assert '@app.get("/launch-check")' not in main
+    assert '@router.get("/health")' not in setup
+    assert '@router.get("/ready")' not in setup
+    assert '@app.get("/health")' in main
+    assert '@app.get("/ready")' in main
+
+    routes = create_app().routes
+    for method, path in (
+        ("GET", "/launch-check"),
+        ("GET", "/health"),
+        ("GET", "/ready"),
+        ("GET", "/admin/workdesk/integrity"),
+    ):
+        owners = [
+            route
+            for route in routes
+            if getattr(route, "path", None) == path
+            and method in (getattr(route, "methods", None) or set())
+        ]
+        assert len(owners) == 1, (method, path, [route.name for route in owners])
 
 
 def test_legacy_demo_panels_are_not_sources_of_live_readiness():
