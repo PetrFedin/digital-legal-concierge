@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
+from app.domain.payments.payment_lifecycle import PaymentLifecycleService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.consultation_statuses import ConsultationStatus
@@ -123,8 +124,10 @@ class SlotService:
                 ).scalars().all()
             )
             for payment in payment_rows:
-                old_status = payment.status
-                payment.status = PaymentStatus.EXPIRED
+                transition = PaymentLifecycleService.transition(
+                    payment,
+                    to_status=PaymentStatus.EXPIRED,
+                )
                 case_id = int(payment.case_id)
                 payment_ids_by_case.setdefault(case_id, []).append(int(payment.id))
                 await add_case_history_event(
@@ -135,12 +138,12 @@ class SlotService:
                     action="CONSULTATION_PAYMENT_LINK_EXPIRED",
                     old_value={
                         "payment_id": payment.id,
-                        "status": old_status,
+                        "status": transition.old_status.value,
                         "reservation_key": payment.reservation_key,
                     },
                     new_value={
                         "payment_id": payment.id,
-                        "status": payment.status,
+                        "status": transition.new_status.value,
                         "reason": "slot_hold_expired",
                     },
                     comment=(
