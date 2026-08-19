@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
 from app.domain.notifications.notification_engine import NotificationEngine
+from app.domain.payments.payment_lifecycle import PaymentLifecycleService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.consultation_statuses import ConsultationStatus
@@ -179,7 +180,10 @@ class NoShowResolutionService:
         consultation.slot_id = None
         consultation.scheduled_at = None
         consultation.status = ConsultationStatus.CANCELLED
-        payment.status = PaymentStatus.REFUND_PENDING
+        transition = PaymentLifecycleService.transition(
+            payment,
+            to_status=PaymentStatus.REFUND_PENDING,
+        )
         await self._advance_refund_case(
             case=case,
             admin_id=admin_id,
@@ -198,7 +202,7 @@ class NoShowResolutionService:
                 "consultation_id": consultation.id,
                 "consultation_status": consultation.status,
                 "payment_id": payment.id,
-                "payment_status": payment.status,
+                "payment_status": transition.new_status.value,
                 "next_action": case.next_action,
             },
             comment=normalized_comment,
