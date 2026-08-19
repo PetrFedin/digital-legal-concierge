@@ -11,7 +11,7 @@ def test_workdesk_m2_projections_use_effective_slot_responsibility():
     assignment = read("app/api/assignment_queue.py")
     assignment_product = read("app/api/assignment_queue_product.py")
     workdesk_product = read("app/api/workdesk_product.py")
-    guard_helpers = read("app/api/workdesk_ui_guard.py")
+    projections = read("app/api/workdesk_projections.py")
 
     assert "effective_lawyer_ids_for_cases" in assignment
     assert "async def _m2_responsibility_by_case" in assignment
@@ -20,7 +20,8 @@ def test_workdesk_m2_projections_use_effective_slot_responsibility():
     assert '"/admin/workdesk/cases/{case_id}/responsibility"' in assignment_product
     assert '"/admin/work-queues/consultations"' in assignment_product
     assert "guarded_workdesk_attention" in workdesk_product
-    assert "_m2_responsibility_by_case" in guard_helpers
+    assert "effective_lawyer_ids_for_cases" in projections
+    assert "async def _m2_responsibility_by_case" in projections
 
 
 def test_m2_case_workspace_is_corrected_by_exact_responsibility_projection():
