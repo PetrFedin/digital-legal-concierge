@@ -7,23 +7,33 @@ def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_consultation_outcome_ui_is_early_guarded_and_preserves_guided_patches():
-    source = read("app/api/consultation_outcomes_ui_guard.py")
+def test_consultation_outcome_ui_has_one_product_owner_and_preserves_existing_m2_patches():
+    product = read("app/api/consultation_outcomes_product.py")
+    retired_guard = read("app/api/consultation_outcomes_ui_guard.py")
     initial_setup = read("app/api/initial_setup_wizard.py")
     main = read("app/main.py")
 
-    assert '@router.get("/admin/consultation-outcomes/ui"' in source
-    assert "_inject_client_no_show_ui(OUTCOMES_HTML)" in source
-    assert "inject_legacy_outcome_ui(html)" in source
-    assert "router.include_router(legacy_consultation_outcome_router)" in source
-    assert "router.include_router(consultation_outcomes_ui_guard_router)" in initial_setup
-    assert main.index('(\"initial_setup_wizard\", initial_setup_wizard_router)') < main.index(
-        '(\"guided_consultation_outcomes\", guided_consultation_outcomes_router)'
-    )
+    assert 'prefix="/admin/consultation-outcomes"' in product
+    assert '@router.get("/ui"' in product
+    assert "_inject_client_no_show_ui(OUTCOMES_HTML)" in product
+    assert "inject_legacy_outcome_ui(html)" in product
+    assert "legacy_outcome_queue" in product
+    assert "resolve_legacy_outcome" in product
+
+    # The old guard is deliberately importable but owns no public path and the
+    # setup router must no longer mount it as a competing FastAPI owner.
+    assert "router = APIRouter" in retired_guard
+    assert "@router." not in retired_guard
+    assert "router.add_api_route" not in retired_guard
+    assert "consultation_outcomes_ui_guard_router" not in initial_setup
+
+    assert "consultation_outcomes_product_router" in main
+    assert "guided_consultation_outcomes_router" not in main
+    assert "consultation_outcomes_ui_guard_router" not in main
 
 
-def test_consultation_outcome_ui_recovers_wrong_or_incomplete_staff_role():
-    source = read("app/api/consultation_outcomes_ui_guard.py")
+def test_consultation_outcome_product_ui_recovers_wrong_or_incomplete_staff_role():
+    source = read("app/api/consultation_outcomes_product.py")
 
     assert "except DocumentAccessError as error:" in source
     assert "except HTTPException as error:" in source
