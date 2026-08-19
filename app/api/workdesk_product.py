@@ -1,31 +1,39 @@
 """Single runtime owner for the existing daily Workdesk surface.
 
-The legacy ``workdesk`` and ``assignment_queue`` modules remain implementation
-libraries. Their routers are deliberately not mounted by application assembly.
-This module registers the existing Workdesk read/action screens exactly once and
-uses the personally-authenticated guided UI implementation already shipped for
-M1/M2 operations. No new Workdesk capability is introduced.
+Legacy modules remain implementation libraries and are not mounted by the app.
+The product router owns the shipped Workdesk URLs exactly once and deliberately
+uses the hardened personal-session implementations where browser navigation or
+M2 responsibility require them. No new business capability is introduced.
 """
 
 from fastapi import APIRouter
 
 from app.api.assignment_queue import guided_workdesk_ui
 from app.api.workdesk import (
-    workdesk_attention,
-    workdesk_case_action,
     workdesk_case_consultation_outcomes,
     workdesk_case_consultations_today,
     workdesk_case_documents,
     workdesk_case_sla,
+)
+from app.api.workdesk_ui_guard import (
+    guarded_active_work_queue,
+    guarded_workdesk_attention,
+    guarded_workdesk_case_action,
 )
 
 router = APIRouter(tags=["admin", "workdesk"])
 
 router.add_api_route(
     "/admin/workdesk/attention",
-    workdesk_attention,
+    guarded_workdesk_attention,
     methods=["GET"],
     name="workdesk_attention",
+)
+router.add_api_route(
+    "/admin/work-queues/active",
+    guarded_active_work_queue,
+    methods=["GET"],
+    name="active_work_queue",
 )
 router.add_api_route(
     "/admin/workdesk/cases/{case_id}/documents",
@@ -53,7 +61,7 @@ router.add_api_route(
 )
 router.add_api_route(
     "/admin/workdesk/cases/{case_id}/action/{task}",
-    workdesk_case_action,
+    guarded_workdesk_case_action,
     methods=["GET"],
     name="workdesk_case_action",
 )
