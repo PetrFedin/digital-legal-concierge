@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -60,25 +59,24 @@ class CalculatorService:
             )
         )
 
-        query = await self.db.execute(
-            select(Calculation).where(Calculation.case_id == case.id)
+        # Every completed calculation is a historical fact. Never overwrite a
+        # previous Calculation: the approved model is Case -> Calculation 1:N,
+        # and readers determine the current value by newest created_at/id.
+        calculation = Calculation(
+            case_id=case.id,
+            contract_price=result.contract_price,
+            planned_transfer_date=result.planned_transfer_date,
+            calculation_date=result.calculation_date,
+            actual_transfer_date=result.actual_transfer_date,
+            object_transferred=result.object_transferred,
+            delay_days=result.delay_days,
+            key_rate=result.key_rate,
+            consumer_multiplier=result.consumer_multiplier,
+            penalty_amount=result.penalty_amount,
+            formula_version=result.formula_version,
+            is_preliminary=True,
         )
-        calculation = query.scalars().first()
-        if calculation is None:
-            calculation = Calculation(case_id=case.id)
-            self.db.add(calculation)
-
-        calculation.contract_price = result.contract_price
-        calculation.planned_transfer_date = result.planned_transfer_date
-        calculation.calculation_date = result.calculation_date
-        calculation.actual_transfer_date = result.actual_transfer_date
-        calculation.object_transferred = result.object_transferred
-        calculation.delay_days = result.delay_days
-        calculation.key_rate = result.key_rate
-        calculation.consumer_multiplier = result.consumer_multiplier
-        calculation.penalty_amount = result.penalty_amount
-        calculation.formula_version = result.formula_version
-        calculation.is_preliminary = True
+        self.db.add(calculation)
 
         # Recalculation must not silently move a case backwards from an active
         # legal or consultation stage. Only the initial calculator phase changes
@@ -92,6 +90,7 @@ class CalculatorService:
                 comment="Предварительный расчёт сохранён",
             )
 
+        await self.db.flush()
         await add_case_history_event(
             self.db,
             actor_type="client",
@@ -99,6 +98,7 @@ class CalculatorService:
             case_id=case.id,
             action="CALCULATION_COMPLETED",
             new_value={
+                "calculation_id": calculation.id,
                 "penalty_amount": str(result.penalty_amount),
                 "delay_days": result.delay_days,
                 "calculation_date": result.calculation_date.isoformat(),
