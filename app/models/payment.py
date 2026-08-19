@@ -3,10 +3,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, String, event
+from sqlalchemy import DateTime, ForeignKey, Numeric, String, event, inspect
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
+from app.models.payment_event import PaymentEvent
 
 
 class Payment(Base, TimestampMixin):
@@ -70,6 +71,28 @@ def _status_value(value: object) -> str:
     return str(raw or "").strip().upper()
 
 
+def _ledger_snapshot(
+    target: Payment,
+    *,
+    event_type: str,
+    status_before: str | None,
+) -> dict[str, object]:
+    return {
+        "payment_id": int(target.id),
+        "case_id": int(target.case_id),
+        "event_type": event_type,
+        "status_before": status_before,
+        "status_after": _status_value(target.status),
+        "payment_code": str(target.payment_code),
+        "amount": target.amount,
+        "currency": str(target.currency or "RUB"),
+        "provider": target.provider,
+        "provider_payment_id": target.provider_payment_id,
+        "reservation_key": target.reservation_key,
+        "source": "payment_model",
+    }
+
+
 @event.listens_for(Payment.status, "set", active_history=True)
 def _stamp_payment_lifecycle_fact(
     target: Payment,
@@ -102,3 +125,46 @@ def _stamp_payment_lifecycle_fact(
     timestamp_field = _LIFECYCLE_TIMESTAMP_FIELDS.get(new_status)
     if timestamp_field and getattr(target, timestamp_field, None) is None:
         setattr(target, timestamp_field, now)
+
+
+@event.listens_for(Payment, "after_insert")
+def _append_payment_created_event(_mapper, connection, target: Payment) -> None:
+    """Append the initial normalized financial snapshot in the same transaction."""
+
+    connection.execute(
+        PaymentEvent.__table__.insert().values(
+            **_ledger_snapshot(
+                target,
+                event_type="CREATED",
+                status_before=None,
+            )
+        )
+    )
+
+
+@event.listens_for(Payment, "after_update")
+def _append_payment_status_transition(_mapper, connection, target: Payment) -> None:
+    """Append exactly one ledger row when the persisted payment status changes.
+
+    This database-write hook deliberately records only normalized financial
+    lifecycle facts. Provider payload evidence remains in PaymentWebhookEvent and
+    actor/business provenance remains in Case/Audit history, so the three ledgers
+    complement rather than duplicate one another.
+    """
+
+    history = inspect(target).attrs.status.history
+    if not history.has_changes():
+        return
+    old_status = _status_value(history.deleted[0]) if history.deleted else None
+    new_status = _status_value(target.status)
+    if old_status == new_status:
+        return
+    connection.execute(
+        PaymentEvent.__table__.insert().values(
+            **_ledger_snapshot(
+                target,
+                event_type="STATUS_CHANGED",
+                status_before=old_status or None,
+            )
+        )
+    )
