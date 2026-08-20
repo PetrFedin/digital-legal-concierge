@@ -64,4 +64,5 @@ jobs:
           pytest -q
           tests/test_postgres_multi_case_concurrency.py
           tests/test_postgres_payment_concurrency.py
+          tests/test_postgres_refund_retry_race.py
           tests/test_postgres_staff_concurrency.py
