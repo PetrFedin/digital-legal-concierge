@@ -10,6 +10,7 @@ from app.domain.consultations.slot_service import SlotService
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.payments.payment_lifecycle import PaymentLifecycleService
 from app.domain.payments.payment_types import PaymentCode
+from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models.case import Case
@@ -43,8 +44,8 @@ class ConsultationRefundService:
     """Shared refund resolution plus consultation-specific cancellation logic.
 
     The historical class name is kept for compatibility. Requesting a client
-    cancellation is still M2-only, while resolving an already-created
-    REFUND_PENDING payment works for both M2 and stale M1 receipts.
+    cancellation is still M2-only, while resolving or reopening an already-created
+    refund workflow works for both M2 and stale M1 receipts.
     """
 
     def __init__(self, db: AsyncSession):
@@ -209,6 +210,91 @@ class ConsultationRefundService:
         await self.db.flush()
         return consultation, payment
 
+    async def reopen_declined_refund(
+        self,
+        *,
+        payment_id: int,
+        actor_id: int | None,
+        comment: str,
+    ) -> tuple[Payment, Case]:
+        """Return an explicitly declined refund to the existing work queue.
+
+        This is an idempotent financial-state operation, not a money movement.
+        Payment is locked before Case so retry and final resolution share one
+        deterministic lock order under PostgreSQL concurrency.
+        """
+
+        normalized_comment = str(comment or "").strip()
+        if len(normalized_comment) < 10:
+            raise ValueError(
+                "Опишите, что исправлено перед повторным возвратом — минимум 10 символов"
+            )
+
+        payment = (
+            await self.db.execute(
+                select(Payment)
+                .where(Payment.id == int(payment_id))
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if payment is None:
+            raise LookupError("Платёж не найден")
+
+        case = (
+            await self.db.execute(
+                select(Case)
+                .where(Case.id == payment.case_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if case is None:
+            raise LookupError("Дело не найдено")
+
+        if payment.status == PaymentStatus.REFUND_PENDING:
+            return payment, case
+        if payment.status != PaymentStatus.REFUND_DECLINED:
+            raise ValueError(
+                "Повторно открыть можно только возврат со статусом REFUND_DECLINED"
+            )
+
+        transition = PaymentLifecycleService.transition(
+            payment,
+            to_status=PaymentStatus.REFUND_PENDING,
+        )
+        if (
+            str(payment.payment_code) == PaymentCode.M2_CONSULTATION_PAYMENT.value
+            and str(case.status) == CaseStatus.M2_CONSULTATION_DONE.value
+        ):
+            case.next_action = (
+                "Повторный возврат открыт: выполнить фактическую операцию у провайдера и зафиксировать результат"
+            )
+
+        action = (
+            "CONSULTATION_REFUND_REOPENED"
+            if str(payment.payment_code) == PaymentCode.M2_CONSULTATION_PAYMENT.value
+            else "M1_PAYMENT_REFUND_REOPENED"
+        )
+        await add_case_history_event(
+            self.db,
+            actor_type="admin",
+            actor_id=actor_id,
+            case_id=case.id,
+            action=action,
+            old_value={
+                "payment_id": payment.id,
+                "status": transition.old_status.value,
+            },
+            new_value={
+                "payment_id": payment.id,
+                "status": transition.new_status.value,
+                "case_status_preserved": str(case.status),
+                "case_route_preserved": case.route,
+            },
+            comment=normalized_comment,
+        )
+        await self.db.flush()
+        return payment, case
+
     async def resolve_refund(
         self,
         *,
@@ -234,6 +320,16 @@ class ConsultationRefundService:
         if not payment:
             raise LookupError("Платёж не найден")
 
+        case = (
+            await self.db.execute(
+                select(Case)
+                .where(Case.id == payment.case_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if not case:
+            raise LookupError("Дело не найдено")
+
         if (
             normalized_decision == "refunded"
             and payment.status == PaymentStatus.REFUNDED
@@ -248,10 +344,6 @@ class ConsultationRefundService:
             raise ValueError(
                 "Платёж не находится в статусе ожидания решения по возврату"
             )
-
-        case = await self.db.get(Case, payment.case_id)
-        if not case:
-            raise LookupError("Дело не найдено")
 
         is_consultation = payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT
         target_status = (
