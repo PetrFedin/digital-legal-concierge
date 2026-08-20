@@ -7,20 +7,17 @@ def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_proof_bound_payment_recovery_is_reachable_before_legacy_workdesk():
+def test_proof_bound_payment_recovery_is_reachable_without_workdesk_string_surgery():
     timeline = read("app/api/workdesk_timeline.py")
-    initial_setup = read("app/api/initial_setup_wizard.py")
+    setup = read("app/api/initial_setup_wizard.py")
     main = read("app/main.py")
 
     assert "router.include_router(m1_internal_payment_recovery_router)" in timeline
-    assert "router.include_router(workdesk_integrity_guard_router)" in initial_setup
-    assert "router.include_router(workdesk_integrity_guard_router)" not in timeline
-    assert main.index('(\"initial_setup_wizard\", initial_setup_wizard_router)') < main.index(
-        '(\"workdesk_timeline\", workdesk_timeline_router)'
-    )
-    assert main.index('(\"workdesk_timeline\", workdesk_timeline_router)') < main.index(
-        '(\"workdesk\", workdesk_router)'
-    )
+    assert "inject_workdesk_integrity" not in timeline
+    assert "WORKDESK_HTML =" not in timeline
+    assert "operator_guard_router" not in setup
+    assert "workdesk_integrity_product_router" in main
+    assert "workdesk_product_router" in main
 
 
 def test_assignment_excludes_business_profiles_without_live_lawyer_login():
@@ -37,20 +34,18 @@ def test_assignment_excludes_business_profiles_without_live_lawyer_login():
 
 
 def test_legacy_lawyer_creation_cannot_manufacture_an_unreachable_assignee():
-    source = read("app/api/admin_queue_guard.py")
-    main = read("app/main.py")
+    guard = read("app/api/admin_queue_guard.py")
+    admin = read("app/api/admin.py")
 
-    assert '@router.get("/lawyers")' in source
-    assert '@router.post("/lawyers")' in source
-    retired = source.split('@router.post("/lawyers")', 1)[1].split(
+    assert '@router.get("/lawyers")' in guard
+    assert '@router.post("/lawyers")' in guard
+    retired = guard.split('@router.post("/lawyers")', 1)[1].split(
         '@router.post("/scheduler/run-once")', 1
     )[0]
     assert "Lawyer(" not in retired
     assert '"canonical_path": "/access/ui"' in retired
     assert '"required_role": "superadmin"' in retired
-    assert main.index('(\"admin_queue_guard\", admin_queue_guard_router)') < main.index(
-        '(\"admin\", admin_router)'
-    )
+    assert '"/lawyers"' not in admin
 
 
 def test_manual_full_scheduler_requires_personal_mfa_superadmin_and_audit():
@@ -76,12 +71,13 @@ def test_workdesk_flags_old_unreachable_assignments_and_paid_transient_stalls():
     assert "PaymentStatus.PAID.value" in guard
 
 
-def test_telegram_stale_m1_views_are_mounted_before_legacy_m1_handlers():
-    source = read("app/bot/bot.py")
+def test_telegram_stale_m1_views_are_owned_by_payment_archive_before_legacy_m1_handlers():
+    bot = read("app/bot/bot.py")
+    archive = read("app/bot/screens/payment_archive_guard.py")
     stale = read("app/bot/screens/m1_stale_view_guard.py")
 
-    assert "m1_stale_view_guard," in source
-    assert source.index("m1_stale_view_guard.router,") < source.index("m1_stages.router,")
+    assert "router.include_router(m1_stale_view_guard_router)" in archive
+    assert bot.index("payment_archive_guard.router,") < bot.index("m1_stages.router,")
     assert 'callback.data != "poa_instruction"' in stale
     assert 'callback.data != "court_status"' in stale
     assert "Старое сообщение ничего не изменило" in stale
