@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from app.main import create_app
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -7,33 +9,59 @@ def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_admin_ui_or_login_distinguishes_session_expiry_from_role_mismatch():
-    source = read("app/api/initial_setup_wizard.py")
-    block = source.split("async def _admin_ui_or_login", 1)[1].split(
-        "async def _staff_ui_or_login", 1
-    )[0]
-
-    assert "error.status_code == 401" in block
-    assert "return None" in block
-    assert "error.status_code in {403, 409}" in block
-    assert "StaffLandingProblem" in block
-    assert "except HTTPException as error:" in block
+def _only(method: str, path: str):
+    rows = [
+        route
+        for route in create_app().routes
+        if getattr(route, "path", None) == path
+        and method in (getattr(route, "methods", None) or set())
+    ]
+    assert len(rows) == 1, (method, path, [row.name for row in rows])
+    return rows[0]
 
 
-def test_legacy_setup_ui_bookmarks_recover_wrong_staff_role_to_canonical_landing():
-    source = read("app/api/initial_setup_wizard.py")
+def test_initial_setup_ui_recovers_anonymous_and_role_mismatch_on_its_own_handler():
+    facade = read("app/api/initial_setup_wizard.py")
+    impl = read("app/api/initial_setup_wizard_impl.py")
 
-    assert "def _legacy_admin_ui_recovery" in source
+    assert '"/initial-setup-wizard/ui"' in facade
+    assert "operator_guard_router" not in facade
+    assert "async def _ui_admin_or_redirect(" in impl
+    assert 'RedirectResponse(url="/login", status_code=303)' in impl
+    assert 'RedirectResponse(url="/operator", status_code=303)' in impl
+    assert "error.status_code in {403, 409}" in impl
+    assert "gate = await _ui_admin_or_redirect(request, db, x_admin_token)" in impl
+    _only("GET", "/initial-setup-wizard/ui")
+
+
+def test_install_wizard_ui_has_explicit_admin_recovery_without_setup_precedence():
+    source = read("app/api/install_wizard.py")
+
+    assert "async def _ui_admin_or_redirect(" in source
     assert 'RedirectResponse(url="/login", status_code=303)' in source
     assert 'RedirectResponse(url="/admin-ui", status_code=303)' in source
+    assert "gate = await _ui_admin_or_redirect(request, db, x_admin_token)" in source
+    _only("GET", "/install-wizard/ui")
 
-    for function_name in (
-        "setup_ui",
-        "install_wizard_ui_guard",
-        "launch_assistant_ui_guard",
+
+def test_launch_assistant_ui_has_explicit_admin_recovery_without_setup_precedence():
+    source = read("app/api/launch_assistant.py")
+
+    assert "async def _ui_admin_or_redirect(" in source
+    assert 'RedirectResponse(url="/login", status_code=303)' in source
+    assert 'RedirectResponse(url="/admin-ui", status_code=303)' in source
+    assert "gate = await _ui_admin_or_redirect(request, db, x_admin_token)" in source
+    _only("GET", "/launch-assistant")
+
+
+def test_setup_related_paths_have_single_runtime_owners():
+    for method, path in (
+        ("GET", "/launch-check"),
+        ("GET", "/initial-setup-wizard/status"),
+        ("GET", "/initial-setup-wizard/ui"),
+        ("GET", "/install-wizard"),
+        ("GET", "/install-wizard/ui"),
+        ("GET", "/launch-assistant/status"),
+        ("GET", "/launch-assistant"),
     ):
-        block = source.split(f"async def {function_name}", 1)[1]
-        assert "actor = await _admin_ui_or_login" in block
-        assert "recovery = _legacy_admin_ui_recovery(actor)" in block
-        assert "if recovery is not None:" in block
-        assert "return recovery" in block
+        _only(method, path)
