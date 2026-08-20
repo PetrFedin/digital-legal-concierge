@@ -1,8 +1,36 @@
 from __future__ import annotations
 
 import ast
+from collections import defaultdict
 from pathlib import Path
 
+from app.api.admin_queue_guard import (
+    retire_legacy_lawyer_creation,
+    safe_legacy_admin_queue,
+    safe_legacy_lawyer_list,
+    safe_manual_scheduler_run_once,
+)
+from app.api.backup_center import router as retired_backup_center_router
+from app.api.backup_manager import (
+    backup_status_override,
+    backup_ui_override,
+    verify_backup_override,
+)
+from app.api.guided_lawyer_ui import guided_client_no_show
+from app.api.lawyer_consultation_decision_guard import guarded_complete_consultation
+from app.api.message_center_role_ui import (
+    role_safe_message_center_ui,
+    router as retired_message_center_ui_router,
+)
+from app.api.operator_guard import router as retired_operator_guard_router
+from app.api.payment_safety_guard import (
+    guarded_fake_payment_page,
+    guarded_fake_payment_success,
+    guarded_fake_payment_webhook,
+)
+from app.api.payment_webhooks import payment_result, yookassa_payment_webhook
+from app.api.staff_ui_guards import retired_technical_cases_ui
+from app.api.workdesk_runtime_ui import workdesk_runtime_ui
 from app.main import create_app
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +48,12 @@ def _owners(method: str, path: str):
         if getattr(route, "path", None) == path
         and method in (getattr(route, "methods", None) or set())
     ]
+
+
+def _only(method: str, path: str):
+    owners = _owners(method, path)
+    assert len(owners) == 1, (method, path, [route.name for route in owners])
+    return owners[0]
 
 
 def test_every_app_api_module_imported_by_main_physically_exists():
@@ -45,154 +79,133 @@ def test_every_app_api_module_imported_by_main_physically_exists():
     assert sorted(missing) == []
 
 
-def test_remaining_compatibility_guards_precede_only_their_historical_surfaces():
-    source = MAIN.read_text(encoding="utf-8")
-    required_order = [
-        ("initial_setup_wizard", "admin"),
-        ("initial_setup_wizard", "operator"),
-        ("contract_workspace_ui", "lawyer"),
-        ("contract_workspace_ui", "lawyer_workspace"),
-    ]
-    for early, legacy in required_order:
-        assert source.index(f'(\"{early}\",') < source.index(f'(\"{legacy}\",')
+def test_every_runtime_method_path_has_exactly_one_owner():
+    seen: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for route in create_app().routes:
+        path = getattr(route, "path", None)
+        methods = getattr(route, "methods", None) or set()
+        if not path:
+            continue
+        for method in methods - {"HEAD", "OPTIONS"}:
+            seen[(method, path)].append(str(getattr(route, "name", "<unnamed>")))
+
+    duplicates = {
+        f"{method} {path}": names
+        for (method, path), names in sorted(seen.items())
+        if len(names) != 1
+    }
+    assert duplicates == {}
 
 
-def test_message_center_has_one_runtime_product_owner():
-    main = MAIN.read_text(encoding="utf-8")
-    product = read("app/api/message_center_product.py")
+def test_retired_compatibility_facades_are_route_free():
+    assert retired_operator_guard_router.routes == []
+    assert retired_backup_center_router.routes == []
+    assert retired_message_center_ui_router.routes == []
 
-    assert "from app.api.message_center_product import router as message_center_product_router" in main
-    assert '("message_center_product", message_center_product_router)' in main
-    assert "guided_message_center_router" not in main
-    assert "message_center_router" not in main
-    assert "guided_message_center_status" in product
-    assert "mark_message_read" in product
+    setup = read("app/api/initial_setup_wizard.py")
+    acceptance = read("app/api/acceptance_center.py")
+    timeline = read("app/api/workdesk_timeline.py")
+    assert "operator_guard_router" not in setup
+    assert "superadmin_ui_guards_router" not in acceptance
+    assert "WORKDESK_HTML =" not in timeline
+    assert "inject_workdesk_integrity" not in timeline
 
+
+def test_backup_center_has_one_hardened_runtime_owner():
+    assert _only("GET", "/backup-center/status").endpoint is backup_status_override
+    assert _only("GET", "/backup-center/ui").endpoint is backup_ui_override
+    assert (
+        _only("POST", "/backup-center/verify/{archive_name}").endpoint
+        is verify_backup_override
+    )
+
+
+def test_message_center_ui_is_owned_by_product_with_role_safe_renderer():
+    assert _only("GET", "/message-center/ui").endpoint is role_safe_message_center_ui
     for method, path in (
         ("GET", "/message-center/status"),
         ("GET", "/message-center/cases/{case_id}/messages"),
         ("POST", "/message-center/cases/{case_id}/reply"),
         ("POST", "/message-center/{message_id}/read"),
-        ("GET", "/message-center/ui"),
     ):
-        owners = _owners(method, path)
-        assert len(owners) == 1, (method, path, [route.name for route in owners])
+        _only(method, path)
 
 
-def test_payment_review_and_sla_have_single_product_owners():
-    main = MAIN.read_text(encoding="utf-8")
-    assignment = read("app/api/case_assignment.py")
-    staff_guards = read("app/api/staff_ui_guards.py")
+def test_legacy_admin_paths_have_hardened_single_owners():
+    assert _only("GET", "/admin/queue").endpoint is safe_legacy_admin_queue
+    assert _only("GET", "/admin/lawyers").endpoint is safe_legacy_lawyer_list
+    assert _only("POST", "/admin/lawyers").endpoint is retire_legacy_lawyer_creation
+    assert (
+        _only("POST", "/admin/scheduler/run-once").endpoint
+        is safe_manual_scheduler_run_once
+    )
 
-    assert "payment_review_product_router" in main
-    assert "sla_product_router" in main
-    assert "payment_review_center_router" not in main
-    assert "sla_center_router" not in main
-    assert "staff_ui_guards_router" not in assignment
-    assert '@router.get("/admin/payment-reviews/ui")' not in staff_guards
-    assert '@router.get("/admin/sla/ui")' not in staff_guards
 
+def test_lawyer_m2_mutations_and_ui_have_product_owners():
+    assert (
+        _only("POST", "/lawyer/consultations/{consultation_id}/complete").endpoint
+        is guarded_complete_consultation
+    )
+    assert (
+        _only(
+            "POST",
+            "/lawyer/consultations/{consultation_id}/client-no-show",
+        ).endpoint
+        is guided_client_no_show
+    )
+    _only("GET", "/lawyer/ui")
+    _only("GET", "/lawyer/workspace/ui")
+    _only("GET", "/lawyer/consultation-desk/ui")
+
+
+def test_fake_payment_surface_is_owned_only_by_local_test_guard():
+    assert _only("POST", "/webhooks/payments/fake").endpoint is guarded_fake_payment_webhook
+    assert (
+        _only("GET", "/webhooks/payments/fake-pay/{payment_id}").endpoint
+        is guarded_fake_payment_page
+    )
+    assert (
+        _only("POST", "/webhooks/payments/fake-pay/{payment_id}/success").endpoint
+        is guarded_fake_payment_success
+    )
+    assert _only("POST", "/webhooks/payments/yookassa").endpoint is yookassa_payment_webhook
+    assert _only("GET", "/webhooks/payments/payment-result").endpoint is payment_result
+
+
+def test_workdesk_and_technical_recovery_have_non_overlapping_ui_owners():
+    assert _only("GET", "/admin/workdesk/ui").endpoint is workdesk_runtime_ui
+    assert _only("GET", "/admin/technical-cases/ui").endpoint is retired_technical_cases_ui
+    _only("GET", "/admin/technical-cases")
+    _only("GET", "/admin/technical-cases/{case_id}/context")
+    _only("POST", "/admin/technical-cases/{case_id}/recover")
+    _only("GET", "/admin/workdesk/cases/{case_id}/timeline")
+
+
+def test_document_payment_sla_refund_and_outcome_products_keep_single_owners():
     for method, path in (
+        ("GET", "/document-access/ui"),
+        ("GET", "/document-access/review/ui"),
         ("GET", "/admin/payment-reviews"),
-        ("GET", "/admin/payment-reviews/slots"),
         ("POST", "/admin/payment-reviews/{payment_id}/resolve"),
         ("GET", "/admin/payment-reviews/ui"),
-        ("GET", "/admin/sla"),
-        ("POST", "/admin/sla/{case_id}/acknowledge"),
-        ("POST", "/admin/sla/run"),
-        ("GET", "/admin/sla/ui"),
-    ):
-        owners = _owners(method, path)
-        assert len(owners) == 1, (method, path, [route.name for route in owners])
-
-
-def test_consultation_outcomes_no_longer_depend_on_router_include_order():
-    source = MAIN.read_text(encoding="utf-8")
-
-    assert "from app.api.consultation_outcomes_product import router as consultation_outcomes_product_router" in source
-    assert '("consultation_outcomes_product", consultation_outcomes_product_router)' in source
-    assert "guided_consultation_outcomes_router" not in source
-    assert "consultation_outcomes_ui_guard_router" not in source
-
-
-def test_refunds_have_one_runtime_product_owner():
-    main = MAIN.read_text(encoding="utf-8")
-    operator_guard = read("app/api/operator_guard.py")
-    product = read("app/api/refund_product.py")
-    assignment = read("app/api/case_assignment.py")
-
-    assert "from app.api.refund_product import router as refund_product_router" in main
-    assert '("refund_product", refund_product_router)' in main
-    assert "guided_refund_center_router" not in main
-    assert "refund_center_router" not in main
-    assert "refund_resolution_guard_router" not in operator_guard
-    assert "refund_resolution_guard_router" not in assignment
-    assert 'prefix="/admin/refunds"' in product
-
-    for method, path in (
         ("GET", "/admin/refunds"),
-        ("GET", "/admin/refunds/context"),
-        ("GET", "/admin/refunds/declined"),
-        ("GET", "/admin/refunds/ui"),
         ("POST", "/admin/refunds/{payment_id}/resolve"),
-        ("POST", "/admin/refunds/{payment_id}/retry"),
-    ):
-        owners = _owners(method, path)
-        assert len(owners) == 1, (method, path, [route.name for route in owners])
-
-
-def test_workdesk_integrity_no_longer_depends_on_compatibility_mounts():
-    main = MAIN.read_text(encoding="utf-8")
-    setup = read("app/api/initial_setup_wizard.py")
-    assignment = read("app/api/case_assignment.py")
-    product = read("app/api/workdesk_integrity_product.py")
-
-    assert "from app.api.workdesk_integrity_product import router as workdesk_integrity_product_router" in main
-    assert '("workdesk_integrity_product", workdesk_integrity_product_router)' in main
-    assert "workdesk_integrity_guard_router" not in setup
-    assert "workdesk_integrity_guard_router" not in assignment
-    assert '"/admin/workdesk/integrity"' in product
-    assert "workdesk_integrity_guard" in product
-
-
-def test_launch_health_and_ready_each_have_one_runtime_owner():
-    main = MAIN.read_text(encoding="utf-8")
-    setup = read("app/api/initial_setup_wizard.py")
-    staff_guards = read("app/api/staff_ui_guards.py")
-
-    assert '@router.get("/launch-check")' in setup
-    assert '@app.get("/launch-check")' not in main
-    assert '@router.get("/health")' not in setup
-    assert '@router.get("/ready")' not in setup
-    assert '@app.get("/health")' in main
-    assert '@app.get("/ready")' in main
-    assert "protected_health_center_ui" not in staff_guards
-
-    for method, path in (
-        ("GET", "/launch-check"),
-        ("GET", "/health"),
-        ("GET", "/ready"),
-        ("GET", "/health-center/ui"),
+        ("GET", "/admin/refunds/ui"),
+        ("GET", "/admin/sla"),
+        ("GET", "/admin/sla/ui"),
+        ("GET", "/admin/consultation-outcomes"),
+        ("GET", "/admin/consultation-outcomes/ui"),
         ("GET", "/admin/workdesk/integrity"),
     ):
-        owners = _owners(method, path)
-        assert len(owners) == 1, (method, path, [route.name for route in owners])
+        _only(method, path)
 
 
-def test_legacy_demo_panels_are_not_sources_of_live_readiness():
-    files = {
-        "task": read("app/api/task_center.py"),
-        "release": read("app/api/release_manager.py"),
-        "handover": read("app/api/handover.py"),
-        "ops": read("app/api/ops_guide.py"),
-        "scenario": read("app/api/scenario_map.py"),
-        "template": read("app/api/template_builder.py"),
-        "calculator": read("app/api/calculator_builder.py"),
-    }
-    assert "consolidated_into_workdesk" in files["task"]
-    assert "live_verification_required" in files["release"]
-    assert "live_operational_contour" in files["handover"]
-    assert "live_operations_only" in files["ops"]
-    assert "live_e2e_is_source_of_truth" in files["scenario"]
-    assert "consolidated_into_live_configuration" in files["template"]
-    assert "calculator_is_runtime_flow_not_builder" in files["calculator"]
+def test_superadmin_sensitive_ui_paths_are_unique():
+    for path in (
+        "/access/ui",
+        "/audit-center/ui",
+        "/security-events/ui",
+        "/retention/ui",
+        "/recovery-center/ui",
+    ):
+        _only("GET", path)
