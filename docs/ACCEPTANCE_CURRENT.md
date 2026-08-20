@@ -14,6 +14,20 @@ Historical persona matrices are evidence/history only. They do not override this
 
 A release claim requires the mandatory scenarios below to be `LIVE_PASS`, not merely `SOURCE_OK`.
 
+## Current automated evidence present in the branch
+
+The following gates now exist in source and are part of the intended CI/runtime pyramid:
+
+- `tests/test_telegram_multi_case_runtime.py` — real aiogram `Dispatcher.feed_update` coverage for persistent Calculate, duplicate callback idempotency, multi-Case selector, stale Case-bound payment action and exact read-only message history;
+- `tests/test_telegram_redis_runtime.py` + `.github/workflows/telegram-runtime.yml` — Redis FSM restart/persistence and exact Case binding;
+- `tests/test_postgres_multi_case_concurrency.py` — same/different Case creation operation keys and Calculation history under PostgreSQL;
+- `tests/test_postgres_payment_concurrency.py` — payment creation, duplicate success, duplicate refund confirmation and M2 hold-expiry/payment-success races;
+- `tests/test_postgres_staff_concurrency.py` — conflicting Document review and conflicting Case branch decisions under PostgreSQL;
+- `tests/test_v37_api_import_inventory.py` — exactly one runtime `(HTTP method, path)` owner plus canonical hardened owners for staff/payment/lawyer/backup/workdesk surfaces;
+- lifecycle/transaction tests for Payment timestamps/events, Case closure/archive, business timezone and AsyncSession presentation boundaries.
+
+Until the workflows actually execute on allocated runners, this is **SOURCE_OK evidence only**. It does not change any `LIVE_REQUIRED` state below.
+
 ## Corrected multi-Case acceptance
 
 ### C-010 — global Calculate while another Case is active
@@ -149,15 +163,20 @@ Must run on real PostgreSQL, not SQLite only:
 - double payment creation;
 - duplicate provider webhook;
 - webhook vs admin payment review/refund;
+- duplicate refund confirmation/retry;
 - two staff update one Document;
 - two staff update one Case;
 - scheduler vs client callback.
+
+Source tests now cover the Case/calculation, core payment/refund/slot and staff Document/Case races listed above. Provider/admin/scheduler race variants that require a fuller runtime remain mandatory.
 
 State before release: **LIVE_REQUIRED**.
 
 ## Telegram + Redis integration acceptance
 
 Feed real aiogram `Update` objects through the dispatcher with Redis FSM and production router order. Cover commands, persistent reply buttons, callbacks, stale v2/raw messages, drafts, multi-Case switch, Back, restart and callback redelivery.
+
+The branch now contains direct `Dispatcher.feed_update` multi-Case tests and a Redis-backed restart contract. These do not replace a real Telegram test-bot/staging walkthrough.
 
 Verify client activity timestamps do not commit unfinished legal transactions and inactivity reminders deduplicate by stable client/stage snapshot.
 
@@ -169,7 +188,7 @@ Use browser E2E (Playwright or equivalent) for:
 
 login → MFA where configured → role boundaries → Workdesk → Lawyer workspace → document review → messages → consultation outcome/no-show → payment review/refund → session expiry/revoke.
 
-A staff UI route must have one runtime owner; role safety must not depend on router include order.
+A staff UI route must have one runtime owner; role safety must not depend on router include order. Current regression contract requires route-free retired facades rather than shadow routes for superseded staff UI guards.
 
 State before release: **LIVE_REQUIRED**.
 
@@ -201,7 +220,9 @@ State before release: **LIVE_REQUIRED**.
 
 Required automated gate includes at least compile/static architecture check, migration chain, SQLite fast tests, PostgreSQL migration/integration/concurrency tests, Redis/deployment contract tests, container build/start smoke and backup/restore checks configured by CI.
 
-At the time this document was created, GitHub Actions runner execution is blocked by infrastructure/billing issue **#116**. Therefore current branch must **not** be described as CI-green or production-ready until runners actually allocate and mandatory jobs pass.
+The repository contains dedicated PostgreSQL concurrency and Telegram/Redis runtime workflows, and PR-trigger rules were widened so non-`main` base PRs are eligible to run. A configured workflow is not evidence of execution.
+
+GitHub Actions runner execution is tracked by infrastructure issue **#116**. If a job stops before runner allocation/steps, current status is **BLOCKED_INFRA**, not PASS. The branch must not be described as CI-green or production-ready until runners actually allocate and mandatory jobs pass.
 
 ## Production-release decision
 
