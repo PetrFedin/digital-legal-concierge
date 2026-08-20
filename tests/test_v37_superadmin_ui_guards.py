@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from app.main import create_app
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -7,61 +9,86 @@ def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_superadmin_guard_protects_sensitive_html_shells():
+def _only(path: str):
+    rows = [
+        route
+        for route in create_app().routes
+        if getattr(route, "path", None) == path
+        and "GET" in (getattr(route, "methods", None) or set())
+    ]
+    assert len(rows) == 1, (path, [row.name for row in rows])
+    return rows[0]
+
+
+def test_superadmin_compatibility_guard_is_not_runtime_mounted():
     guard = read("app/api/superadmin_ui_guards.py")
-
-    assert '@router.get("/audit-center/ui"' in guard
-    assert '@router.get("/security-events/ui"' in guard
-    assert '@router.get("/retention/ui"' in guard
-    assert '@router.get("/recovery-center/ui"' in guard
-    assert "AUDIT_CENTER_HTML" in guard
-    assert "SECURITY_EVENT_HTML" in guard
-    assert "RETENTION_HTML" in guard
-    assert "legacy_recovery_ui" in guard
-    assert "resolve_document_actor" in guard
-    assert "actor.role != ROLE_SUPERADMIN" in guard
-
-
-def test_superadmin_shells_recover_anonymous_and_role_mismatch():
-    guard = read("app/api/superadmin_ui_guards.py")
-
-    assert 'RedirectResponse(url="/login", status_code=303)' in guard
-    assert 'RedirectResponse(url="/admin-ui", status_code=303)' in guard
-    assert "error.status_code in {403, 409}" in guard
-    assert "except DocumentAccessError as error:" in guard
-    assert "except HTTPException as error:" in guard
-
-
-def test_superadmin_guards_are_mounted_before_sensitive_legacy_centers():
     operator = read("app/api/operator_guard.py")
-    initial_setup = read("app/api/initial_setup_wizard.py")
+    setup = read("app/api/initial_setup_wizard.py")
+    acceptance = read("app/api/acceptance_center.py")
     main = read("app/main.py")
 
-    assert "router.include_router(superadmin_ui_guards_router)" in operator
-    assert "router.include_router(operator_guard_router)" in initial_setup
-    initial = main.index('(\"initial_setup_wizard\", initial_setup_wizard_router)')
-    assert initial < main.index('(\"audit_center\", audit_center_router)')
-    assert initial < main.index('(\"security_event_center\", security_event_center_router)')
-    assert initial < main.index('(\"retention_center\", retention_center_router)')
-    assert initial < main.index('(\"recovery_center\", recovery_center_router)')
+    # The historical module may remain importable during consolidation, but no
+    # runtime assembly may depend on it for correctness or route precedence.
+    assert "superadmin_ui_guards_router" not in operator
+    assert "superadmin_ui_guards_router" not in setup
+    assert "superadmin_ui_guards_router" not in acceptance
+    assert "superadmin_ui_guards" not in main
+    assert "resolve_document_actor" in guard
 
 
-def test_retention_ui_no_longer_relies_only_on_client_side_auth():
+def test_access_management_ui_has_its_own_superadmin_gate():
+    source = read("app/api/access_management.py")
+
+    assert "async def _require_superadmin(" in source
+    assert "actor.role != ROLE_SUPERADMIN" in source
+    assert "async def _superadmin_ui_or_redirect(" in source
+    assert 'RedirectResponse(url="/login", status_code=303)' in source
+    _only("/access/ui")
+
+
+def test_audit_and_security_ui_authenticate_before_returning_html():
+    audit = read("app/api/audit_center.py")
+    security = read("app/api/security_event_center.py")
+
+    assert "await require_audit_superadmin(request, db, x_admin_token)" in audit
+    assert "actor.role != ROLE_SUPERADMIN" in audit
+    assert 'RedirectResponse(url="/login", status_code=303)' in audit
+    assert "await require_security_superadmin(request, db, x_admin_token)" in security
+    assert "actor.role != ROLE_SUPERADMIN" in security
+    assert 'RedirectResponse(url="/login", status_code=303)' in security
+    _only("/audit-center/ui")
+    _only("/security-events/ui")
+
+
+def test_retention_shell_is_fail_closed_by_global_personal_session_gate():
     retention = read("app/api/retention_center.py")
-    guard = read("app/api/superadmin_ui_guards.py")
+    session_guard = read("app/security/session_guard.py")
 
-    # Historical route returns the shell directly. The early exact guard must
-    # therefore remain mounted ahead of retention_center.
-    assert "async def retention_ui():" in retention
-    assert "return HTMLResponse(RETENTION_HTML)" in retention
-    assert '@router.get("/retention/ui"' in guard
+    assert "async def require_retention_superadmin(" in retention
+    assert "actor.role != ROLE_SUPERADMIN" in retention
+    assert '"/retention/ui": frozenset({ROLE_SUPERADMIN})' in session_guard
+    assert "protected_ui_roles = _PROTECTED_UI_ROLES.get(path)" in session_guard
+    assert "ROLE_SUPERADMIN in current_roles" in session_guard
+    _only("/retention/ui")
 
 
-def test_recovery_ui_role_mismatch_is_handled_before_legacy_route():
+def test_recovery_center_ui_and_mutations_require_superadmin():
     recovery = read("app/api/recovery_center.py")
-    guard = read("app/api/superadmin_ui_guards.py")
 
-    assert "async def recovery_ui(" in recovery
-    assert "legacy_recovery_ui" in guard
-    assert '@router.get("/recovery-center/ui"' in guard
-    assert "gate = await _superadmin_gate(request, db, x_admin_token)" in guard
+    assert "async def _require_superadmin(" in recovery
+    assert "actor.role != ROLE_SUPERADMIN" in recovery
+    assert "await _require_superadmin(request, db, x_admin_token)" in recovery
+    assert "MAX_RECOVERY_BATCH = 100" in recovery
+    assert ".with_for_update()" in recovery
+    _only("/recovery-center/ui")
+
+
+def test_sensitive_superadmin_ui_paths_have_exactly_one_runtime_owner():
+    for path in (
+        "/access/ui",
+        "/audit-center/ui",
+        "/security-events/ui",
+        "/retention/ui",
+        "/recovery-center/ui",
+    ):
+        _only(path)
