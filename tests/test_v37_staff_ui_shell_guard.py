@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from app.main import create_app
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -7,147 +9,103 @@ def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_lawyer_ui_shells_are_server_side_authenticated():
-    guard = read("app/api/staff_ui_shell_guard.py")
-
-    assert '@router.get("/lawyer/workspace/ui"' in guard
-    assert '@router.get("/lawyer/consultation-desk/ui"' in guard
-    assert "resolve_document_actor" in guard
-    assert "settings.admin_session_cookie" in guard
-    assert "allowed_roles=frozenset({ROLE_LAWYER})" in guard
-
-
-def test_shared_schedule_shell_requires_a_usable_staff_identity():
-    guard = read("app/api/staff_ui_shell_guard.py")
-    main = read("app/main.py")
-
-    assert '@router.get("/consultation-slots/ui"' in guard
-    assert "SLOTS_HTML" in guard
-    assert "allowed_roles=frozenset({ROLE_LAWYER, ROLE_ADMIN, ROLE_SUPERADMIN})" in guard
-    assert main.index('(\"initial_setup_wizard\", initial_setup_wizard_router)') < main.index(
-        '(\"consultation_slots\", consultation_slots_router)'
-    )
+def _only(method: str, path: str):
+    rows = [
+        route
+        for route in create_app().routes
+        if getattr(route, "path", None) == path
+        and method in (getattr(route, "methods", None) or set())
+    ]
+    assert len(rows) == 1, (method, path, [row.name for row in rows])
+    return rows[0]
 
 
-def test_document_access_portal_shell_is_server_side_staff_guarded():
-    guard = read("app/api/staff_ui_shell_guard.py")
-    portal = read("app/api/document_access_portal.py")
-    main = read("app/main.py")
-
-    assert '@router.get("/document-access/ui"' in guard
-    assert "DOCUMENT_ACCESS_HTML" in guard
-    assert "return await _staff_shell(request, db, x_admin_token, DOCUMENT_ACCESS_HTML)" in guard
-    assert "async def document_access_ui():" in portal
-    assert "return HTMLResponse(DOCUMENT_ACCESS_HTML)" in portal
-    assert main.index('(\"initial_setup_wizard\", initial_setup_wizard_router)') < main.index(
-        '(\"document_access_portal\", document_access_portal_router)'
-    )
-
-
-def test_contract_center_shell_uses_guided_staff_recovery_before_legacy_route():
-    guard = read("app/api/staff_ui_shell_guard.py")
-    contract = read("app/api/contract_center.py")
-    main = read("app/main.py")
-
-    assert '@router.get("/contracts/ui"' in guard
-    assert "CONTRACT_CENTER_HTML" in guard
-    assert "return await _staff_shell(request, db, x_admin_token, CONTRACT_CENTER_HTML)" in guard
-    assert '@router.get("/ui", response_class=HTMLResponse)' in contract
-    assert "return HTMLResponse(CONTRACT_CENTER_HTML)" in contract
-    assert main.index('(\"initial_setup_wizard\", initial_setup_wizard_router)') < main.index(
-        '(\"contract_center\", contract_center_router)'
-    )
-
-
-def test_sensitive_admin_action_shells_require_personal_admin_before_html():
-    guard = read("app/api/staff_ui_shell_guard.py")
-
-    assert "async def _require_admin_ui_actor" in guard
-    assert "allowed_roles=frozenset({ROLE_ADMIN, ROLE_SUPERADMIN})" in guard
-    assert "async def _admin_shell" in guard
-    assert '@router.get("/admin/payment-reviews/ui"' in guard
-    assert "PAYMENT_REVIEW_CENTER_HTML" in guard
-    assert '@router.get("/admin/refunds/ui"' in guard
-    assert "REFUND_UI" in guard
-    assert '@router.get("/admin/sla/ui"' in guard
-    assert "SLA_CENTER_HTML" in guard
-
-
-def test_sensitive_admin_shell_guards_win_route_precedence():
-    main = read("app/main.py")
-    initial = main.index('(\"initial_setup_wizard\", initial_setup_wizard_router)')
-
-    assert initial < main.index('(\"guided_refund_center\", guided_refund_center_router)')
-    assert initial < main.index('(\"refund_center\", refund_center_router)')
-    assert initial < main.index('(\"payment_review_center\", payment_review_center_router)')
-    assert initial < main.index('(\"sla_center\", sla_center_router)')
-
-
-def test_admin_action_shells_preserve_hardened_business_templates():
-    guard = read("app/api/staff_ui_shell_guard.py")
-    guided_refund = read("app/api/guided_refund_center.py")
-    payment_review = read("app/api/payment_review_center.py")
-    sla = read("app/api/sla_center.py")
-
-    assert "REFUND_UI" in guided_refund
-    assert "PAYMENT_REVIEW_CENTER_HTML" in payment_review
-    assert "SLA_CENTER_HTML" in sla
-    assert "return await _admin_shell(request, db, x_admin_token, REFUND_UI)" in guard
-    assert "PAYMENT_REVIEW_CENTER_HTML," in guard
-    assert "return await _admin_shell(request, db, x_admin_token, SLA_CENTER_HTML)" in guard
-
-
-def test_anonymous_lawyer_ui_goes_to_login_and_incomplete_staff_to_landing():
-    guard = read("app/api/staff_ui_shell_guard.py")
-
-    assert 'RedirectResponse(url="/login", status_code=303)' in guard
-    assert 'RedirectResponse(url="/admin-ui", status_code=303)' in guard
-    assert "error.status_code in {403, 409}" in guard
-
-
-def test_guard_renders_full_composite_workspace_not_base_template():
-    guard = read("app/api/staff_ui_shell_guard.py")
-    contract = read("app/api/contract_workspace_ui.py")
-    rejection = read("app/api/lawyer_workspace_rejection_ui.py")
-    consultation = read("app/api/lawyer_consultation_decision_guard.py")
-
-    assert "contract_aware_workspace_html" in guard
-    assert "guarded_consultation_desk_html" in guard
-    assert "return HTMLResponse(contract_aware_workspace_html())" in guard
-    assert "return HTMLResponse(guarded_consultation_desk_html())" in guard
-
-    # Composite workspace must still contain all guided business patches that
-    # would otherwise be hidden by the early auth route's precedence.
-    assert "_WORKSPACE_DEEP_LINK_PATCH" in rejection
-    assert "_M1_REJECTION_PATCH" in rejection
-    assert "_M1_POA_PATCH" in rejection
-    assert "_COURT_DECISION_PATCH" in rejection
-    assert "_CONTRACT_WORKSPACE_PATCH" in contract
-    assert "_CONSULTATION_DRAFT_PATCH" in consultation
-    assert "ALLOWED_COMPLETION_DECISIONS" in consultation
-
-
-def test_staff_shell_guard_is_mounted_before_legacy_staff_routers():
+def test_staff_shell_compatibility_router_is_not_part_of_runtime_assembly():
     operator_guard = read("app/api/operator_guard.py")
-    initial_setup = read("app/api/initial_setup_wizard.py")
+    setup = read("app/api/initial_setup_wizard.py")
     main = read("app/main.py")
 
-    assert "router.include_router(staff_ui_shell_guard_router)" in operator_guard
-    assert "router.include_router(operator_guard_router)" in initial_setup
-    initial = main.index('(\"initial_setup_wizard\", initial_setup_wizard_router)')
-    assert initial < main.index('(\"guided_lawyer_ui\", guided_lawyer_ui_router)')
-    assert initial < main.index('(\"lawyer_workspace_rejection_ui\", lawyer_workspace_rejection_ui_router)')
-    assert initial < main.index('(\"contract_workspace_ui\", contract_workspace_ui_router)')
-    assert initial < main.index('(\"contract_center\", contract_center_router)')
-    assert initial < main.index('(\"lawyer_workspace\", lawyer_workspace_router)')
-    assert initial < main.index('(\"lawyer_consultation_desk\", lawyer_consultation_desk_router)')
-    assert initial < main.index('(\"document_access_portal\", document_access_portal_router)')
+    assert "staff_ui_shell_guard_router" not in operator_guard
+    assert "operator_guard_router" not in setup
+    assert "staff_ui_shell_guard" not in main
 
 
-def test_operator_hub_recovers_incomplete_or_unsupported_staff():
+def test_consultation_schedule_ui_authenticates_on_canonical_handler():
+    source = read("app/api/consultation_slots.py")
+    block = source.split('@router.get("/ui"', 1)[1]
+
+    assert "await _staff(request, db, x_admin_token)" in block
+    assert "except DocumentAccessError as error:" in block
+    assert 'RedirectResponse(url="/login?next=/consultation-slots/ui"' in block
+    _only("GET", "/consultation-slots/ui")
+
+
+def test_document_portal_is_server_guarded_without_shadow_route():
+    portal = read("app/api/document_access_portal.py")
+    session_guard = read("app/security/session_guard.py")
+
+    assert "async def document_access_ui():" in portal
+    assert '"/document-access/ui": frozenset({ROLE_ADMIN, ROLE_SUPERADMIN, ROLE_LAWYER})' in session_guard
+    assert "protected_ui_roles = _PROTECTED_UI_ROLES.get(path)" in session_guard
+    assert "if not token:" in session_guard
+    _only("GET", "/document-access/ui")
+
+
+def test_contract_center_ui_authenticates_on_canonical_handler():
+    source = read("app/api/contract_center.py")
+    block = source.split('@router.get("/ui"', 1)[1]
+
+    assert "await _actor(request, db, x_admin_token)" in block
+    assert 'RedirectResponse(url="/login", status_code=303)' in block
+    _only("GET", "/contracts/ui")
+
+
+def test_lawyer_workspaces_and_m2_mutations_have_one_product_owner():
+    product = read("app/api/lawyer_product.py")
+    base = read("app/api/lawyer.py")
+
+    assert '"/lawyer/ui"' in product
+    assert '"/lawyer/workspace/ui"' in product
+    assert '"/lawyer/consultation-desk/ui"' in product
+    assert '"/lawyer/consultations/{consultation_id}/complete"' in product
+    assert '"/lawyer/consultations/{consultation_id}/client-no-show"' in product
+    assert '"/ui"' not in base
+    assert '"/consultations/{consultation_id}/complete"' not in base
+    assert '"/consultations/{consultation_id}/client-no-show"' not in base
+
+    for method, path in (
+        ("GET", "/lawyer/ui"),
+        ("GET", "/lawyer/workspace/ui"),
+        ("GET", "/lawyer/consultation-desk/ui"),
+        ("POST", "/lawyer/consultations/{consultation_id}/complete"),
+        ("POST", "/lawyer/consultations/{consultation_id}/client-no-show"),
+    ):
+        _only(method, path)
+
+
+def test_admin_payment_refund_sla_shells_are_product_owned_not_shell_guarded():
+    payment = read("app/api/payment_review_product.py")
+    refund = read("app/api/refund_product.py")
+    sla = read("app/api/sla_product.py")
+
+    assert "protected_payment_review_ui" in payment
+    assert "refund_ui_guard" in refund
+    assert "protected_sla_ui" in sla
+
+    for path in (
+        "/admin/payment-reviews/ui",
+        "/admin/refunds/ui",
+        "/admin/sla/ui",
+    ):
+        _only("GET", path)
+
+
+def test_operator_is_canonical_authenticated_staff_hub():
+    operator = read("app/api/operator.py")
     guard = read("app/api/operator_guard.py")
-    block = guard.split('@router.get("/operator"', 1)[1]
 
-    assert "error.status_code in {403, 409}" in block
-    assert 'url="/admin-ui"' in block
-    assert "actor.role not in {ROLE_LAWYER, ROLE_ADMIN, ROLE_SUPERADMIN}" in block
+    assert '@router.get("/operator"' in operator
+    assert "resolve_document_actor" in operator
+    assert "@router." not in guard
+    assert "router.add_api_route" not in guard
+    _only("GET", "/operator")
