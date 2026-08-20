@@ -5,6 +5,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin import require_admin
+from app.api.m1_internal_payment_recovery import (
+    router as m1_internal_payment_recovery_router,
+)
+from app.api.technical_case_recovery import router as technical_case_recovery_router
 from app.db.session import get_db
 from app.domain.cases.case_timeline import get_client_visible_status
 from app.models.audit_log import AuditLog
@@ -203,16 +207,11 @@ async def workdesk_case_timeline(
     }
 
 
-from app.api import technical_case_recovery as technical_case_recovery  # noqa: E402
-from app.api.m1_internal_payment_recovery import (  # noqa: E402
-    router as m1_internal_payment_recovery_router,
-)
-from app.api.workdesk_integrity import inject_workdesk_integrity  # noqa: E402
-
-technical_case_recovery.WORKDESK_HTML = inject_workdesk_integrity(
-    technical_case_recovery.WORKDESK_HTML
-)
-# Workdesk integrity has one public owner in workdesk_integrity_product. This
-# module keeps only the HTML projection helper plus recovery/timeline routes.
+# These are existing Workdesk recovery endpoints with no overlapping public
+# paths. They remain colocated with the timeline module until application
+# assembly is split into explicit staff/platform groups; no UI template is
+# patched and no foreign router table is mutated here.
 router.include_router(m1_internal_payment_recovery_router)
-router.include_router(technical_case_recovery.router)
+router.include_router(technical_case_recovery_router)
+
+__all__ = ["router", "workdesk_case_timeline"]
