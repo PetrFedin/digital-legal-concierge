@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from app.config import settings
 from app.db.session import AsyncSessionLocal
 from app.domain.consultations.slot_service import SlotService
+from app.domain.payments.payment_review_service import PaymentReviewService
 from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.payments.payment_webhook_service import PaymentWebhookService
@@ -173,6 +174,93 @@ async def _new_expired_m2_payment_reservation() -> tuple[int, int, int, int]:
         return result
 
 
+async def _new_reviewable_m2_existing_booking() -> tuple[int, int, int, int]:
+    """Seed the exact state where admin review may safely confirm money.
+
+    The consultation/slot booking is already internally consistent while the
+    received money is held in PAID_REVIEW. A duplicate provider success may race
+    the admin confirmation but must never create a second financial transition
+    or corrupt the booked slot.
+    """
+
+    async with AsyncSessionLocal() as db:
+        now = datetime.now(timezone.utc)
+        user = User(
+            telegram_id=_telegram_id(),
+            full_name="Postgres M2 review race client",
+        )
+        lawyer = Lawyer(
+            full_name="Postgres M2 review race lawyer",
+            email=f"review-race-{uuid.uuid4().hex}@example.test",
+            is_active=True,
+        )
+        db.add_all([user, lawyer])
+        await db.flush()
+
+        case = Case(
+            case_number=f"M2-REVIEW-RACE-{uuid.uuid4().hex[:16]}",
+            client_id=user.id,
+            route="M2",
+            status=CaseStatus.M2_CONSULTATION_BOOKED,
+            title="M2 provider versus admin review",
+        )
+        db.add(case)
+        await db.flush()
+
+        consultation = Consultation(
+            case_id=case.id,
+            lawyer_id=lawyer.id,
+            status=ConsultationStatus.BOOKED,
+            consultation_type="online",
+            subject_type="new_or_other",
+            client_description="Provider versus admin review race",
+        )
+        db.add(consultation)
+        await db.flush()
+
+        starts_at = now + timedelta(days=2)
+        slot = ConsultationSlot(
+            lawyer_id=lawyer.id,
+            starts_at=starts_at,
+            ends_at=starts_at + timedelta(hours=1),
+            status="booked",
+            hold_expires_at=None,
+            held_by_user_id=user.id,
+            consultation_id=consultation.id,
+        )
+        db.add(slot)
+        await db.flush()
+
+        consultation.slot_id = slot.id
+        consultation.scheduled_at = starts_at
+        payment = Payment(
+            case_id=case.id,
+            payment_code=PaymentCode.M2_CONSULTATION_PAYMENT,
+            title="Оплата консультации — ручная сверка",
+            amount=Decimal("5000.00"),
+            currency="RUB",
+            status=PaymentStatus.PAID_REVIEW,
+            provider="pytest",
+            provider_payment_id=f"pytest-review-{uuid.uuid4().hex}",
+            reservation_key=PaymentService.consultation_reservation_key(
+                consultation.id,
+                slot.id,
+            ),
+            paid_at=now - timedelta(minutes=1),
+        )
+        db.add(payment)
+        await db.flush()
+
+        result = (
+            int(case.id),
+            int(consultation.id),
+            int(slot.id),
+            int(payment.id),
+        )
+        await db.commit()
+        return result
+
+
 async def _get_or_create_initial_payment(case_id: int) -> int:
     async with AsyncSessionLocal() as db:
         case = await db.get(Case, int(case_id))
@@ -199,6 +287,19 @@ async def _process_success(payment_id: int, case_id: int) -> str:
             provider_payload={"source": "pytest-concurrency"},
         )
         status = str(result.status)
+        await db.commit()
+        return status
+
+
+async def _confirm_existing_review(payment_id: int, consultation_id: int) -> str:
+    async with AsyncSessionLocal() as db:
+        payment, _ = await PaymentReviewService(db).confirm_existing_booking(
+            payment_id=payment_id,
+            consultation_id=consultation_id,
+            actor_id=None,
+            comment="PostgreSQL concurrent provider/admin review confirmation",
+        )
+        status = str(payment.status)
         await db.commit()
         return status
 
@@ -305,6 +406,52 @@ async def _scenario_duplicate_refund_confirmation_is_exactly_once() -> None:
         assert refunded_transition_count == 1
 
 
+async def _scenario_webhook_and_admin_review_converge_on_one_paid_booking() -> None:
+    case_id, consultation_id, slot_id, payment_id = (
+        await _new_reviewable_m2_existing_booking()
+    )
+
+    results = await asyncio.gather(
+        _process_success(payment_id, case_id),
+        _confirm_existing_review(payment_id, consultation_id),
+    )
+    assert all(
+        value in {PaymentStatus.PAID_REVIEW.value, PaymentStatus.PAID.value}
+        for value in results
+    )
+
+    async with AsyncSessionLocal() as db:
+        payment = await db.get(Payment, payment_id)
+        case = await db.get(Case, case_id)
+        consultation = await db.get(Consultation, consultation_id)
+        slot = await db.get(ConsultationSlot, slot_id)
+        assert payment is not None
+        assert case is not None
+        assert consultation is not None
+        assert slot is not None
+
+        assert str(payment.status) == PaymentStatus.PAID.value
+        assert payment.paid_at is not None
+        assert str(case.status) == CaseStatus.M2_CONSULTATION_BOOKED.value
+        assert str(consultation.status) == ConsultationStatus.BOOKED.value
+        assert int(consultation.slot_id or 0) == slot_id
+        assert str(slot.status) == "booked"
+        assert int(slot.consultation_id or 0) == consultation_id
+        assert payment.reservation_key == PaymentService.consultation_reservation_key(
+            consultation_id,
+            slot_id,
+        )
+
+        paid_transition_count = await db.scalar(
+            select(func.count(PaymentEvent.id)).where(
+                PaymentEvent.payment_id == payment_id,
+                PaymentEvent.event_type == "STATUS_CHANGED",
+                PaymentEvent.status_after == PaymentStatus.PAID.value,
+            )
+        )
+        assert paid_transition_count == 1
+
+
 async def _scenario_m2_expiry_and_success_never_resurrect_expired_slot() -> None:
     case_id, consultation_id, slot_id, payment_id = (
         await _new_expired_m2_payment_reservation()
@@ -367,6 +514,10 @@ def test_duplicate_success_is_exactly_one_paid_transition_under_postgres_concurr
 
 def test_duplicate_refund_confirmation_is_exactly_once_under_postgres_concurrency() -> None:
     asyncio.run(_scenario_duplicate_refund_confirmation_is_exactly_once())
+
+
+def test_webhook_and_admin_review_converge_on_one_paid_booking_under_postgres() -> None:
+    asyncio.run(_scenario_webhook_and_admin_review_converge_on_one_paid_booking())
 
 
 def test_m2_expiry_vs_success_never_resurrects_expired_booking_under_postgres() -> None:
