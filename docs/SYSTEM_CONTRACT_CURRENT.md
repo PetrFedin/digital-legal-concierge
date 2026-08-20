@@ -79,7 +79,7 @@ The technical evidence record does not assert a legally stronger signature class
 - refunded → `refunded_at`;
 - expired → `expired_at`.
 
-A model-level invariant backstop stamps the first lifecycle timestamp when the corresponding status is assigned. An exact provider timestamp set before the status change is preserved.
+Application payment status transitions go through `PaymentLifecycleService`. A model-level invariant remains only as a defensive backstop and is not the primary business write path. An exact provider timestamp set before the status change is preserved.
 
 `payment_events` records the initial Payment snapshot and each persisted status transition in the same database transaction. Existing pre-ledger payments receive one `LEGACY_BASELINE` event rather than a fabricated historical sequence.
 
@@ -105,11 +105,24 @@ Telegram, notification and staff presentation code must use the shared formatter
 
 Runtime public route ownership contract is **one `(HTTP method, path)` → one owner**.
 
-Compatibility modules may temporarily compose/retire historical routers only if the superseded route is deterministically removed before application assembly and the code fails closed when the expected compatibility contract changes. Router include order must not determine security or business behavior.
+Security and business behavior must not depend on FastAPI include order. Application code must not mutate another router's `.routes` table and must not patch a foreign UI template at import time.
 
-`architecture_check.py` remains a release gate and must pass naturally; it must not be weakened to tolerate duplicate routes.
+A compatibility module that no longer owns a public path is a **route-free facade**. Its historical implementation may remain importable in a `*_impl.py` module while consolidation is in progress, but mounting the facade cannot recreate a shadow route. If a historical URL must remain, it has one explicit compatibility owner (for example the technical-case redirect) rather than a competing early guard.
 
-The desired assembly layers are:
+Current ownership boundaries include:
+
+- `backup_manager` — existing `/backup-center/*` status/UI/verification paths; historical backup-center/guard facades are route-free;
+- `message_center_product` — Message Center API + role-safe UI; role-UI compatibility facade is route-free;
+- `lawyer_product` — shared lawyer UI and M2 completion/no-show paths; base `lawyer` facade owns only its unique M1/API paths;
+- `admin_queue_guard` — the existing hardened compatibility paths `/admin/queue`, `/admin/lawyers`, `/admin/scheduler/run-once`; base `admin` facade excludes those paths;
+- `payment_safety_guard` — fake local/test payment endpoints; `payment_webhooks` owns only real YooKassa/result endpoints;
+- `workdesk_product` — canonical Workdesk UI; `workdesk_timeline` owns timeline/recovery composition without import-time HTML mutation;
+- `technical_cases_compat` — the one legacy technical-card UI redirect; technical recovery owns only data/mutation endpoints;
+- `payment_review_product`, `refund_product`, `sla_product`, `consultation_outcomes_product`, `document_access_product` — their existing staff product surfaces.
+
+`tests/test_v37_api_import_inventory.py` asserts that every runtime `(method, path)` has exactly one owner. `architecture_check.py` remains a release gate and must pass naturally; neither gate may be weakened to tolerate duplicates.
+
+The target assembly layers remain:
 
 - client/bot product;
 - staff product;
@@ -153,4 +166,13 @@ Source inspection is not runtime proof. Production acceptance requires the same 
 
 **UI → domain result → PostgreSQL state → audit/history/financial evidence**.
 
-SQLite/source tests remain fast regression layers but cannot replace PostgreSQL concurrency, Redis FSM, provider contract, browser E2E and staging persona tests.
+Current automated regression surfaces include:
+
+- real aiogram `Dispatcher.feed_update` multi-Case/stale-callback tests;
+- Redis FSM restart/Case-binding contract;
+- PostgreSQL multi-Case/calculation concurrency;
+- PostgreSQL payment creation, duplicate-success, refund-idempotency and M2 hold-expiry/payment races;
+- PostgreSQL conflicting Document-review and Case-branch staff races;
+- transaction-boundary, payment lifecycle/event ledger, Case lifecycle/timezone and route-ownership regression tests.
+
+These test files/workflows being present is **SOURCE_OK evidence only until they actually execute**. SQLite/source tests remain fast regression layers but cannot replace PostgreSQL concurrency, Redis FSM, provider contract, browser E2E and staging persona tests.
