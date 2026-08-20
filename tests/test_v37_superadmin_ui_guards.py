@@ -20,20 +20,21 @@ def _only(path: str):
     return rows[0]
 
 
-def test_superadmin_compatibility_guard_is_not_runtime_mounted():
+def test_superadmin_compatibility_guard_is_route_free_and_not_runtime_mounted():
     guard = read("app/api/superadmin_ui_guards.py")
     operator = read("app/api/operator_guard.py")
     setup = read("app/api/initial_setup_wizard.py")
     acceptance = read("app/api/acceptance_center.py")
     main = read("app/main.py")
 
-    # The historical module may remain importable during consolidation, but no
-    # runtime assembly may depend on it for correctness or route precedence.
+    assert "superadmin_ui_guards_impl" in guard
+    assert "router = APIRouter" in guard
+    assert "@router." not in guard
+    assert "router.add_api_route" not in guard
     assert "superadmin_ui_guards_router" not in operator
     assert "superadmin_ui_guards_router" not in setup
     assert "superadmin_ui_guards_router" not in acceptance
     assert "superadmin_ui_guards" not in main
-    assert "resolve_document_actor" in guard
 
 
 def test_access_management_ui_has_its_own_superadmin_gate():
