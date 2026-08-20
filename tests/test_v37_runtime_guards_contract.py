@@ -93,19 +93,29 @@ def test_lawyer_no_show_refund_uses_financial_lifecycle_and_releases_slot():
     assert ".with_for_update()" in block
 
 
-def test_refund_resolution_is_product_owned_and_retry_does_not_move_case():
-    guard = read("app/api/refund_resolution_guard.py")
+def test_refund_resolution_is_product_owned_and_retry_uses_domain_lifecycle():
+    facade = read("app/api/refund_resolution_guard.py")
     product = read("app/api/refund_product.py")
+    service = read("app/domain/payments/refund_service.py")
     operator = read("app/api/operator_guard.py")
 
     assert 'prefix="/admin/refunds"' in product
     assert "resolve_refund_guard" in product
     assert "declined_refunds" in product
     assert "retry_declined_refund" in product
-    retry_block = guard.split('@router.post("/admin/refunds/{payment_id}/retry")', 1)[1]
-    assert "PaymentStatus.REFUND_DECLINED" in retry_block
-    assert "PaymentStatus.REFUND_PENDING" in retry_block
-    assert "CaseService(db).change_status" not in retry_block
+    assert "router = APIRouter" in facade
+    assert "@router." not in facade
+    assert "router.add_api_route" not in facade
+    retry_api = facade.split("async def retry_declined_refund", 1)[1]
+    assert "ConsultationRefundService(db).reopen_declined_refund" in retry_api
+    assert "PaymentLifecycleService.transition" not in retry_api
+    reopen = service.split("async def reopen_declined_refund", 1)[1].split(
+        "async def resolve_refund", 1
+    )[0]
+    assert "PaymentStatus.REFUND_DECLINED" in reopen
+    assert "to_status=PaymentStatus.REFUND_PENDING" in reopen
+    assert reopen.count(".with_for_update()") >= 2
+    assert "CaseService(db).change_status" not in reopen
     assert "refund_resolution_guard_router" not in operator
 
 
