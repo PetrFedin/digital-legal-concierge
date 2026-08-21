@@ -16,6 +16,12 @@ PAYMENT_CASE_BOUND_ACTIONS = frozenset(
         "consult_pay",
     }
 )
+CASE_BOUND_MUTATING_ACTIONS = frozenset(
+    {
+        *PAYMENT_CASE_BOUND_ACTIONS,
+        "calc_recover",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -40,10 +46,16 @@ def bound_case_callback(action: str, case_id: int) -> str:
 
 
 def bind_payment_case_action(action: str, case_id: int) -> str:
-    """Bind known payment mutations while leaving read-only/navigation callbacks intact."""
+    """Bind known Case-sensitive mutations; retain the legacy helper name.
+
+    The helper originally covered payments only. Calculator recovery is also a
+    mutation of client workflow/FSM state and therefore must carry exact Case
+    provenance when emitted from My Case. Read-only/navigation callbacks remain
+    unchanged.
+    """
 
     clean_action = str(action or "").strip()
-    if clean_action in PAYMENT_CASE_BOUND_ACTIONS:
+    if clean_action in CASE_BOUND_MUTATING_ACTIONS:
         return bound_case_callback(clean_action, case_id)
     return clean_action
 
