@@ -28,6 +28,12 @@ Physical/implemented mapping:
 
 No implementation may reintroduce a client-wide unique active-Case invariant.
 
+Calculator creation and calculator recovery are intentionally different commands:
+
+- `calc_start` is the global **new calculation / new Case** action. It remains available when another Case, including an unfinished calculator Case, already exists. Duplicate delivery of the same source action is deduplicated by the source operation key.
+- recovery of an unfinished calculation in an existing Case uses the distinct Case-bound action `calc_recover:v2:<case_id>` (followed by the existing draft-resume actions inside that exact Case).
+- router precedence must never reinterpret an explicit `calc_start` as recovery of the currently selected Case. Likewise, a stale recovery action must never create a replacement Case implicitly; it fails closed and offers an explicit new calculation separately.
+
 ## 3. Telegram exact-Case mutation contract
 
 Every business mutation emitted by current Telegram screens must carry exact Case provenance when it can be ambiguous. Current v2 callback form is `<action>:v2:<case_id>` or another action-specific callback containing exact domain identifiers.
@@ -81,7 +87,7 @@ The technical evidence record does not assert a legally stronger signature class
 
 Application payment status transitions go through `PaymentLifecycleService`. A model-level invariant remains only as a defensive backstop and is not the primary business write path. An exact provider timestamp set before the status change is preserved.
 
-`payment_events` records the initial Payment snapshot and each persisted status transition in the same database transaction. Existing pre-ledger payments receive one `LEGACY_BASELINE` event rather than a fabricated historical sequence.
+`payment_events` records the initial Payment snapshot and each persisted status transition in the same database transaction. Existing pre-ledger payments receive one `LEGACY_BASELINE` event rather than a fabricated historical sequence. Application ORM update/delete of an existing `PaymentEvent` is rejected; corrections are represented by later financial events. Database-level permissions remain a separate deployment control.
 
 `payment_webhook_events` remains the provider-event evidence/idempotency ledger. Case/Audit history remains the actor/business-context ledger. These are complementary layers.
 
@@ -91,7 +97,7 @@ Received money is protected from late failure overwrites. M2 payment remains bou
 
 `User.last_activity_at` and `Case.last_client_action_at` are updated in a short independent transaction after a Telegram update finishes and the handler session closes. This prevents activity tracking from committing unfinished legal/payment state and prevents read-only rollbacks from losing activity evidence.
 
-Stage-aware inactivity reminders are generated only for approved unfinished client-action stages. Dedupe identity includes Case, stage and exact last-client-action timestamp, so one quiet snapshot produces one reminder; new activity can arm a new reminder later.
+Stage-aware inactivity reminders are generated only for approved unfinished client-action stages. Dedupe identity includes Case, stage and exact last-client-action timestamp, so one quiet snapshot produces one reminder; new activity can arm a new reminder later. The quiet-period anchor for the current stage comes from auditable Case stage-entry events; unrelated staff/system writes to generic `Case.updated_at` do not postpone a client reminder. Legacy records without stage evidence use a conservative fallback rather than an invented precise timestamp.
 
 Reminders never mutate Case state.
 
