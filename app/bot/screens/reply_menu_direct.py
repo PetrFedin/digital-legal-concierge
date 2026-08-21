@@ -21,9 +21,26 @@ router = Router()
 
 
 async def _message_context(message: Message, db):
+    """Resolve a safe Case for a persistent Telegram reply-menu action.
+
+    A valid selected active Case wins. If selection has become terminal/missing,
+    a single remaining active Case is unambiguous and may be used directly. With
+    two or more active Cases there is deliberately no implicit newest-Case
+    fallback: the client must choose the matter before documents/messages/legal
+    help can act in a Case context.
+    """
+
     ctx = BotContextService(db)
     user = await ctx.get_user_from_message(message)
-    case = await ctx.case_service.get_active_case_for_user(user.id)
+    selected = await ctx.case_service.get_selected_case_for_user(
+        int(user.id),
+        include_terminal=False,
+    )
+    if selected is not None:
+        return ctx, user, selected
+
+    active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
+    case = active_cases[0] if len(active_cases) == 1 else None
     return ctx, user, case
 
 
@@ -63,6 +80,18 @@ async def _matter_selector_text(user, db) -> tuple[str, list[tuple[str, str]]]:
         ]
     )
     return "\n".join(lines), buttons
+
+
+async def _show_selector_if_ambiguous(message: Message, *, ctx, user, case, db) -> bool:
+    if case is not None:
+        return False
+    active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
+    if len(active_cases) <= 1:
+        return False
+    text, buttons = await _matter_selector_text(user, db)
+    await db.commit()
+    await message.answer(text, reply_markup=one(*buttons))
+    return True
 
 
 @router.message(lambda m: m.text == "🧮 Рассчитать неустойку")
@@ -183,12 +212,20 @@ async def select_client_case(callback: CallbackQuery, db):
 
 @router.message(lambda m: m.text == "📄 Документы")
 async def direct_reply_documents(message: Message, state: FSMContext, db):
-    """Open the real document action center without an extra callback tap."""
+    """Open the selected Case document center without cross-Case fallback."""
 
     if await common._guard_message_draft(message, state):
         return
     await document_action_center._clear_document_upload_state(state)
-    _user, case = await _active_message_case(message, db)
+    ctx, user, case = await _message_context(message, db)
+    if await _show_selector_if_ambiguous(
+        message,
+        ctx=ctx,
+        user=user,
+        case=case,
+        db=db,
+    ):
+        return
     if case is None:
         await db.commit()
         await message.answer(
@@ -260,12 +297,21 @@ async def direct_reply_documents(message: Message, state: FSMContext, db):
 
 @router.message(lambda m: m.text == "💬 Переписка")
 async def direct_reply_message_history(message: Message, state: FSMContext, db):
-    """Compatibility for historical reply keyboards; canonical menu uses Contact Lawyer."""
+    """Compatibility for historical keyboards; canonical menu uses Contact Lawyer."""
 
     if await common._guard_message_draft(message, state):
         return
     await state.clear()
-    user, case = await _active_message_case(message, db)
+    ctx, user, case = await _message_context(message, db)
+    if await _show_selector_if_ambiguous(
+        message,
+        ctx=ctx,
+        user=user,
+        case=case,
+        db=db,
+    ):
+        return
+
     read_only = False
     if case is None:
         case = await latest_completed_case_for_user(db, user_id=user.id)
@@ -336,7 +382,16 @@ async def direct_reply_new_question(message: Message, state: FSMContext, db):
 
     if await common._guard_message_draft(message, state):
         return
-    user, case = await _active_message_case(message, db)
+    ctx, user, case = await _message_context(message, db)
+    if await _show_selector_if_ambiguous(
+        message,
+        ctx=ctx,
+        user=user,
+        case=case,
+        db=db,
+    ):
+        return
+
     if case is None:
         completed = await latest_completed_case_for_user(db, user_id=user.id)
         await state.clear()
@@ -386,13 +441,14 @@ async def direct_reply_contact_lawyer(message: Message, state: FSMContext, db):
     if await common._guard_message_draft(message, state):
         return
     await state.clear()
-    _ctx, user, case = await _message_context(message, db)
-    active_cases = await _ctx.case_service.get_active_cases_for_user(int(user.id))
-
-    if len(active_cases) > 1 and case is None:
-        text, buttons = await _matter_selector_text(user, db)
-        await db.commit()
-        await message.answer(text, reply_markup=one(*buttons))
+    ctx, user, case = await _message_context(message, db)
+    if await _show_selector_if_ambiguous(
+        message,
+        ctx=ctx,
+        user=user,
+        case=case,
+        db=db,
+    ):
         return
 
     if case is not None and str(case.route or "") != RouteCode.M2.value:
