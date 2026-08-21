@@ -12,7 +12,10 @@ from app.bot.calculator_draft import (
     clear_calculator_draft_metadata,
     draft_step,
     draft_step_label,
+    finish_calculator_case,
     has_saved_calculator_draft,
+    mark_calculator_draft_paused,
+    start_fresh_calculator_case,
 )
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
@@ -159,7 +162,12 @@ async def _present_committed_callback(
 
 
 async def _recover_stale_step(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.clear()
+    # A stale Telegram button must not erase another Case's paused calculator
+    # draft. Pause the current working set when possible and only drop the active
+    # FSM state, leaving per-Case draft data intact.
+    paused = await mark_calculator_draft_paused(state)
+    if not paused:
+        await state.set_state(None)
     await callback.message.edit_text(
         "Этот шаг расчёта больше не актуален. Данные не изменены.\n\n"
         "Откройте нужное дело или начните новый расчёт.",
@@ -177,9 +185,8 @@ async def _start_fresh(
     *,
     case_id: int,
 ) -> None:
-    """Reset only calculator answers while preserving the exact Case binding."""
-    await state.clear()
-    await state.update_data(**{CALCULATOR_CASE_ID: int(case_id)})
+    """Reset one Case questionnaire while preserving other Case drafts."""
+    await start_fresh_calculator_case(state, case_id=int(case_id))
     await state.set_state(CalculatorStates.waiting_contract_price)
     await callback.message.edit_text(
         _price_prompt(),
@@ -314,7 +321,7 @@ async def calc_start(callback: CallbackQuery, state: FSMContext, db):
         # reset either that progressed legal matter or a different current FSM
         # draft the client may now be editing.
         if previous_case_id == case_id:
-            await state.clear()
+            await finish_calculator_case(state, case_id=case_id)
         await callback.message.edit_text(
             "Этот запуск расчёта уже был обработан. Откройте дело, чтобы увидеть текущий этап.",
             reply_markup=one(
@@ -351,7 +358,8 @@ async def calc_start(callback: CallbackQuery, state: FSMContext, db):
         return
 
     # Different callback id = explicit new operation/new Case. Existing Cases
-    # remain in the database; this FSM context now belongs to the new matter.
+    # and their paused calculator drafts remain intact; this flat FSM working set
+    # now belongs to the new matter.
     await _start_fresh(callback, state, case_id=case_id)
 
 
@@ -446,7 +454,7 @@ async def back_price(callback: CallbackQuery, state: FSMContext):
 async def price(message: Message, state: FSMContext):
     data = await state.get_data()
     if int(data.get(CALCULATOR_CASE_ID) or 0) <= 0:
-        await state.clear()
+        await state.set_state(None)
         await message.answer(
             "Расчёт потерял связь с обращением. Начните новый расчёт с главной.",
         )
@@ -487,7 +495,7 @@ async def back_planned(callback: CallbackQuery, state: FSMContext):
 async def planned(message: Message, state: FSMContext):
     data = await state.get_data()
     if int(data.get(CALCULATOR_CASE_ID) or 0) <= 0:
-        await state.clear()
+        await state.set_state(None)
         await message.answer("Расчёт потерял связь с обращением. Начните новый расчёт с главной.")
         return
     try:
@@ -547,7 +555,9 @@ async def actual(message: Message, state: FSMContext, db):
         return
     data = await state.get_data()
     if int(data.get(CALCULATOR_CASE_ID) or 0) <= 0 or not _base_data_ready(data):
-        await state.clear()
+        paused = await mark_calculator_draft_paused(state)
+        if not paused:
+            await state.set_state(None)
         await message.answer(
             "Этот шаг расчёта больше не актуален. Данные не изменены.",
             reply_markup=_result_recovery_keyboard(),
@@ -616,7 +626,7 @@ async def calculate_show_message(message: Message, state: FSMContext, db):
         )
         return
 
-    await state.clear()
+    await finish_calculator_case(state, case_id=case_id)
     try:
         await message.answer(
             format_calculation_result(result),
@@ -647,7 +657,7 @@ async def calculate_show_callback(callback: CallbackQuery, state: FSMContext, db
         )
         return
 
-    await state.clear()
+    await finish_calculator_case(state, case_id=case_id)
     await _present_committed_callback(
         callback,
         format_calculation_result(result),
@@ -700,7 +710,7 @@ async def unknown_calc_data(callback: CallbackQuery, state: FSMContext, db):
             ),
         )
         return
-    await state.clear()
+    await finish_calculator_case(state, case_id=case_id)
     await _present_committed_callback(
         callback,
         "Без этих данных расчёт будет неточным. Обращение переведено в консультационный маршрут.\n\n"
