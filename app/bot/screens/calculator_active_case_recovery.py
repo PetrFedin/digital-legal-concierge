@@ -9,8 +9,11 @@ from app.bot.calculator_draft import (
     draft_step_label,
     has_saved_calculator_draft,
 )
+from app.bot.case_callback_scope import (
+    callback_matches_action,
+    resolve_case_callback_scope,
+)
 from app.bot.client_case_view import CLIENT_ACTIONS, ClientAction
-from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.screens import calculator
 from app.domain.statuses.case_statuses import CaseStatus
@@ -24,17 +27,23 @@ _RECOVERABLE_CASE_STATUSES = {
 
 
 def install_active_case_recovery_actions() -> None:
-    """Give historical pre-calculation cases a real client continuation CTA."""
+    """Give historical pre-calculation Cases an explicit same-Case resume CTA.
+
+    ``calc_start`` is the global product action for a new calculation/new Case.
+    Recovery therefore has its own callback token and is Case-bound when emitted
+    from My Case. This prevents router precedence from turning an explicit new
+    calculation into a silent resume of another object's unfinished draft.
+    """
 
     CLIENT_ACTIONS[CaseStatus.NEW.value] = ClientAction(
-        "Начать предварительный расчёт",
-        "calc_start",
-        "Продолжите предварительный расчёт в этом обращении — новое дело создаваться не будет.",
+        "Продолжить предварительный расчёт",
+        "calc_recover",
+        "Продолжите предварительный расчёт именно в этом обращении. Новый расчёт по другому объекту запускается отдельной кнопкой «Рассчитать неустойку».",
     )
     CLIENT_ACTIONS[CaseStatus.CALCULATOR_STARTED.value] = ClientAction(
         "Продолжить расчёт",
-        "calc_start",
-        "Вернитесь к предварительному расчёту. Сохранённый черновик будет предложен автоматически, если он доступен.",
+        "calc_recover",
+        "Вернитесь к расчёту этого обращения. Сохранённый черновик будет предложен автоматически, если он доступен.",
     )
 
 
@@ -71,48 +80,64 @@ async def _show_recoverable_calculation(
     )
 
 
-@router.callback_query(lambda c: c.data == "calc_start")
-async def recover_or_delegate_calc_start(
+@router.callback_query(lambda c: callback_matches_action(c.data, "calc_recover"))
+async def recover_selected_calculation(
     callback: CallbackQuery,
     state: FSMContext,
     db,
 ):
-    ctx = BotContextService(db)
-    user = await ctx.get_user_from_callback(callback)
-    case = await ctx.case_service.get_active_case_for_user(user.id)
+    """Resume one explicit unfinished Case; never create a replacement Case."""
 
+    scope = await resolve_case_callback_scope(
+        callback,
+        db,
+        action="calc_recover",
+    )
+    if scope is None:
+        return
+
+    case = scope.case
     if (
-        case is not None
-        and str(case.status) in _RECOVERABLE_CASE_STATUSES
-        and str(case.route or "") != "M2"
+        case is None
+        or str(case.status) not in _RECOVERABLE_CASE_STATUSES
+        or str(case.route or "") == "M2"
     ):
-        try:
-            selected = await ctx.case_service.select_case_for_user(
-                user_id=int(user.id),
-                case_id=int(case.id),
-            )
-            selected_id = int(selected.id)
-            await db.commit()
-        except Exception:
-            await db.rollback()
-            await callback.message.edit_text(
-                "⚠️ Не удалось открыть это обращение. Повторите действие из «Моё дело».",
-                reply_markup=one(
-                    ("📁 Моё дело", "my_case_open"),
-                    ("🏠 Главная", "nav_home"),
-                ),
-            )
-            return
-        await _show_recoverable_calculation(
-            callback,
-            state,
-            case_id=selected_id,
+        await callback.message.edit_text(
+            "Эта кнопка восстановления больше не соответствует текущему этапу обращения. "
+            "Данные не изменены и новое дело не создано.",
+            reply_markup=one(
+                ("📁 Моё дело", "my_case_open"),
+                ("🧮 Новый расчёт", "calc_start"),
+                ("🏠 Главная", "nav_home"),
+            ),
         )
         return
 
-    # No recoverable selected Case: the global calculator creates a new matter
-    # using source-operation idempotency. Existing M1/M2 matters stay intact.
-    await calculator.calc_start(callback, state, db)
+    try:
+        selected = await scope.ctx.case_service.select_case_for_user(
+            user_id=int(scope.user.id),
+            case_id=int(case.id),
+        )
+        selected_id = int(selected.id)
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        await callback.message.edit_text(
+            "⚠️ Не удалось открыть сохранённый расчёт. Данные обращения не изменены. "
+            "Выберите дело заново и повторите действие.",
+            reply_markup=one(
+                ("📁 Выбрать обращение", "my_cases_open"),
+                ("🧮 Новый расчёт", "calc_start"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    await _show_recoverable_calculation(
+        callback,
+        state,
+        case_id=selected_id,
+    )
 
 
 __all__ = ["install_active_case_recovery_actions", "router"]
