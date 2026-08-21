@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -17,7 +18,7 @@ from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models import Base
 from app.models.case import Case
 from app.models.payment import Payment
-from app.models.payment_event import PaymentEvent
+from app.models.payment_event import PaymentEvent, PaymentEventIntegrityError
 from app.models.user import User
 from app.presentation_time import format_business_datetime
 
@@ -213,3 +214,27 @@ def test_payment_event_ledger_records_creation_and_status_change_in_same_db() ->
             )
             == events[-1].id
         )
+
+        # The normalized financial ledger is evidence, not an editable
+        # projection. Ordinary ORM repair/admin code must fail closed rather than
+        # rewrite the past.
+        protected_event_id = int(events[-1].id)
+        protected_event = session.get(PaymentEvent, protected_event_id)
+        assert protected_event is not None
+        protected_event.status_after = "TAMPERED"
+        with pytest.raises(PaymentEventIntegrityError):
+            session.commit()
+        session.rollback()
+
+        unchanged = session.get(PaymentEvent, protected_event_id)
+        assert unchanged is not None
+        assert unchanged.status_after == "PAID"
+
+        session.delete(unchanged)
+        with pytest.raises(PaymentEventIntegrityError):
+            session.commit()
+        session.rollback()
+
+        still_present = session.get(PaymentEvent, protected_event_id)
+        assert still_present is not None
+        assert still_present.status_after == "PAID"
