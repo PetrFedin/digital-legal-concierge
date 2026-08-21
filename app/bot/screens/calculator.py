@@ -288,6 +288,11 @@ async def calc_start(callback: CallbackQuery, state: FSMContext, db):
         )
         case_id = int(case.id)
         case_status = str(case.status)
+        selected_case = await ctx.case_service.get_selected_case_for_user(
+            int(user.id),
+            include_terminal=True,
+        )
+        selected_case_id = int(selected_case.id) if selected_case is not None else None
         await db.commit()
     except Exception:
         await db.rollback()
@@ -320,9 +325,25 @@ async def calc_start(callback: CallbackQuery, state: FSMContext, db):
         )
         return
 
+    if selected_case_id != case_id:
+        # Fresh creation always selects its new Case in the same transaction.
+        # Therefore an active Case returned without becoming selected is a
+        # delayed replay of an older source operation after the client switched
+        # context. Do not let that old delivery steal the current FSM draft.
+        await callback.message.edit_text(
+            "Этот запуск расчёта уже обрабатывался для другого обращения. "
+            "Текущее выбранное дело и незавершённый расчёт не изменены.",
+            reply_markup=one(
+                ("📁 Моё дело", "my_case_open"),
+                ("🧮 Новый расчёт", "calc_start"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
     if previous_case_id == case_id:
-        # Exact redelivery/retry of the same source callback. Preserve any
-        # answers already collected for this Case rather than resetting them.
+        # Exact redelivery/retry of the same source callback while that Case is
+        # still current. Preserve any answers already collected for this Case.
         if has_saved_calculator_draft(data):
             await _show_saved_draft(callback, state)
         else:
