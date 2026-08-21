@@ -222,16 +222,12 @@ class CaseService:
                     "Идемпотентная запись создания обращения ссылается на отсутствующее дело"
                 )
 
-            # A delayed duplicate source event must still resolve to the same
-            # original Case, but it must not steal the live Telegram cabinet
-            # context after that original matter has already reached a terminal
-            # state. Idempotency answers "which Case did this source event create";
-            # it is not authorization to re-select a completed Case.
-            if str(existing_case.status) not in _TERMINAL_CASE_VALUES:
-                await self._set_selected_case_locked(
-                    client_id=int(locked_client.id),
-                    case_id=int(existing_case.id),
-                )
+            # Idempotency answers only which Case this already-processed source
+            # operation created. A delayed duplicate is not a fresh navigation
+            # command and therefore must never re-select that Case, regardless
+            # of whether it is still active or already terminal. The first
+            # creation transaction selected it; later explicit navigation is a
+            # separate user action.
             return existing_case
 
         case = await self.create_case(
