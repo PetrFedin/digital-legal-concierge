@@ -263,44 +263,21 @@ async def _show_saved_draft(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(lambda c: c.data == "calc_start")
 async def calc_start(callback: CallbackQuery, state: FSMContext, db):
+    """Start a genuinely new calculation Case for this source callback.
+
+    Recovery of an unfinished existing Case is deliberately owned by
+    ``calc_recover:v2:<case_id>``. The global calc_start token must therefore
+    never be interpreted as implicit recovery merely because FSM still contains
+    another Case id. Exact Telegram redelivery remains idempotent: if this same
+    callback already created the Case currently bound in FSM, we resume that
+    exact Case instead of resetting its answers.
+    """
+
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     data = await state.get_data()
-    bound_case_id = int(data.get(CALCULATOR_CASE_ID) or 0)
+    previous_case_id = int(data.get(CALCULATOR_CASE_ID) or 0)
 
-    if bound_case_id > 0:
-        case = await ctx.case_service.get_case_for_user(
-            user_id=int(user.id),
-            case_id=bound_case_id,
-        )
-        if case is not None:
-            try:
-                await ctx.case_service.select_case_for_user(
-                    user_id=int(user.id),
-                    case_id=int(case.id),
-                )
-                await db.commit()
-            except Exception:
-                await db.rollback()
-                logger.exception("Calculator draft case selection failed")
-                await callback.message.edit_text(
-                    "⚠️ Не удалось открыть сохранённый расчёт. Повторите действие.",
-                    reply_markup=one(
-                        ("🔄 Повторить", "calc_start"),
-                        ("🏠 Главная", "nav_home"),
-                    ),
-                )
-                return
-            if has_saved_calculator_draft(data):
-                await _show_saved_draft(callback, state)
-            else:
-                await _resume_draft(callback, state)
-            return
-        await state.clear()
-
-    # A new global Calculate action means a new legal matter. Existing active
-    # matters remain untouched. Duplicate delivery of this exact callback is
-    # deduplicated by telegram callback id in CaseCreationRequest.
     try:
         case = await ctx.create_case_from_callback(
             user=user,
@@ -329,8 +306,10 @@ async def calc_start(callback: CallbackQuery, state: FSMContext, db):
         CaseStatus.CALCULATOR_STARTED.value,
     }:
         # A delayed duplicate of an already completed start callback must never
-        # reset a progressed legal matter.
-        await state.clear()
+        # reset either that progressed legal matter or a different current FSM
+        # draft the client may now be editing.
+        if previous_case_id == case_id:
+            await state.clear()
         await callback.message.edit_text(
             "Этот запуск расчёта уже был обработан. Откройте дело, чтобы увидеть текущий этап.",
             reply_markup=one(
@@ -341,6 +320,17 @@ async def calc_start(callback: CallbackQuery, state: FSMContext, db):
         )
         return
 
+    if previous_case_id == case_id:
+        # Exact redelivery/retry of the same source callback. Preserve any
+        # answers already collected for this Case rather than resetting them.
+        if has_saved_calculator_draft(data):
+            await _show_saved_draft(callback, state)
+        else:
+            await _resume_draft(callback, state)
+        return
+
+    # Different callback id = explicit new operation/new Case. Existing Cases
+    # remain in the database; this FSM context now belongs to the new matter.
     await _start_fresh(callback, state, case_id=case_id)
 
 
@@ -376,7 +366,7 @@ async def confirm_restart_calculation(callback: CallbackQuery, state: FSMContext
         "Само обращение и уже завершённые расчёты останутся в истории.",
         reply_markup=one(
             ("Да, удалить черновик", "calc_restart"),
-            ("↩️ Вернуться к черновику", "calc_start"),
+            ("↩️ Вернуться к черновику", "calc_resume"),
             ("🏠 Главная", "nav_home"),
         ),
     )
