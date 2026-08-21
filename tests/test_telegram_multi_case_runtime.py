@@ -326,6 +326,72 @@ async def test_my_case_selector_preserves_context_until_explicit_selection(
 
 
 @pytest.mark.asyncio
+async def test_stale_terminal_case_selector_is_rejected_without_context_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    telegram_id = _telegram_id()
+    user_id, cases = await _seed_cases(
+        telegram_id,
+        [
+            (CaseStatus.M1_SUCCESS_FEE_RECEIVED, RouteCode.M1.value),
+            (CaseStatus.CALCULATOR_STARTED, None),
+        ],
+    )
+    stale_case_id, stale_number = cases[0]
+    selected_case_id, selected_number = cases[1]
+    assert await _selected_case_id(user_id) == selected_case_id
+
+    # The selector was rendered while both Cases were active. Before the client
+    # taps the first row, that matter reaches a legitimate terminal state.
+    async with AsyncSessionLocal() as db:
+        stale_case = await db.get(Case, stale_case_id)
+        assert stale_case is not None
+        await CaseService(db).change_status(
+            case=stale_case,
+            next_status=CaseStatus.M1_CLOSED,
+            actor_type="system",
+            actor_id=None,
+            comment="Runtime stale selector closure",
+        )
+        await db.commit()
+
+    dispatcher = _runtime_dispatcher(monkeypatch)
+    session = RecordingTelegramSession()
+    bot = Bot(token="123456789:" + ("E" * 35), session=session)
+    try:
+        await dispatcher.feed_update(
+            bot,
+            _callback_update(
+                telegram_id=telegram_id,
+                update_id=12,
+                callback_id=f"runtime-stale-select-{uuid.uuid4().hex}",
+                message_id=203,
+                data=f"my_case_select:v2:{stale_case_id}",
+                message_text=(
+                    "📁 МОИ ОБРАЩЕНИЯ\n\n"
+                    f"• {stale_number}\n"
+                    f"• {selected_number}"
+                ),
+            ),
+        )
+
+        assert await _selected_case_id(user_id) == selected_case_id
+        async with AsyncSessionLocal() as db:
+            closed = await db.get(Case, stale_case_id)
+            selected = await db.get(Case, selected_case_id)
+            assert closed is not None
+            assert selected is not None
+            assert str(closed.status) == CaseStatus.M1_CLOSED.value
+            assert str(selected.status) == CaseStatus.CALCULATOR_STARTED.value
+
+        response_text = "\n".join(_texts(session))
+        assert "Не удалось выбрать это обращение" in response_text
+        assert "могло быть закрыто" in response_text
+    finally:
+        await bot.session.close()
+
+
+@pytest.mark.asyncio
 async def test_stale_case_bound_payment_callback_cannot_mutate_other_selected_case(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
