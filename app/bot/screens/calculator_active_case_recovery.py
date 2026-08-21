@@ -6,6 +6,7 @@ from aiogram.types import CallbackQuery
 
 from app.bot.calculator_draft import (
     CALCULATOR_CASE_ID,
+    activate_calculator_case_draft,
     draft_step_label,
     has_saved_calculator_draft,
 )
@@ -53,7 +54,13 @@ async def _show_recoverable_calculation(
     *,
     case_id: int,
 ) -> None:
-    data = await state.get_data()
+    # Switching from another unfinished calculator Case first snapshots that
+    # Case's flat working set, then activates only this exact Case's paused draft.
+    # No draft is silently borrowed from whichever Case happened to be current.
+    data = await activate_calculator_case_draft(
+        state,
+        case_id=int(case_id),
+    )
     draft_case_id = int(data.get(CALCULATOR_CASE_ID) or 0)
     if has_saved_calculator_draft(data) and draft_case_id == int(case_id):
         await state.set_state(None)
@@ -71,8 +78,9 @@ async def _show_recoverable_calculation(
         )
         return
 
-    # Redis/FSM data may have legitimately expired after a historical crash.
-    # Bind the questionnaire to this exact Case before accepting any new input.
+    # Redis/FSM data for this exact Case may have legitimately expired after a
+    # historical crash. Start the questionnaire in the same Case only; drafts of
+    # other active matters stay namespaced and recoverable.
     await calculator._start_fresh(
         callback,
         state,
