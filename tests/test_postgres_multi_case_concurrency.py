@@ -155,9 +155,85 @@ async def _scenario_distinct_operations_create_distinct_active_cases() -> None:
         assert calculation_count == 2
 
 
+async def _scenario_terminal_operation_replay_preserves_live_context() -> None:
+    """A delayed duplicate source event is idempotent but not a context mutation."""
+
+    user_id = await _new_client("Terminal operation replay")
+    original_key = f"telegram_callback:pytest-terminal:{uuid.uuid4().hex}"
+    current_key = f"telegram_callback:pytest-current:{uuid.uuid4().hex}"
+
+    async with AsyncSessionLocal() as db:
+        client = await db.get(User, user_id)
+        assert client is not None
+        service = CaseService(db)
+        original = await service.create_case_for_operation(
+            client=client,
+            operation_key=original_key,
+            purpose="calculator_start",
+            route="M1",
+            status=CaseStatus.M1_SUCCESS_FEE_RECEIVED,
+            title="Original completed matter",
+        )
+        current = await service.create_case_for_operation(
+            client=client,
+            operation_key=current_key,
+            purpose="calculator_start",
+            status=CaseStatus.CALCULATOR_STARTED,
+            title="Current active matter",
+        )
+        original_id = int(original.id)
+        current_id = int(current.id)
+        assert original_id != current_id
+
+        await service.change_status(
+            case=original,
+            next_status=CaseStatus.M1_CLOSED,
+            actor_type="system",
+            actor_id=None,
+            comment="Complete original matter before delayed duplicate delivery",
+        )
+        await db.commit()
+
+    async with AsyncSessionLocal() as db:
+        client = await db.get(User, user_id)
+        assert client is not None
+        replayed = await CaseService(db).create_case_for_operation(
+            client=client,
+            operation_key=original_key,
+            purpose="calculator_start",
+            status=CaseStatus.CALCULATOR_STARTED,
+            title="Ignored replay arguments",
+        )
+        assert int(replayed.id) == original_id
+        assert str(replayed.status) == CaseStatus.M1_CLOSED.value
+
+        context = await db.scalar(
+            select(ClientCaseContext).where(ClientCaseContext.client_id == user_id)
+        )
+        assert context is not None
+        assert int(context.selected_case_id) == current_id
+
+        case_count = await db.scalar(
+            select(func.count(Case.id)).where(Case.client_id == user_id)
+        )
+        request_count = await db.scalar(
+            select(func.count(CaseCreationRequest.id)).where(
+                CaseCreationRequest.client_id == user_id,
+                CaseCreationRequest.operation_key == original_key,
+            )
+        )
+        assert case_count == 2
+        assert request_count == 1
+        await db.commit()
+
+
 def test_same_source_operation_is_idempotent_under_postgres_concurrency() -> None:
     asyncio.run(_scenario_same_operation_is_exactly_once())
 
 
 def test_distinct_source_operations_remain_distinct_cases_under_postgres_concurrency() -> None:
     asyncio.run(_scenario_distinct_operations_create_distinct_active_cases())
+
+
+def test_terminal_source_operation_replay_does_not_reselect_completed_case() -> None:
+    asyncio.run(_scenario_terminal_operation_replay_preserves_live_context())
