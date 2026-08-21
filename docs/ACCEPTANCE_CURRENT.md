@@ -20,11 +20,12 @@ The following gates now exist in source and are part of the intended CI/runtime 
 
 - `tests/test_telegram_multi_case_runtime.py` — real aiogram `Dispatcher.feed_update` coverage for persistent Calculate, duplicate callback idempotency, multi-Case selector, stale Case-bound payment action and exact read-only message history;
 - `tests/test_telegram_redis_runtime.py` + `.github/workflows/telegram-runtime.yml` — Redis FSM restart/persistence and exact Case binding;
-- `tests/test_postgres_multi_case_concurrency.py` — same/different Case creation operation keys and Calculation history under PostgreSQL;
+- `tests/test_postgres_multi_case_concurrency.py` — same/different Case creation operation keys, terminal-operation replay and Calculation history under PostgreSQL;
 - `tests/test_postgres_payment_concurrency.py` — payment creation, duplicate success, duplicate refund confirmation and M2 hold-expiry/payment-success races;
 - `tests/test_postgres_staff_concurrency.py` — conflicting Document review and conflicting Case branch decisions under PostgreSQL;
 - `tests/test_v37_api_import_inventory.py` — exactly one runtime `(HTTP method, path)` owner plus canonical hardened owners for staff/payment/lawyer/backup/workdesk surfaces;
-- lifecycle/transaction tests for Payment timestamps/events, Case closure/archive, business timezone and AsyncSession presentation boundaries.
+- lifecycle/transaction tests for Payment timestamps/events, PaymentEvent immutability, Case closure/archive, business timezone and AsyncSession presentation boundaries;
+- source regressions for calculator new-vs-resume separation, exact Case-bound unknown-data recovery and stale selected-Case reply-menu behavior.
 
 Until the workflows actually execute on allocated runners, this is **SOURCE_OK evidence only**. It does not change any `LIVE_REQUIRED` state below.
 
@@ -34,15 +35,17 @@ Until the workflows actually execute on allocated runners, this is **SOURCE_OK e
 
 Expected contract:
 
-1. Client has active Case A.
+1. Client has active Case A; Case A may itself be an unfinished calculator flow.
 2. Client presses persistent **Calculate** or current inline **new calculation** entry.
-3. A genuinely new source operation may create active Case B.
-4. Case A remains unchanged and active.
-5. A redelivery/retry of the **same operation key** returns/deduplicates to the same Case instead of creating Case C.
-6. Calculation history is one-to-many per Case.
-7. No client-wide active-Case uniqueness error occurs.
+3. The explicit global `calc_start` means **new calculation / new legal matter** and must not be reinterpreted by router precedence as “resume Case A”.
+4. A genuinely new source operation may create active Case B.
+5. Case A remains unchanged and active.
+6. A redelivery/retry of the **same operation key** returns/deduplicates to the same Case instead of creating Case C.
+7. Calculation history is one-to-many per Case.
+8. No client-wide active-Case uniqueness error occurs.
+9. Resuming an unfinished calculation in Case A is a separate explicit Case-bound action (`calc_recover:v2:<case_id>`); a stale recovery action must fail closed rather than implicitly creating a replacement Case.
 
-The former expectation “a second active Case must not be created” is obsolete and incorrect.
+The former expectation “a second active Case must not be created” is obsolete and incorrect. Likewise, overloading the global Calculate callback as an implicit resume command is incorrect.
 
 State before release: **LIVE_REQUIRED**.
 
@@ -73,6 +76,8 @@ State before release: **LIVE_REQUIRED**.
 | MC-07 | message-history pagination after Case switch | exact Case id preserved; no cross-Case messages | LIVE_REQUIRED |
 | MC-08 | Case-history pagination after Case switch | exact Case id preserved; no cross-Case events | LIVE_REQUIRED |
 | MC-09 | documents/replacement callback from old Case | exact document/Case/version check; no cross-Case upload mutation | LIVE_REQUIRED |
+| MC-10 | selected unfinished calculator Case + persistent/global New Calculate | new Case is created; unfinished selected Case is not resumed or modified | LIVE_REQUIRED |
+| MC-11 | Case-bound calculator recovery after switching/closing Case | stale recovery fails closed; current selected Case remains untouched; no replacement Case is created | LIVE_REQUIRED |
 
 ## M1 persona acceptance
 
@@ -130,6 +135,8 @@ For each real/sandbox financial transition verify:
 5. Case/Audit history explains business application/review/refund outcome;
 6. no stale money changes the wrong Case/slot/legal stage.
 
+Historical `payment_events` rows are append-only evidence at the application boundary: ordinary ORM update/delete must fail closed; corrections are represented by later financial events, not rewritten history.
+
 Mandatory provider matrix: create, provider timeout after successful creation, idempotent retry, duplicate success, duplicate webhook, late failure, stale reservation payment, stale M1 payment, refund pending, refund confirmed, refund declined/review, process restart.
 
 State before release: **LIVE_REQUIRED**.
@@ -157,6 +164,7 @@ Must run on real PostgreSQL, not SQLite only:
 
 - same Case creation operation twice;
 - two distinct Case operations for one client;
+- delayed replay of a creation operation after its original Case has closed while another Case is selected;
 - repeated Calculations;
 - two clients attempt same slot;
 - slot cleanup vs payment webhook;
@@ -178,7 +186,9 @@ Feed real aiogram `Update` objects through the dispatcher with Redis FSM and pro
 
 The branch now contains direct `Dispatcher.feed_update` multi-Case tests and a Redis-backed restart contract. These do not replace a real Telegram test-bot/staging walkthrough.
 
-Verify client activity timestamps do not commit unfinished legal transactions and inactivity reminders deduplicate by stable client/stage snapshot.
+Explicitly verify that an unfinished selected calculator Case does not shadow global **New Calculate**, while `calc_recover:v2:<case_id>` resumes only its exact still-active Case.
+
+Verify client activity timestamps do not commit unfinished legal transactions and inactivity reminders deduplicate by stable client/stage snapshot. Unrelated staff/system updates to `Case.updated_at` must not postpone a reminder; a newly entered client-action stage receives its own quiet period.
 
 State before release: **LIVE_REQUIRED**.
 
