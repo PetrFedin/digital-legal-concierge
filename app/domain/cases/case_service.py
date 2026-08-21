@@ -108,10 +108,13 @@ class CaseService:
         await self.db.flush()
 
     async def select_case_for_user(self, *, user_id: int, case_id: int) -> Case:
-        """Select a Case as the current Telegram cabinet context.
+        """Select an active Case as the current Telegram cabinet context.
 
         Selection is navigation state only. It never closes, merges or otherwise
-        changes another active matter belonging to the same client.
+        changes another active matter belonging to the same client. The target
+        Case is locked and revalidated as active before the persisted client
+        context changes, so a stale selector cannot point the cabinet at a Case
+        that became terminal after the selector was rendered.
         """
 
         locked_client = (
@@ -121,9 +124,23 @@ class CaseService:
         ).scalar_one_or_none()
         if locked_client is None:
             raise LookupError("Клиент не найден")
-        case = await self.get_case_for_user(user_id=int(user_id), case_id=int(case_id))
+
+        case = (
+            await self.db.execute(
+                select(Case)
+                .where(
+                    Case.id == int(case_id),
+                    Case.client_id == int(user_id),
+                    Case.status.notin_(_TERMINAL_CASE_VALUES),
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
         if case is None:
-            raise LookupError("Обращение не найдено или принадлежит другому клиенту")
+            raise LookupError(
+                "Обращение уже завершено, недоступно или принадлежит другому клиенту"
+            )
         await self._set_selected_case_locked(
             client_id=int(user_id),
             case_id=int(case.id),
