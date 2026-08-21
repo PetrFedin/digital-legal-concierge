@@ -8,6 +8,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 
 from app.bot.calculator_draft import CALCULATOR_CASE_ID
+from app.bot.case_callback_scope import bound_case_callback
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.states import CalculatorStates
@@ -46,6 +47,25 @@ def _status(case) -> CaseStatus | None:
         return None
 
 
+def _stale_step_buttons(case_id: int) -> list[tuple[str, str]]:
+    buttons: list[tuple[str, str]] = []
+    if case_id > 0:
+        buttons.append(
+            (
+                "▶️ Продолжить расчёт этого обращения",
+                bound_case_callback("calc_recover", case_id),
+            )
+        )
+    buttons.extend(
+        [
+            ("📁 Моё дело", "my_case_open"),
+            ("🧮 Новый расчёт", "calc_start"),
+            ("🏠 Главная", "nav_home"),
+        ]
+    )
+    return buttons
+
+
 @router.callback_query(lambda c: c.data in _EXPECTED_FSM)
 async def atomic_unknown_data_to_consultation(
     callback: CallbackQuery,
@@ -60,16 +80,14 @@ async def atomic_unknown_data_to_consultation(
     if current_state != expected_state or case_id <= 0:
         # Inline keyboards remain clickable forever. Without the exact FSM step
         # and bound Case id, an old callback cannot authorize a route mutation.
+        # If the draft still carries a Case id, recovery remains explicitly
+        # bound to that Case; global calc_start is reserved for a NEW matter.
         await db.rollback()
         await _safe_edit(
             callback,
             "ℹ️ Эта кнопка относится к другому шагу расчёта. Дело и введённые данные не изменены.\n\n"
-            "Продолжите текущий шаг расчёта либо откройте актуальное дело.",
-            reply_markup=one(
-                ("▶️ Продолжить расчёт", "calc_start"),
-                ("📁 Моё дело", "my_case_open"),
-                ("🏠 Главная", "nav_home"),
-            ),
+            "Продолжите расчёт именно этого обращения либо откройте актуальное дело. Новый расчёт создаётся отдельно.",
+            reply_markup=one(*_stale_step_buttons(case_id)),
         )
         return
 
