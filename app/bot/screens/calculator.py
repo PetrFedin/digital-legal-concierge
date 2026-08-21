@@ -17,6 +17,7 @@ from app.bot.calculator_draft import (
     mark_calculator_draft_paused,
     start_fresh_calculator_case,
 )
+from app.bot.case_callback_scope import bound_case_callback
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.states import CalculatorStates
@@ -27,6 +28,19 @@ from app.domain.statuses.case_statuses import CaseStatus
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+_LEGACY_UNBOUND_CALCULATOR_ACTIONS = frozenset(
+    {
+        "calc_resume",
+        "calc_restart_confirm",
+        "calc_restart",
+        "calc_back_price",
+        "calc_back_planned",
+        "calc_back_transfer_status",
+        "calc_object_transferred_yes",
+        "calc_object_transferred_no",
+    }
+)
 
 
 def _price_prompt(current: str | None = None) -> str:
@@ -59,26 +73,45 @@ def _actual_prompt() -> str:
     )
 
 
-def _planned_keyboard():
+def _price_keyboard(case_id: int):
     return one(
-        ("Не знаю дату", "calc_unknown_date"),
-        ("⬅️ Изменить стоимость", "calc_back_price"),
+        ("Не знаю стоимость", bound_case_callback("calc_unknown_price", case_id)),
         ("💾 Сохранить и выйти", "nav_home"),
     )
 
 
-def _transfer_keyboard():
+def _planned_keyboard(case_id: int):
     return one(
-        ("Да, передан", "calc_object_transferred_yes"),
-        ("Нет, не передан", "calc_object_transferred_no"),
-        ("⬅️ Изменить дату по ДДУ", "calc_back_planned"),
+        ("Не знаю дату", bound_case_callback("calc_unknown_date", case_id)),
+        ("⬅️ Изменить стоимость", bound_case_callback("calc_back_price", case_id)),
         ("💾 Сохранить и выйти", "nav_home"),
     )
 
 
-def _actual_keyboard():
+def _transfer_keyboard(case_id: int):
     return one(
-        ("⬅️ Назад к статусу передачи", "calc_back_transfer_status"),
+        (
+            "Да, передан",
+            bound_case_callback("calc_object_transferred_yes", case_id),
+        ),
+        (
+            "Нет, не передан",
+            bound_case_callback("calc_object_transferred_no", case_id),
+        ),
+        (
+            "⬅️ Изменить дату по ДДУ",
+            bound_case_callback("calc_back_planned", case_id),
+        ),
+        ("💾 Сохранить и выйти", "nav_home"),
+    )
+
+
+def _actual_keyboard(case_id: int):
+    return one(
+        (
+            "⬅️ Назад к статусу передачи",
+            bound_case_callback("calc_back_transfer_status", case_id),
+        ),
         ("💾 Сохранить и выйти", "nav_home"),
     )
 
@@ -125,6 +158,26 @@ def _parse_case_callback(data: str | None, prefix: str) -> int:
     return case_id
 
 
+def _current_case_id(data: dict) -> int:
+    try:
+        return int(data.get(CALCULATOR_CASE_ID) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _require_current_case_callback(
+    data: str | None,
+    *,
+    prefix: str,
+    state_data: dict,
+) -> int:
+    expected_case_id = _parse_case_callback(data, prefix)
+    current_case_id = _current_case_id(state_data)
+    if current_case_id <= 0 or current_case_id != expected_case_id:
+        raise ValueError("Кнопка относится к другому обращению")
+    return expected_case_id
+
+
 async def _present_committed_callback(
     callback: CallbackQuery,
     text: str,
@@ -169,7 +222,7 @@ async def _recover_stale_step(callback: CallbackQuery, state: FSMContext) -> Non
     if not paused:
         await state.set_state(None)
     await callback.message.edit_text(
-        "Этот шаг расчёта больше не актуален. Данные не изменены.\n\n"
+        "Этот шаг расчёта больше не актуален или относится к другому обращению. Данные не изменены.\n\n"
         "Откройте нужное дело или начните новый расчёт.",
         reply_markup=_result_recovery_keyboard(),
     )
@@ -190,16 +243,13 @@ async def _start_fresh(
     await state.set_state(CalculatorStates.waiting_contract_price)
     await callback.message.edit_text(
         _price_prompt(),
-        reply_markup=one(
-            ("Не знаю стоимость", "calc_unknown_price"),
-            ("💾 Сохранить и выйти", "nav_home"),
-        ),
+        reply_markup=_price_keyboard(int(case_id)),
     )
 
 
 async def _resume_draft(callback: CallbackQuery, state: FSMContext) -> None:
     data = await clear_calculator_draft_metadata(state)
-    case_id = int(data.get(CALCULATOR_CASE_ID) or 0)
+    case_id = _current_case_id(data)
     if case_id <= 0:
         await _recover_stale_step(callback, state)
         return
@@ -208,10 +258,7 @@ async def _resume_draft(callback: CallbackQuery, state: FSMContext) -> None:
         await state.set_state(CalculatorStates.waiting_contract_price)
         await callback.message.edit_text(
             _price_prompt(str(data.get("contract_price") or "") or None),
-            reply_markup=one(
-                ("Не знаю стоимость", "calc_unknown_price"),
-                ("💾 Сохранить и выйти", "nav_home"),
-            ),
+            reply_markup=_price_keyboard(case_id),
         )
         return
     if step == "planned_date":
@@ -222,25 +269,34 @@ async def _resume_draft(callback: CallbackQuery, state: FSMContext) -> None:
             except (TypeError, ValueError):
                 current = None
         await state.set_state(CalculatorStates.waiting_planned_transfer_date)
-        await callback.message.edit_text(_planned_prompt(current), reply_markup=_planned_keyboard())
+        await callback.message.edit_text(
+            _planned_prompt(current),
+            reply_markup=_planned_keyboard(case_id),
+        )
         return
     if step == "transfer_status":
         if not _base_data_ready(data):
             await _start_fresh(callback, state, case_id=case_id)
             return
         await state.set_state(CalculatorStates.waiting_object_transfer_status)
-        await callback.message.edit_text(_transfer_prompt(), reply_markup=_transfer_keyboard())
+        await callback.message.edit_text(
+            _transfer_prompt(),
+            reply_markup=_transfer_keyboard(case_id),
+        )
         return
     if not _base_data_ready(data):
         await _start_fresh(callback, state, case_id=case_id)
         return
     await state.set_state(CalculatorStates.waiting_actual_transfer_date)
-    await callback.message.edit_text(_actual_prompt(), reply_markup=_actual_keyboard())
+    await callback.message.edit_text(
+        _actual_prompt(),
+        reply_markup=_actual_keyboard(case_id),
+    )
 
 
 async def _bound_case(ctx: BotContextService, user, state: FSMContext):
     data = await state.get_data()
-    case_id = int(data.get(CALCULATOR_CASE_ID) or 0)
+    case_id = _current_case_id(data)
     if case_id <= 0:
         raise LookupError("Расчёт не привязан к обращению")
     case = await ctx.case_service.get_case_for_user(
@@ -249,11 +305,26 @@ async def _bound_case(ctx: BotContextService, user, state: FSMContext):
     )
     if case is None:
         raise LookupError("Обращение расчёта не найдено")
+
+    selected = await ctx.case_service.get_selected_case_for_user(
+        int(user.id),
+        include_terminal=False,
+    )
+    if selected is None:
+        active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
+        if len(active_cases) != 1 or int(active_cases[0].id) != case_id:
+            raise LookupError("Перед действием нужно выбрать это обращение")
+    elif int(selected.id) != case_id:
+        raise LookupError("Сейчас выбрано другое обращение")
     return case
 
 
 async def _show_saved_draft(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
+    case_id = _current_case_id(data)
+    if case_id <= 0:
+        await _recover_stale_step(callback, state)
+        return
     await state.set_state(None)
     await callback.message.edit_text(
         "📝 Сохранён незавершённый расчёт\n\n"
@@ -261,8 +332,14 @@ async def _show_saved_draft(callback: CallbackQuery, state: FSMContext) -> None:
         f"Следующий шаг: {draft_step_label(data)}.\n"
         "Продолжите с сохранённого места или начните заново — сброс потребует подтверждения.",
         reply_markup=one(
-            ("▶️ Продолжить расчёт", "calc_resume"),
-            ("Начать заново", "calc_restart_confirm"),
+            (
+                "▶️ Продолжить расчёт",
+                bound_case_callback("calc_resume", case_id),
+            ),
+            (
+                "Начать заново",
+                bound_case_callback("calc_restart_confirm", case_id),
+            ),
             ("🏠 Главная", "nav_home"),
         ),
     )
@@ -283,7 +360,7 @@ async def calc_start(callback: CallbackQuery, state: FSMContext, db):
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     data = await state.get_data()
-    previous_case_id = int(data.get(CALCULATOR_CASE_ID) or 0)
+    previous_case_id = _current_case_id(data)
 
     try:
         case = await ctx.create_case_from_callback(
@@ -363,8 +440,21 @@ async def calc_start(callback: CallbackQuery, state: FSMContext, db):
     await _start_fresh(callback, state, case_id=case_id)
 
 
-@router.callback_query(lambda c: c.data == "calc_resume")
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_resume:v2:")
+)
 async def resume_saved_calculation(callback: CallbackQuery, state: FSMContext, db):
+    state_data = await state.get_data()
+    try:
+        _require_current_case_callback(
+            callback.data,
+            prefix="calc_resume",
+            state_data=state_data,
+        )
+    except Exception:
+        await _recover_stale_step(callback, state)
+        return
+
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     try:
@@ -382,10 +472,18 @@ async def resume_saved_calculation(callback: CallbackQuery, state: FSMContext, d
     await _resume_draft(callback, state)
 
 
-@router.callback_query(lambda c: c.data == "calc_restart_confirm")
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_restart_confirm:v2:")
+)
 async def confirm_restart_calculation(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    if int(data.get(CALCULATOR_CASE_ID) or 0) <= 0:
+    try:
+        case_id = _require_current_case_callback(
+            callback.data,
+            prefix="calc_restart_confirm",
+            state_data=data,
+        )
+    except Exception:
         await _recover_stale_step(callback, state)
         return
     await state.set_state(None)
@@ -394,18 +492,31 @@ async def confirm_restart_calculation(callback: CallbackQuery, state: FSMContext
         "Сохранённые ответы текущего незавершённого расчёта будут удалены. "
         "Само обращение и уже завершённые расчёты останутся в истории.",
         reply_markup=one(
-            ("Да, удалить черновик", "calc_restart"),
-            ("↩️ Вернуться к черновику", "calc_resume"),
+            (
+                "Да, удалить черновик",
+                bound_case_callback("calc_restart", case_id),
+            ),
+            (
+                "↩️ Вернуться к черновику",
+                bound_case_callback("calc_resume", case_id),
+            ),
             ("🏠 Главная", "nav_home"),
         ),
     )
 
 
-@router.callback_query(lambda c: c.data == "calc_restart")
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_restart:v2:")
+)
 async def restart_calculation(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    case_id = int(data.get(CALCULATOR_CASE_ID) or 0)
-    if case_id <= 0:
+    try:
+        case_id = _require_current_case_callback(
+            callback.data,
+            prefix="calc_restart",
+            state_data=data,
+        )
+    except Exception:
         await _recover_stale_step(callback, state)
         return
     await _start_fresh(callback, state, case_id=case_id)
@@ -434,26 +545,32 @@ async def repeat_calculation(callback: CallbackQuery, state: FSMContext, db):
     await _start_fresh(callback, state, case_id=selected_id)
 
 
-@router.callback_query(lambda c: c.data == "calc_back_price")
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_back_price:v2:")
+)
 async def back_price(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    if int(data.get(CALCULATOR_CASE_ID) or 0) <= 0:
+    try:
+        case_id = _require_current_case_callback(
+            callback.data,
+            prefix="calc_back_price",
+            state_data=data,
+        )
+    except Exception:
         await _recover_stale_step(callback, state)
         return
     await state.set_state(CalculatorStates.waiting_contract_price)
     await callback.message.edit_text(
         _price_prompt(str(data.get("contract_price") or "") or None),
-        reply_markup=one(
-            ("Не знаю стоимость", "calc_unknown_price"),
-            ("💾 Сохранить и выйти", "nav_home"),
-        ),
+        reply_markup=_price_keyboard(case_id),
     )
 
 
 @router.message(CalculatorStates.waiting_contract_price)
 async def price(message: Message, state: FSMContext):
     data = await state.get_data()
-    if int(data.get(CALCULATOR_CASE_ID) or 0) <= 0:
+    case_id = _current_case_id(data)
+    if case_id <= 0:
         await state.set_state(None)
         await message.answer(
             "Расчёт потерял связь с обращением. Начните новый расчёт с главной.",
@@ -469,13 +586,27 @@ async def price(message: Message, state: FSMContext):
         return
     await state.update_data(contract_price=str(amount))
     await state.set_state(CalculatorStates.waiting_planned_transfer_date)
-    await message.answer(_planned_prompt(), reply_markup=_planned_keyboard())
+    await message.answer(
+        _planned_prompt(),
+        reply_markup=_planned_keyboard(case_id),
+    )
 
 
-@router.callback_query(lambda c: c.data == "calc_back_planned")
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_back_planned:v2:")
+)
 async def back_planned(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    if int(data.get(CALCULATOR_CASE_ID) or 0) <= 0 or not data.get("contract_price"):
+    try:
+        case_id = _require_current_case_callback(
+            callback.data,
+            prefix="calc_back_planned",
+            state_data=data,
+        )
+    except Exception:
+        await _recover_stale_step(callback, state)
+        return
+    if not data.get("contract_price"):
         await _recover_stale_step(callback, state)
         return
     current = None
@@ -487,14 +618,15 @@ async def back_planned(callback: CallbackQuery, state: FSMContext):
     await state.set_state(CalculatorStates.waiting_planned_transfer_date)
     await callback.message.edit_text(
         _planned_prompt(current),
-        reply_markup=_planned_keyboard(),
+        reply_markup=_planned_keyboard(case_id),
     )
 
 
 @router.message(CalculatorStates.waiting_planned_transfer_date)
 async def planned(message: Message, state: FSMContext):
     data = await state.get_data()
-    if int(data.get(CALCULATOR_CASE_ID) or 0) <= 0:
+    case_id = _current_case_id(data)
+    if case_id <= 0:
         await state.set_state(None)
         await message.answer("Расчёт потерял связь с обращением. Начните новый расчёт с главной.")
         return
@@ -503,7 +635,7 @@ async def planned(message: Message, state: FSMContext):
     except Exception:
         await message.answer(
             "⚠️ Дата нужна в формате ДД.ММ.ГГГГ. Ранее введённая стоимость сохранена.",
-            reply_markup=_planned_keyboard(),
+            reply_markup=_planned_keyboard(case_id),
         )
         return
     if planned_date > date.today():
@@ -511,50 +643,80 @@ async def planned(message: Message, state: FSMContext):
             "Дата передачи ещё не наступила. Автоматический расчёт сейчас невозможен. "
             "Можно обсудить будущий срок с юристом или исправить дату.",
             reply_markup=one(
-                ("💬 Перейти к юристу", "calc_unknown_date"),
-                ("⬅️ Изменить стоимость", "calc_back_price"),
+                (
+                    "💬 Перейти к юристу",
+                    bound_case_callback("calc_unknown_date", case_id),
+                ),
+                (
+                    "⬅️ Изменить стоимость",
+                    bound_case_callback("calc_back_price", case_id),
+                ),
                 ("💾 Сохранить и выйти", "nav_home"),
             ),
         )
         return
     await state.update_data(planned_transfer_date=planned_date.isoformat())
     await state.set_state(CalculatorStates.waiting_object_transfer_status)
-    await message.answer(_transfer_prompt(), reply_markup=_transfer_keyboard())
+    await message.answer(
+        _transfer_prompt(),
+        reply_markup=_transfer_keyboard(case_id),
+    )
 
 
-@router.callback_query(lambda c: c.data == "calc_back_transfer_status")
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_back_transfer_status:v2:")
+)
 async def back_transfer_status(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    if int(data.get(CALCULATOR_CASE_ID) or 0) <= 0 or not _base_data_ready(data):
+    try:
+        case_id = _require_current_case_callback(
+            callback.data,
+            prefix="calc_back_transfer_status",
+            state_data=data,
+        )
+    except Exception:
+        await _recover_stale_step(callback, state)
+        return
+    if not _base_data_ready(data):
         await _recover_stale_step(callback, state)
         return
     await state.set_state(CalculatorStates.waiting_object_transfer_status)
-    await callback.message.edit_text(_transfer_prompt(), reply_markup=_transfer_keyboard())
+    await callback.message.edit_text(
+        _transfer_prompt(),
+        reply_markup=_transfer_keyboard(case_id),
+    )
 
 
-@router.callback_query(lambda c: c.data == "calc_object_transferred_yes")
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_object_transferred_yes:v2:")
+)
 async def yes(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    if int(data.get(CALCULATOR_CASE_ID) or 0) <= 0 or not _base_data_ready(data):
+    try:
+        case_id = _require_current_case_callback(
+            callback.data,
+            prefix="calc_object_transferred_yes",
+            state_data=data,
+        )
+    except Exception:
+        await _recover_stale_step(callback, state)
+        return
+    if not _base_data_ready(data):
         await _recover_stale_step(callback, state)
         return
     await state.update_data(object_transferred=True)
     await state.set_state(CalculatorStates.waiting_actual_transfer_date)
-    await callback.message.edit_text(_actual_prompt(), reply_markup=_actual_keyboard())
+    await callback.message.edit_text(
+        _actual_prompt(),
+        reply_markup=_actual_keyboard(case_id),
+    )
 
 
 @router.message(CalculatorStates.waiting_actual_transfer_date)
 async def actual(message: Message, state: FSMContext, db):
-    try:
-        actual_date = datetime.strptime(message.text.strip(), "%d.%m.%Y").date()
-    except Exception:
-        await message.answer(
-            "⚠️ Дата нужна в формате ДД.ММ.ГГГГ. Ранее введённые данные сохранены.",
-            reply_markup=_actual_keyboard(),
-        )
-        return
     data = await state.get_data()
-    if int(data.get(CALCULATOR_CASE_ID) or 0) <= 0 or not _base_data_ready(data):
+    case_id = _current_case_id(data)
+    if case_id <= 0 or not _base_data_ready(data):
         paused = await mark_calculator_draft_paused(state)
         if not paused:
             await state.set_state(None)
@@ -563,27 +725,46 @@ async def actual(message: Message, state: FSMContext, db):
             reply_markup=_result_recovery_keyboard(),
         )
         return
+    try:
+        actual_date = datetime.strptime(message.text.strip(), "%d.%m.%Y").date()
+    except Exception:
+        await message.answer(
+            "⚠️ Дата нужна в формате ДД.ММ.ГГГГ. Ранее введённые данные сохранены.",
+            reply_markup=_actual_keyboard(case_id),
+        )
+        return
     planned_date = date.fromisoformat(data["planned_transfer_date"])
     if actual_date < planned_date:
         await message.answer(
             "⚠️ Фактическая дата передачи не может быть раньше даты по ДДУ. Ранее введённые данные сохранены.",
-            reply_markup=_actual_keyboard(),
+            reply_markup=_actual_keyboard(case_id),
         )
         return
     if actual_date > date.today():
         await message.answer(
             "⚠️ Фактическая дата передачи не может быть в будущем. Ранее введённые данные сохранены.",
-            reply_markup=_actual_keyboard(),
+            reply_markup=_actual_keyboard(case_id),
         )
         return
     await state.update_data(actual_transfer_date=actual_date.isoformat())
     await calculate_show_message(message, state, db)
 
 
-@router.callback_query(lambda c: c.data == "calc_object_transferred_no")
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_object_transferred_no:v2:")
+)
 async def no(callback: CallbackQuery, state: FSMContext, db):
     data = await state.get_data()
-    if int(data.get(CALCULATOR_CASE_ID) or 0) <= 0 or not _base_data_ready(data):
+    try:
+        _require_current_case_callback(
+            callback.data,
+            prefix="calc_object_transferred_no",
+            state_data=data,
+        )
+    except Exception:
+        await _recover_stale_step(callback, state)
+        return
+    if not _base_data_ready(data):
         await _recover_stale_step(callback, state)
         return
     await state.update_data(object_transferred=False, actual_transfer_date=None)
@@ -619,10 +800,16 @@ async def calculate_show_message(message: Message, state: FSMContext, db):
     except Exception:
         await db.rollback()
         logger.exception("Calculator result could not be saved from message flow")
+        data = await state.get_data()
+        case_id = _current_case_id(data)
         await message.answer(
             "⚠️ Расчёт временно не сохранён. Введённые данные остаются в текущем шаге. "
             "Повторите дату или вернитесь назад.",
-            reply_markup=_actual_keyboard(),
+            reply_markup=(
+                _actual_keyboard(case_id)
+                if case_id > 0
+                else _result_recovery_keyboard()
+            ),
         )
         return
 
@@ -647,11 +834,22 @@ async def calculate_show_callback(callback: CallbackQuery, state: FSMContext, db
     except Exception:
         await db.rollback()
         logger.exception("Calculator result could not be saved from callback flow")
+        data = await state.get_data()
+        case_id = _current_case_id(data)
+        if case_id <= 0:
+            await _recover_stale_step(callback, state)
+            return
         await callback.message.edit_text(
             "⚠️ Расчёт временно не сохранён. Введённые данные сохранены. Повторите действие.",
             reply_markup=one(
-                ("🔄 Повторить расчёт", "calc_object_transferred_no"),
-                ("⬅️ Изменить дату по ДДУ", "calc_back_planned"),
+                (
+                    "🔄 Повторить расчёт",
+                    bound_case_callback("calc_object_transferred_no", case_id),
+                ),
+                (
+                    "⬅️ Изменить дату по ДДУ",
+                    bound_case_callback("calc_back_planned", case_id),
+                ),
                 ("💾 Сохранить и выйти", "nav_home"),
             ),
         )
@@ -676,16 +874,34 @@ def result_kb(case_id: int):
     )
 
 
-@router.callback_query(lambda c: c.data in {"calc_unknown_price", "calc_unknown_date"})
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_unknown_price:v2:")
+    or str(c.data or "").startswith("calc_unknown_date:v2:")
+)
 async def unknown_calc_data(callback: CallbackQuery, state: FSMContext, db):
+    action = (
+        "calc_unknown_price"
+        if str(callback.data or "").startswith("calc_unknown_price:v2:")
+        else "calc_unknown_date"
+    )
+    data = await state.get_data()
+    try:
+        case_id = _require_current_case_callback(
+            callback.data,
+            prefix=action,
+            state_data=data,
+        )
+    except Exception:
+        await _recover_stale_step(callback, state)
+        return
+
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     try:
         case = await _bound_case(ctx, user, state)
-        case_id = int(case.id)
         reason = (
             "Клиент не знает стоимость"
-            if callback.data == "calc_unknown_price"
+            if action == "calc_unknown_price"
             else "Клиент не знает дату передачи"
         )
         await ctx.case_service.transfer_to_m2(
@@ -705,7 +921,10 @@ async def unknown_calc_data(callback: CallbackQuery, state: FSMContext, db):
         await callback.message.edit_text(
             "Переход к консультации временно не сохранён. Повторите действие.",
             reply_markup=one(
-                ("🔄 Повторить переход", callback.data),
+                (
+                    "🔄 Повторить переход",
+                    bound_case_callback(action, case_id),
+                ),
                 ("🏠 Главная", "nav_home"),
             ),
         )
@@ -843,6 +1062,21 @@ async def legacy_unbound_result_action(callback: CallbackQuery):
     await callback.message.edit_text(
         "Эта кнопка относится к старой версии экрана и больше не выполняет действие без номера обращения.\n\n"
         "Откройте «Моё дело» — там будет показан актуальный шаг без риска изменить другое обращение.",
+        reply_markup=one(
+            ("📁 Моё дело", "my_case_open"),
+            ("🧮 Новый расчёт", "calc_start"),
+            ("🏠 Главная", "nav_home"),
+        ),
+    )
+
+
+@router.callback_query(lambda c: str(c.data or "") in _LEGACY_UNBOUND_CALCULATOR_ACTIONS)
+async def legacy_unbound_calculator_flow_action(callback: CallbackQuery):
+    """Old questionnaire buttons cannot act on whichever Case is current now."""
+
+    await callback.message.edit_text(
+        "Эта кнопка расчёта относится к старой версии экрана и не содержит номер обращения. "
+        "Действие не выполнено. Откройте нужное дело и продолжите его актуальный расчёт.",
         reply_markup=one(
             ("📁 Моё дело", "my_case_open"),
             ("🧮 Новый расчёт", "calc_start"),
