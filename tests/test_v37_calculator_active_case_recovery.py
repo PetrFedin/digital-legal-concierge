@@ -29,7 +29,8 @@ def test_global_calc_start_is_not_shadowed_by_recovery_router():
     assert '@router.callback_query(lambda c: c.data == "calc_start")' in calculator
     assert "ctx.create_case_from_callback(" in calculator
     assert 'purpose="calculator_start"' in calculator
-    assert "A new global Calculate action means a new legal matter" in calculator
+    assert "Start a genuinely new calculation Case for this source callback" in calculator
+    assert "Different callback id = explicit new operation/new Case" in calculator
 
 
 def test_recovery_resolves_exact_case_and_never_creates_replacement_case():
