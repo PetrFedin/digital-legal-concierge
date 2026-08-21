@@ -7,7 +7,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 
-from app.bot.calculator_draft import CALCULATOR_CASE_ID
+from app.bot.calculator_draft import CALCULATOR_CASE_ID, finish_calculator_case
 from app.bot.case_callback_scope import bound_case_callback
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
@@ -157,7 +157,9 @@ async def atomic_unknown_data_to_consultation(
         )
         return
 
-    await state.clear()
+    # The current Case has intentionally left the calculator route. Remove only
+    # its draft; paused calculator drafts for other active Cases stay recoverable.
+    await finish_calculator_case(state, case_id=case_id)
     description_ready = bool(str(consultation.client_description or "").strip())
     primary = (
         ("📅 Продолжить: выбрать время", "consult_booking_start")
