@@ -119,27 +119,35 @@ async def _render_bound_chooser(
         await document_action_center._render_home(callback, state, db)
         return
 
+    # Presentation must not keep a database transaction open while Telegram is
+    # contacted. Snapshot every ORM value first, release the read transaction,
+    # then update Redis/FSM and render the screen from scalars only.
+    case_id = int(case.id)
+    case_number = str(case.case_number)
+    route = str(case.route or "").upper()
+    status = _case_status(case)
+    await db.rollback()
+
     await state.clear()
     await state.set_state(DocumentUploadStates.choosing_type)
-    await state.update_data(document_case_id=int(case.id))
+    await state.update_data(document_case_id=case_id)
 
     items = [
-        (f"Загрузить: {title}", _bound_type(case.id, code))
+        (f"Загрузить: {title}", _bound_type(case_id, code))
         for title, code in legacy_documents.TYPES
     ]
-    status = _case_status(case)
-    if str(case.route or "").upper() == "M2" and status in _M2_CAN_SKIP_STATUSES:
-        items.append(("Продолжить без документов", f"doc_skip_m2:v2:{int(case.id)}"))
+    if route == "M2" and status in _M2_CAN_SKIP_STATUSES:
+        items.append(("Продолжить без документов", f"doc_skip_m2:v2:{case_id}"))
     items.append(("✖️ Отменить загрузку", "document_upload_discard_confirm"))
 
     requirement = (
         "Для передачи дела юридической команде обязательно загрузите актуальный ДДУ."
-        if str(case.route or "").upper() == "M1"
+        if route == "M1"
         else "Для консультации документы необязательны, но помогут юристу подготовиться."
     )
     await callback.message.edit_text(
         "➕ ДОБАВИТЬ ДОКУМЕНТ\n"
-        f"Обращение № {case.case_number}\n\n"
+        f"Обращение № {case_number}\n\n"
         "Выберите тип, затем прикрепите PDF, DOCX, JPG или PNG. Загрузка привязана именно к этому обращению. "
         "Пока она не завершена или явно не отменена, бот не даст случайно потерять этот контекст при навигации.\n\n"
         f"{requirement}",
@@ -347,14 +355,17 @@ async def bound_document_type_choice(
         )
         return
 
+    case_id = int(case.id)
+    case_number = str(case.case_number)
+    await db.rollback()
     await state.update_data(
-        document_case_id=int(case.id),
+        document_case_id=case_id,
         document_type=document_type,
     )
     await state.set_state(DocumentUploadStates.waiting_file)
     await callback.message.edit_text(
         "📎 ФАЙЛ ДЛЯ ДОКУМЕНТА\n"
-        f"Обращение № {case.case_number}\n"
+        f"Обращение № {case_number}\n"
         f"Тип: {_DOCUMENT_TYPE_LABELS.get(document_type, document_type)}\n\n"
         "Прикрепите PDF, DOCX, JPG или PNG. Перед сохранением бот ещё раз проверит обращение и допустимый этап. "
         "Навигация не удалит этот выбор без отдельного подтверждения.",
