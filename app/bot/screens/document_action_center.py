@@ -139,14 +139,29 @@ async def _safe_present(callback: CallbackQuery, text: str, *, reply_markup) -> 
 
 
 async def _active_case(callback: CallbackQuery, db):
+    """Resolve document context without guessing between active matters.
+
+    Historical inline callbacks do not carry a Case id. They may safely reuse an
+    explicitly selected active Case, or the only active Case. When several active
+    matters remain and the selection is missing/stale, fail closed and ask the
+    client to choose; never fall back to the newest Case for an upload action.
+    """
+
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
-    case = await ctx.case_service.get_active_case_for_user(user.id)
-    return user, case
+    case = await ctx.case_service.get_selected_case_for_user(
+        user.id,
+        include_terminal=False,
+    )
+    if case is not None:
+        return user, case
+    active_cases = await ctx.case_service.get_active_cases_for_user(user.id)
+    return user, active_cases[0] if len(active_cases) == 1 else None
 
 
 def _no_case_markup():
     return one(
+        ("📁 Выбрать дело", "my_case_open"),
         ("🧮 Рассчитать неустойку", "calc_start"),
         ("💬 Связаться с юристом", "contact_lawyer"),
         ("🏠 Главная", "nav_home"),
@@ -246,9 +261,9 @@ async def _render_home(callback: CallbackQuery, state: FSMContext, db) -> None:
         await _safe_present(
             callback,
             "📄 ДОКУМЕНТЫ\n\n"
-            "СЕЙЧАС\nАктивного дела пока нет.\n\n"
+            "СЕЙЧАС\nАктивное дело не выбрано или больше недоступно.\n\n"
             "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
-            "Создайте обращение через расчёт или свяжитесь с юридической командой.",
+            "Если у вас несколько обращений, выберите нужное в «Моё дело». Если активных дел нет, создайте новое через расчёт.",
             reply_markup=_no_case_markup(),
         )
         return
@@ -325,7 +340,7 @@ async def exact_replacement_document_list(
     if not case:
         await _safe_present(
             callback,
-            "Активное дело больше не найдено. Старая кнопка списка не создаёт новое обращение.",
+            "Нельзя однозначно определить активное дело. Старая кнопка списка не создаёт и не выбирает обращение автоматически.",
             reply_markup=_no_case_markup(),
         )
         return
@@ -425,7 +440,7 @@ async def direct_document_reupload(
         await _clear_document_upload_state(state)
         await _safe_present(
             callback,
-            "Активное дело больше не найдено. Новая версия не загружалась.",
+            "Нельзя однозначно определить активное дело. Новая версия не загружалась. Выберите нужное обращение в «Моё дело» и откройте документы заново.",
             reply_markup=_no_case_markup(),
         )
         return
