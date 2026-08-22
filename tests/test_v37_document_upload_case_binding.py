@@ -30,16 +30,64 @@ def test_legacy_raw_document_type_callbacks_only_refresh_bound_chooser():
     assert "document_type=" not in legacy
 
 
-def test_file_message_is_rejected_before_legacy_processing_if_case_binding_changed():
+def test_file_message_for_another_selected_case_preserves_exact_upload_draft():
     middleware = read("app/bot/document_replacement_protection.py")
 
+    assert "async def _draft_target_case" in middleware
     assert 'state_data.get("document_case_id")' in middleware
-    assert "expected_case_id != int(case.id)" in middleware
-    block = middleware.split("if is_file_message:", 1)[1].split(
-        "return await handler(event, data)", 1
+    assert 'state_data.get("replacement_document_id")' in middleware
+    assert "ctx.case_service.get_case_for_user" in middleware
+    assert "client_document_upload_allowed(target_case)" in middleware
+    assert 'f"document_upload_resume:v2:{int(case_id)}"' in middleware
+
+    switched = middleware.split(
+        "if selected_case is None or int(selected_case.id) != int(target_case.id):",
+        1,
+    )[1].split(
+        "# The exact selected Case is also the server-verified draft owner.",
+        1,
     )[0]
-    assert "await _stage_recovery(event, state)" in block
-    assert "has_replacement_marker" in block
+    assert "await db.rollback()" in switched
+    assert "_preserve_switched_case_upload" in switched
+    assert "return None" in switched
+    assert "state.clear()" not in switched
+    assert "return await handler(event, data)" not in switched
+
+
+def test_stale_or_stage_invalid_original_upload_case_still_clears_fail_closed():
+    middleware = read("app/bot/document_replacement_protection.py")
+
+    stale = middleware.split(
+        "if target_case is None or not client_document_upload_allowed(target_case):",
+        1,
+    )[1].split(
+        "try:\n                selected_case =",
+        1,
+    )[0]
+    assert "await db.rollback()" in stale
+    assert "await _stage_recovery(event, state)" in stale
+    assert "return None" in stale
+
+
+def test_resume_callback_reselects_only_server_verified_draft_case_without_clearing_state():
+    guard = read("app/bot/screens/document_upload_binding_guard.py")
+
+    assert "async def resume_document_upload_for_exact_case" in guard
+    resume = guard.split("async def resume_document_upload_for_exact_case", 1)[1]
+    assert "current_state != DocumentUploadStates.waiting_file.state" in resume
+    assert 'state_data.get("document_case_id")' in resume
+    assert 'state_data.get("replacement_document_id")' in resume
+    assert "await db.get(Document" in resume
+    assert "int(replacement.case_id) == int(target.id)" in resume
+    assert "client_document_upload_allowed(target)" in resume
+    assert "await ctx.case_service.select_case_for_user(" in resume
+    assert "await db.commit()" in resume
+    assert "ЗАГРУЗКА ВОССТАНОВЛЕНА" in resume
+
+    success = resume.split("try:\n        await ctx.case_service.select_case_for_user", 1)[1].split(
+        "except Exception:", 1
+    )[0]
+    assert "state.clear()" not in success
 
 
 def test_direct_replacement_keeps_stricter_document_version_snapshot_path():
