@@ -52,6 +52,7 @@ _DOCUMENT_UPLOAD_DRAFT_CALLBACKS = {
 }
 _DOCUMENT_UPLOAD_DRAFT_CALLBACK_PREFIXES = (
     "doc_type:",
+    "doc_skip_m2:v2:",
     "document_reupload:",
     "document_upload_resume:v2:",
 )
