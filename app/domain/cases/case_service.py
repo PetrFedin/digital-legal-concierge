@@ -148,12 +148,13 @@ class CaseService:
         return case
 
     async def get_active_case_for_user(self, user_id: int) -> Case | None:
-        """Return the active Case selected for the Telegram cabinet.
+        """Return only an unambiguous active Telegram cabinet Case.
 
-        Legacy callers historically assumed a client-wide singleton. The
-        selected-case context makes that assumption explicit without forbidding
-        several live matters. If old data has no context yet, the newest active
-        Case becomes the deterministic navigation default.
+        A valid selected active Case is authoritative. For legacy data without a
+        selection, the only active Case is safe to reuse. If two or more active
+        matters exist, returning the newest one would let an old unbound callback
+        read or mutate the wrong legal matter, so this method deliberately fails
+        closed with ``None`` until the client selects a Case explicitly.
         """
 
         selected = await self.get_selected_case_for_user(
@@ -163,7 +164,7 @@ class CaseService:
         if selected is not None:
             return selected
         active_cases = await self.get_active_cases_for_user(int(user_id))
-        return active_cases[0] if active_cases else None
+        return active_cases[0] if len(active_cases) == 1 else None
 
     async def create_case_for_operation(
         self,
@@ -262,14 +263,19 @@ class CaseService:
         """Compatibility helper for flows that operate on the selected Case.
 
         New entry points that intentionally create a legal matter must use
-        ``create_case_for_operation`` with source provenance. This helper never
-        imposes a client-wide uniqueness rule; it only reuses the currently
-        selected active Case, or bootstraps one when no active matter exists.
+        ``create_case_for_operation`` with source provenance. This helper only
+        reuses an unambiguous active Case or bootstraps when there are zero
+        active matters. It must never create a new Case merely because multiple
+        active matters require an explicit selection.
         """
 
         selected = await self.get_active_case_for_user(int(client.id))
         if selected is not None:
             return selected
+        if len(await self.get_active_cases_for_user(int(client.id))) > 1:
+            raise CaseSelectionRequired(
+                "Выберите активное обращение перед продолжением"
+            )
 
         # Serialize only the legacy zero-active bootstrap. Two *different* new
         # matter entry points must not use this helper.
@@ -285,6 +291,10 @@ class CaseService:
         selected = await self.get_active_case_for_user(int(locked_client.id))
         if selected is not None:
             return selected
+        if len(await self.get_active_cases_for_user(int(locked_client.id))) > 1:
+            raise CaseSelectionRequired(
+                "Выберите активное обращение перед продолжением"
+            )
         case = await self.create_case(
             client=locked_client,
             route=route,
