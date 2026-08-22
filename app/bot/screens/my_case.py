@@ -10,6 +10,7 @@ from app.bot.client_case_view import (
     format_updated_at,
     load_client_case_view,
     progress_bar,
+    route_label,
 )
 from app.bot.consultation_result import latest_terminal_client_consultation
 from app.bot.context import BotContextService
@@ -153,6 +154,34 @@ def _case_buttons(
     return buttons
 
 
+def _case_selector(active_cases) -> tuple[str, list[tuple[str, str]]]:
+    """Build the compact canonical selector when active context is ambiguous."""
+
+    lines = [
+        "📁 МОИ ОБРАЩЕНИЯ",
+        "",
+        "У вас несколько активных обращений. Выберите нужное — документы, оплаты, переписка и дальнейшие действия будут относиться именно к нему.",
+        "",
+    ]
+    buttons: list[tuple[str, str]] = []
+    for case in active_cases:
+        service = route_label(case.route)
+        lines.append(f"• {case.case_number} · {service}")
+        buttons.append(
+            (
+                f"📁 {case.case_number} · {service}",
+                f"my_case_select:v2:{int(case.id)}",
+            )
+        )
+    buttons.extend(
+        [
+            ("🧮 Новый расчёт / новое обращение", "calc_start"),
+            ("🏠 Главная", "nav_home"),
+        ]
+    )
+    return "\n".join(lines), buttons
+
+
 async def _render_completed_case(
     callback: CallbackQuery,
     db,
@@ -239,6 +268,19 @@ async def _render_completed_case(
 async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None):
     ctx, user, case = await _active_case_context(callback, db)
     if not case:
+        active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
+        if len(active_cases) > 1:
+            text, buttons = _case_selector(active_cases)
+            if notice:
+                text = f"ℹ️ {notice}\n\n{text}"
+            await _safe_edit(
+                callback,
+                text,
+                reply_markup=one(*buttons),
+                unchanged_notice="Список активных обращений уже актуален.",
+            )
+            return
+
         completed = await latest_completed_m1_case_for_user(db, user_id=user.id)
         if completed:
             await _render_completed_case(
