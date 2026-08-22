@@ -57,7 +57,7 @@ async def list_refund_requests(
             "active_booking_preserved": (
                 str(case.status) == str(CaseStatus.M2_CONSULTATION_BOOKED)
             ),
-            "case_detail_url": f"/admin/cases/{case.id}/ui",
+            "case_detail_url": f"/admin/workdesk/ui?case_id={case.id}",
             "client_id": user.id,
             "client_name": user.full_name,
             "telegram_id": user.telegram_id,
@@ -89,6 +89,12 @@ async def resolve_refund(
             actor_id=actor_id_from_token(actor),
             comment=payload.get("comment") or "",
         )
+        response = {
+            "ok": True,
+            "payment_id": int(payment.id),
+            "case_id": int(payment.case_id),
+            "status": str(payment.status),
+        }
         await db.commit()
     except LookupError as error:
         await db.rollback()
@@ -100,12 +106,7 @@ async def resolve_refund(
         await db.rollback()
         raise
 
-    return {
-        "ok": True,
-        "payment_id": payment.id,
-        "case_id": payment.case_id,
-        "status": payment.status,
-    }
+    return response
 
 
 @router.get("/ui", response_class=HTMLResponse)
@@ -132,16 +133,17 @@ REFUND_CENTER_HTML = r"""
 <div id="message" class="muted" role="status" aria-live="polite"></div>
 </main>
 <script>
-const params=new URLSearchParams(location.search),requestedPaymentId=Number(params.get('payment_id')||0),requestedCaseId=Number(params.get('case_id')||0);let token='',terminalCaseId=requestedCaseId||0;const pendingPayments=new Set();
+const params=new URLSearchParams(location.search),requestedPaymentId=Number(params.get('payment_id')||0),requestedCaseId=Number(params.get('case_id')||0);let token='',terminalCaseId=requestedCaseId||0,businessTimeZone='Europe/Moscow',businessTimeLabel='МСК';const pendingPayments=new Set();
 async function api(path,opts={}){const r=await fetch(path,{...opts,credentials:'same-origin',cache:'no-store',headers:{'x-admin-token':token,'Content-Type':'application/json',...(opts.headers||{})}});if(r.status===401||r.status===403){location.href='/login';throw new Error('Сессия истекла или недостаточно прав')}const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||'Ошибка');return d}
 function feedback(text,state='ok'){message.textContent=text;message.className='muted '+state}
 function paymentButtons(id){return Array.from(document.querySelectorAll(`[data-payment-id="${id}"]`))}
 async function withPaymentAction(id,button,work){if(pendingPayments.has(id))return;pendingPayments.add(id);const buttons=paymentButtons(id);const labels=new Map(buttons.map(x=>[x,x.textContent]));buttons.forEach(x=>{x.disabled=true;x.setAttribute('aria-busy','true')});if(button)button.textContent='Выполняется…';try{return await work()}finally{pendingPayments.delete(id);buttons.forEach(x=>{x.disabled=false;x.removeAttribute('aria-busy')});labels.forEach((label,x)=>{x.textContent=label})}}
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function formatDate(v){if(!v)return '—';try{const rendered=new Intl.DateTimeFormat('ru-RU',{dateStyle:'short',timeStyle:'short',timeZone:businessTimeZone}).format(new Date(v));return businessTimeLabel?rendered+' '+businessTimeLabel:rendered}catch{return String(v)}}
 function visibleRows(rows){return requestedPaymentId?rows.filter(x=>Number(x.payment_id)===requestedPaymentId):rows}
-function terminalState(){if(!requestedPaymentId)return '<div class="empty">Заявок на возврат нет.</div>';const back=terminalCaseId?`<a class="button" href="/admin/cases/${terminalCaseId}/ui">Вернуться в дело</a>`:'';return `<div class="empty"><b>Платёж #${requestedPaymentId} больше не требует обработки возврата.</b><br><span>Решение уже сохранено, статус изменился или платёж больше не находится в этой очереди.</span><br>${back}<a class="button gray" href="/admin/refunds/ui">Открыть всю очередь</a></div>`}
-function renderRows(rows){if(!rows.length){content.innerHTML=terminalState();return}content.innerHTML=`<table><thead><tr><th>Платёж</th><th>Дело / клиент</th><th>Сумма</th><th>Контекст дела</th><th>Провайдер</th><th>Действия</th></tr></thead><tbody>${rows.map(x=>`<tr><td>#${x.payment_id}<br><span class="muted">${esc(x.status)}</span></td><td><b>${esc(x.case_number)}</b><br>${esc(x.client_name||'—')}<br><span class="muted">TG ${esc(x.telegram_id)}</span></td><td>${x.amount.toLocaleString('ru-RU')} ${esc(x.currency)}</td><td>${x.active_booking_preserved?'<span class="context keep">Запись сохранена</span>':'<span class="context other">Запись не подтверждена</span>'}<div class="muted">Статус дела: ${esc(x.case_status||'—')}</div><a href="${esc(x.case_detail_url)}">Открыть дело</a></td><td>${esc(x.provider||'—')}<br><span class="muted">${esc(x.provider_payment_id||'')}</span></td><td class="actions"><button data-payment-id="${x.payment_id}" class="green" onclick="resolveRefund(${x.payment_id},'refunded',this)">Возврат выполнен</button><button data-payment-id="${x.payment_id}" class="red" onclick="resolveRefund(${x.payment_id},'declined',this)">Отказать</button></td></tr>`).join('')}</tbody></table>`}
-async function boot(){const r=await fetch('/auth/session',{credentials:'same-origin',cache:'no-store'});if(!r.ok){location.href='/login';return}const s=await r.json();token=s.api_token;if(requestedPaymentId){pageTitle.textContent=`⚖ Возврат по платежу #${requestedPaymentId}`;sectionTitle.textContent='Конкретный возврат'}try{await load()}catch(e){feedback(e.message,'bad')}}
+function terminalState(){if(!requestedPaymentId)return '<div class="empty">Заявок на возврат нет.</div>';const back=terminalCaseId?`<a class="button" href="/admin/workdesk/ui?case_id=${terminalCaseId}">Вернуться в дело</a>`:'';return `<div class="empty"><b>Платёж #${requestedPaymentId} больше не требует обработки возврата.</b><br><span>Решение уже сохранено, статус изменился или платёж больше не находится в этой очереди.</span><br>${back}<a class="button gray" href="/admin/refunds/ui">Открыть всю очередь</a></div>`}
+function renderRows(rows){if(!rows.length){content.innerHTML=terminalState();return}content.innerHTML=`<table><thead><tr><th>Платёж</th><th>Дело / клиент</th><th>Сумма</th><th>Контекст дела</th><th>Провайдер</th><th>Действия</th></tr></thead><tbody>${rows.map(x=>`<tr><td>#${x.payment_id}<br><span class="muted">${esc(x.status)}</span>${x.requested_at?`<br><span class="muted">в очереди с ${esc(formatDate(x.requested_at))}</span>`:''}</td><td><b>${esc(x.case_number)}</b><br>${esc(x.client_name||'—')}<br><span class="muted">TG ${esc(x.telegram_id)}</span></td><td>${x.amount.toLocaleString('ru-RU')} ${esc(x.currency)}</td><td>${x.active_booking_preserved?'<span class="context keep">Запись сохранена</span>':'<span class="context other">Запись не подтверждена</span>'}<div class="muted">Статус дела: ${esc(x.case_status||'—')}</div><a href="${esc(x.case_detail_url)}">Открыть дело</a></td><td>${esc(x.provider||'—')}<br><span class="muted">${esc(x.provider_payment_id||'')}</span></td><td class="actions"><button data-payment-id="${x.payment_id}" class="green" onclick="resolveRefund(${x.payment_id},'refunded',this)">Возврат выполнен</button><button data-payment-id="${x.payment_id}" class="red" onclick="resolveRefund(${x.payment_id},'declined',this)">Отказать</button></td></tr>`).join('')}</tbody></table>`}
+async function boot(){const r=await fetch('/auth/session',{credentials:'same-origin',cache:'no-store'});if(!r.ok){location.href='/login';return}const s=await r.json();token=s.api_token;businessTimeZone=s.business_timezone||businessTimeZone;businessTimeLabel=s.business_timezone_label??businessTimeLabel;if(requestedPaymentId){pageTitle.textContent=`⚖ Возврат по платежу #${requestedPaymentId}`;sectionTitle.textContent='Конкретный возврат'}try{await load()}catch(e){feedback(e.message,'bad')}}
 async function load(){const rows=await api('/admin/refunds');const visible=visibleRows(rows);if(requestedPaymentId&&visible.length){terminalCaseId=Number(visible[0].case_id)||terminalCaseId}renderRows(visible)}
 async function resolveRefund(id,decision,button){const question=decision==='refunded'?'Укажите номер операции возврата или комментарий:':'Укажите причину отказа:';const comment=prompt(question);if(!comment)return;if(comment.trim().length<5){feedback('Комментарий должен содержать не менее 5 символов','bad');return}const warning=decision==='refunded'?`Подтвердите, что деньги по платежу #${id} уже фактически возвращены через платёжного провайдера. Эта кнопка только фиксирует результат в системе.`:`Подтвердите отказ в возврате по платежу #${id}. Причина будет сохранена в истории дела.`;if(!confirm(warning))return;return withPaymentAction(id,button,async()=>{try{const result=await api('/admin/refunds/'+id+'/resolve',{method:'POST',body:JSON.stringify({decision,comment})});terminalCaseId=Number(result.case_id)||terminalCaseId;feedback(`Решение по платежу #${result.payment_id} сохранено: ${result.status}`,'ok');try{await load()}catch(e){feedback(`Решение сохранено, но список не обновился: ${e.message}`,'warn')}}catch(e){feedback(`Решение по платежу #${id} не сохранено: ${e.message}`,'bad')}})}
 boot();
