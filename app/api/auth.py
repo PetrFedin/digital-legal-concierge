@@ -239,12 +239,14 @@ async def login(
 
 @router.get("/auth/session")
 async def auth_session(request: Request, db: AsyncSession = Depends(get_db)):
-    """Return browser identity metadata without exposing the bearer credential.
+    """Return browser identity and non-secret presentation metadata.
 
     The real session remains HttpOnly. Legacy staff JavaScript receives a
     non-secret sentinel; RequestOriginGuardMiddleware validates same-origin
     requests and bridges the cookie credential only inside the ASGI request
-    scope. There is exactly one public GET /auth/session route.
+    scope. Staff surfaces also receive the configured business timezone so every
+    role renders the same legal/financial timestamps regardless of the browser's
+    local timezone. There is exactly one public GET /auth/session route.
     """
 
     token = request.cookies.get(settings.admin_session_cookie)
@@ -259,6 +261,8 @@ async def auth_session(request: Request, db: AsyncSession = Depends(get_db)):
         "mfa_verified": bool(payload.get("mfa")),
         "api_token": BROWSER_SESSION_SENTINEL,
         "session_transport": "httponly_cookie",
+        "business_timezone": settings.business_timezone,
+        "business_timezone_label": settings.business_timezone_label,
     }
 
 
