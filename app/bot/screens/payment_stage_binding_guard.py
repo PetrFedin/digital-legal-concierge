@@ -248,6 +248,7 @@ async def open_exact_stage_payment(callback: CallbackQuery, db):
         if _status(case) != expected_status:
             raise ValueError("Платёжный этап уже изменился")
 
+        case_number = str(case.case_number)
         service = PaymentService(db)
         case_payments = await service.list_case_payments(case.id)
         payment = next(
@@ -270,17 +271,23 @@ async def open_exact_stage_payment(callback: CallbackQuery, db):
             and not payment.payment_url
         ):
             payment = await service.create_payment_link(payment)
+            # The provider result is a durable financial write. Snapshot every
+            # presentation value, including the URL keyboard, before commit so
+            # the client view never depends on an ORM instance crossing the
+            # transaction boundary.
+            text, markup = _exact_payment_presentation(
+                payment=payment,
+                case_number=case_number,
+                title=title,
+            )
             await db.commit()
             committed_provider_link = True
-
-        # Snapshot text and markup before rollback. payment_keyboard itself reads
-        # ORM fields, so it also belongs on this side of the boundary.
-        text, markup = _exact_payment_presentation(
-            payment=payment,
-            case_number=str(case.case_number),
-            title=title,
-        )
-        if not committed_provider_link:
+        else:
+            text, markup = _exact_payment_presentation(
+                payment=payment,
+                case_number=case_number,
+                title=title,
+            )
             await db.rollback()
     except (LookupError, ValueError, RuntimeError) as error:
         await db.rollback()
