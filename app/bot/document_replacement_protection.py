@@ -127,16 +127,80 @@ async def _stage_recovery(event, state) -> None:
         logger.warning("Не удалось показать восстановление загрузки после смены этапа.")
 
 
+async def _draft_target_case(db, ctx, *, user_id: int, state_data: dict):
+    """Resolve the server-verified Case that owns an armed upload draft.
+
+    Generic uploads carry an exact ``document_case_id``. A lawyer-requested
+    replacement carries the immutable Document id/version snapshot, so its Case
+    is derived from the persisted Document rather than trusting client state.
+    Ownership is rechecked through CaseService in both paths.
+    """
+
+    replacement_document_id = state_data.get("replacement_document_id")
+    if replacement_document_id is not None:
+        try:
+            document_id = int(replacement_document_id)
+        except (TypeError, ValueError):
+            return None
+        if document_id <= 0:
+            return None
+        document = await db.get(Document, document_id)
+        if document is None:
+            return None
+        return await ctx.case_service.get_case_for_user(
+            user_id=int(user_id),
+            case_id=int(document.case_id),
+        )
+
+    try:
+        case_id = int(state_data.get("document_case_id"))
+    except (TypeError, ValueError):
+        return None
+    if case_id <= 0:
+        return None
+    return await ctx.case_service.get_case_for_user(
+        user_id=int(user_id),
+        case_id=case_id,
+    )
+
+
+async def _preserve_switched_case_upload(
+    event: Message,
+    *,
+    case_id: int,
+    case_number: str,
+) -> None:
+    """Keep the draft armed while refusing to process a file in another Case."""
+
+    text = (
+        "ℹ️ Файл не обрабатывался и не сохранялся: сейчас открыто другое обращение.\n\n"
+        f"Черновик загрузки для обращения № {case_number} сохранён вместе с выбранным типом документа. "
+        "Вернитесь к нему одной кнопкой, затем отправьте тот же файл ещё раз."
+    )
+    markup = one(
+        (
+            f"↩️ Вернуться к обращению № {case_number}",
+            f"document_upload_resume:v2:{int(case_id)}",
+        ),
+        ("Отменить загрузку", "nav_cancel"),
+        ("🏠 Главная", "nav_home"),
+    )
+    try:
+        await event.answer(text, reply_markup=markup)
+    except (TelegramBadRequest, TelegramNetworkError, TelegramServerError):
+        logger.warning("Не удалось показать восстановление Case-bound загрузки документа.")
+
+
 class ClientDocumentUploadStageProtectionMiddleware:
-    """Fail closed when an old client upload/handoff action outlives its legal stage.
+    """Fail closed without discarding a still-valid Case-bound upload draft.
 
     Telegram messages and inline keyboards can remain visible for a long time.
-    Every generic upload callback, final document handoff callback and the final
-    file message therefore re-check the active case immediately before entering
-    the encrypted upload/review pipeline. Generic uploads additionally carry
-    ``document_case_id`` in FSM state; the file is rejected before download if
-    another case has become active. Direct lawyer-requested replacements use the
-    stricter document/version snapshot middleware below.
+    Every generic upload callback, final document handoff callback and final file
+    message therefore re-checks Case/stage immediately before encrypted upload or
+    review. A file sent while another active Case is selected is never downloaded
+    or stored there: the exact original draft remains armed and the client gets a
+    one-tap return action. The draft is cleared only when its original Case or
+    legal stage is genuinely no longer valid.
     """
 
     @staticmethod
@@ -176,9 +240,62 @@ class ClientDocumentUploadStageProtectionMiddleware:
                 user = await ctx.get_user_from_callback(event)
             else:
                 user = await ctx.get_user_from_message(event)
+        except Exception:
+            logger.exception("Не удалось определить клиента перед загрузкой/передачей документа.")
+            await db.rollback()
+            await _stage_recovery(event, state)
+            return None
+
+        if is_file_message:
+            try:
+                state_data = await state.get_data()
+                target_case = await _draft_target_case(
+                    db,
+                    ctx,
+                    user_id=int(user.id),
+                    state_data=state_data,
+                )
+            except Exception:
+                logger.exception("Не удалось проверить Case-bound snapshot загрузки документа")
+                await db.rollback()
+                await _stage_recovery(event, state)
+                return None
+
+            if target_case is None or not client_document_upload_allowed(target_case):
+                await db.rollback()
+                await _stage_recovery(event, state)
+                return None
+
+            try:
+                selected_case = await ctx.case_service.get_active_case_for_user(user.id)
+            except Exception:
+                logger.exception("Не удалось проверить выбранное дело перед загрузкой документа")
+                await db.rollback()
+                await _stage_recovery(event, state)
+                return None
+
+            if selected_case is None or int(selected_case.id) != int(target_case.id):
+                # Snapshot presentation values before rollback: ORM instances may
+                # expire at the transaction boundary even with expire_on_commit=False.
+                target_case_id = int(target_case.id)
+                target_case_number = str(target_case.case_number)
+                await db.rollback()
+                await _preserve_switched_case_upload(
+                    event,
+                    case_id=target_case_id,
+                    case_number=target_case_number,
+                )
+                return None
+
+            # The exact selected Case is also the server-verified draft owner.
+            # The stricter replacement middleware below will additionally check
+            # document id/version/status for lawyer-requested replacements.
+            return await handler(event, data)
+
+        try:
             case = await ctx.case_service.get_active_case_for_user(user.id)
         except Exception:
-            logger.exception("Не удалось проверить этап дела перед загрузкой/передачей документа.")
+            logger.exception("Не удалось проверить этап дела перед документным действием.")
             await db.rollback()
             await _stage_recovery(event, state)
             return None
@@ -187,29 +304,6 @@ class ClientDocumentUploadStageProtectionMiddleware:
             await db.rollback()
             await _stage_recovery(event, state)
             return None
-
-        if is_file_message:
-            try:
-                state_data = await state.get_data()
-            except Exception:
-                logger.exception("Не удалось прочитать snapshot загрузки документа")
-                await db.rollback()
-                await _stage_recovery(event, state)
-                return None
-
-            has_replacement_marker = bool(
-                "replacement_document_id" in state_data
-                or "replacement_expected_version" in state_data
-            )
-            if not has_replacement_marker:
-                try:
-                    expected_case_id = int(state_data.get("document_case_id"))
-                except (TypeError, ValueError):
-                    expected_case_id = 0
-                if expected_case_id <= 0 or expected_case_id != int(case.id):
-                    await db.rollback()
-                    await _stage_recovery(event, state)
-                    return None
 
         return await handler(event, data)
 
