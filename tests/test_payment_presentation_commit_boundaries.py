@@ -66,16 +66,17 @@ def test_disabled_m1_payment_presentation_never_reads_orm_after_commit(monkeypat
             user = User(telegram_id=990000401, full_name="Commit Boundary")
             db.add(user)
             await db.flush()
+            user_id = int(user.id)
             case = Case(
                 case_number="BOUNDARY-M1-PAY",
-                client_id=user.id,
+                client_id=user_id,
                 route=RouteCode.M1.value,
                 status=CaseStatus.M1_WAITING_PAYMENT_30000.value,
             )
             db.add(case)
-            await db.commit()
-            user_id = int(user.id)
+            await db.flush()
             case_id = int(case.id)
+            await db.commit()
 
         callback = _FakeCallback()
         async with session_factory() as db:
