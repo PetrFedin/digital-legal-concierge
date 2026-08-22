@@ -42,12 +42,14 @@ def install_client_wording() -> None:
     # `Моё дело` is the main client cabinet, not a terminal dialog. Keep the
     # primary action first, but expose the approved global Back affordance just
     # before Home. The navigation guard resolves the previous read-only screen
-    # and never replays business mutations.
+    # and never replays business mutations. Preserve the full canonical helper
+    # signature so multi-case rendering can pass presentation context without a
+    # runtime TypeError after this compatibility layer is installed.
     if not getattr(my_case, "_logical_back_button_installed", False):
         original_case_buttons = my_case._case_buttons
 
-        def case_buttons_with_back(view):
-            items = list(original_case_buttons(view))
+        def case_buttons_with_back(view, **kwargs):
+            items = list(original_case_buttons(view, **kwargs))
             callbacks = [str(item[1]) for item in items]
             if "nav_back" not in callbacks:
                 back_button = ("⬅️ Назад", "nav_back")
