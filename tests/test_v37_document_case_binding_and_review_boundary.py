@@ -75,6 +75,21 @@ def test_live_document_center_emits_bound_handoff_actions_and_guard_has_route_pr
     assert bot.index("document_mutation_guard.router,") < bot.index("documents.router,")
 
 
+def test_m2_documents_under_review_do_not_create_a_false_waiting_dead_end():
+    wording = read("app/bot/client_wording_patch.py")
+
+    block = wording.split("def next_action_with_real_review_boundary", 1)[1].split(
+        "document_action_center._next_action =", 1
+    )[0]
+    assert 'route = str(getattr(case, "route", "") or "").upper()' in block
+    assert 'if route == "M2" and review_only:' in block
+    assert "CaseStatus.M2_SLOT_PENDING" in block
+    assert '[("📅 Выбрать время", "consult_slot_open")]' in block
+    assert "Документы переданы юридической команде и не блокируют запись" in block
+    assert "основной обязательный шаг консультации показан в «Моё дело»" in block
+    assert '[("📁 К текущему шагу обращения", "my_case_open")]' in block
+
+
 def test_document_review_html_is_personally_guarded_before_legacy_shell():
     guard = read("app/api/staff_ui_guards.py")
     case_assignment = read("app/api/case_assignment.py")
