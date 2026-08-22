@@ -17,6 +17,7 @@ from app.models.audit_log import AuditLog
 from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.payment import Payment
+from app.presentation_time import format_business_datetime
 
 
 INACTIVE_REVIEW_ORIGIN_STATUSES = {
@@ -323,7 +324,7 @@ class PaymentReviewService:
             payload={
                 "case_number": case.case_number,
                 "payment_id": payment.id,
-                "date": slot.starts_at.strftime("%d.%m.%Y %H:%M"),
+                "date": format_business_datetime(slot.starts_at),
             },
             dedupe_key=f"payment-review:{payment.id}:confirmed",
         )
@@ -450,7 +451,7 @@ class PaymentReviewService:
             payload={
                 "case_number": case.case_number,
                 "payment_id": payment.id,
-                "date": slot.starts_at.strftime("%d.%m.%Y %H:%M"),
+                "date": format_business_datetime(slot.starts_at),
             },
             dedupe_key=f"payment-review:{payment.id}:assigned:{slot.id}",
         )
