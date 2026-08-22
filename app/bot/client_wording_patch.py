@@ -219,18 +219,31 @@ def install_client_wording() -> None:
     def next_action_with_real_review_boundary(case, documents_list):
         counts = document_action_center._counts(documents_list)
         status = document_action_center._case_status(case)
-        if (
-            status == CaseStatus.M1_DOCUMENTS_RECEIVED
-            and counts["review"]
+        route = str(getattr(case, "route", "") or "").upper()
+        review_only = bool(
+            counts["review"]
             and not counts["required"]
             and not counts["new"]
             and not counts["replacement"]
-        ):
+        )
+        if status == CaseStatus.M1_DOCUMENTS_RECEIVED and review_only:
             return (
                 "Документы переданы юридической команде. Сейчас ждём назначения "
                 "ответственного и фактического начала проверки; повторно "
                 "отправлять эти файлы не нужно.",
                 [("🔄 Проверить статус", "documents_open")],
+            )
+        if route == "M2" and review_only:
+            if status == CaseStatus.M2_SLOT_PENDING:
+                return (
+                    "Документы переданы юридической команде и не блокируют запись. "
+                    "Следующий обязательный шаг — выбрать свободное время консультации.",
+                    [("📅 Выбрать время", "consult_slot_open")],
+                )
+            return (
+                "Документы переданы юридической команде. Их проверка идёт параллельно; "
+                "основной обязательный шаг консультации показан в «Моё дело».",
+                [("📁 К текущему шагу обращения", "my_case_open")],
             )
         text, buttons = original_next_action(case, documents_list)
         return text, bind_document_mutations(case, buttons)
