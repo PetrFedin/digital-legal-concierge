@@ -10,10 +10,12 @@ from app.bot.keyboards import one
 from app.bot.screens import document_action_center, documents as legacy_documents
 from app.bot.states import DocumentUploadStates
 from app.domain.statuses.case_statuses import CaseStatus
+from app.models.document import Document
 
 router = Router()
 
 _DOCUMENT_TYPE_CODES = {code for _, code in legacy_documents.TYPES}
+_DOCUMENT_TYPE_LABELS = {code: title for title, code in legacy_documents.TYPES}
 _M2_CAN_SKIP_STATUSES = {
     CaseStatus.M2_DESCRIPTION_PENDING,
     CaseStatus.M2_DOCUMENTS_OPTIONAL,
@@ -47,6 +49,21 @@ def _parse_bound_type(value: str) -> tuple[int, str] | None:
     if case_id <= 0 or document_type not in _DOCUMENT_TYPE_CODES:
         return None
     return case_id, document_type
+
+
+def _parse_resume_case_id(value: str | None) -> int | None:
+    prefix = "document_upload_resume:v2:"
+    raw = str(value or "")
+    if not raw.startswith(prefix):
+        return None
+    tail = raw[len(prefix) :]
+    if not tail or ":" in tail:
+        return None
+    try:
+        case_id = int(tail)
+    except ValueError:
+        return None
+    return case_id if case_id > 0 else None
 
 
 async def _active_scope(callback: CallbackQuery, db):
@@ -96,10 +113,10 @@ async def _render_bound_chooser(
         else "Для консультации документы необязательны, но помогут юристу подготовиться."
     )
     await callback.message.edit_text(
-        "➕ Добавить документ\n\n"
-        f"Дело № {case.case_number}\n\n"
-        "Выберите тип, затем прикрепите PDF, DOCX, JPG или PNG. Выбор привязан именно к этому делу; "
-        "если активное обращение изменится до отправки файла, загрузка будет отменена.\n\n"
+        "➕ ДОБАВИТЬ ДОКУМЕНТ\n"
+        f"Обращение № {case.case_number}\n\n"
+        "Выберите тип, затем прикрепите PDF, DOCX, JPG или PNG. Загрузка привязана именно к этому обращению. "
+        "Если вы переключитесь на другое дело до отправки файла, бот не перепутает контекст: выбор документа сохранится и предложит вернуться сюда.\n\n"
         f"{requirement}",
         reply_markup=one(*items),
     )
@@ -167,12 +184,136 @@ async def bound_document_type_choice(
     )
     await state.set_state(DocumentUploadStates.waiting_file)
     await callback.message.edit_text(
-        "📎 Прикрепите PDF, DOCX, JPG или PNG.\n\n"
-        f"Файл будет принят только в дело № {case.case_number}. Перед сохранением бот ещё раз проверит, "
-        "что это обращение остаётся активным и находится на допустимом этапе.",
+        "📎 ФАЙЛ ДЛЯ ДОКУМЕНТА\n"
+        f"Обращение № {case.case_number}\n"
+        f"Тип: {_DOCUMENT_TYPE_LABELS.get(document_type, document_type)}\n\n"
+        "Прикрепите PDF, DOCX, JPG или PNG. Перед сохранением бот ещё раз проверит обращение и допустимый этап."
+        " Если вы случайно откроете другое дело, этот выбор не потеряется.",
         reply_markup=one(
             ("Выбрать другой тип", "documents_upload_open"),
-            ("Отменить действие", "nav_cancel"),
+            ("Отменить загрузку", "nav_cancel"),
+            ("🏠 Главная", "nav_home"),
+        ),
+    )
+
+
+@router.callback_query(
+    lambda c: bool(c.data) and c.data.startswith("document_upload_resume:v2:")
+)
+async def resume_document_upload_for_exact_case(
+    callback: CallbackQuery,
+    state: FSMContext,
+    db,
+):
+    """Restore the exact Case context without discarding an armed upload draft.
+
+    A Telegram file message can arrive after the client switched to another
+    active matter. The stage middleware deliberately does not download that
+    file. This callback re-selects only the server-verified Case that owns the
+    existing FSM draft, while preserving document type/replacement provenance.
+    The client can then resend the same Telegram file without rebuilding the
+    flow from the beginning.
+    """
+
+    requested_case_id = _parse_resume_case_id(callback.data)
+    current_state = await state.get_state()
+    state_data = await state.get_data()
+    if (
+        requested_case_id is None
+        or current_state != DocumentUploadStates.waiting_file.state
+    ):
+        await state.clear()
+        await db.rollback()
+        await callback.message.edit_text(
+            "Эта попытка загрузки уже неактуальна. Откройте документы и начните загрузку из текущего обращения.",
+            reply_markup=one(
+                ("📄 Открыть документы", "documents_open"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
+    target = next(
+        (item for item in active_cases if int(item.id) == int(requested_case_id)),
+        None,
+    )
+    if target is None or not client_document_upload_allowed(target):
+        await state.clear()
+        await db.rollback()
+        await callback.message.edit_text(
+            "Обращение из этой загрузки уже завершено или его этап изменился. Черновик загрузки закрыт, чужое дело не затронуто.",
+            reply_markup=one(
+                ("📄 Актуальные документы", "documents_open"),
+                ("📁 Мои обращения", "my_cases_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    replacement_document_id = state_data.get("replacement_document_id")
+    if replacement_document_id is not None:
+        try:
+            replacement = await db.get(Document, int(replacement_document_id))
+        except (TypeError, ValueError):
+            replacement = None
+        binding_valid = bool(
+            replacement is not None
+            and int(replacement.case_id) == int(target.id)
+            and int(replacement.id) == int(replacement_document_id)
+        )
+    else:
+        try:
+            bound_case_id = int(state_data.get("document_case_id"))
+        except (TypeError, ValueError):
+            bound_case_id = 0
+        binding_valid = bound_case_id == int(target.id)
+
+    document_type = str(state_data.get("document_type") or "").strip()
+    if not binding_valid or document_type not in _DOCUMENT_TYPE_CODES:
+        await state.clear()
+        await db.rollback()
+        await callback.message.edit_text(
+            "Не удалось подтвердить исходное обращение или тип документа. Файл не привязан ни к одному делу; начните загрузку заново.",
+            reply_markup=one(
+                ("📄 Открыть документы", "documents_open"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    try:
+        await ctx.case_service.select_case_for_user(
+            user_id=int(user.id),
+            case_id=int(target.id),
+        )
+        case_number = str(target.case_number)
+        document_label = _DOCUMENT_TYPE_LABELS.get(document_type, document_type)
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        await callback.message.edit_text(
+            "Не удалось безопасно вернуть контекст загрузки. Черновик сохранён; повторите попытку или отмените загрузку.",
+            reply_markup=one(
+                (f"↩️ Вернуться к обращению № {target.case_number}", f"document_upload_resume:v2:{int(target.id)}"),
+                ("Отменить загрузку", "nav_cancel"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    await callback.message.edit_text(
+        "📎 ЗАГРУЗКА ВОССТАНОВЛЕНА\n"
+        f"Обращение № {case_number}\n"
+        f"Тип: {document_label}\n\n"
+        "Контекст и выбранный тип сохранены. Теперь отправьте тот же файл ещё раз — он будет проверен и сохранён только в это обращение.",
+        reply_markup=one(
+            ("Выбрать другой тип", "documents_upload_open"),
+            ("Отменить загрузку", "nav_cancel"),
             ("🏠 Главная", "nav_home"),
         ),
     )
