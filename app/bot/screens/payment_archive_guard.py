@@ -150,12 +150,25 @@ async def _reconcile_m2_payment_view(callback: CallbackQuery, db, payment, case)
     payment_id = int(payment.id)
     case_id = int(case.id)
     try:
-        payment, case, changed = await ClientPaymentReconciliationService(db).reconcile(
+        _payment, _case, changed = await ClientPaymentReconciliationService(db).reconcile(
             payment_id=payment_id,
             case_id=case_id,
         )
         await db.commit()
-        return payment, case, changed
+
+        # Reconciliation may change the Payment, Case, Consultation and Slot in
+        # one transaction. Never return the instances that crossed commit(): an
+        # expire-on-commit session would make the caller's presentation access
+        # perform implicit async I/O. Re-resolve the exact owned records in a new
+        # transaction instead.
+        fresh_payment, fresh_case = await payment_screen.get_owned_payment(
+            callback,
+            db,
+            payment_id,
+        )
+        if fresh_payment is None or fresh_case is None:
+            return None, None, changed
+        return fresh_payment, fresh_case, changed
     except (LookupError, ValueError) as error:
         await db.rollback()
         logger.warning(
@@ -595,6 +608,8 @@ async def guard_success_fee_stage(callback: CallbackQuery, db):
     if not payment.payment_url:
         try:
             payment = await service.create_payment_link(payment)
+            payment_amount = payment.amount
+            payment_markup = payment_screen.payment_keyboard(payment)
             await db.commit()
         except (RuntimeError, ValueError) as error:
             await db.rollback()
@@ -609,10 +624,13 @@ async def guard_success_fee_stage(callback: CallbackQuery, db):
                 ),
             )
             return
+    else:
+        payment_amount = payment.amount
+        payment_markup = payment_screen.payment_keyboard(payment)
 
     await callback.message.edit_text(
         "💳 Финальный платёж\n\n"
-        f"Сумма: {payment_screen.money(payment.amount)}\n\n"
+        f"Сумма: {payment_screen.money(payment_amount)}\n\n"
         "Платёж уже сформирован после подтверждённого факта взыскания. После подтверждения оплаты дело будет закрыто.",
-        reply_markup=payment_screen.payment_keyboard(payment),
+        reply_markup=payment_markup,
     )
