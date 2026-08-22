@@ -149,6 +149,28 @@ def test_payment_archive_reconciliation_reloads_after_commit_and_success_fee_sna
     ) < link_branch.index("await db.commit()")
 
 
+def test_staff_payment_review_snapshots_api_response_before_commit():
+    source = _read("app/api/payment_review_center.py")
+    handler = source.split("async def resolve_payment_review", 1)[1].split(
+        '@router.get("/ui"', 1
+    )[0]
+
+    assert 'response = {' in handler
+    assert '"payment_id": int(payment.id)' in handler
+    assert '"case_id": int(payment.case_id)' in handler
+    assert '"payment_status": str(payment.status)' in handler
+    assert "await db.commit()" in handler
+    assert handler.index('response = {') < handler.index("await db.commit()")
+    after_commit = handler.split("await db.commit()", 1)[1]
+    assert "payment.id" not in after_commit
+    assert "payment.case_id" not in after_commit
+    assert "payment.status" not in after_commit
+    assert "consultation.id" not in after_commit
+    assert "consultation.status" not in after_commit
+    assert "consultation.slot_id" not in after_commit
+    assert "return response" in after_commit
+
+
 def test_payment_review_notifications_use_business_timezone_formatter():
     source = _read("app/domain/payments/payment_review_service.py")
 
