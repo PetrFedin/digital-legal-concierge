@@ -100,7 +100,8 @@ def test_active_my_case_keeps_primary_action_first_and_adds_back_before_home():
     patch = read("app/bot/client_wording_patch.py")
 
     assert "original_case_buttons = my_case._case_buttons" in patch
-    assert "items = list(original_case_buttons(view))" in patch
+    assert "def case_buttons_with_back(view, **kwargs):" in patch
+    assert "items = list(original_case_buttons(view, **kwargs))" in patch
     assert 'back_button = ("⬅️ Назад", "nav_back")' in patch
     assert 'home_index = callbacks.index("nav_home")' in patch
     assert "items.insert(home_index, back_button)" in patch
