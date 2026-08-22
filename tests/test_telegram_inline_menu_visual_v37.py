@@ -12,20 +12,17 @@ def _callbacks(markup):
     return [callback for row in _rows(markup) for _text, callback in row]
 
 
-def test_active_inline_menu_groups_context_communication_and_help():
+def test_active_inline_menu_groups_selected_case_actions_and_new_calculation():
     assert _rows(main_menu(True)) == [
         [
             ("📁 Моё дело", "my_case_open"),
             ("📄 Документы", "documents_open"),
         ],
         [
-            ("💬 Переписка", "message_history"),
+            ("💬 Связаться с юристом", "contact_lawyer"),
             ("💳 Оплаты", "payments_open"),
         ],
-        [
-            ("✉️ Новый вопрос", "message_create"),
-            ("⚖️ Юрист / консультация", "contact_lawyer"),
-        ],
+        [("🧮 Новый расчёт", "calc_start")],
     ]
 
 
@@ -49,9 +46,17 @@ def test_specialized_screen_can_hide_payment_shortcut_without_breaking_navigatio
             ("📁 Моё дело", "my_case_open"),
             ("📄 Документы", "documents_open"),
         ],
-        [("💬 Переписка", "message_history")],
         [
-            ("✉️ Новый вопрос", "message_create"),
-            ("⚖️ Юрист / консультация", "contact_lawyer"),
+            ("💬 Связаться с юристом", "contact_lawyer"),
+            ("🧮 Новый расчёт", "calc_start"),
         ],
+    ]
+
+
+def test_completed_inline_menu_is_read_only_plus_explicit_new_matter():
+    rows = _rows(main_menu(False, completed_case=True))
+    assert rows == [
+        [("📁 Моё дело", "my_case_open")],
+        [("💳 Оплаты", "payments_open")],
+        [("🧮 Новое обращение", "calc_start")],
     ]
