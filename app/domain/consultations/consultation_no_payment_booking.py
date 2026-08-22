@@ -13,6 +13,7 @@ from app.domain.consultations.consultation_service import ConsultationService
 from app.domain.consultations.slot_service import SlotUnavailableError
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.payments.mode import payments_disabled
+from app.domain.payments.payment_lifecycle import PaymentLifecycleService
 from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus, RouteCode
@@ -20,6 +21,7 @@ from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models.consultation import Consultation
 from app.models.payment import Payment
+from app.presentation_time import format_business_datetime
 
 
 RECEIVED_OR_REFUND_PAYMENT_STATUSES = {
@@ -108,8 +110,15 @@ class ConsultationNoPaymentBookingService:
         for payment in payments:
             if payment.status not in ACTIVE_ONLINE_PAYMENT_STATUSES:
                 continue
-            old_status = payment.status
-            payment.status = PaymentStatus.EXPIRED
+
+            # Financial projection changes must pass through the shared lifecycle
+            # boundary. Besides preventing a direct status write, this records the
+            # first exact expired_at business timestamp in the same transaction as
+            # the no-payment booking and its Case history evidence.
+            transition = PaymentLifecycleService.transition(
+                payment,
+                to_status=PaymentStatus.EXPIRED,
+            )
             await add_case_history_event(
                 self.db,
                 actor_type="client",
@@ -118,12 +127,13 @@ class ConsultationNoPaymentBookingService:
                 action="CONSULTATION_ONLINE_PAYMENT_EXPIRED_AFTER_NO_PAYMENT_BOOKING",
                 old_value={
                     "payment_id": payment.id,
-                    "status": old_status,
+                    "status": transition.old_status.value,
                     "reservation_key": payment.reservation_key,
                 },
                 new_value={
                     "payment_id": payment.id,
-                    "status": payment.status,
+                    "status": transition.new_status.value,
+                    "expired_at": transition.occurred_at.isoformat(),
                     "reservation_key": reservation_key,
                 },
                 comment=(
@@ -226,7 +236,7 @@ class ConsultationNoPaymentBookingService:
             user_id=client_id,
             payload={
                 "case_number": case.case_number,
-                "date": slot.starts_at.strftime("%d.%m.%Y %H:%M"),
+                "date": format_business_datetime(slot.starts_at),
             },
             dedupe_key=f"{reservation_key}:booked",
         )
