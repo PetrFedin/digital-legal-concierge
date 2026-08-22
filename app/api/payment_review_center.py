@@ -378,6 +378,22 @@ async def resolve_payment_review(
                 actor_id=actor_id_from_token(actor),
                 comment=payload.get("comment") or "",
             )
+        # Presentation/API response values are copied before commit. This route
+        # must remain correct if the session policy changes to expire_on_commit
+        # and must never trigger implicit ORM I/O while serializing the response.
+        response = {
+            "ok": True,
+            "payment_id": int(payment.id),
+            "case_id": int(payment.case_id),
+            "payment_status": str(payment.status),
+            "consultation_id": int(consultation.id) if consultation else None,
+            "consultation_status": str(consultation.status) if consultation else None,
+            "slot_id": (
+                int(consultation.slot_id)
+                if consultation and consultation.slot_id is not None
+                else None
+            ),
+        }
         await db.commit()
     except LookupError as error:
         await db.rollback()
@@ -394,15 +410,7 @@ async def resolve_payment_review(
         await db.rollback()
         raise
 
-    return {
-        "ok": True,
-        "payment_id": payment.id,
-        "case_id": payment.case_id,
-        "payment_status": payment.status,
-        "consultation_id": consultation.id if consultation else None,
-        "consultation_status": consultation.status if consultation else None,
-        "slot_id": consultation.slot_id if consultation else None,
-    }
+    return response
 
 
 @router.get("/ui", response_class=HTMLResponse)
