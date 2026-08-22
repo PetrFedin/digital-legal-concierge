@@ -415,6 +415,20 @@ async def consult_cancel(callback: CallbackQuery, db):
         await _show_missing_booked_context(callback, db, action="cancel")
         return
 
+    consultation_id = int(consultation.id)
+    slot_id = int(consultation.slot_id or 0)
+    confirmation_markup = one(
+        (
+            "Да, отменить текущую запись",
+            f"consult_cancel_confirm:{consultation_id}:{slot_id}",
+        ),
+        ("Нет, сохранить запись", "consultation_booked_open"),
+        ("💳 Оплаты", "payments_open"),
+        ("🏠 Главная", "nav_home"),
+    )
+    # This is a read-only confirmation screen. Close the transaction before the
+    # Telegram network call and use only scalar/markup snapshots afterwards.
+    await db.rollback()
     await _safe_edit(
         callback,
         "⚠️ Отменить текущую консультацию?\n\n"
@@ -423,15 +437,7 @@ async def consult_cancel(callback: CallbackQuery, db):
         "Если по этой записи деньги уже были получены, отмена запустит штатную "
         "проверку возврата. Если фактической оплаты не было, возврат не потребуется. "
         "Финансовый результат будет виден в разделе «Оплаты».",
-        reply_markup=one(
-            (
-                "Да, отменить текущую запись",
-                f"consult_cancel_confirm:{consultation.id}:{int(consultation.slot_id or 0)}",
-            ),
-            ("Нет, сохранить запись", "consultation_booked_open"),
-            ("💳 Оплаты", "payments_open"),
-            ("🏠 Главная", "nav_home"),
-        ),
+        reply_markup=confirmation_markup,
     )
 
 
