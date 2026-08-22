@@ -16,24 +16,32 @@ from app.domain.consultations.slot_service import SlotService, SlotUnavailableEr
 from app.domain.payments.mode import payments_disabled
 from app.domain.payments.refund_service import ConsultationRefundStateConflict
 from app.domain.statuses.consultation_statuses import ConsultationStatus
+from app.presentation_time import to_business_timezone
 
 router = Router()
 logger = logging.getLogger(__name__)
 
 
 def format_date(value):
-    return value.strftime("%d.%m.%Y")
+    return to_business_timezone(value).strftime("%d.%m.%Y")
 
 
 def format_time(value):
-    return value.strftime("%H:%M")
+    return to_business_timezone(value).strftime("%H:%M")
+
+
+def business_date_key(value) -> str:
+    return to_business_timezone(value).date().isoformat()
 
 
 def date_buttons(slots, callback_prefix: str):
     buttons = []
     seen = set()
     for slot in slots:
-        key = slot.starts_at.date().isoformat()
+        # The callback key and the visible date must come from the same outward
+        # timezone. Otherwise a UTC slot around midnight can be shown under one
+        # day but selected with another day's callback key.
+        key = business_date_key(slot.starts_at)
         if key in seen:
             continue
         seen.add(key)
@@ -148,6 +156,7 @@ async def consult_reschedule(callback: CallbackQuery, db):
         return
 
     if not slots:
+        await db.rollback()
         await _safe_edit(
             callback,
             "Сейчас нет свободного времени для переноса. Текущая запись сохранена.\n\n"
@@ -161,16 +170,18 @@ async def consult_reschedule(callback: CallbackQuery, db):
         )
         return
 
+    date_markup = one(
+        *date_buttons(slots, "consult_reschedule_date"),
+        ("← Оставить текущее время", "consultation_booked_open"),
+        ("🏠 Главная", "nav_home"),
+    )
+    await db.rollback()
     await _safe_edit(
         callback,
         "🔄 Перенос консультации\n\n"
         "Выберите новую дату. Текущая запись останется за вами до отдельного "
         "подтверждения нового времени. Повторная оплата не потребуется.",
-        reply_markup=one(
-            *date_buttons(slots, "consult_reschedule_date"),
-            ("← Оставить текущее время", "consultation_booked_open"),
-            ("🏠 Главная", "nav_home"),
-        ),
+        reply_markup=date_markup,
     )
 
 
@@ -192,10 +203,9 @@ async def choose_reschedule_date(callback: CallbackQuery, db):
         )
         return
 
-    selected = [
-        slot for slot in slots if slot.starts_at.date().isoformat() == date_key
-    ]
+    selected = [slot for slot in slots if business_date_key(slot.starts_at) == date_key]
     if not selected:
+        await db.rollback()
         try:
             await callback.answer(
                 "На эту дату свободное время уже закончилось.",
@@ -213,16 +223,19 @@ async def choose_reschedule_date(callback: CallbackQuery, db):
         )
         for slot in selected
     ]
+    visible_date = format_date(selected[0].starts_at)
+    markup = one(
+        *buttons,
+        ("← Другие даты", "consult_reschedule"),
+        ("Оставить текущее время", "consultation_booked_open"),
+        ("🏠 Главная", "nav_home"),
+    )
+    await db.rollback()
     await _safe_edit(
         callback,
-        f"🕐 Новое время на {format_date(selected[0].starts_at)}\n\n"
+        f"🕐 Новое время на {visible_date}\n\n"
         "Текущая запись ещё не изменена. Выберите слот — следующим экраном я попрошу подтвердить перенос.",
-        reply_markup=one(
-            *buttons,
-            ("← Другие даты", "consult_reschedule"),
-            ("Оставить текущее время", "consultation_booked_open"),
-            ("🏠 Главная", "nav_home"),
-        ),
+        reply_markup=markup,
     )
 
 
@@ -275,28 +288,36 @@ async def choose_reschedule_slot(callback: CallbackQuery, db):
         await consult_reschedule(callback, db)
         return
 
-    await db.commit()
     current_time = (
         f"{format_date(consultation.scheduled_at)} · {format_time(consultation.scheduled_at)}"
         if consultation.scheduled_at
         else "уточняется"
     )
     old_slot_id = int(consultation.slot_id or 0)
+    consultation_id = int(consultation.id)
+    selected_slot_id = int(new_slot.id)
+    selected_date = format_date(new_slot.starts_at)
+    selected_start = format_time(new_slot.starts_at)
+    selected_end = format_time(new_slot.ends_at)
+    confirmation_markup = one(
+        (
+            "✅ Да, перенести консультацию",
+            f"consult_reschedule_confirm:{consultation_id}:{old_slot_id}:{selected_slot_id}",
+        ),
+        ("← Выбрать другое время", "consult_reschedule"),
+        ("Нет, оставить текущее время", "consultation_booked_open"),
+    )
+    # This screen is read-only. Snapshot the values and close the read
+    # transaction before Telegram I/O instead of committing and then reading
+    # expired ORM state.
+    await db.rollback()
     await _safe_edit(
         callback,
         "⚠️ Подтвердить перенос консультации?\n\n"
         f"Текущее время: {current_time}\n"
-        f"Новое время: {format_date(new_slot.starts_at)} · "
-        f"{format_time(new_slot.starts_at)}–{format_time(new_slot.ends_at)}\n\n"
+        f"Новое время: {selected_date} · {selected_start}–{selected_end}\n\n"
         "До подтверждения текущая запись остаётся без изменений. При подтверждении старый слот освободится, а вопрос и документы сохранятся.",
-        reply_markup=one(
-            (
-                "✅ Да, перенести консультацию",
-                f"consult_reschedule_confirm:{consultation.id}:{old_slot_id}:{new_slot.id}",
-            ),
-            ("← Выбрать другое время", "consult_reschedule"),
-            ("Нет, оставить текущее время", "consultation_booked_open"),
-        ),
+        reply_markup=confirmation_markup,
     )
 
 
@@ -345,6 +366,9 @@ async def confirm_reschedule_slot(callback: CallbackQuery, db):
             new_slot_id=new_slot_id,
             expected_old_slot_id=expected_old_slot_id,
         )
+        new_date = format_date(new_slot.starts_at)
+        new_start = format_time(new_slot.starts_at)
+        new_end = format_time(new_slot.ends_at)
         await db.commit()
     except (SlotUnavailableError, ValueError) as error:
         await db.rollback()
@@ -372,8 +396,8 @@ async def confirm_reschedule_slot(callback: CallbackQuery, db):
     await _safe_edit(
         callback,
         "✅ Консультация перенесена.\n\n"
-        f"Новая дата: {format_date(new_slot.starts_at)}\n"
-        f"Новое время: {format_time(new_slot.starts_at)}–{format_time(new_slot.ends_at)}\n\n"
+        f"Новая дата: {new_date}\n"
+        f"Новое время: {new_start}–{new_end}\n\n"
         "Предыдущий слот освобождён. Вопрос, документы и подтверждение записи сохранены.",
         reply_markup=one(
             ("👨‍⚖ Открыть запись и подготовку", "consultation_booked_open"),
@@ -466,8 +490,10 @@ async def consult_cancel_confirm(callback: CallbackQuery, db):
         )
         return
 
+    case_id = int(case.id)
+    consultation_id = int(consultation.id)
     try:
-        _cancelled, replacement, case, refund_required = (
+        _cancelled, replacement, _case, refund_required = (
             await ConsultationChangeService(db).cancel_and_prepare_rebooking(
                 consultation=consultation,
                 case=case,
@@ -476,13 +502,15 @@ async def consult_cancel_confirm(callback: CallbackQuery, db):
                 payments_currently_disabled=payments_disabled(),
             )
         )
+        description_ready = consultation_description_ready(replacement)
+        refund_required = bool(refund_required)
         await db.commit()
     except ConsultationRefundStateConflict as error:
         await db.rollback()
         logger.warning(
             "Отмена M2 заблокирована из-за конфликта статуса возврата: case_id=%s consultation_id=%s error=%s",
-            case.id,
-            consultation.id,
+            case_id,
+            consultation_id,
             error,
         )
         await _safe_edit(
@@ -530,7 +558,6 @@ async def consult_cancel_confirm(callback: CallbackQuery, db):
         )
         return
 
-    description_ready = consultation_description_ready(replacement)
     primary = (
         ("📅 Выбрать новое время", "consult_booking_start")
         if description_ready
