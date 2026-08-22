@@ -7,7 +7,7 @@ import pytest
 
 from app.bot.screens.document_action_center import _active_case
 from app.db.session import AsyncSessionLocal
-from app.domain.cases.case_service import CaseService
+from app.domain.cases.case_service import CaseSelectionRequired, CaseService
 from app.domain.statuses.case_statuses import CaseStatus, RouteCode
 from app.models.case import Case
 from app.models.user import User
@@ -76,6 +76,9 @@ async def test_document_callback_fails_closed_if_selected_case_closed_and_two_ac
         )
         await db.commit()
 
+        # Both the document action center and the legacy generic resolver must
+        # refuse to guess between first/second after the selected matter closes.
+        assert await service.get_active_case_for_user(user.id) is None
         _, resolved = await _active_case(_callback(telegram_id), db)
         assert resolved is None
 
@@ -83,6 +86,14 @@ async def test_document_callback_fails_closed_if_selected_case_closed_and_two_ac
             int(case.id) for case in await service.get_active_cases_for_user(user.id)
         }
         assert active_ids == {int(first.id), int(second.id)}
+
+        with pytest.raises(CaseSelectionRequired):
+            await service.get_or_create_active_case_for_user(user)
+        # An ambiguity must never be mistaken for "zero active" and create a
+        # fourth legal matter as a side effect of an old compatibility flow.
+        assert {
+            int(case.id) for case in await service.get_active_cases_for_user(user.id)
+        } == active_ids
 
 
 @pytest.mark.asyncio
@@ -117,6 +128,10 @@ async def test_document_callback_may_use_only_active_case_when_selection_is_stal
             comment="Document context sole-active fallback regression",
         )
         await db.commit()
+
+        global_resolved = await service.get_active_case_for_user(user.id)
+        assert global_resolved is not None
+        assert int(global_resolved.id) == int(only_active.id)
 
         _, resolved = await _active_case(_callback(telegram_id), db)
         assert resolved is not None
