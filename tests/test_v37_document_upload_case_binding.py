@@ -69,25 +69,81 @@ def test_stale_or_stage_invalid_original_upload_case_still_clears_fail_closed():
     assert "return None" in stale
 
 
-def test_resume_callback_reselects_only_server_verified_draft_case_without_clearing_state():
+def test_resume_uses_server_verified_draft_case_and_preserves_waiting_file_state():
     guard = read("app/bot/screens/document_upload_binding_guard.py")
 
-    assert "async def resume_document_upload_for_exact_case" in guard
-    resume = guard.split("async def resume_document_upload_for_exact_case", 1)[1]
-    assert "current_state != DocumentUploadStates.waiting_file.state" in resume
+    assert "async def _draft_target_case" in guard
+    assert "ctx.case_service.get_case_for_user" in guard
+    assert "async def _resume_upload_draft" in guard
+    resume = guard.split("async def _resume_upload_draft", 1)[1].split(
+        '@router.callback_query(lambda c: c.data == "documents_upload_open")', 1
+    )[0]
+    assert "current_state not in _DOCUMENT_UPLOAD_STATES" in resume
     assert 'state_data.get("document_case_id")' in resume
     assert 'state_data.get("replacement_document_id")' in resume
     assert "await db.get(Document" in resume
-    assert "int(replacement.case_id) == int(target.id)" in resume
     assert "client_document_upload_allowed(target)" in resume
     assert "await ctx.case_service.select_case_for_user(" in resume
     assert "await db.commit()" in resume
     assert "ЗАГРУЗКА ВОССТАНОВЛЕНА" in resume
 
-    success = resume.split("try:\n        await ctx.case_service.select_case_for_user", 1)[1].split(
-        "except Exception:", 1
+    waiting_success = resume.rsplit(
+        "try:\n        await ctx.case_service.select_case_for_user",
+        1,
+    )[1].split("except Exception:", 1)[0]
+    assert "state.clear()" not in waiting_success
+
+
+def test_exact_and_draft_resume_callbacks_share_the_same_verified_recovery_path():
+    guard = read("app/bot/screens/document_upload_binding_guard.py")
+
+    exact = guard.split("async def resume_document_upload_for_exact_case", 1)[1].split(
+        '@router.callback_query(lambda c: c.data == "document_upload_resume_draft")', 1
     )[0]
-    assert "state.clear()" not in success
+    current = guard.split("async def resume_current_document_upload_draft", 1)[1].split(
+        '@router.callback_query(lambda c: c.data == "document_upload_discard_confirm")', 1
+    )[0]
+    assert "_parse_resume_case_id" in exact
+    assert "await _resume_upload_draft(" in exact
+    assert "requested_case_id=requested_case_id" in exact
+    assert "await _resume_upload_draft(callback, state, db)" in current
+
+
+def test_document_upload_navigation_requires_explicit_resume_or_confirmed_discard():
+    protection = read("app/bot/draft_protection.py")
+    guard = read("app/bot/screens/document_upload_binding_guard.py")
+
+    assert 'DOCUMENT_UPLOAD_DRAFT = "document_upload"' in protection
+    assert "DocumentUploadStates.choosing_type.state" in protection
+    assert "DocumentUploadStates.waiting_file.state" in protection
+    assert '"document_upload_resume_draft"' in protection
+    assert '"document_upload_discard_confirm"' in protection
+    assert '"doc_skip_m2:v2:"' in protection
+    assert "Продолжите загрузку либо отмените её явно" in protection
+
+    assert "async def confirm_document_upload_discard" in guard
+    confirm = guard.split("async def confirm_document_upload_discard", 1)[1].split(
+        '@router.callback_query(lambda c: c.data == "document_upload_discard")', 1
+    )[0]
+    assert "state.clear()" not in confirm
+    assert '"document_upload_discard"' in confirm
+
+    discard = guard.split("async def discard_document_upload", 1)[1]
+    assert "await state.clear()" in discard
+    assert "Ранее сохранённые документы и данные обращения не изменены" in discard
+
+
+def test_m2_skip_is_exact_case_bound_and_cleans_only_fsm_after_durable_transition():
+    protection = read("app/bot/draft_protection.py")
+    mutation = read("app/bot/screens/document_mutation_guard.py")
+
+    assert '"doc_skip_m2:v2:"' in protection
+    skip = mutation.split("async def skip_documents_for_exact_m2_case", 1)[1]
+    assert '_case_id(callback, "doc_skip_m2")' in skip
+    assert "await db.commit()" in skip
+    cleanup = skip.split("# The legal transition is already durable.", 1)[1]
+    assert "await state.clear()" in cleanup
+    assert cleanup.index("await state.clear()") < cleanup.index("await callback.message.edit_text")
 
 
 def test_direct_replacement_keeps_stricter_document_version_snapshot_path():
