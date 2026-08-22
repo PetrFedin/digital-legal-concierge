@@ -43,17 +43,54 @@ async def latest_completed_case_for_user(
     return result.scalars().first()
 
 
+async def unambiguous_active_case_for_user(
+    *,
+    case_service,
+    user_id: int,
+) -> tuple[Case | None, bool]:
+    """Return selected/sole active Case and whether explicit selection is required.
+
+    Multi-case Telegram surfaces must never silently borrow the newest Case when
+    the persisted selection is missing or points at a Case that has since become
+    terminal. A selected active Case is authoritative; with no selection, the
+    only active Case is safe to use. Two or more active Cases require the client
+    to choose explicitly before any contextual read or mutation continues.
+    """
+
+    selected = await case_service.get_selected_case_for_user(
+        int(user_id),
+        include_terminal=False,
+    )
+    if selected is not None:
+        return selected, False
+    active_cases = await case_service.get_active_cases_for_user(int(user_id))
+    if len(active_cases) == 1:
+        return active_cases[0], False
+    return None, len(active_cases) > 1
+
+
 async def active_or_latest_completed_case_for_user(
     db: AsyncSession,
     *,
     case_service,
     user_id: int,
 ) -> tuple[Case | None, bool]:
-    """Resolve active or latest completed case for read-only client screens."""
+    """Resolve an unambiguous active Case or latest completed read-only Case.
 
-    active = await case_service.get_active_case_for_user(user_id)
+    Completed history is a fallback only when there are no active matters. If
+    several active matters exist without a valid selected context, returning an
+    archive would be equally misleading, so the caller receives no Case and can
+    route the client to the canonical selector.
+    """
+
+    active, selection_required = await unambiguous_active_case_for_user(
+        case_service=case_service,
+        user_id=user_id,
+    )
     if active is not None:
         return active, False
+    if selection_required:
+        return None, False
     completed = await latest_completed_case_for_user(db, user_id=user_id)
     return completed, completed is not None
 
@@ -142,4 +179,5 @@ __all__ = [
     "latest_completed_m1_case_for_user",
     "latest_completed_strict_m1_case_for_user",
     "latest_completed_strict_m2_case_for_user",
+    "unambiguous_active_case_for_user",
 ]
