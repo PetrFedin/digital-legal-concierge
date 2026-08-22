@@ -20,6 +20,18 @@ def test_persistent_my_case_opens_shared_live_view_or_multi_case_selector():
     assert "await message.answer(text, reply_markup=markup)" in direct
 
 
+def test_client_wording_wrapper_preserves_multi_case_button_signature():
+    patch = read("app/bot/client_wording_patch.py")
+    my_case = read("app/bot/screens/my_case.py")
+
+    # The live wording installer replaces `_case_buttons`. `my_case._render_case`
+    # passes presentation context as a keyword when several active matters exist,
+    # so the wrapper must transparently forward the canonical helper signature.
+    assert "def case_buttons_with_back(view, **kwargs):" in patch
+    assert "original_case_buttons(view, **kwargs)" in patch
+    assert "has_multiple_active_cases=has_multiple_active_cases" in my_case
+
+
 def test_reply_menu_context_never_guesses_between_multiple_active_cases():
     direct = read("app/bot/screens/reply_menu_direct.py")
 
