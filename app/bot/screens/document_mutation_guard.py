@@ -277,6 +277,14 @@ async def skip_documents_for_exact_m2_case(
         )
         return
 
+    # The legal transition is already durable. Clearing the Telegram upload FSM
+    # is presentation cleanup only and must never make a successful skip look
+    # like a failed business transaction.
+    try:
+        await state.clear()
+    except Exception:
+        logger.exception("M2 document-skip FSM cleanup failed: case=%s", case_id)
+
     await callback.message.edit_text(
         "Хорошо. Документы сейчас не обязательны. Можно выбрать время консультации, а материалы добавить позже, если это ещё будет допустимо на этапе дела.",
         reply_markup=one(
