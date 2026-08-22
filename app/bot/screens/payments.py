@@ -181,8 +181,11 @@ async def _present_committed_callback(
 
 
 def fake_payments_enabled() -> bool:
-    return settings.payment_provider == "fake" and (
-        settings.app_env in {"local", "test"} or settings.demo_mode
+    """DEV payment confirmation is available only in an explicit local/test fake provider."""
+
+    return bool(
+        str(settings.payment_provider or "").strip().lower() == "fake"
+        and str(settings.app_env or "").strip().lower() in {"local", "test"}
     )
 
 
@@ -246,6 +249,19 @@ async def payments(callback: CallbackQuery, db):
         user_id=user.id,
     )
     if not case:
+        active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
+        if len(active_cases) > 1:
+            await callback.message.edit_text(
+                "💳 ОПЛАТЫ\n\n"
+                "У вас несколько активных обращений, а текущее дело не выбрано. "
+                "Платёжная история и новые финансовые действия не открываются без точного контекста дела.\n\n"
+                "Выберите обращение — после этого раздел «Оплаты» покажет только его платежи.",
+                reply_markup=one(
+                    ("📁 Выбрать обращение", "my_cases_open"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+            )
+            return
         await callback.message.edit_text(
             "💳 Оплаты\n\nАктивного или завершённого дела нет. Платёжная история появится после создания обращения.",
             reply_markup=one(
