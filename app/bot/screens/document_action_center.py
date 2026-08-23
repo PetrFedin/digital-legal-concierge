@@ -209,7 +209,12 @@ def _next_action(case, documents: list[Document]):
         suffix = "файл" if counts["new"] == 1 else "новых файла"
         return (
             f"Передать юристу {counts['new']} {suffix}. До передачи файлы не входят в очередь проверки.",
-            [("✅ Передать новые файлы юристу", "doc_finish_upload")],
+            [
+                (
+                    "✅ Передать новые файлы юристу",
+                    f"doc_finish_upload:v2:{int(case.id)}",
+                )
+            ],
         )
 
     if not documents and case.route == "M2":
@@ -217,7 +222,12 @@ def _next_action(case, documents: list[Document]):
         if status in _M2_CAN_SKIP_STATUSES:
             return (
                 "Документы для консультации необязательны. Можно перейти к следующему шагу дела или добавить материал для подготовки юриста.",
-                [("➡️ Продолжить без документов", "doc_skip_m2")],
+                [
+                    (
+                        "➡️ Продолжить без документов",
+                        f"doc_skip_m2:v2:{int(case.id)}",
+                    )
+                ],
             )
         return (
             "Документы для консультации можно добавить при необходимости. Основной шаг сейчас находится в разделе «Моё дело».",
@@ -487,6 +497,7 @@ async def direct_document_reupload(
 
     await state.clear()
     await state.update_data(
+        document_case_id=int(case.id),
         document_type=document.document_type,
         replacement_document_id=document.id,
         replacement_expected_version=expected_version,
@@ -502,7 +513,8 @@ async def direct_document_reupload(
         f"Юрист попросил заменить «{document.title}», версия {document.version}.\n"
         f"Что исправить: {comment}\n\n"
         "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
-        "Прикрепите PDF, DOCX, JPG или PNG. Тип документа уже выбран — повторно выбирать его не нужно.\n\n"
+        "Прикрепите PDF, DOCX, JPG или PNG. Тип документа уже выбран — повторно выбирать его не нужно. "
+        "Если вы случайно переключитесь на другое дело, бот не перепутает файл: черновик замены сохранится и предложит вернуться сюда.\n\n"
         f"После безопасной проверки файл будет сохранён как следующая версия «{document.title}». Старый запрос останется в истории.",
         reply_markup=one(
             ("✖️ Отменить замену", "documents_open"),
