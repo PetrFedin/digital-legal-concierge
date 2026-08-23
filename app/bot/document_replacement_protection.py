@@ -275,8 +275,6 @@ class ClientDocumentUploadStageProtectionMiddleware:
                 return None
 
             if selected_case is None or int(selected_case.id) != int(target_case.id):
-                # Snapshot presentation values before rollback: ORM instances may
-                # expire at the transaction boundary even with expire_on_commit=False.
                 target_case_id = int(target_case.id)
                 target_case_number = str(target_case.case_number)
                 await db.rollback()
@@ -287,9 +285,6 @@ class ClientDocumentUploadStageProtectionMiddleware:
                 )
                 return None
 
-            # The exact selected Case is also the server-verified draft owner.
-            # The stricter replacement middleware below will additionally check
-            # document id/version/status for lawyer-requested replacements.
             return await handler(event, data)
 
         try:
@@ -309,13 +304,14 @@ class ClientDocumentUploadStageProtectionMiddleware:
 
 
 class DocumentReplacementUploadProtectionMiddleware:
-    """Re-check a direct replacement snapshot when the replacement file arrives.
+    """Re-check exact replacement provenance independently of middleware order.
 
-    The inline action center validates the snapshot when the client opens the
-    replacement flow. This middleware validates it again at message receipt,
-    immediately before the legacy encrypted upload pipeline starts. It keeps a
-    stale lawyer decision from causing an unnecessary file download or a new
-    version based on an obsolete replacement request.
+    The direct replacement action binds its FSM draft to an immutable Document
+    id/version and exact source Case. A file sent while another Case is selected
+    must not clear that still-valid draft and must never be queried/saved against
+    the newly selected Case. This middleware therefore repeats the same Case
+    binding itself rather than relying on ClientDocumentUploadStageProtection
+    happening to run first.
     """
 
     async def __call__(self, handler, event, data):
@@ -357,27 +353,64 @@ class DocumentReplacementUploadProtectionMiddleware:
             logger.error("Replacement upload guard has no database session")
             await _answer_recovery(
                 event,
-                "⚠️ Не удалось проверить актуальность запроса юриста. Файл не обрабатывался. Повторите отправку чуть позже.",
+                "⚠️ Не удалось проверить актуальность запроса юриста. Файл не обрабатывался. Черновик замены сохранён; повторите отправку чуть позже.",
             )
             return None
 
         try:
             ctx = BotContextService(db)
             user = await ctx.get_user_from_message(event)
-            case = await ctx.case_service.get_active_case_for_user(user.id)
-            if case is None:
-                await state.clear()
-                await _answer_recovery(
-                    event,
-                    "Активное дело больше не найдено. Файл не обрабатывался.",
-                )
-                return None
+            target_case = await _draft_target_case(
+                db,
+                ctx,
+                user_id=int(user.id),
+                state_data=state_data,
+            )
+        except Exception:
+            logger.exception("Не удалось определить исходное дело замены документа.")
+            await db.rollback()
+            await _answer_recovery(
+                event,
+                "⚠️ Не удалось проверить исходное обращение. Файл не обрабатывался, а черновик замены сохранён. Повторите отправку позже.",
+            )
+            return None
 
+        if target_case is None or not client_document_upload_allowed(target_case):
+            await db.rollback()
+            await _stage_recovery(event, state)
+            return None
+
+        try:
+            selected_case = await ctx.case_service.get_active_case_for_user(user.id)
+        except Exception:
+            logger.exception("Не удалось проверить выбранное дело перед заменой документа.")
+            target_case_id = int(target_case.id)
+            target_case_number = str(target_case.case_number)
+            await db.rollback()
+            await _preserve_switched_case_upload(
+                event,
+                case_id=target_case_id,
+                case_number=target_case_number,
+            )
+            return None
+
+        if selected_case is None or int(selected_case.id) != int(target_case.id):
+            target_case_id = int(target_case.id)
+            target_case_number = str(target_case.case_number)
+            await db.rollback()
+            await _preserve_switched_case_upload(
+                event,
+                case_id=target_case_id,
+                case_number=target_case_number,
+            )
+            return None
+
+        try:
             document = await db.get(Document, document_id)
             latest = (
                 await db.execute(
                     select(Document)
-                    .where(Document.case_id == case.id)
+                    .where(Document.case_id == target_case.id)
                     .where(Document.document_type == document_type)
                     .where(Document.status != _ARCHIVED_STATUS)
                     .order_by(Document.version.desc(), Document.id.desc())
@@ -386,21 +419,23 @@ class DocumentReplacementUploadProtectionMiddleware:
             ).scalars().first()
         except Exception:
             logger.exception("Не удалось повторно проверить snapshot замены документа.")
+            await db.rollback()
             await _answer_recovery(
                 event,
-                "⚠️ Не удалось подтвердить актуальность запроса юриста. Файл не обрабатывался и не потерян у вас. Повторите отправку позже или откройте документы.",
+                "⚠️ Не удалось подтвердить актуальность запроса юриста. Файл не обрабатывался, а черновик замены сохранён. Повторите отправку позже или откройте документы.",
             )
             return None
 
         if not replacement_snapshot_matches(
             document,
             latest,
-            case_id=case.id,
+            case_id=target_case.id,
             document_type=document_type,
             document_id=document_id,
             expected_version=expected_version,
         ):
             await state.clear()
+            await db.rollback()
             await _answer_recovery(
                 event,
                 "ℹ️ Запрос юриста уже изменился: эта версия больше не требует замены или появилась новая версия. Файл не обрабатывался. Откройте актуальные документы.",
