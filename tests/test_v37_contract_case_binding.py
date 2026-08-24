@@ -35,11 +35,14 @@ def test_contract_payment_handoff_uses_exact_case_callback():
     assert 'f"Обращение № {case_number}' in result
 
 
-def test_legacy_generic_contract_sign_never_confirms_or_creates_payment():
+def test_legacy_generic_or_case_only_contract_sign_never_confirms_or_creates_payment():
     source = read("app/bot/screens/service_contract.py")
+    bot = read("app/bot/bot.py")
 
+    assert 'callback_matches_action(c.data, "contract_sign")' in source
     legacy = source.split("async def legacy_contract_confirmation", 1)[1].split(
         "async def confirm_exact_service_contract", 1
     )[0]
     assert "confirm_service_contract(" not in legacy
-    assert "Старая кнопка без номера версии не может создать платёж" in legacy
+    assert "без идентификатора документа и номера версии" in legacy
+    assert bot.index("service_contract.router") < bot.index("m1_stages.router")
