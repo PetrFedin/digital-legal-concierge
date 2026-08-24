@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery
+from sqlalchemy import select
 
+from app.bot.case_callback_scope import bound_case_callback
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.domain.cases.case_activity import CaseActivityService
@@ -13,6 +16,8 @@ from app.domain.cases.client_case_scope import (
     CLIENT_COMPLETED_CASE_STATUSES,
     latest_completed_case_for_user,
 )
+from app.models.case import Case
+from app.presentation_time import format_business_datetime
 
 router = Router()
 
@@ -20,6 +25,7 @@ HISTORY_PAGE_SIZE = 7
 HISTORY_CALLBACK_PREFIX = "case_history_before:"
 HISTORY_OPEN_PREFIX = "case_history_open:v2:"
 _COMPLETED_STATUS_VALUES = {str(value) for value in CLIENT_COMPLETED_CASE_STATUSES}
+_CASE_NUMBER_PATTERN = re.compile(r"\bDLC-\d{4}-\d{6}\b")
 CATEGORY_ICONS = {
     "case": "📁",
     "calculation": "🧮",
@@ -64,10 +70,49 @@ def _history_target(callback_data: str | None) -> tuple[int | None, int | None, 
     raise ValueError("unknown history callback")
 
 
-def _message_mentions_case(callback: CallbackQuery, case_number: str) -> bool:
+def _message_text(callback: CallbackQuery) -> str:
     message = getattr(callback, "message", None)
-    text = str(getattr(message, "text", "") or getattr(message, "caption", "") or "")
-    return bool(case_number and case_number in text)
+    return str(
+        getattr(message, "text", "") or getattr(message, "caption", "") or ""
+    )
+
+
+def _message_mentions_case(callback: CallbackQuery, case_number: str) -> bool:
+    return bool(case_number and case_number in _message_text(callback))
+
+
+def _legacy_visible_case_number(callback: CallbackQuery) -> str | None:
+    """Return one canonical Case number explicitly visible on a legacy screen."""
+
+    numbers = list(dict.fromkeys(_CASE_NUMBER_PATTERN.findall(_message_text(callback))))
+    return numbers[0] if len(numbers) == 1 else None
+
+
+async def _visible_completed_case(callback: CallbackQuery, db, *, user_id: int):
+    """Recover the exact archived Case named by a trusted old bot message.
+
+    Historical `case_history_open` callbacks carried no Case id. If the old
+    screen itself visibly identifies one canonical completed Case, prefer that
+    read-only archive over a generic "latest completed" fallback. This prevents
+    an old Case A history button from unexpectedly showing newer Case B.
+    """
+
+    case_number = _legacy_visible_case_number(callback)
+    if not case_number:
+        return None
+    case = (
+        await db.execute(
+            select(Case)
+            .where(
+                Case.client_id == int(user_id),
+                Case.case_number == case_number,
+            )
+            .limit(1)
+        )
+    ).scalars().first()
+    if case is None or str(case.status) not in _COMPLETED_STATUS_VALUES:
+        return None
+    return case
 
 
 def _format_datetime(value: str | None) -> str:
@@ -77,7 +122,11 @@ def _format_datetime(value: str | None) -> str:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except (TypeError, ValueError):
         return "Дата не указана"
-    return parsed.strftime("%d.%m.%Y · %H:%M")
+    return format_business_datetime(
+        parsed,
+        pattern="%d.%m.%Y · %H:%M",
+        empty="Дата не указана",
+    )
 
 
 def _format_timeline(
@@ -153,7 +202,10 @@ def _history_buttons(
     elif selected_same_case:
         buttons.extend(
             [
-                ("✉️ Задать вопрос по делу", "message_create"),
+                (
+                    "✉️ Задать вопрос по делу",
+                    bound_case_callback("message_create", case_id),
+                ),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ]
@@ -210,7 +262,14 @@ async def _render_history(
     else:
         case = selected_case
         if case is None:
-            case = await latest_completed_case_for_user(db, user_id=user.id)
+            if legacy_unbound:
+                case = await _visible_completed_case(
+                    callback,
+                    db,
+                    user_id=int(user.id),
+                )
+            if case is None:
+                case = await latest_completed_case_for_user(db, user_id=user.id)
             completed = case is not None
         elif legacy_unbound and cursor is not None and len(active_cases) > 1:
             selected_number = str(case.case_number)
@@ -269,7 +328,10 @@ async def _render_history(
         elif selected_same_case:
             error_buttons.extend(
                 [
-                    ("✉️ Задать вопрос по делу", "message_create"),
+                    (
+                        "✉️ Задать вопрос по делу",
+                        bound_case_callback("message_create", case_id),
+                    ),
                     ("📁 Моё дело", "my_case_open"),
                     ("🏠 Главная", "nav_home"),
                 ]
