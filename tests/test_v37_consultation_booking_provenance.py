@@ -17,6 +17,22 @@ def test_booking_entry_records_case_consultation_and_message_provenance():
     assert "consult_booking_message_id=int(event.message.message_id)" in source
 
 
+def test_booking_entry_checks_multi_case_context_before_opening_calendar():
+    source = read("app/bot/consultation_booking_provenance.py")
+
+    assert "resolve_case_callback_scope" in source
+    entry = source.split("if value in _BOOKING_ENTRY_CALLBACKS:", 1)[1].split(
+        "if not _looks_like_initial_booking_callback(value):", 1
+    )[0]
+    assert "action=value" in entry
+    assert "allow_legacy_message_case_context=True" in entry
+    assert entry.index("resolve_case_callback_scope(") < entry.index(
+        "result = await handler(event, data)"
+    )
+    assert "if scope is None:" in entry
+    assert "return None" in entry
+
+
 def test_initial_slot_day_time_callbacks_fail_closed_on_snapshot_mismatch():
     source = read("app/bot/consultation_booking_provenance.py")
 
