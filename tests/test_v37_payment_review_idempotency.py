@@ -58,3 +58,31 @@ def test_each_terminal_payment_review_branch_requires_exact_retry_evidence():
     assert "compare_slot=True" in assign
     assert "if payment.status == PaymentStatus.REFUND_PENDING:" in refund
     assert 'decision="refund_pending"' in refund
+
+
+def test_payment_review_ui_uses_durable_origin_and_preserves_stale_decision_draft():
+    source = read("app/api/payment_review_center.py")
+    review_context = source.split("async def review_event_context", 1)[1].split(
+        "def allowed_actions_for_candidate", 1
+    )[0]
+
+    assert ".limit(" not in review_context
+    assert 'new_value.get("payment_id")' in review_context
+    assert "e.status=r.status" in source
+    assert "reviewDrafts=new Map()" in source
+    assert "restoreDraftSelections" in source
+    assert "consultationId,slotId" in source
+    assert "reviewDrafts.delete(Number(id))" in source
+    assert "if(e.status===409)" in source
+    assert "await load()" in source
+    assert "решение не применено" in source
+    assert "Ваш допустимый выбор и комментарий сохранены" in source
+
+
+def test_payment_review_card_matches_staff_action_hierarchy():
+    source = read("app/api/payment_review_center.py")
+
+    assert '<div class="section-label">Сейчас</div>' in source
+    assert '<div class="section-label">Главный следующий шаг</div>' in source
+    assert '<div class="section-label">Решение</div>' in source
+    assert '<div class="section-label">Вторичные действия</div>' in source
