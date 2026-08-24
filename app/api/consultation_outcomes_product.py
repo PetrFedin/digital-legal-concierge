@@ -162,9 +162,9 @@ def _inject_business_timezone_ui(html: str) -> str:
       secondary.appendChild(heading);
       secondary.appendChild(row);
       actions.appendChild(secondary);
-      Array.from(actions.querySelectorAll(':scope > .row')).forEach(existing=>{{
-        if(existing!==row&&!existing.children.length)existing.remove();
-      }});
+      Array.from(actions.children)
+        .filter(node=>node!==secondary&&node.matches('.row')&&!node.children.length)
+        .forEach(node=>node.remove());
     }});
   }}
 
