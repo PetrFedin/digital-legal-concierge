@@ -213,6 +213,7 @@ async def contact_lawyer(callback: CallbackQuery, db, state: FSMContext):
 
     if case:
         case_id = int(case.id)
+        case_number = str(case.case_number)
         consultation = await ConsultationService(db).get_current_for_case(case.id)
         if consultation and consultation.status == ConsultationStatus.BOOKED:
             primary = ("👨‍⚖ Открыть подтверждённую запись", "consultation_booked_open")
@@ -225,7 +226,7 @@ async def contact_lawyer(callback: CallbackQuery, db, state: FSMContext):
             primary = ("📝 Продолжить: описать вопрос", "consult_subject_start")
         await callback.message.edit_text(
             "💬 Юридическая консультация\n\n"
-            f"Обращение № {case.case_number}\n\n"
+            f"Обращение № {case_number}\n\n"
             "Продолжите сохранённый этап консультации либо напишите команде по обращению.",
             reply_markup=one(
                 primary,
@@ -255,6 +256,7 @@ async def subject_start(callback: CallbackQuery, db, state: FSMContext):
     user = await ctx.get_user_from_callback(callback)
     try:
         case, _consultation = await ConsultationIntakeService(db).get_or_create_context(user)
+        case_id = int(case.id)
         await db.commit()
     except ActiveCaseRouteConflict as error:
         await db.rollback()
@@ -279,7 +281,7 @@ async def subject_start(callback: CallbackQuery, db, state: FSMContext):
             await db.execute(
                 select(Case)
                 .where(Case.client_id == user.id)
-                .where(Case.id != case.id)
+                .where(Case.id != case_id)
                 .order_by(Case.created_at.desc(), Case.id.desc())
                 .limit(10)
             )
@@ -556,29 +558,32 @@ async def _prepare_slots(callback: CallbackQuery, db, *, scope=None):
 @router.callback_query(lambda c: _booking_entry_action(c.data) is not None)
 async def booking_start(callback: CallbackQuery, db):
     action = _booking_entry_action(callback.data)
-    if action is None:
-        return
-    scope = await resolve_case_callback_scope(
-        callback,
-        db,
-        action=action,
-        allow_legacy_message_case_context=True,
-    )
-    if scope is None:
-        return
-    if scope.case is None or str(scope.case.route or "").upper() != RouteCode.M2.value:
-        await db.rollback()
-        await _safe_edit(
+    scope = None
+    if action is not None:
+        scope = await resolve_case_callback_scope(
             callback,
-            "Выбор времени доступен только внутри текущего консультационного обращения. Ничего не изменено.",
-            reply_markup=one(
-                ("📁 Выбрать обращение", "my_cases_open"),
-                ("✉️ Написать команде", "message_create"),
-                ("🏠 Главная", "nav_home"),
-            ),
+            db,
+            action=action,
+            allow_legacy_message_case_context=True,
         )
-        return
+        if scope is None:
+            return
+        if scope.case is None or str(scope.case.route or "").upper() != RouteCode.M2.value:
+            await db.rollback()
+            await _safe_edit(
+                callback,
+                "Выбор времени доступен только внутри текущего консультационного обращения. Ничего не изменено.",
+                reply_markup=one(
+                    ("📁 Выбрать обращение", "my_cases_open"),
+                    ("✉️ Написать команде", "message_create"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+            )
+            return
 
+    # Internal recovery calls originate only from already validated date/slot
+    # handlers. They deliberately reuse the current selected M2 context instead
+    # of treating consult_date:/consult_slot_select: as a fresh entry callback.
     prepared = await _prepare_slots(callback, db, scope=scope)
     if prepared is None:
         return
@@ -676,7 +681,6 @@ async def choose_slot(callback: CallbackQuery, db):
         await callback.message.edit_text(
             "Эта кнопка выбора времени больше не актуальна.",
             reply_markup=one(
-                ("🔄 Выбрать дату заново", "consult_booking_start"),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
@@ -720,9 +724,8 @@ async def choose_slot(callback: CallbackQuery, db):
         await callback.message.edit_text(
             "Не удалось сохранить выбранное время. Вопрос и документы не изменены.",
             reply_markup=one(
-                ("🔄 Выбрать время заново", "consult_booking_start"),
-                ("✉️ Написать команде", "message_create"),
                 ("📁 Моё дело", "my_case_open"),
+                ("✉️ Написать команде", "message_create"),
                 ("🏠 Главная", "nav_home"),
             ),
         )
