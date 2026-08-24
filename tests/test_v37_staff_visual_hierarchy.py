@@ -62,6 +62,24 @@ def test_message_center_has_context_now_main_step_recovery_and_business_time():
     assert "formatBusinessTime(m.created_at)" in role_ui
 
 
+def test_workdesk_case_card_uses_context_now_main_step_without_breaking_m2_projection():
+    base = read("app/api/workdesk_ui.py")
+    runtime = read("app/api/workdesk_runtime_ui.py")
+
+    assert "timeZone:businessTimeZone" in base
+    assert "business_timezone" in base
+    assert "function applyGuidedCaseHierarchy()" in runtime
+    assert "heading.textContent='Сейчас'" in runtime
+    assert "label.className='eyebrow main-step-label'" in runtime
+    assert "label.textContent='Главный следующий шаг'" in runtime
+    assert "const actionText=actionBox.querySelector('div')" in runtime
+    assert "actionBox.insertBefore(label,actionText)" in runtime
+    assert "applyGuidedCaseHierarchy();" in runtime
+    # The M2 product extension still updates the original action div. Keeping
+    # the new hierarchy label as a span avoids changing this selector contract.
+    assert "const primary=cv.querySelector('.action div')" in runtime
+
+
 def test_staff_palette_remains_consistent_on_decision_surfaces():
     document_review = read("app/api/document_review.py")
     payment_review = read("app/api/payment_review_center.py")
