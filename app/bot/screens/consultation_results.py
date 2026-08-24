@@ -310,17 +310,36 @@ async def consultation_result_open(callback: CallbackQuery, db):
     user = await ctx.get_user_from_callback(callback)
     active_case = await ctx.case_service.get_active_case_for_user(user.id)
 
-    latest = None
-    if active_case:
+    if active_case is not None:
+        case_id = int(active_case.id)
+        case_number = str(active_case.case_number)
         latest = await latest_terminal_client_consultation(
             db,
             client_id=user.id,
-            case_id=active_case.id,
+            case_id=case_id,
         )
-    if latest is None:
+        if latest is None:
+            await db.rollback()
+            await _safe_edit(
+                callback,
+                "👨‍⚖ ИТОГ КОНСУЛЬТАЦИИ\n"
+                f"Обращение № {case_number}\n\n"
+                "Для выбранного обращения завершённый итог консультации пока не найден. "
+                "Результат другого дела здесь не показывается, чтобы не смешивать контексты.\n\n"
+                "Откройте текущий шаг или явно выберите другое обращение.",
+                reply_markup=one(
+                    ("📁 Текущее дело", "my_case_open"),
+                    ("📁 Выбрать обращение", "my_cases_open"),
+                    ("✉️ Написать команде", "message_create"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+            )
+            return
+    else:
         latest = await latest_terminal_client_consultation(db, client_id=user.id)
 
     if latest is None:
+        await db.rollback()
         await _safe_edit(
             callback,
             "👨‍⚖ ИТОГ КОНСУЛЬТАЦИИ\n\n"
