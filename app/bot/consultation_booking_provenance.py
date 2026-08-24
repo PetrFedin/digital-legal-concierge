@@ -6,7 +6,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, Telegra
 from aiogram.types import CallbackQuery
 from sqlalchemy import select
 
-from app.bot.case_callback_scope import callback_matches_action
+from app.bot.case_callback_scope import bound_case_callback, callback_matches_action
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.domain.statuses.case_statuses import CaseStatus
@@ -87,7 +87,13 @@ async def _current_context(event: CallbackQuery, db):
     return user, case, consultation
 
 
-async def _recover(event: CallbackQuery, state, text: str) -> None:
+async def _recover(
+    event: CallbackQuery,
+    state,
+    text: str,
+    *,
+    case_id: int | None = None,
+) -> None:
     if state is not None:
         try:
             await state.update_data(
@@ -97,12 +103,28 @@ async def _recover(event: CallbackQuery, state, text: str) -> None:
             )
         except Exception:
             logger.warning("Не удалось очистить provenance выбора консультации")
-    markup = one(
-        ("📁 Выбрать обращение", "my_cases_open"),
-        ("📅 Открыть актуальный выбор времени", "consult_booking_start"),
-        ("✉️ Написать команде", "message_create"),
-        ("🏠 Главная", "nav_home"),
+
+    buttons: list[tuple[str, str]] = [("📁 Выбрать обращение", "my_cases_open")]
+    if case_id is not None:
+        buttons.extend(
+            [
+                (
+                    "📅 Открыть актуальный выбор времени",
+                    bound_case_callback("consult_booking_start", int(case_id)),
+                ),
+                (
+                    "✉️ Написать команде",
+                    bound_case_callback("message_create", int(case_id)),
+                ),
+            ]
+        )
+    buttons.extend(
+        [
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ]
     )
+    markup = one(*buttons)
     try:
         await event.message.edit_text(text, reply_markup=markup)
     except TelegramBadRequest as error:
@@ -196,11 +218,13 @@ class ConsultationBookingProvenanceMiddleware:
             or int(consultation.id) != expected_consultation_id
             or current_message_id != expected_message_id
         ):
+            current_case_id = int(case.id) if case is not None else None
             await db.rollback()
             await _recover(
                 event,
                 state,
                 "ℹ️ Этот календарь относится к более раннему экрану или другому обращению. Старый слот не бронировался. Выберите нужное обращение и откройте актуальное время.",
+                case_id=current_case_id,
             )
             return None
 
