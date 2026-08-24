@@ -19,6 +19,7 @@ from app.bot.keyboards import one
 from app.bot.screens import documents, my_case, payments
 from app.domain.cases.client_case_scope import (
     CLIENT_COMPLETED_CASE_STATUSES,
+    completed_case_count_for_user,
     completed_cases_for_user,
 )
 from app.domain.documents.document_service import DocumentService
@@ -28,7 +29,9 @@ from app.presentation_time import format_business_datetime
 router = Router()
 
 _COMPLETED_VALUES = {str(status) for status in CLIENT_COMPLETED_CASE_STATUSES}
+_ARCHIVE_CASE_PAGE_SIZE = 6
 _ARCHIVE_DOCUMENT_PAGE_SIZE = 8
+_ARCHIVE_PAYMENT_PAGE_SIZE = 6
 _ARCHIVE_BUTTON_INSTALLED = False
 
 
@@ -71,14 +74,38 @@ def _archive_closed_at(case) -> str:
     return format_business_datetime(value) if value else "дата завершения уточняется"
 
 
-async def _completed_cases(event, db):
+def _page_count(total: int, page_size: int) -> int:
+    return max(1, (max(0, int(total)) + page_size - 1) // page_size)
+
+
+def _archive_page_from_callback(value: str | None) -> int:
+    if value == "my_case_archive_open":
+        return 0
+    parts = str(value or "").split(":")
+    if len(parts) != 3 or parts[0] != "my_case_archive_page" or parts[1] != "v2":
+        return 0
+    try:
+        return max(0, int(parts[2]))
+    except (TypeError, ValueError):
+        return 0
+
+
+async def _completed_case_page(event, db, requested_page: int = 0):
     ctx = BotContextService(db)
     if isinstance(event, CallbackQuery):
         user = await ctx.get_user_from_callback(event)
     else:
         user = await ctx.get_user_from_message(event)
-    cases = await completed_cases_for_user(db, user_id=int(user.id))
-    return ctx, user, cases
+    total = await completed_case_count_for_user(db, user_id=int(user.id))
+    total_pages = _page_count(total, _ARCHIVE_CASE_PAGE_SIZE)
+    page = min(max(0, int(requested_page)), total_pages - 1)
+    cases = await completed_cases_for_user(
+        db,
+        user_id=int(user.id),
+        limit=_ARCHIVE_CASE_PAGE_SIZE,
+        offset=page * _ARCHIVE_CASE_PAGE_SIZE,
+    )
+    return ctx, user, cases, total, page, total_pages
 
 
 async def _owned_completed_case(callback: CallbackQuery, db, case_id: int):
@@ -93,11 +120,20 @@ async def _owned_completed_case(callback: CallbackQuery, db, case_id: int):
     return ctx, user, case
 
 
-def _archive_selector(cases) -> tuple[str, list[tuple[str, str]]]:
-    if not cases:
+def _archive_selector(
+    cases,
+    *,
+    total: int,
+    page: int,
+    total_pages: int,
+) -> tuple[str, list[tuple[str, str]]]:
+    if total <= 0:
         return (
             "🗄 АРХИВ ОБРАЩЕНИЙ\n\n"
-            "Завершённых обращений пока нет. Активные дела остаются в разделе «Моё дело».",
+            "СЕЙЧАС\n"
+            "Завершённых обращений пока нет. Активные дела остаются в разделе «Моё дело».\n\n"
+            "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+            "Откройте текущее дело или начните новое обращение.",
             [
                 ("📁 Моё дело", "my_case_open"),
                 ("🧮 Новое обращение", "calc_start"),
@@ -109,12 +145,20 @@ def _archive_selector(cases) -> tuple[str, list[tuple[str, str]]]:
         "🗄 АРХИВ ОБРАЩЕНИЙ",
         "",
         "СЕЙЧАС",
-        f"Завершённых обращений: {len(cases)}.",
-        "",
-        "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ",
-        "Выберите точное обращение. Просмотр архива не меняет выбранное активное дело и не запускает никаких действий.",
-        "",
+        f"Завершённых обращений: {total}.",
     ]
+    if total_pages > 1:
+        lines.append(f"Страница {page + 1} из {total_pages}.")
+    lines.extend(
+        [
+            "",
+            "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ",
+            "Выберите точное обращение. Просмотр архива не меняет выбранное активное дело и не запускает никаких действий.",
+            "",
+            "НА ЭТОЙ СТРАНИЦЕ",
+        ]
+    )
+
     buttons: list[tuple[str, str]] = []
     for case in cases:
         lines.append(f"• {_archive_case_label(case)} · {_archive_closed_at(case)}")
@@ -123,6 +167,15 @@ def _archive_selector(cases) -> tuple[str, list[tuple[str, str]]]:
                 f"🗄 {case.case_number} · {route_label(case.route)}",
                 f"my_case_archive:v2:{int(case.id)}",
             )
+        )
+
+    if page > 0:
+        buttons.append(
+            ("⬅️ Более новые", f"my_case_archive_page:v2:{page - 1}")
+        )
+    if page + 1 < total_pages:
+        buttons.append(
+            ("Более ранние ➡️", f"my_case_archive_page:v2:{page + 1}")
         )
     buttons.extend(
         [
@@ -168,7 +221,7 @@ def _archive_case_buttons(case_id: int, *, has_result: bool) -> list[tuple[str, 
     buttons.extend(
         [
             ("📄 Документы", f"client_archive_documents:v2:{case_id}:0"),
-            ("💳 Оплаты", f"client_archive_payments:v2:{case_id}"),
+            ("💳 Оплаты", f"client_archive_payments:v2:{case_id}:0"),
             ("💬 Переписка", f"message_history:v2:{case_id}:0"),
             ("🕘 История дела", f"case_history_open:v2:{case_id}"),
             ("🗄 Другие завершённые", "my_case_archive_open"),
@@ -214,9 +267,23 @@ async def _archive_case_text_buttons(db, *, user_id: int, case):
     return "\n".join(lines), _archive_case_buttons(int(case.id), has_result=has_result)
 
 
-async def _show_archive_selector_callback(callback: CallbackQuery, db) -> None:
-    _ctx, _user, cases = await _completed_cases(callback, db)
-    text, buttons = _archive_selector(cases)
+async def _show_archive_selector_callback(
+    callback: CallbackQuery,
+    db,
+    *,
+    requested_page: int = 0,
+) -> None:
+    _ctx, _user, cases, total, page, total_pages = await _completed_case_page(
+        callback,
+        db,
+        requested_page,
+    )
+    text, buttons = _archive_selector(
+        cases,
+        total=total,
+        page=page,
+        total_pages=total_pages,
+    )
     await callback.message.edit_text(text, reply_markup=one(*buttons))
 
 
@@ -229,12 +296,24 @@ async def route_my_case_or_archive(callback: CallbackQuery, db):
         await my_case._render_case(callback, db)
         return
 
-    completed = await completed_cases_for_user(db, user_id=int(user.id))
-    if len(completed) > 1:
-        text, buttons = _archive_selector(completed)
+    total = await completed_case_count_for_user(db, user_id=int(user.id))
+    if total > 1:
+        cases = await completed_cases_for_user(
+            db,
+            user_id=int(user.id),
+            limit=_ARCHIVE_CASE_PAGE_SIZE,
+            offset=0,
+        )
+        text, buttons = _archive_selector(
+            cases,
+            total=total,
+            page=0,
+            total_pages=_page_count(total, _ARCHIVE_CASE_PAGE_SIZE),
+        )
         await callback.message.edit_text(text, reply_markup=one(*buttons))
         return
-    if len(completed) == 1:
+    if total == 1:
+        completed = await completed_cases_for_user(db, user_id=int(user.id), limit=1)
         text, buttons = await _archive_case_text_buttons(
             db,
             user_id=int(user.id),
@@ -259,14 +338,26 @@ async def route_reply_my_case_or_archive(message: Message, state: FSMContext, db
         await reply_menu_direct.direct_reply_my_case(message, state, db)
         return
 
-    completed = await completed_cases_for_user(db, user_id=int(user.id))
-    if len(completed) > 1:
+    total = await completed_case_count_for_user(db, user_id=int(user.id))
+    if total > 1:
         await state.clear()
-        text, buttons = _archive_selector(completed)
+        completed = await completed_cases_for_user(
+            db,
+            user_id=int(user.id),
+            limit=_ARCHIVE_CASE_PAGE_SIZE,
+            offset=0,
+        )
+        text, buttons = _archive_selector(
+            completed,
+            total=total,
+            page=0,
+            total_pages=_page_count(total, _ARCHIVE_CASE_PAGE_SIZE),
+        )
         await message.answer(text, reply_markup=one(*buttons))
         return
-    if len(completed) == 1:
+    if total == 1:
         await state.clear()
+        completed = await completed_cases_for_user(db, user_id=int(user.id), limit=1)
         text, buttons = await _archive_case_text_buttons(
             db,
             user_id=int(user.id),
@@ -277,9 +368,16 @@ async def route_reply_my_case_or_archive(message: Message, state: FSMContext, db
     await reply_menu_direct.direct_reply_my_case(message, state, db)
 
 
-@router.callback_query(lambda c: c.data == "my_case_archive_open")
+@router.callback_query(
+    lambda c: c.data == "my_case_archive_open"
+    or str(c.data or "").startswith("my_case_archive_page:v2:")
+)
 async def open_client_archive(callback: CallbackQuery, db):
-    await _show_archive_selector_callback(callback, db)
+    await _show_archive_selector_callback(
+        callback,
+        db,
+        requested_page=_archive_page_from_callback(callback.data),
+    )
 
 
 @router.callback_query(lambda c: str(c.data or "").startswith("my_case_archive:v2:"))
@@ -351,7 +449,7 @@ async def open_exact_archive_documents(callback: CallbackQuery, db):
     current = documents._active_documents(all_documents)
     previous = documents._archived_documents(all_documents)
     rows = [(item, False) for item in current] + [(item, True) for item in previous]
-    total_pages = max(1, (len(rows) + _ARCHIVE_DOCUMENT_PAGE_SIZE - 1) // _ARCHIVE_DOCUMENT_PAGE_SIZE)
+    total_pages = _page_count(len(rows), _ARCHIVE_DOCUMENT_PAGE_SIZE)
     page = min(requested_page, total_pages - 1)
     start = page * _ARCHIVE_DOCUMENT_PAGE_SIZE
     page_rows = rows[start : start + _ARCHIVE_DOCUMENT_PAGE_SIZE]
@@ -395,14 +493,29 @@ async def open_exact_archive_documents(callback: CallbackQuery, db):
     await callback.message.edit_text("\n".join(lines), reply_markup=one(*buttons))
 
 
+def _archive_payment_target(value: str) -> tuple[int, int]:
+    parts = value.split(":")
+    if len(parts) not in {3, 4} or parts[0] != "client_archive_payments" or parts[1] != "v2":
+        raise ValueError("invalid archive payment callback")
+    case_id = int(parts[2])
+    page = max(0, int(parts[3])) if len(parts) == 4 else 0
+    if case_id <= 0:
+        raise ValueError("invalid archive case id")
+    return case_id, page
+
+
 @router.callback_query(
     lambda c: str(c.data or "").startswith("client_archive_payments:v2:")
 )
 async def open_exact_archive_payments(callback: CallbackQuery, db):
     try:
-        case_id = int(str(callback.data).split(":", 2)[2])
+        case_id, requested_page = _archive_payment_target(str(callback.data))
     except (TypeError, ValueError):
-        case_id = 0
+        await callback.message.edit_text(
+            "Ссылка на архив оплат устарела. Ничего не изменено.",
+            reply_markup=one(("🗄 Архив обращений", "my_case_archive_open")),
+        )
+        return
     _ctx, _user, case = await _owned_completed_case(callback, db, case_id)
     if case is None:
         await callback.message.edit_text(
@@ -412,23 +525,36 @@ async def open_exact_archive_payments(callback: CallbackQuery, db):
         return
 
     rows = await PaymentService(db).list_case_payments(case_id)
+    total_pages = _page_count(len(rows), _ARCHIVE_PAYMENT_PAGE_SIZE)
+    page = min(requested_page, total_pages - 1)
+    start = page * _ARCHIVE_PAYMENT_PAGE_SIZE
+    page_rows = rows[start : start + _ARCHIVE_PAYMENT_PAGE_SIZE]
     text = (
         "💳 ОПЛАТЫ · АРХИВ\n"
         f"Обращение № {case.case_number}\n\n"
         "СЕЙЧАС\n"
-        "Дело завершено. Финансовые записи доступны только для просмотра.\n\n"
+        f"Дело завершено. Финансовые записи доступны только для просмотра. Всего записей: {len(rows)}.\n\n"
         "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
         "При необходимости откройте конкретную запись платежа; старые ссылки и тестовые подтверждения для закрытого дела не выполняют действий.\n\n"
         + (
             "Платежей по этому обращению нет."
-            if not rows
-            else "\n\n".join(payments.payment_summary_line(item) for item in rows)
+            if not page_rows
+            else "\n\n".join(payments.payment_summary_line(item) for item in page_rows)
         )
+        + (f"\n\nСтраница {page + 1} из {total_pages}." if total_pages > 1 else "")
     )
     buttons = [
         (payments.payment_action_label(item), f"pay_open:{int(item.id)}")
-        for item in rows
+        for item in page_rows
     ]
+    if page > 0:
+        buttons.append(
+            ("⬅️ Более новые", f"client_archive_payments:v2:{case_id}:{page - 1}")
+        )
+    if page + 1 < total_pages:
+        buttons.append(
+            ("Более ранние ➡️", f"client_archive_payments:v2:{case_id}:{page + 1}")
+        )
     buttons.extend(
         [
             ("🗄 Архив обращения", f"my_case_archive:v2:{case_id}"),
@@ -506,7 +632,7 @@ async def open_exact_archive_consultation_result(callback: CallbackQuery, db):
         "\n".join(lines),
         reply_markup=one(
             ("📄 Документы", f"client_archive_documents:v2:{case_id}:0"),
-            ("💳 Оплаты", f"client_archive_payments:v2:{case_id}"),
+            ("💳 Оплаты", f"client_archive_payments:v2:{case_id}:0"),
             ("💬 Переписка", f"message_history:v2:{case_id}:0"),
             ("🕘 История", f"case_history_open:v2:{case_id}"),
             ("🗄 Архив обращения", f"my_case_archive:v2:{case_id}"),
