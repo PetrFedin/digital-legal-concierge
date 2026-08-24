@@ -7,7 +7,11 @@ from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, Telegra
 from aiogram.types import BufferedInputFile, CallbackQuery
 from sqlalchemy import select
 
-from app.bot.case_callback_scope import bound_case_callback, callback_matches_action
+from app.bot.case_callback_scope import (
+    bound_case_callback,
+    callback_matches_action,
+    resolve_case_callback_scope,
+)
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.domain.cases.service_contract import (
@@ -55,13 +59,23 @@ async def _existing_initial_payment(db, case_id: int) -> Payment | None:
     ).scalars().first()
 
 
-async def _stale(callback: CallbackQuery, text: str) -> None:
+async def _stale(
+    callback: CallbackQuery,
+    text: str,
+    *,
+    case_id: int | None = None,
+) -> None:
+    message_callback = (
+        bound_case_callback("message_create", case_id)
+        if case_id is not None
+        else "message_create"
+    )
     await _show(
         callback,
         text,
         buttons=(
             ("📁 Моё дело", "my_case_open"),
-            ("✉️ Задать вопрос команде", "message_create"),
+            ("✉️ Задать вопрос команде", message_callback),
             ("🏠 Главная", "nav_home"),
         ),
     )
@@ -104,12 +118,22 @@ def _parse_contract_confirmation(data: str | None) -> tuple[int | None, int, int
     return None
 
 
-@router.callback_query(lambda c: c.data == "contract_open")
+@router.callback_query(lambda c: callback_matches_action(c.data, "contract_open"))
 async def open_service_contract(callback: CallbackQuery, db):
-    _ctx, _user, case = await _context(callback, db)
+    scope = await resolve_case_callback_scope(
+        callback,
+        db,
+        action="contract_open",
+        allow_legacy_message_case_context=True,
+    )
+    if scope is None:
+        return
+    case = scope.case
     if not case:
         await _stale(callback, "Активное дело не найдено. Откройте актуальную карточку.")
         return
+    case_id = int(case.id)
+    case_number = str(case.case_number)
     if str(case.status) not in {
         CaseStatus.M1_CONTRACT_READY.value,
         CaseStatus.M1_WAITING_PAYMENT_30000.value,
@@ -117,11 +141,10 @@ async def open_service_contract(callback: CallbackQuery, db):
         await _stale(
             callback,
             "Договорный этап уже изменился. Старая кнопка ничего не меняет — откройте актуальное дело.",
+            case_id=case_id,
         )
         return
 
-    case_id = int(case.id)
-    case_number = str(case.case_number)
     document = await current_service_contract(db, case_id=case_id)
     if document is None:
         await _show(
@@ -172,7 +195,10 @@ async def open_service_contract(callback: CallbackQuery, db):
             "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
             "Повторите выдачу позже или напишите команде.",
             buttons=(
-                ("🔄 Повторить открытие", "contract_open"),
+                (
+                    "🔄 Повторить открытие",
+                    bound_case_callback("contract_open", case_id),
+                ),
                 (
                     "✉️ Задать вопрос команде",
                     bound_case_callback("message_create", case_id),
@@ -239,16 +265,33 @@ async def legacy_contract_confirmation(callback: CallbackQuery, db):
     deliberately consumes both forms before the legacy M1 mutator mounted later.
     """
 
-    _ctx, _user, case = await _context(callback, db)
+    scope = await resolve_case_callback_scope(
+        callback,
+        db,
+        action="contract_sign",
+        allow_legacy_message_case_context=True,
+    )
+    if scope is None:
+        return
+    case = scope.case
     if not case:
         await _stale(callback, "Активное дело не найдено. Старая кнопка не выполнила действие.")
         return
+    case_id = int(case.id)
+    case_number = str(case.case_number)
     await _show(
         callback,
-        "Перед подтверждением нужно открыть текущую версию договора. "
-        "Старая кнопка без идентификатора документа и номера версии не может подтвердить договор или создать платёж.",
+        "📝 СТАРАЯ КНОПКА ДОГОВОРА\n"
+        f"Обращение № {case_number}\n\n"
+        "СЕЙЧАС\n"
+        "Подтверждение не выполнено: эта кнопка не содержит идентификатор конкретного файла и версии.\n\n"
+        "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+        "Откройте актуальный договор, проверьте редакцию и подтвердите её с нового экрана.",
         buttons=(
-            ("📝 Открыть актуальный договор", "contract_open"),
+            (
+                "📝 Открыть актуальный договор",
+                bound_case_callback("contract_open", case_id),
+            ),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         ),
@@ -289,6 +332,7 @@ async def confirm_exact_service_contract(callback: CallbackQuery, db):
             await _stale(
                 callback,
                 "Договор уже подтверждён, но платёж не найден. Повторное подтверждение заблокировано — напишите команде.",
+                case_id=case_id,
             )
             return
         await _show_payment_result(
@@ -302,6 +346,7 @@ async def confirm_exact_service_contract(callback: CallbackQuery, db):
         await _stale(
             callback,
             "Этап договора уже изменился. Старая версия не подтверждалась и дело не изменено.",
+            case_id=case_id,
         )
         return
 
@@ -316,7 +361,10 @@ async def confirm_exact_service_contract(callback: CallbackQuery, db):
             "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
             "Откройте новую редакцию и проверьте её перед подтверждением.",
             buttons=(
-                ("📝 Открыть новую версию", "contract_open"),
+                (
+                    "📝 Открыть новую версию",
+                    bound_case_callback("contract_open", case_id),
+                ),
                 (
                     "✉️ Задать вопрос команде",
                     bound_case_callback("message_create", case_id),
@@ -341,7 +389,10 @@ async def confirm_exact_service_contract(callback: CallbackQuery, db):
             callback,
             f"Подтверждение не сохранено: {error}",
             buttons=(
-                ("📝 Открыть актуальный договор", "contract_open"),
+                (
+                    "📝 Открыть актуальный договор",
+                    bound_case_callback("contract_open", case_id),
+                ),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
@@ -353,6 +404,7 @@ async def confirm_exact_service_contract(callback: CallbackQuery, db):
         await _stale(
             callback,
             "Подтверждение временно не сохранено. Дело и платёж не изменены; повторите после обновления.",
+            case_id=case_id,
         )
         return
 
