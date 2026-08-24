@@ -193,9 +193,12 @@ def _history_buttons(
             ("⬆️ К последним событиям", f"case_history_open:v2:{case_id}")
         )
     if completed:
+        # The archive may be inspected while another active Case is selected.
+        # Returning through a raw my_case_open would silently jump contexts.
         buttons.extend(
             [
-                ("📁 Итог дела", "my_case_open"),
+                ("🗄 Архив обращения", f"my_case_archive:v2:{case_id}"),
+                ("📁 Активное дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ]
         )
@@ -321,7 +324,8 @@ async def _render_history(
         if completed:
             error_buttons.extend(
                 [
-                    ("📁 Итог дела", "my_case_open"),
+                    ("🗄 Архив обращения", f"my_case_archive:v2:{case_id}"),
+                    ("📁 Активное дело", "my_case_open"),
                     ("🏠 Главная", "nav_home"),
                 ]
             )
