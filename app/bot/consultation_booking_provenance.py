@@ -6,7 +6,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, Telegra
 from aiogram.types import CallbackQuery
 from sqlalchemy import select
 
-from app.bot.case_callback_scope import resolve_case_callback_scope
+from app.bot.case_callback_scope import callback_matches_action
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.domain.statuses.case_statuses import CaseStatus
@@ -15,10 +15,10 @@ from app.models.consultation import Consultation
 
 logger = logging.getLogger(__name__)
 
-_BOOKING_ENTRY_CALLBACKS = {
+_BOOKING_ENTRY_CALLBACKS = (
     "consult_booking_start",
     "consult_slot_open",
-}
+)
 _BOUND_OTHER_FLOWS = (
     "consult_reschedule",
     "consult_cancel",
@@ -32,9 +32,16 @@ _PRIMARY_BOOKING_TOKENS = ("slot", "day", "time")
 _ADDITIONAL_BOOKING_TOKENS = ("date", "calendar", "book")
 
 
+def _booking_entry_action(value: str | None) -> str | None:
+    for action in _BOOKING_ENTRY_CALLBACKS:
+        if callback_matches_action(value, action):
+            return action
+    return None
+
+
 def _looks_like_initial_booking_callback(value: str) -> bool:
     data = str(value or "")
-    if not data or data in _BOOKING_ENTRY_CALLBACKS:
+    if not data or _booking_entry_action(data) is not None:
         return False
     if data.startswith(_BOUND_OTHER_FLOWS):
         return False
@@ -91,8 +98,8 @@ async def _recover(event: CallbackQuery, state, text: str) -> None:
         except Exception:
             logger.warning("Не удалось очистить provenance выбора консультации")
     markup = one(
+        ("📁 Выбрать обращение", "my_cases_open"),
         ("📅 Открыть актуальный выбор времени", "consult_booking_start"),
-        ("📁 Моё дело", "my_case_open"),
         ("✉️ Написать команде", "message_create"),
         ("🏠 Главная", "nav_home"),
     )
@@ -113,19 +120,17 @@ async def _recover(event: CallbackQuery, state, text: str) -> None:
 
 
 class ConsultationBookingProvenanceMiddleware:
-    """Keep historical raw calendar keyboards from acting on a newer M2 case.
+    """Keep historical calendar keyboards bound to the exact M2 matter.
 
     Initial date/time callbacks historically contain no case id, so every live
     calendar is bound to the exact case, consultation and Telegram message that
-    rendered it. The snapshot is retired only after the business state proves
-    that slot selection actually succeeded; a failed slot race can therefore
-    render a fresh calendar without making that recovery screen unusable.
+    rendered it. New entry buttons may additionally carry ``:v2:<case_id>``;
+    this middleware recognizes both forms and records the resulting calendar
+    provenance after the canonical entry handler has verified Case scope.
 
-    Entry buttons are navigation-only, but in a multi-Case cabinet a stale raw
-    entry from Case A must not silently open the calendar for selected Case B.
-    With several active matters, raw entry is accepted only when the trusted
-    bot-rendered message visibly names the currently selected Case. Otherwise
-    the existing case-scope recovery forces explicit Case selection first.
+    The snapshot is retired only after business state proves slot selection
+    succeeded. A failed slot race can therefore render a fresh calendar without
+    making that recovery screen unusable.
     """
 
     async def __call__(self, handler, event, data):
@@ -135,28 +140,9 @@ class ConsultationBookingProvenanceMiddleware:
         value = str(event.data or "")
         state = data.get("state")
         db = data.get("db")
+        entry_action = _booking_entry_action(value)
 
-        if value in _BOOKING_ENTRY_CALLBACKS:
-            if db is not None:
-                try:
-                    scope = await resolve_case_callback_scope(
-                        event,
-                        db,
-                        action=value,
-                        allow_legacy_message_case_context=True,
-                    )
-                except Exception:
-                    logger.exception("Не удалось проверить Case-контекст входа в выбор времени")
-                    await db.rollback()
-                    await _recover(
-                        event,
-                        state,
-                        "Не удалось безопасно определить обращение для этого экрана. Время не выбиралось. Откройте нужное дело и запустите выбор времени заново.",
-                    )
-                    return None
-                if scope is None:
-                    return None
-
+        if entry_action is not None:
             result = await handler(event, data)
             if db is None or state is None:
                 return result
@@ -214,7 +200,7 @@ class ConsultationBookingProvenanceMiddleware:
             await _recover(
                 event,
                 state,
-                "ℹ️ Этот календарь относится к более раннему экрану или другому обращению. Старый слот не бронировался. Откройте актуальный выбор времени.",
+                "ℹ️ Этот календарь относится к более раннему экрану или другому обращению. Старый слот не бронировался. Выберите нужное обращение и откройте актуальное время.",
             )
             return None
 
