@@ -12,9 +12,11 @@ def test_staff_guard_injects_one_configured_business_timezone_formatter():
 
     assert "settings.business_timezone" in source
     assert "settings.business_timezone_label" in source
-    assert "Intl.DateTimeFormat('ru-RU'" in source
+    assert "_RAW_BROWSER_DT_RENDERERS" in source
+    assert "new Date(v).toLocaleString('ru-RU')" in source
+    assert "new Intl.DateTimeFormat('ru-RU',{dateStyle:'short',timeStyle:'short'})" in source
     assert "timeZone:businessTimeZone" in source
-    assert "browser-local dt renderer not found" in source
+    assert "expected exactly one browser-local dt renderer" in source
 
 
 def test_document_review_and_sla_use_guard_timezone_patch_but_payment_keeps_own_owner():
