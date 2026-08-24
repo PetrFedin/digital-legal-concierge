@@ -26,6 +26,25 @@ def _completed_ordering():
     )
 
 
+async def completed_cases_for_user(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    limit: int = 30,
+) -> list[Case]:
+    """Return the client's completed M1/M2 matters for explicit read-only archive navigation."""
+
+    bounded_limit = min(max(int(limit), 1), 100)
+    result = await db.execute(
+        select(Case)
+        .where(Case.client_id == int(user_id))
+        .where(Case.status.in_(CLIENT_COMPLETED_CASE_STATUSES))
+        .order_by(*_completed_ordering())
+        .limit(bounded_limit)
+    )
+    return list(result.scalars().all())
+
+
 async def latest_completed_case_for_user(
     db: AsyncSession,
     *,
@@ -33,14 +52,8 @@ async def latest_completed_case_for_user(
 ) -> Case | None:
     """Return the latest completed case for client read-only archive screens."""
 
-    result = await db.execute(
-        select(Case)
-        .where(Case.client_id == user_id)
-        .where(Case.status.in_(CLIENT_COMPLETED_CASE_STATUSES))
-        .order_by(*_completed_ordering())
-        .limit(1)
-    )
-    return result.scalars().first()
+    items = await completed_cases_for_user(db, user_id=user_id, limit=1)
+    return items[0] if items else None
 
 
 async def unambiguous_active_case_for_user(
@@ -175,6 +188,7 @@ __all__ = [
     "CLIENT_COMPLETED_CASE_STATUSES",
     "active_or_latest_completed_case_for_user",
     "active_or_latest_completed_m1_case_for_user",
+    "completed_cases_for_user",
     "latest_completed_case_for_user",
     "latest_completed_m1_case_for_user",
     "latest_completed_strict_m1_case_for_user",
