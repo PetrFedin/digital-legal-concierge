@@ -6,6 +6,7 @@ from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramServerError
 from aiogram.types import CallbackQuery
 
+from app.bot.case_callback_scope import bound_case_callback
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.domain.cases.m1_rejection_decision_service import (
@@ -107,6 +108,11 @@ async def guarded_rejected_m1_to_m2(callback: CallbackQuery, db):
             raise ActiveCaseRouteConflict(
                 "Активное обращение изменилось во время перехода к консультации"
             )
+
+        # Snapshot every presentation value before the transaction boundary.
+        converted_case_id = int(result.case.id)
+        converted_case_number = str(result.case.case_number)
+        description_ready = bool(str(consultation.client_description or "").strip())
         await db.commit()
     except LookupError:
         await _stale(
@@ -141,22 +147,37 @@ async def guarded_rejected_m1_to_m2(callback: CallbackQuery, db):
         )
         return
 
-    description_ready = bool(str(consultation.client_description or "").strip())
     primary = (
-        ("📅 Продолжить: выбрать время", "consult_booking_start")
+        (
+            "📅 Продолжить: выбрать время",
+            bound_case_callback("consult_booking_start", converted_case_id),
+        )
         if description_ready
-        else ("📝 Описать вопрос", "consult_subject_start")
+        else (
+            "📝 Описать вопрос",
+            bound_case_callback("consult_subject_start", converted_case_id),
+        )
     )
     await _safe_edit(
         callback,
-        "✅ Обращение переведено в консультацию.\n\n"
-        "Документы и история остались в том же деле. Отдельное дублирующее обращение не создано.\n\n"
+        "✅ МАРШРУТ ОБНОВЛЁН\n"
+        f"Обращение № {converted_case_number}\n"
+        "Услуга: личная консультация\n\n"
+        "СЕЙЧАС\n"
+        "Обращение переведено из M1 в консультационный маршрут. Документы и история остались в этом же обращении; дубликат не создан.\n\n"
         "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
-        "Продолжите консультацию с сохранёнными данными.",
+        + (
+            "Выберите актуальные дату и время консультации."
+            if description_ready
+            else "Опишите вопрос для консультации."
+        ),
         reply_markup=one(
             primary,
             ("📄 Документы", "documents_open"),
-            ("✉️ Написать команде", "message_create"),
+            (
+                "✉️ Написать команде",
+                bound_case_callback("message_create", converted_case_id),
+            ),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         ),
@@ -187,6 +208,7 @@ async def guarded_rejected_m1_close(callback: CallbackQuery, db):
                 "Статус именно этого дела уже изменился. Повторное закрытие не выполнялось.",
             )
             return
+        closed_case_number = str(result.case.case_number)
         await db.commit()
     except LookupError:
         await _stale(
@@ -223,8 +245,12 @@ async def guarded_rejected_m1_close(callback: CallbackQuery, db):
 
     await _safe_edit(
         callback,
-        "✅ Обращение завершено.\n\n"
-        "Оно больше не считается активным. Документы, переписка и история сохранены для просмотра. Новое обращение можно начать отдельно.",
+        "✅ ОБРАЩЕНИЕ ЗАВЕРШЕНО\n"
+        f"Обращение № {closed_case_number}\n\n"
+        "СЕЙЧАС\n"
+        "Обращение больше не считается активным. Документы, переписка и история сохранены в режиме просмотра.\n\n"
+        "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+        "Действий по закрытому обращению не требуется. Новое обращение создаётся отдельно.",
         reply_markup=one(
             ("📁 Открыть архив обращения", "my_case_open"),
             ("🧮 Новое обращение", "calc_start"),
