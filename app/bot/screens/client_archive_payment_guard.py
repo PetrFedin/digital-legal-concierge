@@ -56,17 +56,20 @@ def _archive_payment_text(payment, *, case_number: str) -> str:
     return "\n".join(lines)
 
 
-async def _owned_payment(callback: CallbackQuery, db):
+async def _render_if_completed(callback: CallbackQuery, db) -> bool:
+    """Return True when this early guard has fully handled the callback.
+
+    A syntactically broken id is delegated to the canonical guard so it keeps
+    the existing validation wording. A valid id that is missing/foreign is
+    already answered by get_owned_payment and must not be processed twice.
+    """
+
     payment_id = _payment_id(callback.data)
     if payment_id is None:
-        return None, None
-    return await payments.get_owned_payment(callback, db, payment_id)
-
-
-async def _render_if_completed(callback: CallbackQuery, db) -> bool:
-    payment, case = await _owned_payment(callback, db)
-    if payment is None or case is None:
         return False
+    payment, case = await payments.get_owned_payment(callback, db, payment_id)
+    if payment is None or case is None:
+        return True
     if str(case.status) not in _COMPLETED_VALUES:
         return False
 
