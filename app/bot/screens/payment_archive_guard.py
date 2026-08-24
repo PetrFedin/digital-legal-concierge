@@ -5,6 +5,7 @@ import logging
 from aiogram import Router
 from aiogram.types import CallbackQuery
 
+from app.bot.case_callback_scope import bound_case_callback, resolve_case_callback_scope
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.screens import payments as payment_screen
@@ -112,6 +113,7 @@ def _m1_payment_matches_current_stage(payment, case) -> bool:
 
 def _m2_stale_link_keyboard(case):
     items = []
+    case_id = int(case.id)
     if str(case.status) == CaseStatus.M2_CONSULTATION_BOOKED.value:
         items.append(("👨‍⚖ Текущая запись", "consultation_booked_open"))
     elif str(case.status) in {
@@ -119,7 +121,12 @@ def _m2_stale_link_keyboard(case):
         CaseStatus.M2_DOCUMENTS_OPTIONAL.value,
         CaseStatus.M2_DESCRIPTION_PENDING.value,
     }:
-        items.append(("📅 Выбрать актуальное время", "consult_booking_start"))
+        items.append(
+            (
+                "📅 Выбрать актуальное время",
+                bound_case_callback("consult_booking_start", case_id),
+            )
+        )
     items.extend(
         [
             ("📁 Обновить Моё дело", "my_case_open"),
@@ -188,17 +195,59 @@ async def _reconcile_m2_payment_view(callback: CallbackQuery, db, payment, case)
     return None, None, False
 
 
-async def _render_hold_lost(callback: CallbackQuery, error: Exception) -> None:
+async def _render_hold_lost(
+    callback: CallbackQuery,
+    error: Exception,
+    *,
+    case_id: int,
+    case_number: str,
+) -> None:
     await callback.message.edit_text(
         f"⏳ {error}\n\n"
+        f"Обращение № {case_number}\n\n"
         "Старая ссылка не открыта. Вопрос и документы сохранены — выберите новое свободное время.",
         reply_markup=one(
-            ("📅 Выбрать дату и время", "consult_booking_start"),
+            (
+                "📅 Выбрать дату и время",
+                bound_case_callback("consult_booking_start", case_id),
+            ),
             ("📁 Моё дело", "my_case_open"),
             ("✉️ Написать команде", "message_create"),
             ("🏠 Главная", "nav_home"),
         ),
     )
+
+
+async def _require_selected_active_payment_case(callback: CallbackQuery, db, case) -> bool:
+    """Prevent an old exact payment button from acting on a non-selected live Case.
+
+    Archived/completed payment views are read-only and may be opened directly.
+    Any action that can reconcile a live payment, create a provider URL or run a
+    fake local confirmation must still match the client's current selected Case.
+    """
+
+    if _case_is_completed(case):
+        return True
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    selected = await ctx.case_service.get_active_case_for_user(int(user.id))
+    if selected is not None and int(selected.id) == int(case.id):
+        return True
+
+    case_number = str(case.case_number)
+    await db.rollback()
+    await callback.message.edit_text(
+        "Эта платёжная кнопка относится к другому активному обращению. "
+        "Ссылка не открыта, платёж не сверялся и финансовый статус не изменён.\n\n"
+        f"Обращение из старого сообщения: № {case_number}\n\n"
+        "Сначала выберите нужное обращение и откройте его актуальный раздел «Оплаты».",
+        reply_markup=one(
+            ("📁 Выбрать обращение", "my_cases_open"),
+            ("💳 Оплаты выбранного дела", "payments_open"),
+            ("🏠 Главная", "nav_home"),
+        ),
+    )
+    return False
 
 
 @router.callback_query(lambda c: c.data == "payments_open")
@@ -219,6 +268,7 @@ async def guard_active_m2_payment_list(callback: CallbackQuery, db):
         return
 
     case_id = int(case.id)
+    case_number = str(case.case_number)
     service = PaymentService(db)
     payments = await service.list_case_payments(case_id)
     active_links = [
@@ -254,7 +304,12 @@ async def guard_active_m2_payment_list(callback: CallbackQuery, db):
         # Persist that cleanup instead of rolling the client back into the same
         # dead hold.
         await db.commit()
-        await _render_hold_lost(callback, error)
+        await _render_hold_lost(
+            callback,
+            error,
+            case_id=case_id,
+            case_number=case_number,
+        )
         return
     except ConsultationDescriptionRequired as error:
         await db.rollback()
@@ -287,7 +342,16 @@ async def guard_active_m2_payment_list(callback: CallbackQuery, db):
 
 @router.callback_query(lambda c: c.data == "consult_pay")
 async def legacy_consult_pay_is_navigation(callback: CallbackQuery, db):
-    """Historical unbound pay buttons never create a provider operation online."""
+    """Historical unbound pay buttons never select whichever Case is current now."""
+
+    scope = await resolve_case_callback_scope(
+        callback,
+        db,
+        action="consult_pay",
+        allow_legacy_message_case_context=True,
+    )
+    if scope is None:
+        return
 
     if payments_disabled():
         # In no-payment mode this callback is not financial: the canonical
@@ -295,9 +359,7 @@ async def legacy_consult_pay_is_navigation(callback: CallbackQuery, db):
         await payment_screen.consult_pay(callback, db)
         return
 
-    ctx = BotContextService(db)
-    user = await ctx.get_user_from_callback(callback)
-    case = await ctx.case_service.get_active_case_for_user(user.id)
+    case = scope.case
     if case is not None and str(case.route or "").upper() != RouteCode.M2.value:
         await db.rollback()
         await callback.message.edit_text(
@@ -311,9 +373,10 @@ async def legacy_consult_pay_is_navigation(callback: CallbackQuery, db):
         )
         return
 
-    # Use the current Payments entry point. It reconciles the reservation and
-    # creates only the internal exact obligation; the provider link is opened
-    # later by a concrete pay_open:<payment_id> callback.
+    # Use the current Payments entry point only after the legacy button has been
+    # proven to belong to the selected Case. The Payments entry reconciles the
+    # reservation and creates only the internal exact obligation; the provider
+    # link is opened later by a concrete pay_open:<payment_id> callback.
     await guard_active_m2_payment_list(callback, db)
 
 
@@ -328,6 +391,8 @@ async def guard_archived_payment_open(callback: CallbackQuery, db):
 
     payment, case = await payment_screen.get_owned_payment(callback, db, payment_id)
     if not payment or not case:
+        return
+    if not await _require_selected_active_payment_case(callback, db, case):
         return
     if _case_is_completed(case):
         await callback.message.edit_text(
@@ -348,14 +413,17 @@ async def guard_archived_payment_open(callback: CallbackQuery, db):
         str(payment.payment_code) == PaymentCode.M2_CONSULTATION_PAYMENT.value
         and str(payment.status) == PaymentStatus.EXPIRED.value
     ):
+        case_number = str(case.case_number)
         if str(case.status) == CaseStatus.M2_CONSULTATION_BOOKED.value:
             text = (
                 "⏳ Эта старая ссылка оплаты больше не действует.\n\n"
+                f"Обращение № {case_number}\n\n"
                 "✅ Текущая подтверждённая консультация сохранена. Старый платёж не меняет её дату, слот или статус."
             )
         else:
             text = (
                 "⏳ Эта ссылка оплаты больше не соответствует текущему резерву консультации.\n\n"
+                f"Обращение № {case_number}\n\n"
                 "Переход к провайдеру скрыт. Вопрос и документы сохранены; откройте актуальное дело и продолжите с текущего шага."
             )
         await callback.message.edit_text(
@@ -477,6 +545,8 @@ async def guard_archived_fake_success(callback: CallbackQuery, db):
 
     payment, case = await payment_screen.get_owned_payment(callback, db, payment_id)
     if not payment or not case:
+        return
+    if not await _require_selected_active_payment_case(callback, db, case):
         return
     if not _case_is_completed(case):
         payment, case, _changed = await _reconcile_m2_payment_view(
