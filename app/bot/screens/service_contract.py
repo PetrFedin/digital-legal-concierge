@@ -7,6 +7,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, Telegra
 from aiogram.types import BufferedInputFile, CallbackQuery
 from sqlalchemy import select
 
+from app.bot.case_callback_scope import bound_case_callback
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.domain.cases.service_contract import (
@@ -66,6 +67,43 @@ async def _stale(callback: CallbackQuery, text: str) -> None:
     )
 
 
+def _contract_confirm_callback(case_id: int, document_id: int, version: int) -> str:
+    return f"contract_confirm:v2:{int(case_id)}:{int(document_id)}:{int(version)}"
+
+
+def _parse_contract_confirmation(data: str | None) -> tuple[int | None, int, int] | None:
+    """Return (expected_case_id, document_id, version).
+
+    Historical callbacks encoded only document id + version. They remain
+    read-compatible and still fail if that exact document is not current for the
+    selected Case. Fresh screens carry Case id as well, so they can never be
+    reinterpreted after the client switches cabinet context.
+    """
+
+    value = str(data or "")
+    try:
+        if value.startswith("contract_confirm:v2:"):
+            parts = value.split(":")
+            if len(parts) != 5:
+                return None
+            case_id = int(parts[2])
+            document_id = int(parts[3])
+            version = int(parts[4])
+            if case_id <= 0 or document_id <= 0 or version <= 0:
+                return None
+            return case_id, document_id, version
+        if value.startswith("contract_confirm:"):
+            _, document_id_raw, version_raw = value.split(":", 2)
+            document_id = int(document_id_raw)
+            version = int(version_raw)
+            if document_id <= 0 or version <= 0:
+                return None
+            return None, document_id, version
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
 @router.callback_query(lambda c: c.data == "contract_open")
 async def open_service_contract(callback: CallbackQuery, db):
     _ctx, _user, case = await _context(callback, db)
@@ -82,16 +120,23 @@ async def open_service_contract(callback: CallbackQuery, db):
         )
         return
 
-    document = await current_service_contract(db, case_id=case.id)
+    case_id = int(case.id)
+    case_number = str(case.case_number)
+    document = await current_service_contract(db, case_id=case_id)
     if document is None:
         await _show(
             callback,
-            "📝 Договор готовится\n\n"
-            "Юрист уже принял дело, но проверенная версия договора ещё не опубликована. "
-            "Подтверждение и первый платёж заблокированы до появления конкретного файла.\n\n"
-            "Когда договор будет опубликован, бот сообщит об этом. Если срок затягивается — напишите команде.",
+            "📝 ДОГОВОР ГОТОВИТСЯ\n"
+            f"Обращение № {case_number}\n\n"
+            "СЕЙЧАС\n"
+            "Юрист уже принял дело, но проверенная версия договора ещё не опубликована. Подтверждение и первый платёж заблокированы до появления конкретного файла.\n\n"
+            "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+            "Дождитесь публикации договора. Если срок затягивается — напишите команде.",
             buttons=(
-                ("✉️ Задать вопрос команде", "message_create"),
+                (
+                    "✉️ Задать вопрос команде",
+                    bound_case_callback("message_create", case_id),
+                ),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
@@ -111,6 +156,7 @@ async def open_service_contract(callback: CallbackQuery, db):
             BufferedInputFile(payload, filename=document.file_name),
             caption=(
                 f"📝 {document.title}\n"
+                f"Обращение № {case_number}\n"
                 f"Версия: {int(document.version or 1)}\n"
                 f"Контроль: {str(document.sha256 or '')[:12]}…"
             ),
@@ -119,11 +165,18 @@ async def open_service_contract(callback: CallbackQuery, db):
         logger.exception("Не удалось выдать клиенту защищённую версию договора")
         await _show(
             callback,
-            "⚠️ Договор опубликован, но файл сейчас не удалось безопасно открыть. "
-            "Подтверждение заблокировано — повторите выдачу позже или напишите команде.",
+            "⚠️ ДОГОВОР ВРЕМЕННО НЕДОСТУПЕН\n"
+            f"Обращение № {case_number}\n\n"
+            "СЕЙЧАС\n"
+            "Договор опубликован, но файл сейчас не удалось безопасно открыть. Подтверждение заблокировано.\n\n"
+            "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+            "Повторите выдачу позже или напишите команде.",
             buttons=(
                 ("🔄 Повторить открытие", "contract_open"),
-                ("✉️ Задать вопрос команде", "message_create"),
+                (
+                    "✉️ Задать вопрос команде",
+                    bound_case_callback("message_create", case_id),
+                ),
                 ("📁 Моё дело", "my_case_open"),
             ),
         )
@@ -132,10 +185,17 @@ async def open_service_contract(callback: CallbackQuery, db):
     if str(case.status) == CaseStatus.M1_WAITING_PAYMENT_30000.value:
         await _show(
             callback,
-            "✅ Эта версия договора уже подтверждена.\n\n"
-            "Повторное подтверждение не требуется. Следующий шаг — первый платёж.",
+            "✅ ДОГОВОР ПОДТВЕРЖДЁН\n"
+            f"Обращение № {case_number}\n\n"
+            "СЕЙЧАС\n"
+            "Эта версия договора уже подтверждена; повторное подтверждение не требуется.\n\n"
+            "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+            "Перейдите к первому платежу.",
             buttons=(
-                ("💳 Перейти к оплате", "pay_start_30000"),
+                (
+                    "💳 Перейти к оплате",
+                    bound_case_callback("pay_start_30000", case_id),
+                ),
                 ("💳 Все оплаты", "payments_open"),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
@@ -143,20 +203,27 @@ async def open_service_contract(callback: CallbackQuery, db):
         )
         return
 
+    document_id = int(document.id)
+    version = int(document.version or 1)
+    file_name = str(document.file_name)
     await _show(
         callback,
-        "📝 Договор открыт\n\n"
-        f"Вы получили версию {int(document.version or 1)} файла «{document.file_name}». "
-        "Проверьте реквизиты, объём услуг, стоимость и условия.\n\n"
-        "Кнопка подтверждения будет привязана именно к этой версии. Если команда опубликует новую редакцию, "
-        "старая кнопка перестанет работать. Подтверждение в Telegram фиксируется в истории, но не заявляется "
-        "как квалифицированная электронная подпись.",
+        "📝 ДОГОВОР ОТКРЫТ\n"
+        f"Обращение № {case_number}\n\n"
+        "СЕЙЧАС\n"
+        f"Вы получили версию {version} файла «{file_name}». Проверьте реквизиты, объём услуг, стоимость и условия.\n\n"
+        "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+        "Подтвердите именно эту редакцию после проверки. Если команда опубликует новую версию, старая кнопка перестанет работать.\n\n"
+        "Подтверждение в Telegram фиксируется в истории, но не заявляется как квалифицированная электронная подпись.",
         buttons=(
             (
                 "✅ Подтвердить эту версию",
-                f"contract_confirm:{int(document.id)}:{int(document.version or 1)}",
+                _contract_confirm_callback(case_id, document_id, version),
             ),
-            ("✉️ Задать вопрос команде", "message_create"),
+            (
+                "✉️ Задать вопрос команде",
+                bound_case_callback("message_create", case_id),
+            ),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         ),
@@ -185,27 +252,46 @@ async def legacy_contract_confirmation(callback: CallbackQuery, db):
 
 @router.callback_query(lambda c: str(c.data or "").startswith("contract_confirm:"))
 async def confirm_exact_service_contract(callback: CallbackQuery, db):
+    parsed = _parse_contract_confirmation(callback.data)
+    if parsed is None:
+        await _stale(callback, "Кнопка договора повреждена. Откройте актуальную версию заново.")
+        return
+    expected_case_id, document_id, version = parsed
+
     _ctx, user, case = await _context(callback, db)
     if not case:
         await _stale(callback, "Активное дело не найдено. Подтверждение не выполнено.")
         return
-    try:
-        _, document_id_raw, version_raw = str(callback.data).split(":", 2)
-        document_id = int(document_id_raw)
-        version = int(version_raw)
-    except (TypeError, ValueError):
-        await _stale(callback, "Кнопка договора повреждена. Откройте актуальную версию заново.")
+
+    case_id = int(case.id)
+    case_number = str(case.case_number)
+    if expected_case_id is not None and expected_case_id != case_id:
+        await db.rollback()
+        await _show(
+            callback,
+            "Эта кнопка договора относится к другому обращению. Подтверждение и платёж не выполнены.",
+            buttons=(
+                ("📁 Выбрать обращение", "my_cases_open"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
         return
 
     if str(case.status) == CaseStatus.M1_WAITING_PAYMENT_30000.value:
-        payment = await _existing_initial_payment(db, case.id)
+        payment = await _existing_initial_payment(db, case_id)
         if payment is None:
             await _stale(
                 callback,
                 "Договор уже подтверждён, но платёж не найден. Повторное подтверждение заблокировано — напишите команде.",
             )
             return
-        await _show_payment_result(callback, payment)
+        await _show_payment_result(
+            callback,
+            payment,
+            case_id=case_id,
+            case_number=case_number,
+        )
         return
     if str(case.status) != CaseStatus.M1_CONTRACT_READY.value:
         await _stale(
@@ -214,15 +300,22 @@ async def confirm_exact_service_contract(callback: CallbackQuery, db):
         )
         return
 
-    current = await current_service_contract(db, case_id=case.id)
+    current = await current_service_contract(db, case_id=case_id)
     if current is None or int(current.id) != document_id or int(current.version or 1) != version:
         await _show(
             callback,
-            "⚠️ Версия договора изменилась после открытия.\n\n"
-            "Никакой платёж не создан. Откройте новую редакцию и проверьте её перед подтверждением.",
+            "⚠️ ВЕРСИЯ ДОГОВОРА ИЗМЕНИЛАСЬ\n"
+            f"Обращение № {case_number}\n\n"
+            "СЕЙЧАС\n"
+            "Открытая ранее версия больше не является актуальной. Никакой платёж не создан.\n\n"
+            "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+            "Откройте новую редакцию и проверьте её перед подтверждением.",
             buttons=(
                 ("📝 Открыть новую версию", "contract_open"),
-                ("✉️ Задать вопрос команде", "message_create"),
+                (
+                    "✉️ Задать вопрос команде",
+                    bound_case_callback("message_create", case_id),
+                ),
                 ("📁 Моё дело", "my_case_open"),
             ),
         )
@@ -235,8 +328,8 @@ async def confirm_exact_service_contract(callback: CallbackQuery, db):
             client_id=user.id,
             document=current,
         )
+        payment_amount = payment.amount
         await db.commit()
-        await db.refresh(payment)
     except ValueError as error:
         await db.rollback()
         await _show(
@@ -258,35 +351,66 @@ async def confirm_exact_service_contract(callback: CallbackQuery, db):
         )
         return
 
-    await _show_payment_result(callback, payment)
+    # Do not carry ORM objects across the transaction boundary just for UI.
+    await _show_payment_result(
+        callback,
+        None,
+        case_id=case_id,
+        case_number=case_number,
+        payment_amount=payment_amount,
+    )
 
 
-async def _show_payment_result(callback: CallbackQuery, payment: Payment) -> None:
+async def _show_payment_result(
+    callback: CallbackQuery,
+    payment: Payment | None,
+    *,
+    case_id: int,
+    case_number: str,
+    payment_amount=None,
+) -> None:
     from app.bot.screens.payments import money
 
+    amount = payment_amount if payment_amount is not None else payment.amount
     if payments_disabled():
         await _show(
             callback,
-            "✅ Конкретная версия договора подтверждена и сохранена в истории.\n\n"
-            f"Первый платёж: {money(payment.amount)}. Онлайн-оплата отключена; этап продолжится "
-            "только после фактической проверки поступления командой.",
+            "✅ ДОГОВОР ПОДТВЕРЖДЁН\n"
+            f"Обращение № {case_number}\n\n"
+            "СЕЙЧАС\n"
+            "Конкретная версия договора сохранена в истории.\n\n"
+            "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+            f"Первый платёж: {money(amount)}. Онлайн-оплата отключена; этап продолжится только после фактической проверки поступления командой.",
             buttons=(
                 ("💳 Оплаты", "payments_open"),
                 ("📁 Моё дело", "my_case_open"),
-                ("✉️ Задать вопрос команде", "message_create"),
+                (
+                    "✉️ Задать вопрос команде",
+                    bound_case_callback("message_create", case_id),
+                ),
                 ("🏠 Главная", "nav_home"),
             ),
         )
         return
     await _show(
         callback,
-        "✅ Конкретная версия договора подтверждена и сохранена в истории.\n\n"
-        f"Следующий шаг — первый платёж {money(payment.amount)}.",
+        "✅ ДОГОВОР ПОДТВЕРЖДЁН\n"
+        f"Обращение № {case_number}\n\n"
+        "СЕЙЧАС\n"
+        "Конкретная версия договора сохранена в истории.\n\n"
+        "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+        f"Оплатите первый платёж {money(amount)}.",
         buttons=(
-            (f"💳 Оплатить {money(payment.amount)}", "pay_start_30000"),
+            (
+                f"💳 Оплатить {money(amount)}",
+                bound_case_callback("pay_start_30000", case_id),
+            ),
             ("💳 Все оплаты", "payments_open"),
             ("📁 Моё дело", "my_case_open"),
-            ("✉️ Задать вопрос команде", "message_create"),
+            (
+                "✉️ Задать вопрос команде",
+                bound_case_callback("message_create", case_id),
+            ),
             ("🏠 Главная", "nav_home"),
         ),
     )
