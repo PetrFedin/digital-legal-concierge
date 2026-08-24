@@ -30,6 +30,8 @@ def install_client_wording() -> None:
         consultation_intake as consultation_intake_screen,
         document_action_center,
         documents,
+        message_history_guard,
+        messages,
         my_case,
         payments,
         service_contract,
@@ -77,6 +79,137 @@ def install_client_wording() -> None:
         )
 
     calculator.result_kb = safe_calculator_result_keyboard
+
+    # The question flow is intentionally repetitive about Case identity. A
+    # Telegram user may return to a form hours later, after switching the cabinet
+    # elsewhere, so every step must answer: which Case, what is happening now,
+    # and what single action is expected next. Provenance middleware remains the
+    # write boundary; these functions are presentation only.
+    def message_context(data: dict[str, object]) -> str:
+        case_number = str(data.get("case_number") or "").strip()
+        return (
+            f"Обращение № {case_number}"
+            if case_number
+            else "Контекст: новое обращение (ещё не создано)"
+        )
+
+    def message_category_prompt(data: dict[str, object]) -> str:
+        return (
+            "✉️ НОВЫЙ ВОПРОС\n"
+            f"{message_context(data)}\n\n"
+            "СЕЙЧАС\n"
+            "Черновик ещё не отправлен. Для существующего дела он останется привязан именно к нему; "
+            "новое обращение появится только после финального подтверждения.\n\n"
+            "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+            "Выберите тему вопроса."
+        )
+
+    def message_urgency_prompt(data: dict[str, object]) -> str:
+        category = str(data.get("category") or "Не выбрана")
+        return (
+            "✉️ НОВЫЙ ВОПРОС\n"
+            f"{message_context(data)}\n"
+            f"Тема: {category}\n\n"
+            "СЕЙЧАС\n"
+            "Тема выбрана, вопрос ещё не отправлен.\n\n"
+            "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+            "Укажите, насколько срочно нужен ответ."
+        )
+
+    def message_text_prompt(data: dict[str, object], *, editing: bool = False) -> str:
+        category = str(data.get("category") or "Другой вопрос")
+        urgency = str(data.get("urgency") or "Обычный")
+        edit_note = (
+            "Предыдущий текст сохранён до получения нового сообщения. "
+            if editing and data.get("draft_text")
+            else ""
+        )
+        return (
+            "✉️ НОВЫЙ ВОПРОС\n"
+            f"{message_context(data)}\n"
+            f"Тема: {category}\n"
+            f"Срочность: {urgency}\n\n"
+            "СЕЙЧАС\n"
+            f"{edit_note}Ничего не отправлено.\n\n"
+            "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+            "Одним сообщением опишите, что произошло, какой результат вы ожидаете, важные даты и документы. "
+            "Не отправляйте пароли, коды из SMS и банковские данные."
+        )
+
+    def message_draft_review(data: dict[str, object]) -> str:
+        category = str(data.get("category") or "Другой вопрос")
+        urgency = str(data.get("urgency") or "Обычный")
+        draft = str(data.get("draft_text") or "").strip()
+        preview = messages._truncate(draft, messages.DRAFT_PREVIEW_LIMIT)
+        shortened_note = (
+            "\n\nПредпросмотр сокращён для Telegram; при подтверждении будет отправлен весь сохранённый текст."
+            if preview != draft
+            else ""
+        )
+        return (
+            "✅ ПРОВЕРКА ПЕРЕД ОТПРАВКОЙ\n"
+            f"{message_context(data)}\n\n"
+            "СЕЙЧАС\n"
+            "Черновик сохранён локально в сценарии, но ещё не отправлен юридической команде.\n\n"
+            "ГЛАВНЫЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+            "Проверьте контекст и текст. Отправка произойдёт только после отдельной кнопки «Отправить вопрос».\n\n"
+            f"Тема: {category}\n"
+            f"Срочность: {urgency}\n\n"
+            f"Текст:\n{preview}"
+            f"{shortened_note}"
+        )
+
+    messages._category_prompt = message_category_prompt
+    messages._urgency_prompt = message_urgency_prompt
+    messages._message_prompt = message_text_prompt
+    messages._draft_review_text = message_draft_review
+
+    # Fresh history screens already carry Case id for pagination. Their write
+    # entry must do the same: opening a new draft from Case A may not be silently
+    # reinterpreted after the client selects Case B.
+    def case_bound_history_keyboard(
+        *,
+        case_id: int,
+        page: int,
+        total_pages: int,
+        read_only: bool,
+        selected_same_case: bool,
+    ):
+        buttons: list[tuple[str, str]] = []
+        if page < total_pages - 1:
+            buttons.append(
+                ("⬅️ Более ранние", f"message_history:v2:{case_id}:{page + 1}")
+            )
+        if page > 0:
+            buttons.append(
+                ("Более новые ➡️", f"message_history:v2:{case_id}:{page - 1}")
+            )
+        if not read_only and selected_same_case:
+            buttons.append(
+                (
+                    "✉️ Написать сообщение",
+                    bound_case_callback("message_create", int(case_id)),
+                )
+            )
+        elif not read_only:
+            buttons.append(
+                (
+                    "📁 Переключиться на это обращение",
+                    f"my_case_select:v2:{case_id}",
+                )
+            )
+        buttons.append(("🔄 Обновить", f"message_history:v2:{case_id}:{page}"))
+        if read_only:
+            buttons.append(("🕘 История дела", "case_history_open"))
+        buttons.extend(
+            [
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ]
+        )
+        return one(*buttons)
+
+    message_history_guard._history_keyboard = case_bound_history_keyboard
 
     # Historical payments.py still contains a compatibility helper that treated
     # demo_mode as permission to expose a DEV payment button. Production runtime
