@@ -9,12 +9,14 @@ def read(path: str) -> str:
 
 def test_message_entry_resolves_exact_case_before_form_opens():
     source = read("app/bot/client_message_provenance.py")
+    screens = read("app/bot/screens/messages.py")
 
     assert '"message_create"' in source
     assert "callback_matches_action" in source
     assert "resolve_case_callback_scope(" in source
     assert "allow_legacy_message_case_context=True" in source
     assert "client_message_case_id=int(case.id)" in source
+    assert 'callback_matches_action(c.data, "message_create")' in screens
 
 
 def test_delayed_message_cannot_be_written_into_another_active_case():
@@ -23,7 +25,7 @@ def test_delayed_message_cannot_be_written_into_another_active_case():
     validation = source.split("async def _validate_snapshot", 1)[1].split(
         "async def _clear_provenance_if_flow_finished", 1
     )[0]
-    assert 'snapshot.get("client_message_case_id")' in validation
+    assert "expected_case_id = _draft_case_id(snapshot)" in validation
     assert "int(current_case.id) == expected_case_id" in validation
     assert "await db.rollback()" in validation
     assert "_preserve_text_after_target_change(" in validation
@@ -40,6 +42,61 @@ def test_case_switch_preserves_draft_and_requires_explicit_retarget():
     assert 'f"message_retarget_current:v2:{int(current_case.id)}"' in recovery
     assert '"my_cases_open"' in recovery
     assert '"message_discard_confirm"' in recovery
+
+
+def test_fresh_entry_does_not_silently_retarget_foreign_existing_draft():
+    source = read("app/bot/client_message_provenance.py")
+
+    entry = source.split(
+        "if isinstance(event, CallbackQuery) and entry_action is not None:", 1
+    )[1].split(
+        "if isinstance(event, CallbackQuery) and callback_data in _MESSAGE_NEW_TARGET_CALLBACKS:",
+        1,
+    )[0]
+    assert 'str(snapshot.get("draft_text") or "").strip()' in entry
+    assert "origin_case_id = _draft_case_id(snapshot)" in entry
+    assert "origin_case_id == target_case_id" in entry
+    assert "Opening" not in entry
+    assert "Открытие нового экрана не переносит его автоматически" in entry
+    assert "_render_preserved_draft(" in entry
+    assert "return None" in entry
+
+
+def test_explicit_retarget_to_current_case_updates_both_business_and_middleware_provenance():
+    screens = read("app/bot/screens/messages.py")
+
+    handler = screens.split("async def message_retarget_current", 1)[1].split(
+        "async def message_retarget_new_confirm", 1
+    )[0]
+    assert 'action="message_retarget_current"' in handler
+    assert "case_id=case_id" in handler
+    assert "case_number=case_number" in handler
+    assert "new_request_confirmed=False" in handler
+    assert "client_message_case_id=case_id" in handler
+    assert "client_message_recovery_case_id=None" in handler
+    assert "Черновик перенесён только в выбранный контекст, но ещё не отправлен" in handler
+
+
+def test_explicit_retarget_to_new_request_clears_previous_case_provenance():
+    screens = read("app/bot/screens/messages.py")
+
+    handler = screens.split("async def message_retarget_new", 1)[1].split(
+        "async def message_submit", 1
+    )[0]
+    assert "case_id=None" in handler
+    assert "case_number=None" in handler
+    assert "new_request_confirmed=True" in handler
+    assert "client_message_case_id=None" in handler
+    assert "client_message_recovery_case_id=None" in handler
+
+
+def test_message_history_and_follow_up_keep_exact_case_identity_and_business_time():
+    screens = read("app/bot/screens/messages.py")
+
+    assert "format_business_datetime(item.created_at)" in screens
+    assert 'bound_case_callback("message_create", case_id)' in screens
+    assert "case_number=case_number" in screens
+    assert "Обращение № {case_number}" in screens
 
 
 def test_message_flow_provenance_survives_review_and_clears_outside_flow():
