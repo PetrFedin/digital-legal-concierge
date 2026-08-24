@@ -19,6 +19,17 @@ _DESCRIPTION_ENTRY_CALLBACKS = (
     "consult_description_start",
     "consult_question_start",
 )
+_DESCRIPTION_FLOW_CALLBACKS = frozenset(
+    {
+        "consult_subject_new",
+        "consult_description_review",
+        "consult_description_edit",
+        "consult_description_discard_confirm",
+        "consult_description_discard",
+        "consult_description_confirm",
+    }
+)
+_DESCRIPTION_FLOW_PREFIXES = ("consult_subject_case:",)
 
 
 def _description_entry_action(value: str | None) -> str | None:
@@ -26,6 +37,11 @@ def _description_entry_action(value: str | None) -> str | None:
         if callback_matches_action(value, action):
             return action
     return None
+
+
+def _is_description_flow_callback(value: str | None) -> bool:
+    data = str(value or "")
+    return data in _DESCRIPTION_FLOW_CALLBACKS or data.startswith(_DESCRIPTION_FLOW_PREFIXES)
 
 
 async def _current_context(event, db):
@@ -78,14 +94,69 @@ async def _recover(event, state, text: str) -> None:
         logger.warning("Telegram не показал recovery ввода вопроса")
 
 
-class ConsultationDescriptionProvenanceMiddleware:
-    """Bind M2 description input to its exact Case and Consultation.
+async def _validate_snapshot(event, state, db) -> bool:
+    if state is None or db is None:
+        await _recover(
+            event,
+            state,
+            "Не удалось подтвердить, к какому обращению относится этот шаг вопроса. Ничего не сохранено.",
+        )
+        return False
+    try:
+        snapshot = await state.get_data()
+        expected_case_id = int(snapshot.get("consult_description_case_id") or 0)
+        expected_consultation_id = int(snapshot.get("consult_description_id") or 0)
+        _user, case, consultation = await _current_context(event, db)
+    except Exception:
+        logger.exception("Не удалось проверить provenance формы вопроса")
+        await db.rollback()
+        await _recover(
+            event,
+            state,
+            "Не удалось безопасно проверить форму вопроса. Ничего не сохранено.",
+        )
+        return False
 
-    If no Case is selected, the first explicit Telegram entry click is also the
-    source-idempotent creation operation for a new M2 matter. If another Case is
-    already selected, the entry itself is now Case-scoped before any form is
-    shown: a stale Case A button cannot silently open an editor for Case B.
-    Text input remains bound to the Case/Consultation snapshot stored in FSM.
+    if (
+        expected_case_id <= 0
+        or expected_consultation_id <= 0
+        or case is None
+        or consultation is None
+        or int(case.id) != expected_case_id
+        or int(consultation.id) != expected_consultation_id
+    ):
+        await db.rollback()
+        await _recover(
+            event,
+            state,
+            "ℹ️ Этот шаг вопроса относится к другому или более раннему обращению. Черновик не записан в выбранное сейчас дело. Откройте нужное обращение и начните форму заново.",
+        )
+        return False
+    return True
+
+
+async def _clear_provenance_if_flow_finished(state) -> None:
+    if state is None:
+        return
+    try:
+        current_state = await state.get_state()
+        if current_state is None:
+            await state.update_data(
+                consult_description_case_id=None,
+                consult_description_id=None,
+            )
+    except Exception:
+        logger.warning("Не удалось очистить завершённый provenance вопроса")
+
+
+class ConsultationDescriptionProvenanceMiddleware:
+    """Bind the entire M2 question workflow to one Case and Consultation.
+
+    If no Case is selected, the first explicit entry click is the source-
+    idempotent creation operation for a new M2 matter. If a Case already exists,
+    the entry itself is Case-scoped before the form opens. Every intermediate
+    callback and every text message then re-validates the FSM snapshot, so a
+    stale Case A form cannot edit or confirm a question in selected Case B.
     """
 
     async def __call__(self, handler, event, data):
@@ -153,6 +224,13 @@ class ConsultationDescriptionProvenanceMiddleware:
                 return None
             return result
 
+        if isinstance(event, CallbackQuery) and _is_description_flow_callback(event.data):
+            if not await _validate_snapshot(event, state, db):
+                return None
+            result = await handler(event, data)
+            await _clear_provenance_if_flow_finished(state)
+            return result
+
         if not isinstance(event, Message) or state is None:
             return await handler(event, data)
 
@@ -166,54 +244,14 @@ class ConsultationDescriptionProvenanceMiddleware:
         if raw_case_id in (None, "") and raw_consultation_id in (None, ""):
             return await handler(event, data)
 
-        if db is None:
-            await _recover(
-                event,
-                state,
-                "Не удалось подтвердить, к какому обращению относится этот текст. Сообщение не сохранено как вопрос консультации.",
-            )
-            return None
-
-        try:
-            expected_case_id = int(raw_case_id or 0)
-            expected_consultation_id = int(raw_consultation_id or 0)
-            _user, case, consultation = await _current_context(event, db)
-        except Exception:
-            logger.exception("Не удалось проверить provenance текста консультации")
-            await db.rollback()
-            await _recover(
-                event,
-                state,
-                "Не удалось безопасно проверить консультацию. Текст не сохранён как вопрос.",
-            )
-            return None
-
-        if (
-            expected_case_id <= 0
-            or expected_consultation_id <= 0
-            or case is None
-            or consultation is None
-            or int(case.id) != expected_case_id
-            or int(consultation.id) != expected_consultation_id
-        ):
-            await db.rollback()
-            await _recover(
-                event,
-                state,
-                "ℹ️ Пока вы вводили вопрос, выбранное консультационное обращение изменилось. Текст не был записан в другое дело. Откройте актуальную форму и отправьте вопрос туда.",
-            )
+        if not await _validate_snapshot(event, state, db):
             return None
 
         result = await handler(event, data)
-        try:
-            current_state = await state.get_state()
-            if current_state is not None:
-                await state.update_data(
-                    consult_description_case_id=None,
-                    consult_description_id=None,
-                )
-        except Exception:
-            logger.warning("Не удалось очистить использованный provenance вопроса")
+        # Text capture normally advances from waiting_description to review.
+        # Provenance must survive that transition and be cleared only when the
+        # whole description workflow has actually ended.
+        await _clear_provenance_if_flow_finished(state)
         return result
 
 
