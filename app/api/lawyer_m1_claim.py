@@ -8,6 +8,7 @@ from app.db.session import get_db
 from app.domain.cases.m1_claim_service import M1ClaimService
 from app.domain.cases.sla_service import CaseSLAError, CaseSLAService
 from app.domain.notifications.notification_engine import NotificationEngine
+from app.presentation_time import format_business_datetime
 from app.security.lawyer_access import require_lawyer_actor
 
 router = APIRouter(prefix="/lawyer", tags=["lawyer-m1-claim"])
@@ -137,7 +138,7 @@ async def mark_claim_sent(
             payload={
                 "case_number": case.case_number,
                 "due_at": (
-                    due_at.strftime("%d.%m.%Y %H:%M UTC")
+                    format_business_datetime(due_at)
                     if due_at
                     else "уточняется"
                 ),
