@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +22,38 @@ _M2_OPEN_LINK_STATUSES = {
     PaymentStatus.PENDING.value,
     PaymentStatus.WAITING_CONFIRMATION.value,
 }
+_RAW_BROWSER_DT = "function dt(v){return v?new Date(v).toLocaleString('ru-RU'):'—'}"
+
+
+def _js_string(value: object) -> str:
+    return json.dumps(str(value or ""), ensure_ascii=False).replace("<", "\\u003c")
+
+
+def _inject_business_timezone_ui(html: str) -> str:
+    """Render operational timestamps in one server-configured business zone.
+
+    Document Review and SLA used the staff browser timezone, so the same UTC
+    instant could be displayed differently on two workstations. These legacy
+    templates both expose one small ``dt`` helper; harden it at the authenticated
+    product boundary instead of duplicating the large HTML templates.
+    """
+
+    if html.count(_RAW_BROWSER_DT) != 1:
+        raise RuntimeError(
+            "Staff UI template contract changed: browser-local dt renderer not found"
+        )
+    zone = _js_string(settings.business_timezone)
+    label = _js_string(settings.business_timezone_label)
+    replacement = (
+        f"const businessTimeZone={zone},businessTimeLabel={label};"
+        "function dt(v){"
+        "if(!v)return '—';"
+        "try{const rendered=new Intl.DateTimeFormat('ru-RU',{dateStyle:'short',timeStyle:'short',timeZone:businessTimeZone}).format(new Date(v));"
+        "return businessTimeLabel?rendered+' '+businessTimeLabel:rendered}"
+        "catch(_){return String(v)}"
+        "}"
+    )
+    return html.replace(_RAW_BROWSER_DT, replacement, 1)
 
 
 async def _actor(request: Request, db: AsyncSession, header_token: str | None):
@@ -77,6 +111,8 @@ async def _guarded_html(
     *,
     staff: bool = False,
 ):
+    """Authenticate first; template injections must never weaken the gate."""
+
     gate = await _staff_gate(
         request,
         db,
@@ -119,6 +155,9 @@ async def protected_payment_review_ui(
                 status_code=303,
             )
 
+    # Payment Review already reads business_timezone from /auth/session and owns
+    # its own formatter; injecting a second formatter would create competing UI
+    # sources of truth.
     return HTMLResponse(PAYMENT_REVIEW_CENTER_HTML)
 
 
@@ -127,7 +166,12 @@ async def protected_sla_ui(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    return await _guarded_html(request, db, x_admin_token, SLA_CENTER_HTML)
+    return await _guarded_html(
+        request,
+        db,
+        x_admin_token,
+        _inject_business_timezone_ui(SLA_CENTER_HTML),
+    )
 
 
 async def protected_document_review_ui(
@@ -141,7 +185,7 @@ async def protected_document_review_ui(
         request,
         db,
         x_admin_token,
-        REVIEW_HTML,
+        _inject_business_timezone_ui(REVIEW_HTML),
         staff=True,
     )
 
