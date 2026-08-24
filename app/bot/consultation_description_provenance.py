@@ -9,6 +9,7 @@ from sqlalchemy import select
 from app.bot.case_callback_scope import callback_matches_action, resolve_case_callback_scope
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
+from app.bot.states import ConsultationDescriptionStates
 from app.domain.consultations.consultation_intake import ConsultationIntakeService
 from app.models.consultation import Consultation
 
@@ -30,6 +31,13 @@ _DESCRIPTION_FLOW_CALLBACKS = frozenset(
     }
 )
 _DESCRIPTION_FLOW_PREFIXES = ("consult_subject_case:",)
+_DESCRIPTION_STATES = frozenset(
+    {
+        ConsultationDescriptionStates.waiting_subject_choice.state,
+        ConsultationDescriptionStates.waiting_description.state,
+        ConsultationDescriptionStates.reviewing_description.state,
+    }
+)
 
 
 def _description_entry_action(value: str | None) -> str | None:
@@ -140,7 +148,7 @@ async def _clear_provenance_if_flow_finished(state) -> None:
         return
     try:
         current_state = await state.get_state()
-        if current_state is None:
+        if current_state not in _DESCRIPTION_STATES:
             await state.update_data(
                 consult_description_case_id=None,
                 consult_description_id=None,
@@ -204,6 +212,13 @@ class ConsultationDescriptionProvenanceMiddleware:
             if db is None or state is None:
                 return result
             try:
+                current_state = await state.get_state()
+                if current_state not in _DESCRIPTION_STATES:
+                    # The handler may have shown a route/error/recovery screen
+                    # instead of opening the form. Do not leave Case provenance
+                    # attached to an unrelated FSM state.
+                    await _clear_provenance_if_flow_finished(state)
+                    return result
                 _user, case, consultation = await _current_context(event, db)
                 if case is None or consultation is None:
                     # The route handler may have refused M2 because the selected
@@ -235,6 +250,7 @@ class ConsultationDescriptionProvenanceMiddleware:
             return await handler(event, data)
 
         try:
+            current_state = await state.get_state()
             snapshot = await state.get_data()
         except Exception:
             return await handler(event, data)
@@ -242,6 +258,10 @@ class ConsultationDescriptionProvenanceMiddleware:
         raw_case_id = snapshot.get("consult_description_case_id")
         raw_consultation_id = snapshot.get("consult_description_id")
         if raw_case_id in (None, "") and raw_consultation_id in (None, ""):
+            return await handler(event, data)
+
+        if current_state not in _DESCRIPTION_STATES:
+            await _clear_provenance_if_flow_finished(state)
             return await handler(event, data)
 
         if not await _validate_snapshot(event, state, db):
