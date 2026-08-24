@@ -7,6 +7,7 @@ from aiogram.types import CallbackQuery
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.screens import (
+    client_archive,
     common,
     consultation_results,
     documents,
@@ -113,7 +114,7 @@ async def _render_target(
         await _reset(state)
         return True
     if target == "my_case_open":
-        await my_case.my_case(callback, db)
+        await client_archive.route_my_case_or_archive(callback, db)
         return True
     if target == "documents_open":
         await documents.docs(callback, db)
@@ -188,13 +189,13 @@ async def logical_back(callback: CallbackQuery, db, state: FSMContext):
         return
 
     # UX fallback from the specification: if previous logical screen is not
-    # available, prefer the case cabinet; from the case cabinet fall back Home.
+    # available, prefer the case/archive cabinet; from that cabinet fall back Home.
     if current == "my_case_open":
         await common.home(callback, db, state)
         await _reset(state)
         return
 
-    await my_case.my_case(callback, db)
+    await client_archive.route_my_case_or_archive(callback, db)
     await _record(state, "my_case_open")
 
 
@@ -261,7 +262,7 @@ async def guarded_case_selection(callback: CallbackQuery, db, state: FSMContext)
 @router.callback_query(lambda c: c.data == "my_case_open")
 async def logical_my_case(callback: CallbackQuery, db, state: FSMContext):
     return await _record_after(
-        lambda: my_case.my_case(callback, db),
+        lambda: client_archive.route_my_case_or_archive(callback, db),
         "my_case_open",
         state=state,
     )
