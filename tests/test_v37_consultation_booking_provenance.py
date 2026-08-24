@@ -12,25 +12,24 @@ def test_booking_entry_records_case_consultation_and_message_provenance():
 
     assert '"consult_booking_start"' in source
     assert '"consult_slot_open"' in source
+    assert "callback_matches_action" in source
+    assert "entry_action = _booking_entry_action(value)" in source
     assert "consult_booking_case_id=int(case.id)" in source
     assert "consult_booking_id=int(consultation.id)" in source
     assert "consult_booking_message_id=int(event.message.message_id)" in source
 
 
-def test_booking_entry_checks_multi_case_context_before_opening_calendar():
-    source = read("app/bot/consultation_booking_provenance.py")
+def test_canonical_booking_entry_checks_case_scope_before_slot_preparation():
+    source = read("app/bot/screens/consultation_intake.py")
 
-    assert "resolve_case_callback_scope" in source
-    entry = source.split("if value in _BOOKING_ENTRY_CALLBACKS:", 1)[1].split(
-        "if not _looks_like_initial_booking_callback(value):", 1
+    assert "@router.callback_query(lambda c: _booking_entry_action(c.data) is not None)" in source
+    handler = source.split("async def booking_start(callback: CallbackQuery, db):", 1)[1].split(
+        '@router.callback_query(lambda c: c.data.startswith("consult_date:"))', 1
     )[0]
-    assert "action=value" in entry
-    assert "allow_legacy_message_case_context=True" in entry
-    assert entry.index("resolve_case_callback_scope(") < entry.index(
-        "result = await handler(event, data)"
-    )
-    assert "if scope is None:" in entry
-    assert "return None" in entry
+    assert "resolve_case_callback_scope(" in handler
+    assert "allow_legacy_message_case_context=True" in handler
+    assert "scope.case is None" in handler
+    assert handler.index("resolve_case_callback_scope(") < handler.index("_prepare_slots(")
 
 
 def test_initial_slot_day_time_callbacks_fail_closed_on_snapshot_mismatch():
@@ -43,6 +42,7 @@ def test_initial_slot_day_time_callbacks_fail_closed_on_snapshot_mismatch():
     assert "int(consultation.id) != expected_consultation_id" in source
     assert "current_message_id != expected_message_id" in source
     assert "Старый слот не бронировался" in source
+    assert '("📁 Выбрать обращение", "my_cases_open")' in source
 
 
 def test_bound_cancel_and_reschedule_are_not_downgraded_to_message_snapshot():
