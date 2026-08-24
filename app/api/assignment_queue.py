@@ -17,6 +17,7 @@ from app.domain.cases.case_timeline import get_client_visible_status
 from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.lawyer import Lawyer
+from app.presentation_time import to_business_timezone
 from app.security.access_control import ROLE_ADMIN, ROLE_SUPERADMIN
 from app.security.document_access import DocumentAccessError, resolve_document_actor
 
@@ -306,19 +307,28 @@ async def consultation_queue_with_slot_lawyer(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    """Project the actual booked lawyer instead of a generic case assignee.
+    """Project the actual booked lawyer for the current business day.
 
     In M2 the lawyer is selected by the consultation slot. A Case may therefore
     intentionally have no assigned_lawyer_id, and presenting it as "без юриста"
-    is misleading. This route keeps the calendar as the source of truth for the
-    consultation queue and prevents the admin from assigning a random M1 lawyer
-    just to make the card look complete.
+    is misleading. The queue is also a business-day view: UTC persistence must
+    not move an early-morning or late-evening local appointment into the wrong
+    admin queue.
     """
 
     require_admin(x_admin_token)
     now = datetime.now(timezone.utc)
-    today_start = datetime.combine(now.date(), time.min, tzinfo=timezone.utc)
-    tomorrow_start = today_start + timedelta(days=1)
+    business_now = to_business_timezone(now)
+    business_zone = business_now.tzinfo
+    business_date = business_now.date()
+    today_start = datetime.combine(business_date, time.min, tzinfo=business_zone).astimezone(
+        timezone.utc
+    )
+    tomorrow_start = datetime.combine(
+        business_date + timedelta(days=1),
+        time.min,
+        tzinfo=business_zone,
+    ).astimezone(timezone.utc)
     rows = (
         await db.execute(
             select(Case, Consultation, Lawyer)
@@ -363,4 +373,7 @@ async def consultation_queue_with_slot_lawyer(
         "count": len(items),
         "items": items,
         "generated_at": now.isoformat(),
+        "business_date": business_date.isoformat(),
+        "business_timezone": settings.business_timezone,
+        "business_timezone_label": settings.business_timezone_label,
     }
