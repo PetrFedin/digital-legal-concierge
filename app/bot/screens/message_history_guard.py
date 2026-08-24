@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
@@ -18,6 +20,7 @@ from app.presentation_time import format_business_datetime
 router = Router()
 
 _COMPLETED_STATUS_VALUES = {str(value) for value in CLIENT_COMPLETED_CASE_STATUSES}
+_CASE_NUMBER_PATTERN = re.compile(r"\bDLC-\d{4}-\d{6}\b")
 
 
 def _parse_history_target(data: str | None) -> tuple[int | None, int, bool]:
@@ -42,10 +45,27 @@ def _parse_history_target(data: str | None) -> tuple[int | None, int, bool]:
     raise ValueError("unknown message history callback")
 
 
-def _message_mentions_case(callback: CallbackQuery, case_number: str) -> bool:
+def _message_text(callback: CallbackQuery) -> str:
     message = getattr(callback, "message", None)
-    text = str(getattr(message, "text", "") or getattr(message, "caption", "") or "")
-    return bool(case_number and case_number in text)
+    return str(getattr(message, "text", "") or getattr(message, "caption", "") or "")
+
+
+def _message_mentions_case(callback: CallbackQuery, case_number: str) -> bool:
+    return bool(case_number and case_number in _message_text(callback))
+
+
+def _visible_case_numbers(callback: CallbackQuery) -> frozenset[str]:
+    return frozenset(_CASE_NUMBER_PATTERN.findall(_message_text(callback)))
+
+
+def _legacy_context_conflicts(callback: CallbackQuery, selected_case) -> bool:
+    numbers = _visible_case_numbers(callback)
+    if not numbers:
+        return False
+    selected_number = str(
+        getattr(selected_case, "case_number", "") if selected_case is not None else ""
+    ).strip()
+    return not selected_number or selected_number not in numbers
 
 
 def _with_case_heading(text: str, case_number: str) -> str:
@@ -303,10 +323,9 @@ async def present_message_history(
 ) -> None:
     """Render case-bound message history without touching expired ORM objects.
 
-    Pagination callbacks carry the exact Case id. Historical page-only callbacks
-    are accepted with several active matters only when the trusted bot message
-    visibly names the currently selected Case; otherwise the read is blocked and
-    the client must choose a matter explicitly.
+    Pagination callbacks carry the exact Case id. Historical raw callbacks are
+    accepted only when their context is unambiguous. A trusted old bot message
+    that visibly names another Case always fails closed before read tracking.
     """
 
     if await messages._guard_existing_draft(callback, state):
@@ -346,20 +365,27 @@ async def present_message_history(
         if case is None:
             case = await latest_completed_case_for_user(db, user_id=user.id)
             read_only = case is not None
-        elif legacy_unbound and len(active_cases) > 1:
-            selected_number = str(case.case_number)
-            # First-page raw callback is intentional navigation from the current
-            # cabinet and is safe. Historical page-only callbacks are ambiguous
-            # unless their bot-rendered message still names this selected Case.
-            is_first_page_navigation = str(callback.data or "") == "message_history"
-            if not is_first_page_navigation and not _message_mentions_case(
+        elif legacy_unbound:
+            if _legacy_context_conflicts(callback, case):
+                await messages._safe_edit(
+                    callback,
+                    "Эта старая кнопка переписки относится к другому обращению, чем выбрано сейчас. "
+                    "Чтобы не показать и не отметить прочитанными сообщения другого дела, выберите обращение явно.",
+                    reply_markup=one(
+                        ("📁 Выбрать обращение", "my_cases_open"),
+                        ("📁 Моё дело", "my_case_open"),
+                        ("🏠 Главная", "nav_home"),
+                    ),
+                )
+                return
+            if len(active_cases) > 1 and not _message_mentions_case(
                 callback,
-                selected_number,
+                str(case.case_number),
             ):
                 await messages._safe_edit(
                     callback,
-                    "Эта старая кнопка страницы не содержит номер обращения, а у вас несколько активных дел. "
-                    "Чтобы не показать переписку другого дела, выберите обращение явно.",
+                    "Эта старая кнопка переписки не содержит подтверждённый номер обращения, а у вас несколько активных дел. "
+                    "Переписка не открыта автоматически — выберите дело явно.",
                     reply_markup=one(
                         ("📁 Выбрать обращение", "my_cases_open"),
                         ("🏠 Главная", "nav_home"),
