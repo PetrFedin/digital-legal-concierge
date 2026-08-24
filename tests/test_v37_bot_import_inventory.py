@@ -59,7 +59,7 @@ def test_client_dev_payment_fixture_is_runtime_disabled_outside_local_test():
     assert '{"local", "test"}' in block
     assert "demo_mode" not in block
     assert "payments.fake_payments_enabled = local_test_fake_payments_only" in patch
-    assert bot.index("install_client_wording()") < bot.index("for router in (")
+    assert bot.index("install_client_wording()") < bot.index("for router in [")
 
 
 def test_unknown_callback_fallback_is_last_and_preserves_active_fsm():
