@@ -7,6 +7,11 @@ from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, Telegra
 from aiogram.types import CallbackQuery
 from sqlalchemy import select
 
+from app.bot.case_callback_scope import (
+    bound_case_callback,
+    callback_matches_action,
+    resolve_case_callback_scope,
+)
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.screens import payments as payment_screen
@@ -51,6 +56,13 @@ def _status(case: Case) -> CaseStatus | None:
         return None
 
 
+def _stage_action(value: str | None) -> str | None:
+    for action in _STAGE_BY_ACTION:
+        if callback_matches_action(value, action):
+            return action
+    return None
+
+
 def _bound(case_id: int, payment_code: str) -> str:
     return f"pay_stage:v2:{int(case_id)}:{payment_code}"
 
@@ -89,7 +101,7 @@ async def _current_case(callback: CallbackQuery, db):
     return ctx, user, case
 
 
-def _exact_payment_presentation(*, payment, case_number: str, title: str):
+def _exact_payment_presentation(*, payment, case_id: int, case_number: str, title: str):
     """Snapshot all ORM-backed payment presentation before transaction release."""
 
     payment_status = str(payment.status)
@@ -98,8 +110,9 @@ def _exact_payment_presentation(*, payment, case_number: str, title: str):
     amount_text = payment_screen.money(payment.amount)
     lines = [
         f"💳 {title}",
+        f"Обращение № {case_number}",
         "",
-        f"Дело № {case_number}",
+        "СЕЙЧАС",
         f"Сумма: {amount_text}",
         f"Статус: {status_label}",
     ]
@@ -110,12 +123,16 @@ def _exact_payment_presentation(*, payment, case_number: str, title: str):
         lines.extend(
             [
                 "",
+                "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ",
                 "Онлайн-оплата сейчас отключена. Команда изменит этап только после проверки фактического поступления.",
             ]
         )
         markup = one(
             ("💳 Все оплаты", "payments_open"),
-            ("✉️ Написать команде", "message_create"),
+            (
+                "✉️ Написать команде",
+                bound_case_callback("message_create", int(case_id)),
+            ),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         )
@@ -123,7 +140,8 @@ def _exact_payment_presentation(*, payment, case_number: str, title: str):
         lines.extend(
             [
                 "",
-                "Переход по ссылке не меняет юридический этап. Следующий этап откроется только после серверного подтверждения фактической оплаты.",
+                "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ",
+                "Откройте существующий платёж по ссылке ниже. Переход по ссылке сам по себе не меняет юридический этап; следующий этап откроется только после серверного подтверждения фактической оплаты.",
             ]
         )
         # The keyboard reads payment_url/status/id. Build it while ORM state is
@@ -133,7 +151,8 @@ def _exact_payment_presentation(*, payment, case_number: str, title: str):
         lines.extend(
             [
                 "",
-                "Этот платёж уже не находится в состоянии ожидания оплаты. Доступно только актуальное состояние записи.",
+                "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ",
+                "Этот платёж уже не находится в состоянии ожидания оплаты. Откройте актуальную платёжную историю; повторное обязательство не создаётся.",
             ]
         )
         markup = one(
@@ -144,23 +163,38 @@ def _exact_payment_presentation(*, payment, case_number: str, title: str):
     return "\n".join(lines), markup
 
 
-@router.callback_query(lambda c: c.data in _STAGE_BY_ACTION)
-async def legacy_stage_payment_is_confirmation_only(callback: CallbackQuery, db):
-    """Turn historical unbound stage buttons into a current-case confirmation.
+@router.callback_query(lambda c: _stage_action(c.data) is not None)
+async def stage_payment_is_exact_confirmation_only(callback: CallbackQuery, db):
+    """Own raw and v2 M1 payment entry before legacy payment handlers.
 
-    Raw Telegram callbacks contain no case id and can survive a closed case.
-    They are therefore navigation only. The freshly rendered v2 button carries
-    both the exact case id and the exact server-known payment code.
+    A client payment button may open only a financial obligation already created
+    by the authoritative business transition: contract confirmation, court
+    decision, or lawyer-recorded recovery. It must never synthesize the missing
+    obligation or advance M1_MONEY_RECEIVED into the success-fee stage.
+
+    Historical raw callbacks are accepted only when their bot-rendered Case
+    context is unambiguous. Fresh v2 callbacks are tied to the selected exact
+    Case. Both forms are converted into the same explicit ``pay_stage`` screen.
     """
 
-    action = str(callback.data or "")
+    action = _stage_action(callback.data)
+    if action is None:
+        return
     expected_status, payment_code, title = _STAGE_BY_ACTION[action]
-    _ctx, _user, case = await _current_case(callback, db)
+    scope = await resolve_case_callback_scope(
+        callback,
+        db,
+        action=action,
+        allow_legacy_message_case_context=True,
+    )
+    if scope is None:
+        return
+    case = scope.case
     if case is None:
         await db.rollback()
         await _safe_edit(
             callback,
-            "Активное дело не найдено. Старая кнопка оплаты ничего не изменила и новый платёж не создавался.",
+            "Активное дело не найдено. Эта кнопка оплаты ничего не изменила и новый платёж не создавался.",
             reply_markup=one(
                 ("💳 Все оплаты", "payments_open"),
                 ("📁 Моё дело", "my_case_open"),
@@ -175,19 +209,23 @@ async def legacy_stage_payment_is_confirmation_only(callback: CallbackQuery, db)
         if action == "pay_success_fee" and current_status == CaseStatus.M1_MONEY_RECEIVED:
             message = (
                 "Фактическое взыскание уже отмечено, но финальное платёжное обязательство ещё не открыто ответственным юристом. "
-                "Старая кнопка ничего не создала."
+                "Клиентская кнопка не может создать его или перевести дело дальше."
             )
         else:
             message = (
-                "Эта кнопка оплаты относится к другому этапу дела. Финансовый статус и юридический этап не изменены."
+                "Эта кнопка оплаты относится к другому или уже завершённому этапу дела. Финансовый статус и юридический этап не изменены."
             )
+        case_id = int(case.id)
         await _safe_edit(
             callback,
             message,
             reply_markup=one(
                 ("💳 Актуальные оплаты", "payments_open"),
                 ("📁 Открыть текущее дело", "my_case_open"),
-                ("✉️ Написать команде", "message_create"),
+                (
+                    "✉️ Написать команде",
+                    bound_case_callback("message_create", case_id),
+                ),
                 ("🏠 Главная", "nav_home"),
             ),
         )
@@ -198,14 +236,19 @@ async def legacy_stage_payment_is_confirmation_only(callback: CallbackQuery, db)
     await db.rollback()
     await _safe_edit(
         callback,
-        f"💳 {title}\n\n"
-        f"Дело № {case_number}\n\n"
-        "Следующее действие относится только к этому делу. Бот не создаёт юридический этап и не считает оплату полученной по нажатию кнопки. "
-        "Он только откроет уже существующее платёжное обязательство и, если необходимо, запросит ссылку у настроенного провайдера.\n\n"
-        "Продолжить?",
+        f"💳 {title}\n"
+        f"Обращение № {case_number}\n\n"
+        "СЕЙЧАС\n"
+        "Платёжный этап подтверждён текущим состоянием дела. Нажатие этой кнопки не создаёт новое финансовое обязательство и не считает деньги полученными.\n\n"
+        "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+        "Откройте уже существующий платёж именно этого этапа. Если обязательство отсутствует, система остановится и передаст проблему в рабочий контур вместо автоматического восстановления деньгами клиента.",
         reply_markup=one(
-            ("Перейти к оплате", _bound(case_id, payment_code)),
+            ("💳 Открыть платёж", _bound(case_id, payment_code)),
             ("💳 Все оплаты", "payments_open"),
+            (
+                "✉️ Написать команде",
+                bound_case_callback("message_create", case_id),
+            ),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         ),
@@ -277,6 +320,7 @@ async def open_exact_stage_payment(callback: CallbackQuery, db):
             # transaction boundary.
             text, markup = _exact_payment_presentation(
                 payment=payment,
+                case_id=case_id,
                 case_number=case_number,
                 title=title,
             )
@@ -285,6 +329,7 @@ async def open_exact_stage_payment(callback: CallbackQuery, db):
         else:
             text, markup = _exact_payment_presentation(
                 payment=payment,
+                case_id=case_id,
                 case_number=case_number,
                 title=title,
             )
@@ -293,11 +338,16 @@ async def open_exact_stage_payment(callback: CallbackQuery, db):
         await db.rollback()
         await _safe_edit(
             callback,
-            f"Оплата не открыта: {error}.\n\n"
-            "Юридический этап и платёжный статус не были изменены. Если обязательство должно существовать, команда увидит это как проблему целостности процесса.",
+            f"💳 ОПЛАТА НЕ ОТКРЫТА\n\n"
+            f"СЕЙЧАС\n{error}.\n\n"
+            "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+            "Откройте актуальные оплаты или сообщите команде. Юридический этап и платёжный статус не были изменены; отсутствующее обязательство автоматически не создаётся.",
             reply_markup=one(
                 ("💳 Актуальные оплаты", "payments_open"),
-                ("✉️ Написать команде", "message_create"),
+                (
+                    "✉️ Написать команде",
+                    bound_case_callback("message_create", case_id),
+                ),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
@@ -308,16 +358,28 @@ async def open_exact_stage_payment(callback: CallbackQuery, db):
         logger.exception("Bound payment stage open failed: case=%s code=%s", case_id, payment_code)
         await _safe_edit(
             callback,
-            "Не удалось безопасно открыть оплату. Новый платёж не создавался, юридический этап не изменён. Повторите через раздел «Оплаты» или напишите команде.",
+            "💳 ОПЛАТА ВРЕМЕННО НЕДОСТУПНА\n\n"
+            "СЕЙЧАС\nБезопасно открыть платёж не удалось. Новый платёж не создан, юридический этап не изменён.\n\n"
+            "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+            "Повторите через раздел «Оплаты» или напишите команде.",
             reply_markup=one(
                 ("💳 Все оплаты", "payments_open"),
-                ("✉️ Написать команде", "message_create"),
+                (
+                    "✉️ Написать команде",
+                    bound_case_callback("message_create", case_id),
+                ),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
         )
         return
 
+    if committed_provider_link:
+        logger.info(
+            "Provider link committed for existing M1 payment: case=%s code=%s",
+            case_id,
+            payment_code,
+        )
     await _safe_edit(callback, text, reply_markup=markup)
 
 
