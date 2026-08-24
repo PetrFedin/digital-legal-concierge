@@ -6,6 +6,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, Telegra
 from aiogram.types import CallbackQuery
 from sqlalchemy import select
 
+from app.bot.case_callback_scope import resolve_case_callback_scope
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.domain.statuses.case_statuses import CaseStatus
@@ -119,6 +120,12 @@ class ConsultationBookingProvenanceMiddleware:
     rendered it. The snapshot is retired only after the business state proves
     that slot selection actually succeeded; a failed slot race can therefore
     render a fresh calendar without making that recovery screen unusable.
+
+    Entry buttons are navigation-only, but in a multi-Case cabinet a stale raw
+    entry from Case A must not silently open the calendar for selected Case B.
+    With several active matters, raw entry is accepted only when the trusted
+    bot-rendered message visibly names the currently selected Case. Otherwise
+    the existing case-scope recovery forces explicit Case selection first.
     """
 
     async def __call__(self, handler, event, data):
@@ -130,6 +137,26 @@ class ConsultationBookingProvenanceMiddleware:
         db = data.get("db")
 
         if value in _BOOKING_ENTRY_CALLBACKS:
+            if db is not None:
+                try:
+                    scope = await resolve_case_callback_scope(
+                        event,
+                        db,
+                        action=value,
+                        allow_legacy_message_case_context=True,
+                    )
+                except Exception:
+                    logger.exception("Не удалось проверить Case-контекст входа в выбор времени")
+                    await db.rollback()
+                    await _recover(
+                        event,
+                        state,
+                        "Не удалось безопасно определить обращение для этого экрана. Время не выбиралось. Откройте нужное дело и запустите выбор времени заново.",
+                    )
+                    return None
+                if scope is None:
+                    return None
+
             result = await handler(event, data)
             if db is None or state is None:
                 return result
