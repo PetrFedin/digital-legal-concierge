@@ -8,9 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.refund_center import REFUND_CENTER_HTML
 from app.config import settings
 from app.db.session import get_db
-from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
-from app.domain.payments.payment_lifecycle import PaymentLifecycleService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.payments.refund_service import ConsultationRefundService
 from app.domain.statuses.case_statuses import CaseStatus
@@ -208,74 +206,16 @@ async def retry_declined_refund(
             detail="Опишите, что исправлено перед повторным возвратом — минимум 10 символов",
         )
     try:
-        payment = (
-            await db.execute(
-                select(Payment)
-                .where(Payment.id == int(payment_id))
-                .with_for_update()
-            )
-        ).scalar_one_or_none()
-        if payment is None:
-            raise LookupError("Платёж не найден")
-        case = (
-            await db.execute(
-                select(Case)
-                .where(Case.id == payment.case_id)
-                .with_for_update()
-            )
-        ).scalar_one_or_none()
-        if case is None:
-            raise LookupError("Дело не найдено")
-        if payment.status == PaymentStatus.REFUND_PENDING:
-            response = {
-                "ok": True,
-                "payment_id": int(payment.id),
-                "case_id": int(case.id),
-                "status": str(payment.status),
-                "case_status": str(case.status),
-            }
-            await db.commit()
-            return response
-        if payment.status != PaymentStatus.REFUND_DECLINED:
-            raise ValueError(
-                "Повторно открыть можно только возврат со статусом REFUND_DECLINED"
-            )
-
-        transition = PaymentLifecycleService.transition(
-            payment,
-            to_status=PaymentStatus.REFUND_PENDING,
-        )
-        if str(case.status) == CaseStatus.M2_CONSULTATION_DONE.value:
-            case.next_action = (
-                "Повторный возврат открыт: выполнить фактическую операцию у провайдера и зафиксировать результат"
-            )
-        action = (
-            "CONSULTATION_REFUND_REOPENED"
-            if str(payment.payment_code) == PaymentCode.M2_CONSULTATION_PAYMENT.value
-            else "M1_PAYMENT_REFUND_REOPENED"
-        )
-        await add_case_history_event(
-            db,
-            actor_type="admin",
+        payment, case = await ConsultationRefundService(db).reopen_declined_refund(
+            payment_id=payment_id,
             actor_id=int(actor.account_id),
-            case_id=case.id,
-            action=action,
-            old_value={
-                "payment_id": payment.id,
-                "status": transition.old_status.value,
-            },
-            new_value={
-                "payment_id": payment.id,
-                "status": transition.new_status.value,
-                "case_status_preserved": str(case.status),
-            },
             comment=comment,
         )
         response = {
             "ok": True,
             "payment_id": int(payment.id),
             "case_id": int(case.id),
-            "status": transition.new_status.value,
+            "status": str(payment.status),
             "case_status": str(case.status),
         }
         await db.commit()
@@ -296,7 +236,7 @@ _REFUND_RETRY_UI_PATCH = r"""
 (function(){
   const baseRenderRows=renderRows;
   function retryCard(x){
-    return `<article style="background:#fff7e6;border:1px solid #fedf89;border-radius:14px;padding:14px;margin-bottom:12px"><div class="row"><div><span class="context other">Возврат требует повторной попытки</span><h3>${esc(x.case_number)} · платёж #${Number(x.payment_id)}</h3><div class="muted">${esc(x.client_name||'—')} · ${Number(x.amount).toLocaleString('ru-RU')} ${esc(x.currency||'RUB')}</div></div><b>${esc(x.status)}</b></div><div class="notice" style="margin-top:10px"><b>Сейчас.</b> Деньги не отмечены возвращёнными. Сначала устраните причину отказа у провайдера/банка.</div><div class="action-box"><b>Главный следующий шаг</b><br>Верните платёж в рабочую очередь только после устранения причины. Затем выполните фактический возврат у провайдера и отдельно зафиксируйте его результат.</div><div class="actions"><button data-payment-id="${Number(x.payment_id)}" onclick="retryRefund(${Number(x.payment_id)},this)">Вернуть в очередь возврата</button><a class="button gray" href="/message-center/ui?case_id=${Number(x.case_id)}">Связаться с клиентом</a><a class="button gray" href="/admin/workdesk/ui?case_id=${Number(x.case_id)}">Открыть дело</a></div></article>`;
+    return `<article style="background:#fff7e6;border:1px solid #fedf89;border-radius:14px;padding:14px;margin-bottom:12px"><div class="row"><div><span class="context other">Возврат требует повторной попытки</span><h3>${esc(x.case_number)} · платёж #${Number(x.payment_id)}</h3><div class="muted">${esc(x.client_name||'—')} · ${Number(x.amount).toLocaleString('ru-RU')} ${esc(x.currency||'RUB')}</div></div><b>${esc(x.status)}</b></div><div class="notice" style="margin-top:10px"><b>Сейчас.</b> Деньги не отмечены возвращёнными. Сначала устраните причину отказа у провайдера/банка.</div><div class="next"><b>Главный следующий шаг</b><br>Верните платёж в рабочую очередь только после устранения причины. Затем выполните фактический возврат у провайдера и отдельно зафиксируйте его результат.</div><div class="section-label" style="margin-top:12px">Вторичные действия</div><div class="actions"><button data-payment-id="${Number(x.payment_id)}" onclick="retryRefund(${Number(x.payment_id)},this)">Вернуть в очередь возврата</button><a class="button gray" href="/message-center/ui?case_id=${Number(x.case_id)}">Связаться с клиентом</a><a class="button gray" href="/admin/workdesk/ui?case_id=${Number(x.case_id)}">Открыть дело</a></div></article>`;
   }
   renderRows=function(rows){
     const retry=rows.filter(x=>x.retry_only),pending=rows.filter(x=>!x.retry_only);
@@ -305,16 +245,27 @@ _REFUND_RETRY_UI_PATCH = r"""
     if(!pending.length&&!retry.length)baseRenderRows([]);
   };
   window.retryRefund=async function(id,button){
-    const comment=prompt('Что исправлено перед повторной попыткой возврата?');
-    if(!comment)return;
-    if(comment.trim().length<10){feedback('Комментарий должен содержать не менее 10 символов.','bad');return}
+    const previous=refundDrafts.get(Number(id)),defaultComment=previous&&previous.decision==='retry'?previous.comment:'';
+    const entered=prompt('Что исправлено перед повторной попыткой возврата?',defaultComment);
+    if(entered===null)return;
+    const comment=entered.trim();
+    if(comment.length<10){feedback('Комментарий должен содержать не менее 10 символов.','bad');return}
+    refundDrafts.set(Number(id),{decision:'retry',comment});
     if(!confirm(`Вернуть платёж #${id} в очередь возврата? Это не отправляет деньги и не меняет этап дела.`))return;
     return withPaymentAction(id,button,async()=>{
       try{
-        const result=await api(`/admin/refunds/${id}/retry`,{method:'POST',body:JSON.stringify({comment:comment.trim()})});
+        const result=await api(`/admin/refunds/${id}/retry`,{method:'POST',body:JSON.stringify({comment})});
+        refundDrafts.delete(Number(id));
         feedback(`Платёж #${result.payment_id} снова в очереди возврата. Выполните фактическую операцию у провайдера, затем зафиксируйте результат.`,'ok');
-        await load();
-      }catch(e){feedback('Возврат не переоткрыт: '+e.message,'bad')}
+        try{await load()}catch(e){feedback(`Возврат переоткрыт, но список не обновился: ${e.message}`,'warn')}
+      }catch(e){
+        if(e.status===409){
+          try{await load()}catch(refreshError){feedback(`Карточка платежа #${id} устарела, повтор не применён. Не удалось обновить очередь: ${refreshError.message}. Ваш комментарий сохранён в этой вкладке.`,'bad');return}
+          feedback(`Карточка платежа #${id} устарела, повтор не применён. Очередь обновлена; сверьте актуальный статус. Ваш комментарий сохранён в этой вкладке.`,'warn');
+          return;
+        }
+        feedback('Возврат не переоткрыт: '+e.message,'bad');
+      }
     });
   };
   load=async function(){
