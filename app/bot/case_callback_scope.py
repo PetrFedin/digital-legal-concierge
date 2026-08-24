@@ -22,6 +22,9 @@ CASE_BOUND_MUTATING_ACTIONS = frozenset(
         *PAYMENT_CASE_BOUND_ACTIONS,
         "calc_recover",
         "message_create",
+        "contract_open",
+        "poa_instruction",
+        "court_status",
         "consult_subject_start",
         "consult_description_start",
         "consult_booking_start",
@@ -60,9 +63,9 @@ def bind_payment_case_action(action: str, case_id: int) -> str:
 
     The helper name is retained for compatibility with the existing My Case
     renderer. It originally covered payments only; message entry, calculator
-    recovery and M2 question/booking/change actions also carry workflow state
-    and must not be reinterpreted against whichever Case happens to be selected
-    later. Read-only/navigation callbacks remain unchanged.
+    recovery, M1 contextual action screens and M2 question/booking/change
+    actions must also not be reinterpreted against whichever Case happens to be
+    selected later. Generic navigation callbacks remain unchanged.
     """
 
     clean_action = str(action or "").strip()
@@ -148,11 +151,11 @@ async def resolve_case_callback_scope(
     action: str,
     allow_legacy_message_case_context: bool = False,
 ) -> CaseCallbackScope | None:
-    """Resolve a mutation against the explicitly selected active Case.
+    """Resolve a Case-sensitive action against the selected active Case.
 
-    New callbacks must carry ``:v2:<case_id>``. Historical unbound buttons stay
+    New callbacks may carry ``:v2:<case_id>``. Historical unbound buttons stay
     usable only while their context is unambiguous. With several active matters
-    an old unbound mutation is blocked unless the bot-rendered message visibly
+    an old unbound action is blocked unless the bot-rendered message visibly
     names the exact selected Case.
 
     A raw legacy button is also blocked when its bot message visibly names a
@@ -161,8 +164,8 @@ async def resolve_case_callback_scope(
     while preserving compatibility for genuinely old screens with no Case number.
 
     A bound button never switches the cabinet implicitly: if the client has
-    selected another Case since the message was rendered, the mutation is
-    rejected and the user must choose the intended matter explicitly first.
+    selected another Case since the message was rendered, the action is rejected
+    and the user must choose the intended matter explicitly first.
     """
 
     try:
