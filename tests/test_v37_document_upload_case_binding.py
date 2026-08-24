@@ -11,11 +11,25 @@ def test_generic_upload_chooser_emits_case_bound_document_type_callbacks():
     guard = read("app/bot/screens/document_upload_binding_guard.py")
 
     assert 'return f"doc_type:v2:{int(case_id)}:{document_type}"' in guard
-    assert "document_case_id=int(case.id)" in guard
+    assert "document_case_id=case_id" in guard
     assert "DocumentUploadStates.choosing_type" in guard
     assert "DocumentUploadStates.waiting_file" in guard
     assert "expected_case_id" in guard
     assert "int(case.id) != int(expected_case_id)" in guard
+
+
+def test_upload_entry_stale_screen_is_scoped_before_chooser_rearms_fsm():
+    entry = read("app/bot/screens/document_upload_entry_scope_guard.py")
+    bot = read("app/bot/bot.py")
+
+    assert 'callback_matches_action(c.data, "documents_upload_open")' in entry
+    assert 'action="documents_upload_open"' in entry
+    assert "allow_legacy_message_case_context=True" in entry
+    assert "if scope is None or scope.case is None" in entry
+    assert "document_upload_binding_guard._render_bound_chooser" in entry
+    assert bot.index("document_upload_entry_scope_guard.router,") < bot.index(
+        "document_upload_binding_guard.router,"
+    )
 
 
 def test_legacy_raw_document_type_callbacks_only_refresh_bound_chooser():
@@ -44,14 +58,13 @@ def test_file_message_for_another_selected_case_preserves_exact_upload_draft():
         "if selected_case is None or int(selected_case.id) != int(target_case.id):",
         1,
     )[1].split(
-        "# The exact selected Case is also the server-verified draft owner.",
+        "return await handler(event, data)",
         1,
     )[0]
     assert "await db.rollback()" in switched
     assert "_preserve_switched_case_upload" in switched
     assert "return None" in switched
     assert "state.clear()" not in switched
-    assert "return await handler(event, data)" not in switched
 
 
 def test_stale_or_stage_invalid_original_upload_case_still_clears_fail_closed():
@@ -155,9 +168,12 @@ def test_direct_replacement_keeps_stricter_document_version_snapshot_path():
     assert "int(latest.id) == int(document.id)" in middleware
 
 
-def test_upload_binding_guard_precedes_mutation_center_and_legacy_documents():
+def test_upload_binding_guards_precede_mutation_center_and_legacy_documents():
     bot = read("app/bot/bot.py")
 
+    assert bot.index("document_upload_entry_scope_guard.router,") < bot.index(
+        "document_upload_binding_guard.router,"
+    )
     assert bot.index("document_upload_binding_guard.router,") < bot.index(
         "document_mutation_guard.router,"
     )
