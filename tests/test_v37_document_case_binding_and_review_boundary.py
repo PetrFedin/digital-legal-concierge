@@ -84,10 +84,19 @@ def test_m2_documents_under_review_do_not_create_a_false_waiting_dead_end():
     assert 'route = str(getattr(case, "route", "") or "").upper()' in block
     assert 'if route == "M2" and review_only:' in block
     assert "CaseStatus.M2_SLOT_PENDING" in block
-    assert '[("📅 Выбрать время", "consult_slot_open")]' in block
+    assert '"📅 Выбрать дату и время"' in block
+    assert 'bound_case_callback("consult_booking_start", int(case.id))' in block
     assert "Документы переданы юридической команде и не блокируют запись" in block
     assert "основной обязательный шаг консультации показан в «Моё дело»" in block
     assert '[("📁 К текущему шагу обращения", "my_case_open")]' in block
+
+
+def test_m2_document_handoff_and_skip_emit_exact_case_booking_entry():
+    guard = read("app/bot/screens/document_mutation_guard.py")
+
+    assert "from app.bot.case_callback_scope import bound_case_callback" in guard
+    assert guard.count('bound_case_callback("consult_booking_start", case_id)') >= 2
+    assert '"📅 Выбрать дату и время"' in guard
 
 
 def test_document_review_html_is_personally_guarded_before_legacy_shell():
