@@ -171,6 +171,8 @@ class PaymentReviewService:
         payment: Payment,
         case_id: int,
     ) -> str | None:
+        """Return the review origin for this exact payment without aging evidence out."""
+
         events = list(
             (
                 await self.db.execute(
@@ -181,7 +183,6 @@ class PaymentReviewService:
                         AuditLog.action == "CONSULTATION_PAYMENT_REVIEW_REQUIRED",
                     )
                     .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
-                    .limit(50)
                 )
             ).scalars().all()
         )
@@ -207,7 +208,9 @@ class PaymentReviewService:
 
         The payment row is already locked by every caller. Audit history therefore
         acts as the durable idempotency record without adding mutable duplicate
-        resolution columns to the financial model.
+        resolution columns to the financial model. The lookup intentionally has no
+        arbitrary event-count window: older payments must remain retry-safe even on
+        long-lived Cases with large audit histories.
         """
 
         events = list(
@@ -220,7 +223,6 @@ class PaymentReviewService:
                         AuditLog.action == "CONSULTATION_PAYMENT_REVIEW_RESOLVED",
                     )
                     .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
-                    .limit(100)
                 )
             ).scalars().all()
         )
