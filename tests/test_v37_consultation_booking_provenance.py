@@ -45,6 +45,23 @@ def test_initial_slot_day_time_callbacks_fail_closed_on_snapshot_mismatch():
     assert '("📁 Выбрать обращение", "my_cases_open")' in source
 
 
+def test_stale_calendar_recovery_never_emits_raw_mutating_case_actions_when_case_known():
+    source = read("app/bot/consultation_booking_provenance.py")
+
+    recovery = source.split("async def _recover", 1)[1].split(
+        "class ConsultationBookingProvenanceMiddleware", 1
+    )[0]
+    assert 'bound_case_callback("consult_booking_start", int(case_id))' in recovery
+    assert 'bound_case_callback("message_create", int(case_id))' in recovery
+    assert 'case_id: int | None = None' in recovery
+
+    mismatch = source.split("current_message_id =", 1)[1].split(
+        "result = await handler(event, data)", 1
+    )[0]
+    assert "current_case_id = int(case.id) if case is not None else None" in mismatch
+    assert "case_id=current_case_id" in mismatch
+
+
 def test_bound_cancel_and_reschedule_are_not_downgraded_to_message_snapshot():
     source = read("app/bot/consultation_booking_provenance.py")
 
