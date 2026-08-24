@@ -61,6 +61,16 @@ def _message_flow_states() -> frozenset[str]:
     )
 
 
+def _draft_case_id(snapshot: dict) -> int:
+    raw_case_id = snapshot.get("client_message_case_id")
+    if raw_case_id in (None, ""):
+        raw_case_id = snapshot.get("case_id")
+    try:
+        return int(raw_case_id or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 async def _current_scope(event, db):
     ctx = BotContextService(db)
     if isinstance(event, CallbackQuery):
@@ -252,10 +262,7 @@ async def _validate_snapshot(event, state, db) -> bool:
 
     try:
         snapshot = await state.get_data()
-        raw_case_id = snapshot.get("client_message_case_id")
-        if raw_case_id in (None, ""):
-            raw_case_id = snapshot.get("case_id")
-        expected_case_id = int(raw_case_id or 0)
+        expected_case_id = _draft_case_id(snapshot)
         new_request = bool(snapshot.get("new_request_confirmed"))
         _user, current_case, active_cases = await _current_scope(event, db)
     except Exception:
@@ -353,6 +360,7 @@ class ClientMessageProvenanceMiddleware:
                     active_cases = await scope.ctx.case_service.get_active_cases_for_user(
                         int(scope.user.id)
                     )
+                    snapshot = await state.get_data() if state is not None else {}
                 except Exception:
                     logger.exception("Не удалось определить Case перед открытием переписки")
                     await db.rollback()
@@ -364,8 +372,34 @@ class ClientMessageProvenanceMiddleware:
                         text="Не удалось безопасно открыть вопрос. Другое обращение не изменено.",
                     )
                     return None
+
+                if str(snapshot.get("draft_text") or "").strip():
+                    origin_case_id = _draft_case_id(snapshot)
+                    target_case_id = int(current_case.id) if current_case is not None else 0
+                    draft_is_new_request = bool(snapshot.get("new_request_confirmed"))
+                    same_target = bool(
+                        (origin_case_id > 0 and origin_case_id == target_case_id)
+                        or (
+                            draft_is_new_request
+                            and current_case is None
+                            and len(active_cases) == 0
+                        )
+                    )
+                    if not same_target:
+                        await db.rollback()
+                        await _render_preserved_draft(
+                            event,
+                            state,
+                            current_case=current_case,
+                            active_count=len(active_cases),
+                            reason=(
+                                "У вас уже есть черновик в другом контексте. "
+                                "Открытие нового экрана не переносит его автоматически."
+                            ),
+                        )
+                        return None
+
                 if current_case is None and len(active_cases) > 1:
-                    snapshot = await state.get_data() if state is not None else {}
                     if str(snapshot.get("draft_text") or "").strip():
                         await _render_preserved_draft(
                             event,
