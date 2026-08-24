@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+from datetime import datetime
 
 from aiogram import Router
 from aiogram.exceptions import (
@@ -12,6 +14,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 
+from app.bot.case_callback_scope import (
+    bound_case_callback,
+    callback_matches_action,
+    resolve_case_callback_scope,
+)
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.states import ConsultationDescriptionStates
@@ -30,21 +37,60 @@ from app.domain.payments.mode import payments_disabled
 from app.domain.statuses.case_statuses import CaseStatus, RouteCode
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.models.case import Case
+from app.presentation_time import format_business_datetime, to_business_timezone
 
 router = Router()
 logger = logging.getLogger(__name__)
 
+_BOOKING_ENTRY_ACTIONS = ("consult_booking_start", "consult_slot_open")
+
+
+@dataclass(frozen=True)
+class _SlotView:
+    id: int
+    starts_at: datetime
+    ends_at: datetime
+    hold_expires_at: datetime | None = None
+
+
+def _slot_view(slot) -> _SlotView:
+    return _SlotView(
+        id=int(slot.id),
+        starts_at=slot.starts_at,
+        ends_at=slot.ends_at,
+        hold_expires_at=slot.hold_expires_at,
+    )
+
 
 def _format_date(value) -> str:
-    return value.strftime("%d.%m.%Y")
+    return format_business_datetime(
+        value,
+        pattern="%d.%m.%Y",
+        include_label=False,
+    )
 
 
 def _format_time(value) -> str:
-    return value.strftime("%H:%M")
+    return format_business_datetime(
+        value,
+        pattern="%H:%M",
+        include_label=False,
+    )
 
 
 def _format_datetime(value) -> str:
-    return value.strftime("%d.%m.%Y %H:%M")
+    return format_business_datetime(value)
+
+
+def _business_date_key(value) -> str:
+    return to_business_timezone(value).date().isoformat()
+
+
+def _booking_entry_action(value: str | None) -> str | None:
+    for action in _BOOKING_ENTRY_ACTIONS:
+        if callback_matches_action(value, action):
+            return action
+    return None
 
 
 def _slot_text(slot) -> str:
@@ -58,7 +104,7 @@ def _date_buttons(slots, callback_prefix: str):
     buttons: list[tuple[str, str]] = []
     seen: set[str] = set()
     for slot in slots:
-        key = slot.starts_at.date().isoformat()
+        key = _business_date_key(slot.starts_at)
         if key in seen:
             continue
         seen.add(key)
@@ -123,12 +169,22 @@ async def _show_description_required(callback: CallbackQuery) -> None:
     )
 
 
-async def _show_booking_error(callback: CallbackQuery, error: Exception) -> None:
+async def _show_booking_error(
+    callback: CallbackQuery,
+    error: Exception,
+    *,
+    case_id: int | None = None,
+) -> None:
+    retry = (
+        bound_case_callback("consult_booking_start", case_id)
+        if case_id
+        else "consult_booking_start"
+    )
     await _safe_edit(
         callback,
         f"Действие не выполнено: {error}",
         reply_markup=one(
-            ("🔄 Продолжить консультацию", "consult_booking_start"),
+            ("🔄 Продолжить консультацию", retry),
             ("✉️ Задать вопрос команде", "message_create"),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
@@ -156,15 +212,20 @@ async def contact_lawyer(callback: CallbackQuery, db, state: FSMContext):
         return
 
     if case:
+        case_id = int(case.id)
         consultation = await ConsultationService(db).get_current_for_case(case.id)
         if consultation and consultation.status == ConsultationStatus.BOOKED:
             primary = ("👨‍⚖ Открыть подтверждённую запись", "consultation_booked_open")
         elif consultation and consultation_description_ready(consultation):
-            primary = ("📅 Продолжить: выбрать время", "consult_booking_start")
+            primary = (
+                "📅 Продолжить: выбрать время",
+                bound_case_callback("consult_booking_start", case_id),
+            )
         else:
             primary = ("📝 Продолжить: описать вопрос", "consult_subject_start")
         await callback.message.edit_text(
             "💬 Юридическая консультация\n\n"
+            f"Обращение № {case.case_number}\n\n"
             "Продолжите сохранённый этап консультации либо напишите команде по обращению.",
             reply_markup=one(
                 primary,
@@ -368,12 +429,14 @@ async def save_description(message: Message, state: FSMContext, db):
     ctx = BotContextService(db)
     user = await ctx.get_user_from_message(message)
     try:
-        _case, consultation, was_booked = await ConsultationIntakeService(db).save_description(
+        case, consultation, was_booked = await ConsultationIntakeService(db).save_description(
             client=user,
             description=text,
             subject_type=data.get("subject_type", "new_or_other"),
             related_case_id=data.get("related_case_id"),
         )
+        case_id = int(case.id)
+        consultation_status = consultation.status
         await db.commit()
     except ActiveCaseRouteConflict as error:
         await db.rollback()
@@ -413,7 +476,7 @@ async def save_description(message: Message, state: FSMContext, db):
         return
 
     await state.clear()
-    if was_booked or consultation.status == ConsultationStatus.BOOKED:
+    if was_booked or consultation_status == ConsultationStatus.BOOKED:
         await message.answer(
             "✅ Вопрос обновлён. Дата и время консультации сохранены.\n\n"
             "Юрист увидит актуальное описание до встречи.",
@@ -432,7 +495,7 @@ async def save_description(message: Message, state: FSMContext, db):
         "нет, переходите к выбору времени без потери описания.",
         reply_markup=one(
             ("📄 Добавить документы", "documents_open"),
-            ("Продолжить без документов", "doc_skip_m2"),
+            ("Продолжить без документов", f"doc_skip_m2:v2:{case_id}"),
             ("✉️ Задать вопрос команде", "message_create"),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
@@ -440,16 +503,23 @@ async def save_description(message: Message, state: FSMContext, db):
     )
 
 
-async def _prepare_slots(callback: CallbackQuery, db):
-    ctx = BotContextService(db)
-    user = await ctx.get_user_from_callback(callback)
+async def _prepare_slots(callback: CallbackQuery, db, *, scope=None):
+    if scope is None:
+        ctx = BotContextService(db)
+        user = await ctx.get_user_from_callback(callback)
+    else:
+        user = scope.user
+    case_id_hint = int(scope.case.id) if scope is not None and scope.case is not None else None
     try:
         case, consultation = await ConsultationIntakeService(db).prepare_slot_selection(
             client=user
         )
         slots = await SlotService(db).get_available_slots(limit=60)
+        case_id = int(case.id)
+        consultation_id = int(consultation.id)
+        slot_views = [_slot_view(slot) for slot in slots]
         await db.commit()
-        return case, consultation, slots
+        return case_id, consultation_id, slot_views
     except ConsultationDescriptionRequired:
         # Keep a newly created M2 draft so /start and My Case can restore it.
         await db.commit()
@@ -461,15 +531,20 @@ async def _prepare_slots(callback: CallbackQuery, db):
         return None
     except ConsultationIntakeError as error:
         await db.rollback()
-        await _show_booking_error(callback, error)
+        await _show_booking_error(callback, error, case_id=case_id_hint)
         return None
     except Exception:
         await db.rollback()
         logger.exception("Не удалось подготовить выбор времени консультации")
+        retry = (
+            bound_case_callback("consult_booking_start", case_id_hint)
+            if case_id_hint
+            else "consult_booking_start"
+        )
         await callback.message.edit_text(
             "Не удалось загрузить доступное время. Данные вопроса и документов сохранены.",
             reply_markup=one(
-                ("🔄 Повторить", "consult_booking_start"),
+                ("🔄 Повторить", retry),
                 ("✉️ Написать команде", "message_create"),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
@@ -478,19 +553,44 @@ async def _prepare_slots(callback: CallbackQuery, db):
         return None
 
 
-@router.callback_query(lambda c: c.data in {"consult_booking_start", "consult_slot_open"})
+@router.callback_query(lambda c: _booking_entry_action(c.data) is not None)
 async def booking_start(callback: CallbackQuery, db):
-    prepared = await _prepare_slots(callback, db)
+    action = _booking_entry_action(callback.data)
+    if action is None:
+        return
+    scope = await resolve_case_callback_scope(
+        callback,
+        db,
+        action=action,
+        allow_legacy_message_case_context=True,
+    )
+    if scope is None:
+        return
+    if scope.case is None or str(scope.case.route or "").upper() != RouteCode.M2.value:
+        await db.rollback()
+        await _safe_edit(
+            callback,
+            "Выбор времени доступен только внутри текущего консультационного обращения. Ничего не изменено.",
+            reply_markup=one(
+                ("📁 Выбрать обращение", "my_cases_open"),
+                ("✉️ Написать команде", "message_create"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    prepared = await _prepare_slots(callback, db, scope=scope)
     if prepared is None:
         return
-    _case, _consultation, slots = prepared
+    case_id, _consultation_id, slots = prepared
+    retry = bound_case_callback("consult_booking_start", case_id)
     if not slots:
         await _safe_edit(
             callback,
             "Сейчас свободных слотов нет. Вопрос и документы сохранены.\n\n"
             "Повторите позже или напишите юридической команде.",
             reply_markup=one(
-                ("🔄 Проверить свободное время", "consult_booking_start"),
+                ("🔄 Проверить свободное время", retry),
                 ("✉️ Написать команде", "message_create"),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
@@ -516,9 +616,9 @@ async def choose_date(callback: CallbackQuery, db):
     prepared = await _prepare_slots(callback, db)
     if prepared is None:
         return
-    _case, _consultation, slots = prepared
+    case_id, _consultation_id, slots = prepared
     selected = [
-        slot for slot in slots if slot.starts_at.date().isoformat() == date_key
+        slot for slot in slots if _business_date_key(slot.starts_at) == date_key
     ]
     if not selected:
         await callback.answer("На эту дату свободное время уже закончилось.", show_alert=True)
@@ -536,14 +636,17 @@ async def choose_date(callback: CallbackQuery, db):
         f"🕐 Выберите время на {_format_date(selected[0].starts_at)}.",
         reply_markup=one(
             *buttons,
-            ("← Другие даты", "consult_booking_start"),
+            (
+                "← Другие даты",
+                bound_case_callback("consult_booking_start", case_id),
+            ),
             ("📄 Документы", "documents_open"),
             ("🏠 Главная", "nav_home"),
         ),
     )
 
 
-async def _show_booked(callback: CallbackQuery, consultation, slot) -> None:
+async def _show_booked(callback: CallbackQuery, slot: _SlotView) -> None:
     await _safe_edit(
         callback,
         "✅ Консультация подтверждена.\n\n"
@@ -589,12 +692,14 @@ async def choose_slot(callback: CallbackQuery, db):
             slot_id=slot_id,
             payment_required=not payments_disabled(),
         )
+        case_id = int(case.id)
         if payments_disabled():
             consultation, slot = await intake.confirm_without_payment(
                 client=user,
                 case=case,
                 consultation=consultation,
             )
+        slot_view = _slot_view(slot)
         await db.commit()
     except ConsultationDescriptionRequired:
         await db.rollback()
@@ -624,24 +729,30 @@ async def choose_slot(callback: CallbackQuery, db):
         return
 
     if payments_disabled():
-        await _show_booked(callback, consultation, slot)
+        await _show_booked(callback, slot_view)
         return
 
     hold_until = (
-        _format_datetime(slot.hold_expires_at)
-        if slot.hold_expires_at
+        _format_datetime(slot_view.hold_expires_at)
+        if slot_view.hold_expires_at
         else "в течение 10 минут"
     )
     await _safe_edit(
         callback,
         "✅ Время временно удерживается за вами.\n\n"
-        f"Дата: {_format_date(slot.starts_at)}\n"
-        f"Время: {_format_time(slot.starts_at)}–{_format_time(slot.ends_at)}\n"
+        f"Дата: {_format_date(slot_view.starts_at)}\n"
+        f"Время: {_format_time(slot_view.starts_at)}–{_format_time(slot_view.ends_at)}\n"
         f"Резерв до: {hold_until}\n\n"
         "Подтвердите запись оплатой до окончания резерва. Вопрос и документы уже сохранены.",
         reply_markup=one(
-            ("💳 Оплатить и подтвердить", "consult_pay"),
-            ("Выбрать другое время", "consult_booking_start"),
+            (
+                "💳 Оплатить и подтвердить",
+                bound_case_callback("consult_pay", case_id),
+            ),
+            (
+                "Выбрать другое время",
+                bound_case_callback("consult_booking_start", case_id),
+            ),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         ),
@@ -653,12 +764,13 @@ async def stale_consult_pay(callback: CallbackQuery, db):
     ctx, user, case = await _active_context(callback, db)
     if not case:
         completed_m2 = await latest_completed_strict_m2_case_for_user(db, user_id=user.id)
+        completed_case_number = str(completed_m2.case_number) if completed_m2 else None
         await db.rollback()
-        if completed_m2:
+        if completed_case_number:
             await _safe_edit(
                 callback,
                 "🔒 КОНСУЛЬТАЦИЯ УЖЕ ЗАВЕРШЕНА\n\n"
-                f"Дело {completed_m2.case_number} находится в архиве. "
+                f"Дело {completed_case_number} находится в архиве. "
                 "Старая кнопка подтверждения оплаты не создаёт новую запись и не меняет закрытое обращение.\n\n"
                 "Откройте итог консультации или нужный раздел архива.",
                 reply_markup=one(
@@ -681,6 +793,9 @@ async def stale_consult_pay(callback: CallbackQuery, db):
             ),
         )
         return
+
+    case_id = int(case.id)
+    case_number = str(case.case_number)
     if str(case.route or "") != RouteCode.M2.value:
         await db.rollback()
         await _safe_edit(
@@ -695,21 +810,27 @@ async def stale_consult_pay(callback: CallbackQuery, db):
         return
     consultation = await ConsultationService(db).get_current_for_case(case.id)
     if not consultation:
+        await db.rollback()
         await callback.message.edit_text(
-            "Активная запись не найдена. Описание дела сохранено в карточке.",
+            "Активная запись не найдена. Описание дела сохранено в карточке.\n\n"
+            f"Обращение № {case_number}",
             reply_markup=one(
-                ("📅 Выбрать время", "consult_booking_start"),
+                (
+                    "📅 Выбрать время",
+                    bound_case_callback("consult_booking_start", case_id),
+                ),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
         )
         return
     try:
-        consultation, slot = await ConsultationIntakeService(db).confirm_without_payment(
+        _consultation, slot = await ConsultationIntakeService(db).confirm_without_payment(
             client=user,
             case=case,
             consultation=consultation,
         )
+        slot_view = _slot_view(slot)
         await db.commit()
     except ConsultationDescriptionRequired:
         await db.rollback()
@@ -717,7 +838,7 @@ async def stale_consult_pay(callback: CallbackQuery, db):
         return
     except (ConsultationIntakeError, SlotUnavailableError, ValueError) as error:
         await db.rollback()
-        await _show_booking_error(callback, error)
+        await _show_booking_error(callback, error, case_id=case_id)
         return
     except Exception:
         await db.rollback()
@@ -725,10 +846,13 @@ async def stale_consult_pay(callback: CallbackQuery, db):
         await callback.message.edit_text(
             "Запись временно не подтверждена. Вопрос и выбранные данные сохранены.",
             reply_markup=one(
-                ("🔄 Повторить подтверждение", "consult_pay"),
+                (
+                    "🔄 Повторить подтверждение",
+                    bound_case_callback("consult_pay", case_id),
+                ),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
         )
         return
-    await _show_booked(callback, consultation, slot)
+    await _show_booked(callback, slot_view)
