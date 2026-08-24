@@ -16,6 +16,7 @@ from aiogram.types import BotCommand, BotCommandScopeDefault, CallbackQuery, Mes
 
 from app.bot.calculator_draft import CalculatorDraftNavigationMiddleware
 from app.bot.client_activity import record_client_activity
+from app.bot.client_case_navigation import install_case_bound_navigation
 from app.bot.client_message_provenance import ClientMessageProvenanceMiddleware
 from app.bot.client_wording_patch import install_client_wording
 from app.bot.consultation_booking_provenance import ConsultationBookingProvenanceMiddleware
@@ -172,6 +173,9 @@ def build_fsm_storage() -> BaseStorage:
 def build_dispatcher() -> Dispatcher:
     install_client_wording()
     client_archive.install_archive_button()
+    # Install after the archive/presentation wrappers so the final My Case
+    # keyboard keeps their labels/order and only upgrades callback provenance.
+    install_case_bound_navigation()
     calculator_active_case_recovery.install_active_case_recovery_actions()
     dispatcher = Dispatcher(storage=build_fsm_storage())
     dispatcher.update.middleware(DbMiddleware())
