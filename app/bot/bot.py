@@ -49,6 +49,7 @@ from app.bot.screens import (
     consultation_intake,
     consultation_results,
     consultations,
+    contact_lawyer_scope_guard,
     document_action_center,
     document_mutation_guard,
     document_read_scope_guard,
@@ -206,12 +207,9 @@ def build_dispatcher() -> Dispatcher:
 
     # Order is a business invariant. Provenance-bearing/exact-case guards must
     # see historical Telegram callbacks before legacy handlers can mutate a
-    # case, payment, document or appointment. client_archive owns explicit
-    # read-only terminal navigation. client_archive_payment_guard owns completed
-    # pay_open/fake buttons and delegates live payments to the canonical payment
-    # guard, so archive details cannot lose their exact Case through secondary
-    # navigation. document_upload_entry_scope_guard owns the raw Add Document
-    # entry before it may re-arm a draft against a newly selected Case.
+    # case, payment, document or appointment. The early contact guard preserves
+    # the existing terminal-M2 / M1-rejected / normal contact semantics only
+    # after the visible or bound Case context has been proven.
     for router in [
         navigation_history_guard.router,
         client_archive.router,
@@ -230,6 +228,7 @@ def build_dispatcher() -> Dispatcher:
         document_action_center.router,
         documents.router,
         no_payment_legal.router,
+        contact_lawyer_scope_guard.router,
         consultation_results.router,
         consultation_booking_ui.router,
         consultation_description.router,
