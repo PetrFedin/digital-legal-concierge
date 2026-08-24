@@ -26,7 +26,7 @@ from app.api.lawyer_m1_rejection import router as lawyer_m1_rejection_router
 from app.api.lawyer_poa import router as lawyer_poa_router
 from app.db.session import get_db
 from app.domain.statuses.consultation_statuses import ConsultationStatus
-from app.presentation_time import to_business_timezone
+from app.presentation_time import format_business_datetime, to_business_timezone
 
 router = APIRouter(tags=["lawyer-product"])
 
@@ -58,6 +58,13 @@ def _business_today(value: object, *, now: datetime | None = None) -> bool:
         return False
     current = now or datetime.now(timezone.utc)
     return to_business_timezone(scheduled_at).date() == to_business_timezone(current).date()
+
+
+def _business_schedule_note(value: object) -> str | None:
+    scheduled_at = _parse_utc_datetime(value)
+    if scheduled_at is None:
+        return None
+    return f"Назначено на {format_business_datetime(scheduled_at)}"
 
 
 async def business_timezone_guided_workspace_data(
@@ -97,9 +104,7 @@ async def business_timezone_guided_workspace_data(
             "Открыть консультацию" if is_today else "Подготовиться к консультации"
         )
         item["priority"] = "high" if is_today else "normal"
-        item["action_note"] = (
-            f"Назначено на {scheduled_at}" if scheduled_at else None
-        )
+        item["action_note"] = _business_schedule_note(scheduled_at)
 
     payload["cases"] = cases
     payload["summary"] = _rebuild_workspace_summary(cases)
