@@ -5,14 +5,15 @@ import logging
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramServerError
 from aiogram.types import CallbackQuery, Message
 
+from app.bot.case_callback_scope import callback_matches_action, resolve_case_callback_scope
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 
 logger = logging.getLogger(__name__)
 
-_MESSAGE_ENTRY_CALLBACKS = {
+_MESSAGE_ENTRY_CALLBACKS = (
     "message_create",
-}
+)
 _MESSAGE_NEW_TARGET_CALLBACKS = frozenset(
     {
         "message_new_request",
@@ -35,9 +36,29 @@ _MESSAGE_FLOW_PREFIXES = (
 )
 
 
+def _message_entry_action(value: str | None) -> str | None:
+    for action in _MESSAGE_ENTRY_CALLBACKS:
+        if callback_matches_action(value, action):
+            return action
+    return None
+
+
 def _is_message_flow_callback(value: str | None) -> bool:
     data = str(value or "")
     return data in _MESSAGE_FLOW_CALLBACKS or data.startswith(_MESSAGE_FLOW_PREFIXES)
+
+
+def _message_flow_states() -> frozenset[str]:
+    from app.bot.screens.messages import MessageStates
+
+    return frozenset(
+        {
+            MessageStates.choosing_category.state,
+            MessageStates.choosing_urgency.state,
+            MessageStates.waiting_message.state,
+            MessageStates.confirming_message.state,
+        }
+    )
 
 
 async def _current_scope(event, db):
@@ -249,7 +270,6 @@ async def _validate_snapshot(event, state, db) -> bool:
         )
         return False
 
-    valid = True
     reason = ""
     if expected_case_id > 0:
         valid = current_case is not None and int(current_case.id) == expected_case_id
@@ -258,8 +278,8 @@ async def _validate_snapshot(event, state, db) -> bool:
         valid = current_case is None and len(active_cases) == 0
         reason = "Пока готовился новый запрос, появилось или стало доступно активное обращение."
     else:
-        # This is not an active message draft managed by this middleware.
-        return True
+        valid = False
+        reason = "Этот старый шаг формы больше не содержит точного контекста обращения."
 
     if valid:
         return True
@@ -289,7 +309,7 @@ async def _clear_provenance_if_flow_finished(state) -> None:
         return
     try:
         current_state = await state.get_state()
-        if current_state is None:
+        if current_state not in _message_flow_states():
             await state.update_data(
                 client_message_case_id=None,
                 client_message_recovery_case_id=None,
@@ -312,11 +332,27 @@ class ClientMessageProvenanceMiddleware:
         state = data.get("state")
         db = data.get("db")
         callback_data = str(event.data or "") if isinstance(event, CallbackQuery) else ""
+        entry_action = (
+            _message_entry_action(callback_data)
+            if isinstance(event, CallbackQuery)
+            else None
+        )
 
-        if isinstance(event, CallbackQuery) and callback_data in _MESSAGE_ENTRY_CALLBACKS:
+        if isinstance(event, CallbackQuery) and entry_action is not None:
             if db is not None:
                 try:
-                    _user, current_case, active_cases = await _current_scope(event, db)
+                    scope = await resolve_case_callback_scope(
+                        event,
+                        db,
+                        action=entry_action,
+                        allow_legacy_message_case_context=True,
+                    )
+                    if scope is None:
+                        return None
+                    current_case = scope.case
+                    active_cases = await scope.ctx.case_service.get_active_cases_for_user(
+                        int(scope.user.id)
+                    )
                 except Exception:
                     logger.exception("Не удалось определить Case перед открытием переписки")
                     await db.rollback()
@@ -355,6 +391,9 @@ class ClientMessageProvenanceMiddleware:
             if db is None or state is None:
                 return result
             try:
+                current_state = await state.get_state()
+                if current_state not in _message_flow_states():
+                    return result
                 _user, case, _active_cases = await _current_scope(event, db)
                 if case is not None:
                     await state.update_data(client_message_case_id=int(case.id))
@@ -404,6 +443,7 @@ class ClientMessageProvenanceMiddleware:
             return await handler(event, data)
 
         try:
+            current_state = await state.get_state()
             snapshot = await state.get_data()
         except Exception:
             return await handler(event, data)
@@ -411,7 +451,14 @@ class ClientMessageProvenanceMiddleware:
         raw_case_id = snapshot.get("client_message_case_id")
         if raw_case_id in (None, ""):
             raw_case_id = snapshot.get("case_id")
-        if raw_case_id in (None, "") and not bool(snapshot.get("new_request_confirmed")):
+        has_message_provenance = raw_case_id not in (None, "") or bool(
+            snapshot.get("new_request_confirmed")
+        )
+        if not has_message_provenance:
+            return await handler(event, data)
+
+        if current_state not in _message_flow_states():
+            await _clear_provenance_if_flow_finished(state)
             return await handler(event, data)
 
         if not await _validate_snapshot(event, state, db):
