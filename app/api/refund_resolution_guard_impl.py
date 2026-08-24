@@ -296,7 +296,7 @@ _REFUND_RETRY_UI_PATCH = r"""
 (function(){
   const baseRenderRows=renderRows;
   function retryCard(x){
-    return `<article style="background:#fff7e6;border:1px solid #fedf89;border-radius:14px;padding:14px;margin-bottom:12px"><div class="row"><div><span class="context other">Возврат требует повторной попытки</span><h3>${esc(x.case_number)} · платёж #${Number(x.payment_id)}</h3><div class="muted">${esc(x.client_name||'—')} · ${Number(x.amount).toLocaleString('ru-RU')} ${esc(x.currency||'RUB')}</div></div><b>${esc(x.status)}</b></div><div class="notice" style="margin-top:10px"><b>Деньги не отмечены возвращёнными.</b> Сначала устраните причину отказа у провайдера/банка. Затем верните платёж в рабочую очередь и после фактической операции отдельно нажмите «Возврат выполнен».</div><div class="actions"><button data-payment-id="${Number(x.payment_id)}" onclick="retryRefund(${Number(x.payment_id)},this)">Вернуть в очередь возврата</button><a class="button gray" href="/message-center/ui?case_id=${Number(x.case_id)}">Связаться с клиентом</a><a class="button gray" href="/admin/workdesk/ui?case_id=${Number(x.case_id)}">Открыть дело</a></div></article>`;
+    return `<article style="background:#fff7e6;border:1px solid #fedf89;border-radius:14px;padding:14px;margin-bottom:12px"><div class="row"><div><span class="context other">Возврат требует повторной попытки</span><h3>${esc(x.case_number)} · платёж #${Number(x.payment_id)}</h3><div class="muted">${esc(x.client_name||'—')} · ${Number(x.amount).toLocaleString('ru-RU')} ${esc(x.currency||'RUB')}</div></div><b>${esc(x.status)}</b></div><div class="notice" style="margin-top:10px"><b>Сейчас.</b> Деньги не отмечены возвращёнными. Сначала устраните причину отказа у провайдера/банка.</div><div class="action-box"><b>Главный следующий шаг</b><br>Верните платёж в рабочую очередь только после устранения причины. Затем выполните фактический возврат у провайдера и отдельно зафиксируйте его результат.</div><div class="actions"><button data-payment-id="${Number(x.payment_id)}" onclick="retryRefund(${Number(x.payment_id)},this)">Вернуть в очередь возврата</button><a class="button gray" href="/message-center/ui?case_id=${Number(x.case_id)}">Связаться с клиентом</a><a class="button gray" href="/admin/workdesk/ui?case_id=${Number(x.case_id)}">Открыть дело</a></div></article>`;
   }
   renderRows=function(rows){
     const retry=rows.filter(x=>x.retry_only),pending=rows.filter(x=>!x.retry_only);
@@ -321,6 +321,7 @@ _REFUND_RETRY_UI_PATCH = r"""
     const data=await Promise.all([api('/admin/refunds'),api('/admin/refunds/declined')]);
     const rows=[...(data[0]||[]),...(data[1]||[])],visible=visibleRows(rows);
     if(requestedPaymentId&&visible.length)terminalCaseId=Number(visible[0].case_id)||terminalCaseId;
+    updateRefundSummary(visible);
     renderRows(visible);
   };
 })();
