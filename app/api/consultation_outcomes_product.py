@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -92,6 +94,45 @@ router.add_api_route(
 )
 
 
+def _js_string(value: object) -> str:
+    return json.dumps(str(value or ""), ensure_ascii=False).replace("<", "\\u003c")
+
+
+def _inject_business_timezone_ui(html: str) -> str:
+    """Make the canonical admin outcome desk use the same outward timezone.
+
+    The legacy base HTML formats timestamps in the browser's local timezone.
+    Staff may work from another region, so that makes the same consultation look
+    different in Telegram, Workdesk and the outcome desk. The product owner
+    appends one final presentation patch instead of changing business data or
+    adding a second route owner.
+    """
+
+    head, marker, tail = html.rpartition("</body>")
+    if not marker:
+        raise RuntimeError("Consultation outcomes template contract changed: closing body missing")
+    zone = _js_string(settings.business_timezone)
+    label = _js_string(settings.business_timezone_label)
+    patch = f"""
+<script>
+(function(){{
+  const businessTimeZone={zone};
+  const businessTimeLabel={label};
+  dt=function(v){{
+    if(!v)return '—';
+    try{{
+      const rendered=new Intl.DateTimeFormat('ru-RU',{{dateStyle:'short',timeStyle:'short',timeZone:businessTimeZone}}).format(new Date(v));
+      return businessTimeLabel?rendered+' '+businessTimeLabel:rendered;
+    }}catch(_){{return String(v)}}
+  }};
+  const subtitle=document.querySelector('header .header p');
+  if(subtitle)subtitle.textContent=subtitle.textContent+' · Время: '+(businessTimeLabel||businessTimeZone);
+}})();
+</script>
+"""
+    return head + patch + marker + tail
+
+
 @router.get("/ui", response_class=HTMLResponse, name="consultation_outcomes_ui")
 async def consultation_outcomes_ui(
     request: Request,
@@ -117,7 +158,8 @@ async def consultation_outcomes_ui(
         return RedirectResponse(url="/admin-ui", status_code=303)
 
     html = _inject_client_no_show_ui(OUTCOMES_HTML)
-    return HTMLResponse(inject_legacy_outcome_ui(html))
+    html = inject_legacy_outcome_ui(html)
+    return HTMLResponse(_inject_business_timezone_ui(html))
 
 
 __all__ = ["consultation_outcomes_ui", "router"]
