@@ -26,6 +26,23 @@ _PROVENANCE_KEYS = (
 )
 
 
+def _parse_confirmation(value: str) -> tuple[int, int, int] | None:
+    if not value.startswith(_RESCHEDULE_CONFIRM_PREFIX):
+        return None
+    try:
+        consultation_raw, old_slot_raw, new_slot_raw = value[
+            len(_RESCHEDULE_CONFIRM_PREFIX) :
+        ].split(":", 2)
+        consultation_id = int(consultation_raw)
+        old_slot_id = int(old_slot_raw)
+        new_slot_id = int(new_slot_raw)
+    except (TypeError, ValueError):
+        return None
+    if consultation_id <= 0 or old_slot_id < 0 or new_slot_id <= 0:
+        return None
+    return consultation_id, old_slot_id, new_slot_id
+
+
 async def _current_booked_context(event: CallbackQuery, db):
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(event)
@@ -49,6 +66,24 @@ async def _clear(state) -> None:
         )
     except Exception:
         logger.warning("Не удалось очистить provenance переноса консультации")
+
+
+async def _store_current(event: CallbackQuery, state, db) -> bool:
+    if state is None or db is None:
+        return False
+    try:
+        _user, case, consultation = await _current_booked_context(event, db)
+        if case is None or consultation is None:
+            return False
+        await state.update_data(
+            consult_reschedule_case_id=int(case.id),
+            consult_reschedule_id=int(consultation.id),
+            consult_reschedule_message_id=int(event.message.message_id),
+        )
+        return True
+    except Exception:
+        logger.warning("Не удалось сохранить provenance переноса", exc_info=True)
+        return False
 
 
 async def _recover(event: CallbackQuery, state, text: str) -> None:
@@ -123,25 +158,37 @@ class ConsultationChangeProvenanceMiddleware:
                 return None
 
             result = await handler(event, data)
-            if state is None:
-                return result
-            try:
-                _user, case, consultation = await _current_booked_context(event, db)
-                if case is not None and consultation is not None:
-                    await state.update_data(
-                        consult_reschedule_case_id=int(case.id),
-                        consult_reschedule_id=int(consultation.id),
-                        consult_reschedule_message_id=int(event.message.message_id),
-                    )
-            except Exception:
-                logger.warning("Не удалось сохранить provenance переноса", exc_info=True)
+            if not await _store_current(event, state, db):
+                await _clear(state)
             return result
 
         if value.startswith(_RESCHEDULE_CONFIRM_PREFIX):
+            expected = _parse_confirmation(value)
             result = await handler(event, data)
-            # Confirmation is exact-id bound. Once it has been processed, any
-            # older intermediate calendar must stop being reusable.
-            await _clear(state)
+            if expected is None or db is None or state is None:
+                await _clear(state)
+                return result
+
+            expected_consultation_id, expected_old_slot_id, _new_slot_id = expected
+            try:
+                _user, case, consultation = await _current_booked_context(event, db)
+                retry_calendar_rendered = bool(
+                    case is not None
+                    and consultation is not None
+                    and int(consultation.id) == expected_consultation_id
+                    and int(consultation.slot_id or 0) == expected_old_slot_id
+                )
+            except Exception:
+                retry_calendar_rendered = False
+
+            if retry_calendar_rendered:
+                # The domain action can lose a race for the requested new slot
+                # and render a fresh reschedule calendar in the same Telegram
+                # message. Keep provenance for that new calendar. A successful
+                # reschedule changes slot_id, so the old calendar is retired.
+                await _store_current(event, state, db)
+            else:
+                await _clear(state)
             return result
 
         if not value.startswith(_RESCHEDULE_PREFIXES):
