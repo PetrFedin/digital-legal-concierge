@@ -48,6 +48,7 @@ from app.bot.screens import (
     consultations,
     document_action_center,
     document_mutation_guard,
+    document_read_scope_guard,
     document_upload_binding_guard,
     documents,
     fallback,
@@ -201,7 +202,9 @@ def build_dispatcher() -> Dispatcher:
     # replay-safe/read-only screens. reply_menu_direct owns the persistent menu
     # before old trampoline handlers. payment_received_money_guard is before the
     # archive/payment routers so received money under review can never send the
-    # client into another slot/payment loop.
+    # client into another slot/payment loop. document_read_scope_guard routes
+    # terminal documents to the existing read-only archive before the active-only
+    # action center can turn that button into a dead end.
     for router in [
         navigation_history_guard.router,
         reply_menu_direct.router,
@@ -213,6 +216,7 @@ def build_dispatcher() -> Dispatcher:
         my_case.router,
         document_upload_binding_guard.router,
         document_mutation_guard.router,
+        document_read_scope_guard.router,
         document_action_center.router,
         documents.router,
         no_payment_legal.router,
