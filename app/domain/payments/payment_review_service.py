@@ -31,6 +31,10 @@ class PaymentReviewResolutionError(ValueError):
     pass
 
 
+class PaymentReviewConflictError(PaymentReviewResolutionError):
+    """A stale review command conflicts with an already persisted decision."""
+
+
 class PaymentReviewService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -193,6 +197,43 @@ class PaymentReviewService:
             return str(old_value.get("status") or "") or None
         return None
 
+    async def _latest_resolution_event(
+        self,
+        *,
+        payment: Payment,
+        case_id: int,
+    ) -> AuditLog | None:
+        """Return the persisted review decision for this exact payment.
+
+        The payment row is already locked by every caller. Audit history therefore
+        acts as the durable idempotency record without adding mutable duplicate
+        resolution columns to the financial model.
+        """
+
+        events = list(
+            (
+                await self.db.execute(
+                    select(AuditLog)
+                    .where(
+                        AuditLog.entity_type == "case",
+                        AuditLog.entity_id == int(case_id),
+                        AuditLog.action == "CONSULTATION_PAYMENT_REVIEW_RESOLVED",
+                    )
+                    .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+                    .limit(100)
+                )
+            ).scalars().all()
+        )
+        for event in events:
+            new_value = event.new_value or {}
+            try:
+                event_payment_id = int(new_value.get("payment_id") or 0)
+            except (TypeError, ValueError):
+                event_payment_id = 0
+            if event_payment_id == int(payment.id):
+                return event
+        return None
+
     @staticmethod
     def _require_comment(comment: str | None) -> str:
         normalized = str(comment or "").strip()
@@ -201,6 +242,63 @@ class PaymentReviewService:
                 "Укажите комментарий администратора не короче 5 символов"
             )
         return normalized
+
+    async def _require_exact_retry_or_conflict(
+        self,
+        *,
+        payment: Payment,
+        case: Case,
+        consultation: Consultation,
+        actor_id: int | None,
+        decision: str,
+        comment: str,
+        slot_id: int | None = None,
+        compare_slot: bool = False,
+    ) -> None:
+        """Accept only an exact retry of the already committed review command.
+
+        This distinguishes a network retry from a second administrator acting on
+        a stale browser tab. Returning success merely because the payment reached
+        PAID/REFUND_PENDING would hide conflicting decisions.
+        """
+
+        event = await self._latest_resolution_event(
+            payment=payment,
+            case_id=int(case.id),
+        )
+        if event is None:
+            raise PaymentReviewConflictError(
+                "Платёж уже вышел из очереди сверки другим процессом. Обновите карточку перед новым решением."
+            )
+
+        new_value = event.new_value or {}
+        actual_decision = str(new_value.get("decision") or "").strip().lower()
+        try:
+            actual_consultation_id = int(new_value.get("consultation_id") or 0)
+        except (TypeError, ValueError):
+            actual_consultation_id = 0
+        try:
+            actual_slot_id = int(new_value.get("slot_id") or 0)
+        except (TypeError, ValueError):
+            actual_slot_id = 0
+        expected_slot_id = int(slot_id or 0)
+        actual_comment = str(event.comment or "").strip()
+        actual_actor_id = int(event.actor_id) if event.actor_id is not None else None
+        expected_actor_id = int(actor_id) if actor_id is not None else None
+
+        same = bool(
+            actual_decision == str(decision).strip().lower()
+            and actual_consultation_id == int(consultation.id)
+            and actual_comment == str(comment).strip()
+            and actual_actor_id == expected_actor_id
+            and (not compare_slot or actual_slot_id == expected_slot_id)
+        )
+        if same:
+            return
+
+        raise PaymentReviewConflictError(
+            "Платёж уже обработан другим или отличающимся решением. Обновите очередь: повторять старую команду автоматически нельзя."
+        )
 
     async def _record_resolution(
         self,
@@ -248,6 +346,16 @@ class PaymentReviewService:
         )
 
         if payment.status == PaymentStatus.PAID:
+            await self._require_exact_retry_or_conflict(
+                payment=payment,
+                case=case,
+                consultation=consultation,
+                actor_id=actor_id,
+                decision="confirm_existing",
+                comment=comment,
+                slot_id=consultation.slot_id,
+                compare_slot=True,
+            )
             return payment, consultation
         if payment.status != PaymentStatus.PAID_REVIEW:
             raise PaymentReviewResolutionError(
@@ -350,6 +458,16 @@ class PaymentReviewService:
         )
 
         if payment.status == PaymentStatus.PAID:
+            await self._require_exact_retry_or_conflict(
+                payment=payment,
+                case=case,
+                consultation=consultation,
+                actor_id=actor_id,
+                decision="assign_slot",
+                comment=comment,
+                slot_id=slot_id,
+                compare_slot=True,
+            )
             return payment, consultation
         if payment.status != PaymentStatus.PAID_REVIEW:
             raise PaymentReviewResolutionError(
@@ -476,6 +594,14 @@ class PaymentReviewService:
         )
 
         if payment.status == PaymentStatus.REFUND_PENDING:
+            await self._require_exact_retry_or_conflict(
+                payment=payment,
+                case=case,
+                consultation=consultation,
+                actor_id=actor_id,
+                decision="refund_pending",
+                comment=comment,
+            )
             return payment, consultation
         if payment.status != PaymentStatus.PAID_REVIEW:
             raise PaymentReviewResolutionError(
