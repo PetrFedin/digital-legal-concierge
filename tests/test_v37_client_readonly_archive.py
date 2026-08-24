@@ -17,6 +17,22 @@ def test_client_case_history_uses_business_timezone_and_exact_case_pagination():
     assert 'bound_case_callback("message_create", case_id)' in source
 
 
+def test_case_activity_consultation_details_use_same_business_timezone_as_history_heading():
+    source = read("app/domain/cases/case_activity.py")
+
+    assert "from app.presentation_time import format_business_datetime" in source
+    helper = source.split("def _format_datetime", 1)[1].split(
+        "def _document_label", 1
+    )[0]
+    assert "format_business_datetime(" in helper
+    assert 'pattern="%d.%m.%Y в %H:%M"' in helper
+    assert 'return parsed.strftime("%d.%m.%Y в %H:%M")' not in helper
+    assert '"CONSULTATION_SLOT_HELD"' in source
+    assert '"CONSULTATION_RESCHEDULED"' in source
+    assert 'return f"Дата и время: {scheduled}."' in source
+    assert 'return f"Новое время: {scheduled}."' in source
+
+
 def test_legacy_history_prefers_visible_completed_case_before_latest_fallback():
     source = read("app/bot/screens/history.py")
 
