@@ -7,7 +7,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, Telegra
 from aiogram.types import BufferedInputFile, CallbackQuery
 from sqlalchemy import select
 
-from app.bot.case_callback_scope import bound_case_callback
+from app.bot.case_callback_scope import bound_case_callback, callback_matches_action
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.domain.cases.service_contract import (
@@ -230,9 +230,14 @@ async def open_service_contract(callback: CallbackQuery, db):
     )
 
 
-@router.callback_query(lambda c: c.data == "contract_sign")
+@router.callback_query(lambda c: callback_matches_action(c.data, "contract_sign"))
 async def legacy_contract_confirmation(callback: CallbackQuery, db):
-    """Old generic buttons may not confirm a contract they did not identify."""
+    """Historical generic or Case-only buttons may not confirm a document.
+
+    Older M1 screens emitted ``contract_sign`` or ``contract_sign:v2:<case>``.
+    Neither identifies the exact published document/version. This early router
+    deliberately consumes both forms before the legacy M1 mutator mounted later.
+    """
 
     _ctx, _user, case = await _context(callback, db)
     if not case:
@@ -241,7 +246,7 @@ async def legacy_contract_confirmation(callback: CallbackQuery, db):
     await _show(
         callback,
         "Перед подтверждением нужно открыть текущую версию договора. "
-        "Старая кнопка без номера версии не может создать платёж.",
+        "Старая кнопка без идентификатора документа и номера версии не может подтвердить договор или создать платёж.",
         buttons=(
             ("📝 Открыть актуальный договор", "contract_open"),
             ("📁 Моё дело", "my_case_open"),
