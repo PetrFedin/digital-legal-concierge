@@ -68,6 +68,7 @@ from app.bot.screens import (
     no_payment,
     no_payment_legal,
     payment_archive_guard,
+    payment_list_resume_guard,
     payment_received_money_guard,
     payments,
     poa_handoff,
@@ -205,12 +206,12 @@ def build_dispatcher() -> Dispatcher:
     dispatcher.callback_query.middleware(flood_control)
     dispatcher.callback_query.middleware(CallbackAcknowledgeMiddleware())
 
-    # Order is a business invariant. Provenance-bearing/exact-case guards must
-    # see historical Telegram callbacks before legacy handlers can mutate a
-    # case, payment, document or appointment. The early contact guard preserves
-    # the existing terminal-M2 / M1-rejected / normal contact semantics only
-    # after the visible or bound Case context has been proven.
+    # Order is a business invariant. Direct Payments is intentionally before
+    # logical navigation: explicit entry may reconcile/materialize the current
+    # exact M2 obligation, while nav_back never matches that router and remains
+    # presentation-only. Other provenance guards precede legacy handlers.
     for router in [
+        payment_list_resume_guard.router,
         navigation_history_guard.router,
         client_archive.router,
         client_archive_payment_guard.router,
