@@ -20,6 +20,13 @@ CASE_BOUND_MUTATING_ACTIONS = frozenset(
     {
         *PAYMENT_CASE_BOUND_ACTIONS,
         "calc_recover",
+        "consult_subject_start",
+        "consult_description_start",
+        "consult_booking_start",
+        "consult_slot_open",
+        "consult_reschedule",
+        "consult_cancel",
+        "consult_follow_up_start",
     }
 )
 
@@ -34,7 +41,7 @@ class CaseCallbackScope:
 
 
 def bound_case_callback(action: str, case_id: int) -> str:
-    """Encode a mutating Telegram action with explicit Case provenance."""
+    """Encode a Case-sensitive Telegram action with explicit Case provenance."""
 
     clean_action = str(action or "").strip()
     if not clean_action or ":" in clean_action:
@@ -46,12 +53,13 @@ def bound_case_callback(action: str, case_id: int) -> str:
 
 
 def bind_payment_case_action(action: str, case_id: int) -> str:
-    """Bind known Case-sensitive mutations; retain the legacy helper name.
+    """Bind every known Case-sensitive action emitted by My Case.
 
-    The helper originally covered payments only. Calculator recovery is also a
-    mutation of client workflow/FSM state and therefore must carry exact Case
-    provenance when emitted from My Case. Read-only/navigation callbacks remain
-    unchanged.
+    The helper name is retained for compatibility with the existing My Case
+    renderer. It originally covered payments only; calculator recovery and M2
+    question/booking/change actions also carry workflow state and must not be
+    reinterpreted against whichever Case happens to be selected later.
+    Read-only/navigation callbacks remain unchanged.
     """
 
     clean_action = str(action or "").strip()
