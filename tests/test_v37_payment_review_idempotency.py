@@ -60,6 +60,23 @@ def test_each_terminal_payment_review_branch_requires_exact_retry_evidence():
     assert 'decision="refund_pending"' in refund
 
 
+def test_orphan_refund_retry_requires_same_actor_comment_and_encoded_context():
+    source = read("app/domain/payments/orphan_payment_review_service.py")
+    exact = source.split("async def _require_exact_retry_or_conflict", 1)[1].split(
+        "async def route_to_refund", 1
+    )[0]
+    route = source.split("async def route_to_refund", 1)[1]
+
+    assert "PaymentReviewService(self.db)._latest_resolution_event(" in exact
+    assert 'actual_decision == "refund_orphan"' in exact
+    assert "actual_orphan_consultation_id == int(linked_consultation_id)" in exact
+    assert "actual_orphan_slot_id == int(linked_slot_id or 0)" in exact
+    assert "actual_comment == str(comment).strip()" in exact
+    assert "actual_actor_id == expected_actor_id" in exact
+    assert "if payment.status == PaymentStatus.REFUND_PENDING:" in route
+    assert "_require_exact_retry_or_conflict(" in route
+
+
 def test_payment_review_ui_uses_durable_origin_and_preserves_stale_decision_draft():
     source = read("app/api/payment_review_center.py")
     review_context = source.split("async def review_event_context", 1)[1].split(
