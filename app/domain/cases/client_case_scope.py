@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.statuses.case_statuses import CaseStatus, RouteCode
@@ -26,20 +26,43 @@ def _completed_ordering():
     )
 
 
+async def completed_case_count_for_user(
+    db: AsyncSession,
+    *,
+    user_id: int,
+) -> int:
+    """Count completed matters without loading the whole client archive."""
+
+    value = await db.scalar(
+        select(func.count(Case.id))
+        .where(Case.client_id == int(user_id))
+        .where(Case.status.in_(CLIENT_COMPLETED_CASE_STATUSES))
+    )
+    return int(value or 0)
+
+
 async def completed_cases_for_user(
     db: AsyncSession,
     *,
     user_id: int,
     limit: int = 30,
+    offset: int = 0,
 ) -> list[Case]:
-    """Return the client's completed M1/M2 matters for explicit read-only archive navigation."""
+    """Return one deterministic page of completed M1/M2 matters.
+
+    The archive is read-only. Pagination belongs here rather than in Telegram UI
+    so a long client history never requires loading every closed Case into one
+    message while preserving the same close-time ordering across pages.
+    """
 
     bounded_limit = min(max(int(limit), 1), 100)
+    bounded_offset = max(int(offset), 0)
     result = await db.execute(
         select(Case)
         .where(Case.client_id == int(user_id))
         .where(Case.status.in_(CLIENT_COMPLETED_CASE_STATUSES))
         .order_by(*_completed_ordering())
+        .offset(bounded_offset)
         .limit(bounded_limit)
     )
     return list(result.scalars().all())
@@ -188,6 +211,7 @@ __all__ = [
     "CLIENT_COMPLETED_CASE_STATUSES",
     "active_or_latest_completed_case_for_user",
     "active_or_latest_completed_m1_case_for_user",
+    "completed_case_count_for_user",
     "completed_cases_for_user",
     "latest_completed_case_for_user",
     "latest_completed_m1_case_for_user",
