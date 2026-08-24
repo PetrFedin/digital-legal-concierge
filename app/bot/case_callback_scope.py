@@ -32,6 +32,11 @@ CASE_BOUND_MUTATING_ACTIONS = frozenset(
         "consult_reschedule",
         "consult_cancel",
         "consult_follow_up_start",
+        # Contextual read entries can expose subsequent actions and therefore
+        # need the same exact-Case provenance on fresh My Case screens.
+        "documents_open",
+        "payments_open",
+        "consultation_result_open",
     }
 )
 _CASE_NUMBER_PATTERN = re.compile(r"\bDLC-\d{4}-\d{6}\b")
@@ -63,9 +68,10 @@ def bind_payment_case_action(action: str, case_id: int) -> str:
 
     The helper name is retained for compatibility with the existing My Case
     renderer. It originally covered payments only; message entry, calculator
-    recovery, M1 contextual action screens and M2 question/booking/change
-    actions must also not be reinterpreted against whichever Case happens to be
-    selected later. Generic navigation callbacks remain unchanged.
+    recovery, contextual document/payment/result screens, M1 action screens and
+    M2 question/booking/change actions must also not be reinterpreted against
+    whichever Case happens to be selected later. Truly global navigation
+    callbacks remain unchanged.
     """
 
     clean_action = str(action or "").strip()
