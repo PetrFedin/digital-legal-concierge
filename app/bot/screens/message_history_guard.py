@@ -123,13 +123,45 @@ def _history_keyboard(
         )
     buttons.append(("🔄 Обновить", f"message_history:v2:{case_id}:{page}"))
     if read_only:
-        buttons.append(("🕘 История дела", "case_history_open"))
-    buttons.extend(
-        [
-            ("📁 Моё дело", "my_case_open"),
-            ("🏠 Главная", "nav_home"),
-        ]
-    )
+        # Never leave exact archive A through a raw callback that may resolve to
+        # the currently selected active Case B.
+        buttons.extend(
+            [
+                ("🕘 История этого обращения", f"case_history_open:v2:{case_id}"),
+                ("🗄 Архив обращения", f"my_case_archive:v2:{case_id}"),
+                ("📁 Активное дело", "my_case_open"),
+            ]
+        )
+    else:
+        buttons.append(("📁 Моё дело", "my_case_open"))
+    buttons.append(("🏠 Главная", "nav_home"))
+    return one(*buttons)
+
+
+def _history_error_keyboard(
+    *,
+    case_id: int,
+    page: int,
+    read_only: bool,
+    selected_same_case: bool,
+):
+    buttons: list[tuple[str, str]] = [
+        ("🔄 Повторить", f"message_history:v2:{case_id}:{max(0, page)}"),
+    ]
+    if read_only:
+        buttons.extend(
+            [
+                ("🗄 Архив обращения", f"my_case_archive:v2:{case_id}"),
+                ("📁 Активное дело", "my_case_open"),
+            ]
+        )
+    elif selected_same_case:
+        buttons.append(("📁 Моё дело", "my_case_open"))
+    else:
+        buttons.append(
+            ("📁 Переключиться на это обращение", f"my_case_select:v2:{case_id}")
+        )
+    buttons.append(("🏠 Главная", "nav_home"))
     return one(*buttons)
 
 
@@ -243,10 +275,11 @@ async def present_reply_message_history(
         await db.rollback()
         await message.answer(
             "Не удалось загрузить переписку. Данные не изменены.",
-            reply_markup=one(
-                ("🔄 Повторить", f"message_history:v2:{case_id}:0"),
-                ("📁 Моё дело", "my_case_open"),
-                ("🏠 Главная", "nav_home"),
+            reply_markup=_history_error_keyboard(
+                case_id=case_id,
+                page=0,
+                read_only=read_only,
+                selected_same_case=selected_same_case,
             ),
         )
         return
@@ -374,13 +407,11 @@ async def present_message_history(
         await messages._safe_edit(
             callback,
             "Не удалось загрузить переписку. Данные не изменены.",
-            reply_markup=one(
-                (
-                    "🔄 Повторить",
-                    f"message_history:v2:{case_id}:{requested_page}",
-                ),
-                ("📁 Моё дело", "my_case_open"),
-                ("🏠 Главная", "nav_home"),
+            reply_markup=_history_error_keyboard(
+                case_id=case_id,
+                page=requested_page,
+                read_only=read_only,
+                selected_same_case=selected_same_case,
             ),
         )
         return
