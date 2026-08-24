@@ -33,6 +33,34 @@ _SLA_GUIDED_CARD_HEAD = (
 )
 _SLA_NEXT_LABEL = "<b>Следующий шаг по делу</b>"
 _SLA_GUIDED_NEXT_LABEL = "<b>Главный следующий шаг</b>"
+_PAYMENT_REVIEW_REASON = '<div class="reason"><b>Почему автоматика остановилась</b><br>'
+_PAYMENT_REVIEW_REASON_GUIDED = (
+    '<div class="reason"><b>Сейчас · почему требуется сверка</b><br>'
+)
+_PAYMENT_REVIEW_NEXT = '<div class="next"><b>Что делать</b><br>'
+_PAYMENT_REVIEW_NEXT_GUIDED = '<div class="next"><b>Главный следующий шаг</b><br>'
+_PAYMENT_REVIEW_SECONDARY = '<div style="margin-top:10px">${x.case_detail_url?'
+_PAYMENT_REVIEW_SECONDARY_GUIDED = (
+    '<div style="margin-top:10px"><div class="muted" style="margin-bottom:6px">'
+    '<b>Вторичные действия</b></div>${x.case_detail_url?'
+)
+_PAYMENT_REVIEW_SUBTITLE = (
+    '<div style="font-size:12px;color:#d0d5dd">'
+    'Деньги получены, но автоматическое действие остановлено безопасностью</div>'
+)
+_PAYMENT_REVIEW_SUBTITLE_GUIDED = (
+    '<div id="paymentReviewContext" style="font-size:12px;color:#d0d5dd">'
+    'Роль: администратор · время загружается…</div>'
+)
+_PAYMENT_REVIEW_BOOT = (
+    "businessTimeZone=s.business_timezone||businessTimeZone;"
+    "businessTimeLabel=s.business_timezone_label??businessTimeLabel;"
+)
+_PAYMENT_REVIEW_BOOT_GUIDED = (
+    "businessTimeZone=s.business_timezone||businessTimeZone;"
+    "businessTimeLabel=s.business_timezone_label??businessTimeLabel;"
+    "paymentReviewContext.textContent=`Роль: администратор · время: ${businessTimeLabel||businessTimeZone}`;"
+)
 
 
 def _js_string(value: object) -> str:
@@ -77,6 +105,40 @@ def _inject_sla_guided_copy(html: str) -> str:
         _SLA_NEXT_LABEL,
         _SLA_GUIDED_NEXT_LABEL,
         1,
+    )
+
+
+def _inject_payment_review_guided_copy(html: str) -> str:
+    """Align Payment Review with the canonical staff information hierarchy.
+
+    The payment-review template already owns its business-time formatter and
+    decision semantics. This patch changes only labels/context presentation at
+    the authenticated product boundary: context -> now -> main step -> secondary
+    navigation. Destructive/financial actions remain exactly where the original
+    implementation placed them.
+    """
+
+    markers = (
+        _PAYMENT_REVIEW_REASON,
+        _PAYMENT_REVIEW_NEXT,
+        _PAYMENT_REVIEW_SECONDARY,
+        _PAYMENT_REVIEW_SUBTITLE,
+        _PAYMENT_REVIEW_BOOT,
+    )
+    if any(html.count(marker) != 1 for marker in markers):
+        raise RuntimeError(
+            "Payment Review template contract changed: guided UI markers not found exactly once"
+        )
+    return (
+        html.replace(_PAYMENT_REVIEW_REASON, _PAYMENT_REVIEW_REASON_GUIDED, 1)
+        .replace(_PAYMENT_REVIEW_NEXT, _PAYMENT_REVIEW_NEXT_GUIDED, 1)
+        .replace(
+            _PAYMENT_REVIEW_SECONDARY,
+            _PAYMENT_REVIEW_SECONDARY_GUIDED,
+            1,
+        )
+        .replace(_PAYMENT_REVIEW_SUBTITLE, _PAYMENT_REVIEW_SUBTITLE_GUIDED, 1)
+        .replace(_PAYMENT_REVIEW_BOOT, _PAYMENT_REVIEW_BOOT_GUIDED, 1)
     )
 
 
@@ -181,8 +243,8 @@ async def protected_payment_review_ui(
 
     # Payment Review already reads business_timezone from /auth/session and owns
     # its own formatter; injecting a second formatter would create competing UI
-    # sources of truth.
-    return HTMLResponse(PAYMENT_REVIEW_CENTER_HTML)
+    # sources of truth. Only the canonical visual hierarchy is patched here.
+    return HTMLResponse(_inject_payment_review_guided_copy(PAYMENT_REVIEW_CENTER_HTML))
 
 
 async def protected_sla_ui(
