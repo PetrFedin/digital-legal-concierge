@@ -21,7 +21,7 @@ def test_reschedule_intermediate_calendar_is_bound_to_case_consultation_and_mess
     assert "Старый слот не менялся" in source
 
 
-def test_reschedule_entry_is_case_scoped_and_final_confirmation_retires_calendar():
+def test_reschedule_entry_is_case_scoped_and_confirmation_handles_slot_race():
     source = read("app/bot/consultation_change_provenance.py")
 
     assert "callback_matches_action(value, _RESCHEDULE_ENTRY)" in source
@@ -31,11 +31,16 @@ def test_reschedule_entry_is_case_scoped_and_final_confirmation_retires_calendar
     assert "resolve_case_callback_scope(" in entry
     assert "allow_legacy_message_case_context=True" in entry
     assert "if scope is None:" in entry
+    assert "await _store_current(event, state, db)" in entry
 
     confirm = source.split("if value.startswith(_RESCHEDULE_CONFIRM_PREFIX):", 1)[1].split(
         "if not value.startswith(_RESCHEDULE_PREFIXES):", 1
     )[0]
+    assert "expected = _parse_confirmation(value)" in confirm
     assert "result = await handler(event, data)" in confirm
+    assert "retry_calendar_rendered" in confirm
+    assert "int(consultation.slot_id or 0) == expected_old_slot_id" in confirm
+    assert "await _store_current(event, state, db)" in confirm
     assert "await _clear(state)" in confirm
 
 
@@ -52,3 +57,12 @@ def test_fresh_action_center_reschedule_and_cancel_are_case_bound():
 
     assert 'bound_case_callback("consult_reschedule", case_id)' in source
     assert 'bound_case_callback("consult_cancel", case_id)' in source
+
+
+def test_reschedule_and_cancel_recovery_buttons_keep_case_context():
+    source = read("app/bot/screens/consultations.py")
+
+    assert 'retry_action = bound_case_callback("consult_reschedule", case_id)' in source
+    assert 'bound_case_callback("consult_cancel", case_id)' in source
+    assert 'bound_case_callback("consult_booking_start", case_id)' in source
+    assert "Обращение № {case_number}" in source
