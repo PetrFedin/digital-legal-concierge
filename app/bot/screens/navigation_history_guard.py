@@ -4,12 +4,14 @@ from aiogram import Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 
+from app.bot.case_callback_scope import callback_matches_action, resolve_case_callback_scope
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.screens import (
     client_archive,
     common,
     consultation_results,
+    document_read_scope_guard,
     documents,
     history,
     message_history_guard,
@@ -109,6 +111,13 @@ async def _render_target(
     state: FSMContext,
     db,
 ) -> bool:
+    """Replay a logical screen without replaying the original business callback.
+
+    The callback here is normally ``nav_back``. Therefore contextual provenance
+    is intentionally not re-parsed: Back renders from the *current* selected
+    Case and is limited to read-only/replay-safe surfaces.
+    """
+
     if target == "nav_home":
         await common.home(callback, db, state)
         await _reset(state)
@@ -117,15 +126,17 @@ async def _render_target(
         await client_archive.route_my_case_or_archive(callback, db)
         return True
     if target == "documents_open":
-        await documents.docs(callback, db)
+        await document_read_scope_guard.route_documents_home(callback, state, db)
         return True
     if target == "documents_list_open":
-        await documents.list_docs(callback, db)
+        await document_read_scope_guard.route_documents_list(callback, state, db)
         return True
     if target == "documents_history_open":
         await documents.documents_history(callback, db)
         return True
     if target == "payments_open":
+        # Presentation only. Back must never create/reconcile a payment or retry
+        # a provider operation.
         await payments.payments(callback, db)
         return True
     if target == "case_history_open":
@@ -147,6 +158,36 @@ async def _record_after(callback_handler, target: str, *, state: FSMContext):
     result = await callback_handler()
     await _record(state, target)
     return result
+
+
+async def _direct_case_context_is_safe(
+    callback: CallbackQuery,
+    db,
+    *,
+    action: str,
+) -> bool:
+    """Validate a direct contextual entry without breaking terminal legacy reads.
+
+    A raw historical entry with no active matters may continue to the existing
+    completed/archive resolver. Once any active Case exists, or when the callback
+    is explicitly v2-bound, exact/visible Case provenance is mandatory. Thus an
+    old Case A screen can never be reinterpreted as currently selected Case B.
+    """
+
+    value = str(callback.data or "")
+    explicitly_bound = value.startswith(f"{action}:v2:")
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
+    if not active_cases and not explicitly_bound:
+        return True
+    scope = await resolve_case_callback_scope(
+        callback,
+        db,
+        action=action,
+        allow_legacy_message_case_context=True,
+    )
+    return scope is not None
 
 
 @router.callback_query(lambda c: c.data == "nav_home")
@@ -268,26 +309,32 @@ async def logical_my_case(callback: CallbackQuery, db, state: FSMContext):
     )
 
 
-@router.callback_query(lambda c: c.data == "documents_open")
+@router.callback_query(lambda c: callback_matches_action(c.data, "documents_open"))
 async def logical_documents(callback: CallbackQuery, db, state: FSMContext):
+    if not await _direct_case_context_is_safe(callback, db, action="documents_open"):
+        return
     return await _record_after(
-        lambda: documents.docs(callback, db),
+        lambda: document_read_scope_guard.route_documents_home(callback, state, db),
         "documents_open",
         state=state,
     )
 
 
-@router.callback_query(lambda c: c.data == "documents_list_open")
+@router.callback_query(lambda c: callback_matches_action(c.data, "documents_list_open"))
 async def logical_documents_list(callback: CallbackQuery, db, state: FSMContext):
+    if not await _direct_case_context_is_safe(callback, db, action="documents_list_open"):
+        return
     return await _record_after(
-        lambda: documents.list_docs(callback, db),
+        lambda: document_read_scope_guard.route_documents_list(callback, state, db),
         "documents_list_open",
         state=state,
     )
 
 
-@router.callback_query(lambda c: c.data == "documents_history_open")
+@router.callback_query(lambda c: callback_matches_action(c.data, "documents_history_open"))
 async def logical_documents_history(callback: CallbackQuery, db, state: FSMContext):
+    if not await _direct_case_context_is_safe(callback, db, action="documents_history_open"):
+        return
     return await _record_after(
         lambda: documents.documents_history(callback, db),
         "documents_history_open",
@@ -295,8 +342,10 @@ async def logical_documents_history(callback: CallbackQuery, db, state: FSMConte
     )
 
 
-@router.callback_query(lambda c: c.data == "payments_open")
+@router.callback_query(lambda c: callback_matches_action(c.data, "payments_open"))
 async def logical_payments(callback: CallbackQuery, db, state: FSMContext):
+    if not await _direct_case_context_is_safe(callback, db, action="payments_open"):
+        return
     return await _record_after(
         lambda: payments.payments(callback, db),
         "payments_open",
@@ -337,8 +386,16 @@ async def logical_message_history_page(
     return await message_history_guard.present_message_history(callback, db, state)
 
 
-@router.callback_query(lambda c: c.data == "consultation_result_open")
+@router.callback_query(
+    lambda c: callback_matches_action(c.data, "consultation_result_open")
+)
 async def logical_consultation_result(callback: CallbackQuery, db, state: FSMContext):
+    if not await _direct_case_context_is_safe(
+        callback,
+        db,
+        action="consultation_result_open",
+    ):
+        return
     return await _record_after(
         lambda: consultation_results.consultation_result_open(callback, db),
         "consultation_result_open",
