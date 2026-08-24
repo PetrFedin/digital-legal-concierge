@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -59,6 +60,66 @@ def _parse_aware_datetime(value: object, field_name: str) -> datetime:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise HTTPException(400, f"{field_name}: обязательно укажите часовой пояс")
     return parsed.astimezone(timezone.utc)
+
+
+def _parse_business_local_datetime(value: object, field_name: str) -> datetime:
+    """Interpret a staff datetime-local value in the configured business zone.
+
+    Browser local timezone is intentionally irrelevant: a Moscow business slot
+    entered from a laptop in New York must still mean the same Moscow wall time.
+    Ambiguous/non-existent DST wall times fail closed instead of silently picking
+    one offset.
+    """
+
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError) as error:
+        raise HTTPException(
+            400,
+            f"{field_name}: укажите дату и время без часового пояса",
+        ) from error
+    if parsed.tzinfo is not None and parsed.utcoffset() is not None:
+        raise HTTPException(
+            400,
+            f"{field_name}: локальное рабочее время не должно содержать смещение",
+        )
+    try:
+        zone = ZoneInfo(str(settings.business_timezone))
+    except ZoneInfoNotFoundError as error:
+        raise HTTPException(500, "Рабочий часовой пояс настроен некорректно") from error
+
+    first = parsed.replace(tzinfo=zone, fold=0)
+    second = parsed.replace(tzinfo=zone, fold=1)
+    if first.utcoffset() != second.utcoffset():
+        raise HTTPException(
+            400,
+            f"{field_name}: это время неоднозначно из-за перехода часового пояса; выберите другое время",
+        )
+
+    utc_value = first.astimezone(timezone.utc)
+    roundtrip = utc_value.astimezone(zone).replace(tzinfo=None)
+    if roundtrip != parsed:
+        raise HTTPException(
+            400,
+            f"{field_name}: такого локального времени нет из-за перехода часового пояса",
+        )
+    return utc_value
+
+
+def _parse_slot_datetimes(payload: dict) -> tuple[datetime, datetime]:
+    starts_local = payload.get("starts_local")
+    ends_local = payload.get("ends_local")
+    if starts_local not in {None, ""} or ends_local not in {None, ""}:
+        if starts_local in {None, ""} or ends_local in {None, ""}:
+            raise HTTPException(400, "Начало и окончание должны использовать один формат времени")
+        return (
+            _parse_business_local_datetime(starts_local, "Начало"),
+            _parse_business_local_datetime(ends_local, "Окончание"),
+        )
+    return (
+        _parse_aware_datetime(payload.get("starts_at"), "Начало"),
+        _parse_aware_datetime(payload.get("ends_at"), "Окончание"),
+    )
 
 
 def _clean_note(value: object) -> str | None:
@@ -128,6 +189,8 @@ async def schedule_context(
         "lawyer_id": int(actor.lawyer_id) if actor.lawyer_id else None,
         "can_manage_all_lawyers": _is_admin(actor),
         "hold_minutes": await SlotService(db).get_hold_minutes(),
+        "business_timezone": settings.business_timezone,
+        "business_timezone_label": settings.business_timezone_label,
     }
 
 
@@ -186,8 +249,7 @@ async def create_slot(
     x_admin_token: str | None = Header(default=None),
 ):
     actor = await _staff(request, db, x_admin_token)
-    starts_at = _parse_aware_datetime(payload.get("starts_at"), "Начало")
-    ends_at = _parse_aware_datetime(payload.get("ends_at"), "Окончание")
+    starts_at, ends_at = _parse_slot_datetimes(payload)
     now = datetime.now(timezone.utc)
     if starts_at <= now:
         raise HTTPException(400, "Нельзя создать слот в прошлом или на уже начавшееся время")
@@ -400,24 +462,24 @@ SLOTS_HTML = r"""
 <style>
 :root{--bg:#f4f6fa;--card:#fff;--ink:#172033;--muted:#667085;--line:#e4e7ec;--blue:#3157d5;--green:#14804a;--red:#b42318;--amber:#a15c00;--blue2:#eef2ff;--shadow:0 10px 28px rgba(16,24,40,.06)}*{box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;background:var(--bg);margin:0;color:var(--ink)}header{background:linear-gradient(135deg,#111827,#26334f);color:#fff;padding:18px 22px}.head,main{max-width:1140px;margin:auto}.head{display:flex;justify-content:space-between;gap:12px;align-items:center}.links{display:flex;gap:8px;flex-wrap:wrap}.button,button{display:inline-block;border:0;border-radius:10px;padding:9px 12px;background:var(--blue);color:#fff;text-decoration:none;font-weight:750;cursor:pointer}.button.secondary,button.secondary{background:#475467}.danger{background:var(--red)}main{padding:20px}.intro,.card{background:var(--card);border:1px solid var(--line);border-radius:15px;padding:15px;margin-bottom:13px;box-shadow:var(--shadow)}.intro{background:var(--blue2);border-color:#c7d2fe}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px}.field label{display:block;font-size:12px;font-weight:750;margin-bottom:5px}.field input,.field select{width:100%;padding:10px;border:1px solid #d0d5dd;border-radius:10px;font:inherit}.actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px}.slot{display:grid;grid-template-columns:1.1fr 1.5fr .8fr auto;gap:10px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)}.slot:last-child{border-bottom:0}.badge{display:inline-flex;border-radius:999px;padding:5px 8px;background:#eef2f6;font-size:12px;font-weight:750}.muted{color:var(--muted);font-size:12px;line-height:1.45}.feedback{min-height:20px;margin-top:9px}.ok{color:var(--green)}.bad{color:var(--red)}button:disabled{opacity:.55;cursor:wait}@media(max-width:760px){.head{align-items:flex-start;flex-direction:column}.grid,.slot{grid-template-columns:1fr}.links,.actions{width:100%}.button,button{width:100%;text-align:center}main{padding:12px}}
 </style></head><body><header><div class="head"><div><h1 style="margin:0 0 4px;font-size:22px">🗓 Расписание консультаций</h1><div style="font-size:13px;color:#d0d5dd">Свободное время → резерв клиента → подтверждённая консультация</div></div><div class="links"><a class="button secondary" id="backLink" href="/operator">Рабочий кабинет</a></div></div></header><main>
-<section class="intro"><b>Как работает запись.</b> Клиент видит только свободные слоты. После выбора время удерживается на <span id="holdMinutes">—</span> мин.; если подтверждение/оплата не завершены вовремя, резерв освобождается системой.</section>
-<section class="card"><h2 style="margin-top:0">Добавить свободное время</h2><div class="grid"><div class="field" id="lawyerField"><label for="lawyer">Юрист</label><select id="lawyer"></select></div><div class="field"><label for="starts">Начало</label><input id="starts" type="datetime-local"></div><div class="field"><label for="ends">Окончание</label><input id="ends" type="datetime-local"></div><div class="field"><label for="note">Комментарий</label><input id="note" maxlength="500" placeholder="Например: онлайн"></div></div><div class="actions"><button id="createButton" onclick="createSlot(this)">Добавить слот</button><button id="releaseButton" class="secondary" onclick="releaseExpired(this)" hidden>Сверить истёкшие резервы</button></div><div id="message" class="feedback muted" role="status" aria-live="polite"></div></section>
+<section class="intro"><b>Как работает запись.</b> Клиент видит только свободные слоты. Все даты вводятся и показываются в <b id="scheduleZone">рабочем часовом поясе</b>. После выбора время удерживается на <span id="holdMinutes">—</span> мин.; если подтверждение/оплата не завершены вовремя, резерв освобождается системой.</section>
+<section class="card"><h2 style="margin-top:0">Добавить свободное время</h2><div class="grid"><div class="field" id="lawyerField"><label for="lawyer">Юрист</label><select id="lawyer"></select></div><div class="field"><label id="startsLabel" for="starts">Начало</label><input id="starts" type="datetime-local"></div><div class="field"><label id="endsLabel" for="ends">Окончание</label><input id="ends" type="datetime-local"></div><div class="field"><label for="note">Комментарий</label><input id="note" maxlength="500" placeholder="Например: онлайн"></div></div><div class="actions"><button id="createButton" onclick="createSlot(this)">Добавить слот</button><button id="releaseButton" class="secondary" onclick="releaseExpired(this)" hidden>Сверить истёкшие резервы</button></div><div id="message" class="feedback muted" role="status" aria-live="polite"></div></section>
 <section class="card"><div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap"><div><h2 style="margin:0">Текущее расписание</h2><div class="muted">Удалить можно только свободный слот. Резерв и подтверждённая запись защищены.</div></div><button class="secondary" onclick="loadSlots(this)">Обновить</button></div><div id="slots"><div class="muted" style="padding:18px 0">Загрузка…</div></div></section>
 </main><script>
-let context=null,lawyers={};
+let context=null,lawyers={},businessTimeZone='Europe/Moscow',businessTimeLabel='МСК';
 const statusNames={available:'Свободен',held:'Временный резерв',booked:'Подтверждён',cancelled:'Отменён',client_no_show:'Неявка клиента',lawyer_no_show:'Неявка юриста',completed:'Завершён'};
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function fmt(v){return v?new Intl.DateTimeFormat('ru-RU',{dateStyle:'short',timeStyle:'short'}).format(new Date(v)):'—'}
+function fmt(v){if(!v)return'—';try{const rendered=new Intl.DateTimeFormat('ru-RU',{dateStyle:'short',timeStyle:'short',timeZone:businessTimeZone}).format(new Date(v));return businessTimeLabel?rendered+' '+businessTimeLabel:rendered}catch{return String(v)}}
 function feedback(text,ok=true){message.textContent=text;message.className='feedback '+(ok?'ok':'bad')}
 async function api(path,opts={}){const r=await fetch(path,{...opts,credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json',...(opts.headers||{})}});const d=await r.json().catch(()=>({}));if(r.status===401||r.status===403){if(r.status===401)location.href='/login?next=/consultation-slots/ui';throw new Error(d.detail||'Недостаточно прав')}if(!r.ok)throw new Error(d.detail||'Ошибка запроса');return d}
 async function busy(button,work){if(button?.disabled)return;const label=button?.textContent||'';if(button){button.disabled=true;button.textContent='Сохраняем…'}try{return await work()}finally{if(button){button.disabled=false;button.textContent=label}}}
 function holdText(x){if(x.status!=='held'||!x.hold_expires_at)return '';const ms=new Date(x.hold_expires_at)-new Date();return `<div class="muted">${ms>0?'Резерв до '+fmt(x.hold_expires_at)+' · '+Math.ceil(ms/60000)+' мин.':'Резерв истёк; система вернёт клиента к выбору времени'}</div>`}
 function slotCard(x){const lawyerName=lawyers[x.lawyer_id]||('Юрист #'+x.lawyer_id),canDelete=x.status==='available';return `<div class="slot"><div><b>${esc(lawyerName)}</b><div class="muted">${esc(x.note||'Без комментария')}</div></div><div><b>${esc(fmt(x.starts_at))} — ${esc(fmt(x.ends_at))}</b>${holdText(x)}</div><div><span class="badge">${esc(statusNames[x.status]||x.status)}</span></div><div>${canDelete?`<button class="danger" onclick="removeSlot(${Number(x.id)},this)">Удалить свободный слот</button>`:'<span class="muted">Изменение недоступно</span>'}</div></div>`}
 async function loadSlots(button=null){return busy(button,async()=>{try{const selected=context?.can_manage_all_lawyers&&lawyer.value?`?lawyer_id=${encodeURIComponent(lawyer.value)}`:'';const rows=await api('/consultation-slots'+selected);slots.innerHTML=rows.length?rows.map(slotCard).join(''):'<div class="muted" style="padding:18px 0">Слотов по выбранному юристу пока нет.</div>'}catch(e){slots.innerHTML=`<div class="bad" style="padding:18px 0">${esc(e.message)}</div>`}})}
-async function createSlot(button){return busy(button,async()=>{try{if(!starts.value||!ends.value)throw new Error('Укажите начало и окончание');const lawyerId=context.can_manage_all_lawyers?lawyer.value:context.lawyer_id;const body={lawyer_id:lawyerId,starts_at:new Date(starts.value).toISOString(),ends_at:new Date(ends.value).toISOString(),note:note.value};await api('/consultation-slots',{method:'POST',body:JSON.stringify(body)});feedback('Слот добавлен. Он сразу доступен клиентам как свободное время.');note.value='';await loadSlots()}catch(e){feedback(e.message,false)}})}
+async function createSlot(button){return busy(button,async()=>{try{if(!starts.value||!ends.value)throw new Error('Укажите начало и окончание');const lawyerId=context.can_manage_all_lawyers?lawyer.value:context.lawyer_id;const body={lawyer_id:lawyerId,starts_local:starts.value,ends_local:ends.value,note:note.value};await api('/consultation-slots',{method:'POST',body:JSON.stringify(body)});feedback('Слот добавлен в '+(businessTimeLabel||businessTimeZone)+'. Он сразу доступен клиентам как свободное время.');note.value='';await loadSlots()}catch(e){feedback(e.message,false)}})}
 async function removeSlot(id,button){if(!confirm('Удалить этот свободный слот? Подтверждённые записи и резервы этой кнопкой удалить нельзя.'))return;return busy(button,async()=>{try{await api('/consultation-slots/'+id,{method:'DELETE'});feedback('Свободный слот удалён.');await loadSlots()}catch(e){feedback(e.message,false)}})}
 async function releaseExpired(button){return busy(button,async()=>{try{const d=await api('/consultation-slots/release-expired',{method:'POST',body:'{}'});feedback(`Сверка завершена. Освобождено резервов: ${d.released}.`);await loadSlots()}catch(e){feedback(e.message,false)}})}
-async function boot(){try{context=await api('/consultation-slots/context');holdMinutes.textContent=String(context.hold_minutes||'—');const ls=await api('/consultation-slots/lawyers');lawyers=Object.fromEntries(ls.map(x=>[Number(x.id),x.full_name]));lawyer.innerHTML=ls.length?ls.map(x=>`<option value="${Number(x.id)}">${esc(x.full_name)}</option>`).join(''):'<option value="">Нет активных юристов</option>';if(!context.can_manage_all_lawyers){lawyerField.hidden=true;backLink.href='/lawyer/workspace/ui'}else{backLink.href='/admin/workdesk/ui';releaseButton.hidden=false;lawyer.addEventListener('change',()=>loadSlots())}await loadSlots()}catch(e){document.querySelector('main').innerHTML=`<section class="card bad"><b>Расписание не загружено</b><p>${esc(e.message)}</p><a class="button secondary" href="/operator">Вернуться в кабинет</a></section>`}}
+async function boot(){try{context=await api('/consultation-slots/context');businessTimeZone=context.business_timezone||businessTimeZone;businessTimeLabel=context.business_timezone_label??businessTimeLabel;const zoneLabel=businessTimeLabel||businessTimeZone;scheduleZone.textContent=zoneLabel;startsLabel.textContent='Начало ('+zoneLabel+')';endsLabel.textContent='Окончание ('+zoneLabel+')';holdMinutes.textContent=String(context.hold_minutes||'—');const ls=await api('/consultation-slots/lawyers');lawyers=Object.fromEntries(ls.map(x=>[Number(x.id),x.full_name]));lawyer.innerHTML=ls.length?ls.map(x=>`<option value="${Number(x.id)}">${esc(x.full_name)}</option>`).join(''):'<option value="">Нет активных юристов</option>';if(!context.can_manage_all_lawyers){lawyerField.hidden=true;backLink.href='/lawyer/workspace/ui'}else{backLink.href='/admin/workdesk/ui';releaseButton.hidden=false;lawyer.addEventListener('change',()=>loadSlots())}await loadSlots()}catch(e){document.querySelector('main').innerHTML=`<section class="card bad"><b>Расписание не загружено</b><p>${esc(e.message)}</p><a class="button secondary" href="/operator">Вернуться в кабинет</a></section>`}}
 boot();
 </script></body></html>
 """
