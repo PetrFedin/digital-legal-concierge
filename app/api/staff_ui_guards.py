@@ -22,7 +22,10 @@ _M2_OPEN_LINK_STATUSES = {
     PaymentStatus.PENDING.value,
     PaymentStatus.WAITING_CONFIRMATION.value,
 }
-_RAW_BROWSER_DT = "function dt(v){return v?new Date(v).toLocaleString('ru-RU'):'—'}"
+_RAW_BROWSER_DT_RENDERERS = (
+    "function dt(v){return v?new Date(v).toLocaleString('ru-RU'):'—'}",
+    "function dt(v){return v?new Intl.DateTimeFormat('ru-RU',{dateStyle:'short',timeStyle:'short'}).format(new Date(v)):'—'}",
+)
 
 
 def _js_string(value: object) -> str:
@@ -33,14 +36,16 @@ def _inject_business_timezone_ui(html: str) -> str:
     """Render operational timestamps in one server-configured business zone.
 
     Document Review and SLA used the staff browser timezone, so the same UTC
-    instant could be displayed differently on two workstations. These legacy
-    templates both expose one small ``dt`` helper; harden it at the authenticated
-    product boundary instead of duplicating the large HTML templates.
+    instant could be displayed differently on two workstations. Their templates
+    currently use two equivalent local-time ``dt`` implementations; harden
+    either at the authenticated product boundary instead of duplicating the
+    large HTML templates.
     """
 
-    if html.count(_RAW_BROWSER_DT) != 1:
+    matches = [renderer for renderer in _RAW_BROWSER_DT_RENDERERS if renderer in html]
+    if len(matches) != 1:
         raise RuntimeError(
-            "Staff UI template contract changed: browser-local dt renderer not found"
+            "Staff UI template contract changed: expected exactly one browser-local dt renderer"
         )
     zone = _js_string(settings.business_timezone)
     label = _js_string(settings.business_timezone_label)
@@ -53,7 +58,7 @@ def _inject_business_timezone_ui(html: str) -> str:
         "catch(_){return String(v)}"
         "}"
     )
-    return html.replace(_RAW_BROWSER_DT, replacement, 1)
+    return html.replace(matches[0], replacement, 1)
 
 
 async def _actor(request: Request, db: AsyncSession, header_token: str | None):
