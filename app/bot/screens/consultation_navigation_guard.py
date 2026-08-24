@@ -115,7 +115,10 @@ async def route_active_m2_navigation(
             "👨‍⚖ ПРОДОЛЖИТЬ КОНСУЛЬТАЦИЮ\n"
             f"Обращение № {case_number}\n\n"
             "Вопрос сохранён. Следующий шаг — выбрать актуальную дату и время. Документы можно добавить до или после выбора слота.",
-            ("▶️ Выбрать дату и время", "consult_booking_start"),
+            (
+                "▶️ Выбрать дату и время",
+                bound_case_callback("consult_booking_start", case_id),
+            ),
             ("📄 Добавить документы", "documents_open"),
         )
         return
