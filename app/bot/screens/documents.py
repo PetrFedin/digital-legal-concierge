@@ -281,13 +281,18 @@ def _recommended_step(case, documents: list) -> tuple[str, list[tuple[str, str]]
     if counts["new"]:
         return (
             "Передайте новые файлы юристу. До передачи они остаются только в вашем деле.",
-            [("✅ Передать новые файлы юристу", "doc_finish_upload")],
+            [
+                (
+                    "✅ Передать новые файлы юристу",
+                    f"doc_finish_upload:v2:{int(case.id)}",
+                )
+            ],
         )
     if not documents and case.route == "M2" and _case_status(case) in _M2_CAN_SKIP_STATUSES:
         return (
             "Документы необязательны. Можно добавить файл или перейти к выбору времени.",
             [
-                ("Продолжить без документов", "doc_skip_m2"),
+                ("Продолжить без документов", f"doc_skip_m2:v2:{int(case.id)}"),
                 ("➕ Добавить документ", "documents_upload_open"),
             ],
         )
@@ -441,9 +446,12 @@ async def upload_menu(callback: CallbackQuery, state: FSMContext, db):
     await state.clear()
     await state.set_state(DocumentUploadStates.choosing_type)
 
-    items = [(f"Загрузить: {title}", f"doc_type:{code}") for title, code in TYPES]
+    items = [
+        (f"Загрузить: {title}", f"doc_type:v2:{int(case.id)}:{code}")
+        for title, code in TYPES
+    ]
     if case.route == "M2" and _case_status(case) in _M2_CAN_SKIP_STATUSES:
-        items.append(("Продолжить без документов", "doc_skip_m2"))
+        items.append(("Продолжить без документов", f"doc_skip_m2:v2:{int(case.id)}"))
     items.extend(
         [
             ("⬅️ К обзору документов", "documents_open"),
@@ -674,12 +682,15 @@ async def upload(message: Message, state: FSMContext, db):
         )
         return
 
+    case_id = int(case.id)
+    document_title = str(document.title)
+    document_version = int(document.version)
     await state.clear()
     await message.answer(
-        f"✅ Файл безопасно загружен: {document.title}, версия {document.version}.\n\n"
+        f"✅ Файл безопасно загружен: {document_title}, версия {document_version}.\n\n"
         "Он ещё не передан юристу. Передайте новые файлы, когда закончите загрузку.",
         reply_markup=one(
-            ("✅ Передать новые файлы юристу", "doc_finish_upload"),
+            ("✅ Передать новые файлы юристу", f"doc_finish_upload:v2:{case_id}"),
             ("➕ Добавить ещё", "documents_upload_open"),
             ("📄 Обзор документов", "documents_open"),
             ("✉️ Задать вопрос по делу", "message_create"),
@@ -878,6 +889,7 @@ async def finish(callback: CallbackQuery, db):
             )
         return
 
+    case_id = int(case.id)
     document_service = DocumentService(db)
     existing = await document_service.list_case_documents(case.id)
     active = _active_documents(existing)
@@ -908,7 +920,7 @@ async def finish(callback: CallbackQuery, db):
             ("✉️ Задать вопрос по делу", "message_create"),
         ]
         if not active and case.route == "M2" and _case_status(case) in _M2_CAN_SKIP_STATUSES:
-            buttons.insert(0, ("Продолжить без документов", "doc_skip_m2"))
+            buttons.insert(0, ("Продолжить без документов", f"doc_skip_m2:v2:{case_id}"))
         buttons.extend(
             [
                 ("📁 Моё дело", "my_case_open"),
@@ -1006,7 +1018,7 @@ async def finish(callback: CallbackQuery, db):
         await callback.message.edit_text(
             f"Документы не переданы: {error}",
             reply_markup=one(
-                ("🔄 Повторить передачу", "doc_finish_upload"),
+                ("🔄 Повторить передачу", f"doc_finish_upload:v2:{case_id}"),
                 ("📋 Актуальные документы", "documents_list_open"),
                 ("✉️ Задать вопрос по делу", "message_create"),
                 ("📁 Моё дело", "my_case_open"),
@@ -1016,11 +1028,11 @@ async def finish(callback: CallbackQuery, db):
         return
     except Exception:
         await db.rollback()
-        logger.exception("Document review submission failed: case=%s", case.id)
+        logger.exception("Document review submission failed: case=%s", case_id)
         await callback.message.edit_text(
             "Документы временно не переданы. Загруженные файлы сохранены.",
             reply_markup=one(
-                ("🔄 Повторить передачу", "doc_finish_upload"),
+                ("🔄 Повторить передачу", f"doc_finish_upload:v2:{case_id}"),
                 ("📋 Актуальные документы", "documents_list_open"),
                 ("✉️ Задать вопрос по делу", "message_create"),
                 ("📁 Моё дело", "my_case_open"),
@@ -1051,6 +1063,7 @@ async def skip(callback: CallbackQuery, db):
             ),
         )
         return
+    case_id = int(case.id)
     status = _case_status(case)
     if status not in _M2_CAN_SKIP_STATUSES:
         await callback.message.edit_text(
@@ -1073,7 +1086,7 @@ async def skip(callback: CallbackQuery, db):
         await callback.message.edit_text(
             f"Переход не выполнен: {error}",
             reply_markup=one(
-                ("🔄 Повторить", "doc_skip_m2"),
+                ("🔄 Повторить", f"doc_skip_m2:v2:{case_id}"),
                 ("📄 Документы", "documents_open"),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
