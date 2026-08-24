@@ -53,6 +53,7 @@ from app.bot.screens import (
     document_mutation_guard,
     document_read_scope_guard,
     document_upload_binding_guard,
+    document_upload_entry_scope_guard,
     documents,
     fallback,
     history,
@@ -209,11 +210,8 @@ def build_dispatcher() -> Dispatcher:
     # read-only terminal navigation. client_archive_payment_guard owns completed
     # pay_open/fake buttons and delegates live payments to the canonical payment
     # guard, so archive details cannot lose their exact Case through secondary
-    # navigation. navigation_history_guard owns replay-safe/read-only screens.
-    # payment_received_money_guard is before archive/payment routers so received
-    # money under review can never send the client into another slot/payment loop.
-    # document_read_scope_guard routes terminal documents to the existing read-only
-    # archive before the active-only action center can turn that button into a dead end.
+    # navigation. document_upload_entry_scope_guard owns the raw Add Document
+    # entry before it may re-arm a draft against a newly selected Case.
     for router in [
         navigation_history_guard.router,
         client_archive.router,
@@ -225,6 +223,7 @@ def build_dispatcher() -> Dispatcher:
         calculator_unknown_data_guard.router,
         calculator.router,
         my_case.router,
+        document_upload_entry_scope_guard.router,
         document_upload_binding_guard.router,
         document_mutation_guard.router,
         document_read_scope_guard.router,
