@@ -221,12 +221,12 @@ def test_logical_my_case_and_back_use_archive_aware_resolver():
     assert "client_archive.route_my_case_or_archive(callback, db)" in back
 
 
-def test_exact_archive_message_history_is_read_only_when_active_case_is_different():
+def test_exact_archive_message_history_is_read_only_and_never_marks_foreign_context_read():
     history_guard = read("app/bot/screens/message_history_guard.py")
 
     assert 'MESSAGE_HISTORY_EXACT_PREFIX = "message_history:v2:"' in history_guard
     assert "target_case_id" in history_guard
-    assert "selected_same_case = bool(" in history_guard
-    assert "read_only = not selected_same_case" in history_guard
-    assert "and not read_only" in history_guard
+    assert "selected_same_case = selected_case_id == case_id" in history_guard
+    assert "read_only = str(case.status) in _COMPLETED_STATUS_VALUES" in history_guard
+    assert "if visible_team_ids and not read_only and selected_same_case:" in history_guard
     assert "mark_lawyer_messages_read" in history_guard
