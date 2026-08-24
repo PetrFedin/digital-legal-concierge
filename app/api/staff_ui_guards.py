@@ -26,6 +26,13 @@ _RAW_BROWSER_DT_RENDERERS = (
     "function dt(v){return v?new Date(v).toLocaleString('ru-RU'):'—'}",
     "function dt(v){return v?new Intl.DateTimeFormat('ru-RU',{dateStyle:'short',timeStyle:'short'}).format(new Date(v)):'—'}",
 )
+_SLA_CARD_HEAD = '<div class="case-head"><div><h3>${esc(x.case_number)}</h3>'
+_SLA_GUIDED_CARD_HEAD = (
+    '<div class="case-head"><div><div class="rule"><b>Сейчас</b></div>'
+    '<h3>${esc(x.case_number)}</h3>'
+)
+_SLA_NEXT_LABEL = "<b>Следующий шаг по делу</b>"
+_SLA_GUIDED_NEXT_LABEL = "<b>Главный следующий шаг</b>"
 
 
 def _js_string(value: object) -> str:
@@ -59,6 +66,18 @@ def _inject_business_timezone_ui(html: str) -> str:
         "}"
     )
     return html.replace(matches[0], replacement, 1)
+
+
+def _inject_sla_guided_copy(html: str) -> str:
+    """Use the same context -> now -> main step hierarchy as other staff UIs."""
+
+    if html.count(_SLA_CARD_HEAD) != 1 or html.count(_SLA_NEXT_LABEL) != 1:
+        raise RuntimeError("SLA UI template contract changed: guided-card markers not found")
+    return html.replace(_SLA_CARD_HEAD, _SLA_GUIDED_CARD_HEAD, 1).replace(
+        _SLA_NEXT_LABEL,
+        _SLA_GUIDED_NEXT_LABEL,
+        1,
+    )
 
 
 async def _actor(request: Request, db: AsyncSession, header_token: str | None):
@@ -171,11 +190,13 @@ async def protected_sla_ui(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
+    html = _inject_business_timezone_ui(SLA_CENTER_HTML)
+    html = _inject_sla_guided_copy(html)
     return await _guarded_html(
         request,
         db,
         x_admin_token,
-        _inject_business_timezone_ui(SLA_CENTER_HTML),
+        html,
     )
 
 
