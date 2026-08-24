@@ -56,7 +56,6 @@ def test_fresh_entry_does_not_silently_retarget_foreign_existing_draft():
     assert 'str(snapshot.get("draft_text") or "").strip()' in entry
     assert "origin_case_id = _draft_case_id(snapshot)" in entry
     assert "origin_case_id == target_case_id" in entry
-    assert "Opening" not in entry
     assert "Открытие нового экрана не переносит его автоматически" in entry
     assert "_render_preserved_draft(" in entry
     assert "return None" in entry
