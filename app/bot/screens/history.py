@@ -274,13 +274,29 @@ async def _render_history(
             if case is None:
                 case = await latest_completed_case_for_user(db, user_id=user.id)
             completed = case is not None
-        elif legacy_unbound and cursor is not None and len(active_cases) > 1:
+        elif legacy_unbound:
             selected_number = str(case.case_number)
-            if not _message_mentions_case(callback, selected_number):
+            visible_number = _legacy_visible_case_number(callback)
+            if visible_number and visible_number != selected_number:
                 await _safe_edit(
                     callback,
-                    "Эта старая кнопка страницы истории не содержит номер обращения, а у вас несколько активных дел. "
-                    "Чтобы не показать события другого дела, выберите обращение явно.",
+                    "Эта старая кнопка истории относится к другому обращению, чем выбрано сейчас. "
+                    "Чтобы не показать события другого дела, откройте нужное обращение явно.",
+                    reply_markup=one(
+                        ("📁 Выбрать обращение", "my_cases_open"),
+                        ("📁 Моё дело", "my_case_open"),
+                        ("🏠 Главная", "nav_home"),
+                    ),
+                )
+                return
+            if len(active_cases) > 1 and not _message_mentions_case(
+                callback,
+                selected_number,
+            ):
+                await _safe_edit(
+                    callback,
+                    "Эта старая кнопка истории не содержит подтверждённый номер обращения, а у вас несколько активных дел. "
+                    "История не открыта автоматически — выберите дело явно.",
                     reply_markup=one(
                         ("📁 Выбрать обращение", "my_cases_open"),
                         ("🏠 Главная", "nav_home"),
