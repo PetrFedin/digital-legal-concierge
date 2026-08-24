@@ -5,6 +5,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 from sqlalchemy import select
 
+from app.bot.case_callback_scope import parse_bound_case_id
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.screens import messages
@@ -14,6 +15,7 @@ from app.models.case import Case
 router = Router()
 _COMPLETED = {str(value) for value in CLIENT_COMPLETED_CASE_STATUSES}
 _PREFIX = "message_retarget_current:v2:"
+_MESSAGE_ENTRY_PREFIX = "message_create:v2:"
 
 
 def _parse_case_id(value: str) -> int | None:
@@ -24,6 +26,46 @@ def _parse_case_id(value: str) -> int | None:
     except (TypeError, ValueError):
         return None
     return case_id if case_id > 0 else None
+
+
+@router.callback_query(lambda c: str(c.data or "").startswith(_MESSAGE_ENTRY_PREFIX))
+async def open_case_bound_message_draft(
+    callback: CallbackQuery,
+    state: FSMContext,
+    db,
+):
+    """Compatibility owner for fresh exact-case message entry callbacks.
+
+    ClientMessageProvenanceMiddleware validates the same callback before this
+    handler is reached. The local check is retained as defense-in-depth for
+    direct handler tests or alternate dispatcher composition.
+    """
+
+    try:
+        _legacy, expected_case_id = parse_bound_case_id(callback.data, "message_create")
+    except ValueError:
+        expected_case_id = None
+
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    active = await ctx.case_service.get_active_case_for_user(int(user.id))
+    if (
+        expected_case_id is None
+        or active is None
+        or int(active.id) != int(expected_case_id)
+    ):
+        await db.rollback()
+        await callback.message.edit_text(
+            "Эта кнопка сообщения относится к другому или уже неактивному обращению. Ничего не отправлено.",
+            reply_markup=one(
+                ("📁 Выбрать обращение", "my_cases_open"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    await messages.message_create(callback, state, db)
 
 
 @router.callback_query(lambda c: str(c.data or "").startswith(_PREFIX))
