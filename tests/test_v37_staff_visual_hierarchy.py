@@ -80,6 +80,52 @@ def test_workdesk_case_card_uses_context_now_main_step_without_breaking_m2_proje
     assert "const primary=cv.querySelector('.action div')" in runtime
 
 
+def test_lawyer_consultation_desk_already_uses_canonical_card_hierarchy_and_business_time():
+    desk = read("app/api/lawyer_consultation_desk.py")
+
+    assert "business_timezone" in desk
+    assert "business_timezone_label" in desk
+    assert "timeZone:businessTimeZone" in desk
+    assert ".now-box" in desk
+    assert ".next-box" in desk
+    assert ".secondary-actions" in desk
+    assert ".exception" in desk
+    assert "Один главный следующий шаг по каждой встрече" in desk
+
+
+def test_consultation_outcomes_product_separates_now_main_step_and_secondary_actions():
+    product = read("app/api/consultation_outcomes_product.py")
+    base = read("app/api/consultation_outcomes.py")
+
+    assert "timeZone:businessTimeZone" in product
+    assert "function applyGuidedHierarchy()" in product
+    assert "now.textContent='Сейчас'" in product
+    assert "nextHeading.textContent='Главный следующий шаг'" in product
+    assert "heading.textContent='Вторичные действия'" in product
+    assert "actions.querySelectorAll('a.button.secondary')" in product
+    assert "links.forEach(link=>row.appendChild(link))" in product
+    assert "const previousRender=render" in product
+    assert "applyGuidedHierarchy();" in product
+    # The business forms remain collapsed and confirm before mutation.
+    assert "Ничего не изменится" in base
+    assert "Подтвердить неявку" in base
+
+
+def test_document_access_portal_exposes_exact_case_and_role_context_before_files():
+    portal = read("app/api/document_access_portal.py")
+    product = read("app/api/document_access_product.py")
+
+    assert 'id="caseContext"' in portal
+    assert 'id="caseBadge"' in portal
+    assert 'id="roleBadge"' in portal
+    assert "applyContext(id)" in portal
+    assert "'/message-center/ui?case_id='+id" in portal
+    assert "Одноразовая защищённая выдача" in portal
+    assert '"/cases/{case_id}/documents"' in product
+    assert '"/documents/{document_id}/grant"' in product
+    assert '"/grants/{public_id}/download"' in product
+
+
 def test_staff_palette_remains_consistent_on_decision_surfaces():
     document_review = read("app/api/document_review.py")
     payment_review = read("app/api/payment_review_center.py")
