@@ -38,6 +38,7 @@ from app.bot.screens import (
     calculator_active_case_recovery,
     calculator_unknown_data_guard,
     client_archive,
+    client_archive_payment_guard,
     common,
     consent_decision_guard,
     consent_flow,
@@ -200,18 +201,19 @@ def build_dispatcher() -> Dispatcher:
 
     # Order is a business invariant. Provenance-bearing/exact-case guards must
     # see historical Telegram callbacks before legacy handlers can mutate a
-    # case, payment, document or appointment. client_archive owns only explicit
-    # read-only terminal navigation and delegates active My Case to the canonical
-    # renderer; it must precede reply_menu_direct/my_case so several completed
-    # matters never collapse to an implicit latest archive. navigation_history_guard
-    # owns only replay-safe/read-only screens. payment_received_money_guard is
-    # before archive/payment routers so received money under review can never send
-    # the client into another slot/payment loop. document_read_scope_guard routes
-    # terminal documents to the existing read-only archive before the active-only
-    # action center can turn that button into a dead end.
+    # case, payment, document or appointment. client_archive owns explicit
+    # read-only terminal navigation. client_archive_payment_guard owns completed
+    # pay_open/fake buttons and delegates live payments to the canonical payment
+    # guard, so archive details cannot lose their exact Case through secondary
+    # navigation. navigation_history_guard owns replay-safe/read-only screens.
+    # payment_received_money_guard is before archive/payment routers so received
+    # money under review can never send the client into another slot/payment loop.
+    # document_read_scope_guard routes terminal documents to the existing read-only
+    # archive before the active-only action center can turn that button into a dead end.
     for router in [
         navigation_history_guard.router,
         client_archive.router,
+        client_archive_payment_guard.router,
         reply_menu_direct.router,
         common.router,
         post_calculation.router,
