@@ -15,16 +15,23 @@ from app.bot.screens import (
     documents,
     history,
     message_history_guard,
+    messages,
     my_case,
     payments,
     service_contract,
 )
+from app.domain.cases.client_case_scope import (
+    CLIENT_COMPLETED_CASE_STATUSES,
+    latest_completed_case_for_user,
+)
+from app.domain.messages.message_service import MessageService
 
 router = Router()
 
 _HISTORY_KEY = "_client_nav_history_v1"
 _CURRENT_KEY = "_client_nav_current_v1"
 _MAX_HISTORY = 12
+_COMPLETED_STATUS_VALUES = {str(value) for value in CLIENT_COMPLETED_CASE_STATUSES}
 
 _REPLAY_SAFE = frozenset(
     {
@@ -37,7 +44,6 @@ _REPLAY_SAFE = frozenset(
         "case_history_open",
         "message_history",
         "consultation_result_open",
-        "contract_open",
     }
 )
 
@@ -104,6 +110,114 @@ async def _pop(state: FSMContext) -> tuple[str | None, str | None]:
     return current, target
 
 
+async def _render_current_message_history(
+    callback: CallbackQuery,
+    db,
+    state: FSMContext,
+) -> None:
+    """Replay Messages from the current cabinet context, never from nav_back data."""
+
+    if await messages._guard_existing_draft(callback, state):
+        return
+
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
+    selected_case = await ctx.case_service.get_selected_case_for_user(
+        int(user.id),
+        include_terminal=False,
+    )
+    if selected_case is None and len(active_cases) > 1:
+        await db.rollback()
+        await messages._safe_edit(
+            callback,
+            "💬 ПЕРЕПИСКА\n\n"
+            "У вас несколько активных обращений. Back не выбирает дело автоматически — выберите нужное обращение явно.",
+            reply_markup=one(
+                ("📁 Выбрать обращение", "my_cases_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    case = selected_case or (active_cases[0] if len(active_cases) == 1 else None)
+    read_only = False
+    if case is None:
+        case = await latest_completed_case_for_user(db, user_id=int(user.id))
+        read_only = case is not None
+    if case is None:
+        await db.rollback()
+        await messages._safe_edit(
+            callback,
+            "💬 История переписки появится после создания обращения.",
+            reply_markup=one(
+                ("🧮 Рассчитать неустойку", "calc_start"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    case_id = int(case.id)
+    case_number = str(case.case_number)
+    if str(case.status) in _COMPLETED_STATUS_VALUES:
+        read_only = True
+    selected_same_case = bool(
+        not read_only
+        and (
+            (selected_case is not None and int(selected_case.id) == case_id)
+            or (selected_case is None and len(active_cases) == 1)
+        )
+    )
+
+    service = MessageService(db)
+    try:
+        dialog = await service.list_case_messages(case_id, limit=100)
+        text, page, total_pages = message_history_guard._format_dialog(
+            dialog,
+            0,
+            read_only=read_only,
+        )
+        text = message_history_guard._with_case_heading(text, case_number)
+        page_messages, _, _ = messages._history_slice(dialog, page)
+        visible_team_ids = tuple(
+            int(item.id)
+            for item in page_messages
+            if item.sender_type == "lawyer"
+        )
+        markup = message_history_guard._history_keyboard(
+            case_id=case_id,
+            page=page,
+            total_pages=total_pages,
+            read_only=read_only,
+            selected_same_case=selected_same_case,
+        )
+        await db.rollback()
+    except Exception:
+        await db.rollback()
+        await messages._safe_edit(
+            callback,
+            "Не удалось загрузить переписку. Данные не изменены.",
+            reply_markup=message_history_guard._history_error_keyboard(
+                case_id=case_id,
+                page=0,
+                read_only=read_only,
+                selected_same_case=selected_same_case,
+            ),
+        )
+        return
+
+    await messages._safe_edit(callback, text, reply_markup=markup)
+    if visible_team_ids and not read_only and selected_same_case:
+        try:
+            await service.mark_lawyer_messages_read(
+                case_id,
+                message_ids=visible_team_ids,
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+
+
 async def _render_target(
     target: str,
     *,
@@ -113,9 +227,9 @@ async def _render_target(
 ) -> bool:
     """Replay a logical screen without replaying the original business callback.
 
-    The callback here is normally ``nav_back``. Therefore contextual provenance
-    is intentionally not re-parsed: Back renders from the *current* selected
-    Case and is limited to read-only/replay-safe surfaces.
+    The callback here is normally ``nav_back``. Contextual provenance is not
+    re-parsed from that token: Back renders the *current* cabinet projection and
+    is limited to screens whose entry is read-only/replay-safe.
     """
 
     if target == "nav_home":
@@ -140,16 +254,21 @@ async def _render_target(
         await payments.payments(callback, db)
         return True
     if target == "case_history_open":
-        await history.case_history(callback, db)
+        await history._render_history(
+            callback,
+            db,
+            expected_case_id=None,
+            cursor=None,
+            legacy_unbound=False,
+        )
         return True
     if target == "message_history":
-        await message_history_guard.present_message_history(callback, db, state)
+        await _render_current_message_history(callback, db, state)
         return True
     if target == "consultation_result_open":
+        # The result renderer reads the current selected Case and does not parse
+        # callback.data, so replay is read-only and deterministic.
         await consultation_results.consultation_result_open(callback, db)
-        return True
-    if target == "contract_open":
-        await service_contract.open_service_contract(callback, db)
         return True
     return False
 
@@ -213,8 +332,9 @@ async def logical_back(callback: CallbackQuery, db, state: FSMContext):
     """Return to the previous replay-safe logical screen without mutating case state.
 
     Only idempotent/read-only screen entry callbacks are replayed. Mutating
-    callbacks, payment creation, slot reservation and legal-stage actions are
-    deliberately excluded, so Back can never repeat a business operation.
+    callbacks, payment creation, slot reservation, protected file delivery and
+    legal-stage actions are deliberately excluded, so Back can never repeat a
+    business operation.
     """
 
     if await common._guard_callback_draft(callback, state):
@@ -405,11 +525,9 @@ async def logical_consultation_result(callback: CallbackQuery, db, state: FSMCon
 
 @router.callback_query(lambda c: c.data == "contract_open")
 async def logical_contract(callback: CallbackQuery, db, state: FSMContext):
-    return await _record_after(
-        lambda: service_contract.open_service_contract(callback, db),
-        "contract_open",
-        state=state,
-    )
+    # Contract delivery is deliberately not recorded as replay-safe: opening it
+    # may re-send a protected file and the handler validates exact callback data.
+    return await service_contract.open_service_contract(callback, db)
 
 
 __all__ = ["router"]
