@@ -99,13 +99,14 @@ def _js_string(value: object) -> str:
 
 
 def _inject_business_timezone_ui(html: str) -> str:
-    """Make the canonical admin outcome desk use the same outward timezone.
+    """Unify outcome-desk time and action hierarchy at the product boundary.
 
-    The legacy base HTML formats timestamps in the browser's local timezone.
-    Staff may work from another region, so that makes the same consultation look
-    different in Telegram, Workdesk and the outcome desk. The product owner
-    appends one final presentation patch instead of changing business data or
-    adding a second route owner.
+    The legacy base HTML formats timestamps in the browser's local timezone and
+    mixes operational mutation buttons with navigation links. Staff may work
+    from another region, so the same consultation must look identical in
+    Telegram, Workdesk and this desk. The final product patch changes only
+    presentation: business facts, forms, confirmations and endpoint ownership
+    remain untouched.
     """
 
     head, marker, tail = html.rpartition("</body>")
@@ -114,6 +115,11 @@ def _inject_business_timezone_ui(html: str) -> str:
     zone = _js_string(settings.business_timezone)
     label = _js_string(settings.business_timezone_label)
     patch = f"""
+<style>
+.guided-section-label{{margin:12px 0 6px;color:#667085;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.08em}}
+.guided-secondary{{border-top:1px solid #e4e7ec;margin-top:12px;padding-top:10px}}
+.guided-secondary .row{{margin-top:0!important}}
+</style>
 <script>
 (function(){{
   const businessTimeZone={zone};
@@ -127,6 +133,48 @@ def _inject_business_timezone_ui(html: str) -> str:
   }};
   const subtitle=document.querySelector('header .header p');
   if(subtitle)subtitle.textContent=subtitle.textContent+' · Время: '+(businessTimeLabel||businessTimeZone);
+
+  function applyGuidedHierarchy(){{
+    document.querySelectorAll('.case').forEach(card=>{{
+      const meta=card.querySelector('.meta');
+      if(meta&&!card.querySelector('.guided-now')){{
+        const now=document.createElement('div');
+        now.className='guided-section-label guided-now';
+        now.textContent='Сейчас';
+        meta.parentNode.insertBefore(now,meta);
+      }}
+      const next=card.querySelector('.next');
+      const nextHeading=next?.querySelector('b');
+      if(nextHeading)nextHeading.textContent='Главный следующий шаг';
+
+      const actions=card.querySelector('.actions');
+      if(!actions||actions.querySelector('.guided-secondary'))return;
+      const links=Array.from(actions.querySelectorAll('a.button.secondary'));
+      if(!links.length)return;
+      const secondary=document.createElement('div');
+      secondary.className='guided-secondary';
+      const heading=document.createElement('div');
+      heading.className='guided-section-label';
+      heading.textContent='Вторичные действия';
+      const row=document.createElement('div');
+      row.className='row';
+      links.forEach(link=>row.appendChild(link));
+      secondary.appendChild(heading);
+      secondary.appendChild(row);
+      actions.appendChild(secondary);
+      Array.from(actions.querySelectorAll(':scope > .row')).forEach(existing=>{{
+        if(existing!==row&&!existing.children.length)existing.remove();
+      }});
+    }});
+  }}
+
+  const previousRender=render;
+  render=function(rows){{
+    const result=previousRender(rows);
+    applyGuidedHierarchy();
+    return result;
+  }};
+  applyGuidedHierarchy();
 }})();
 </script>
 """
