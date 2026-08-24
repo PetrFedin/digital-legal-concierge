@@ -19,6 +19,7 @@ from app.bot.client_activity import record_client_activity
 from app.bot.client_message_provenance import ClientMessageProvenanceMiddleware
 from app.bot.client_wording_patch import install_client_wording
 from app.bot.consultation_booking_provenance import ConsultationBookingProvenanceMiddleware
+from app.bot.consultation_change_provenance import ConsultationChangeProvenanceMiddleware
 from app.bot.consultation_description_provenance import (
     ConsultationDescriptionProvenanceMiddleware,
 )
@@ -187,6 +188,7 @@ def build_dispatcher() -> Dispatcher:
     dispatcher.callback_query.middleware(DraftProtectionMiddleware())
     dispatcher.callback_query.middleware(ConsultationRouteIsolationMiddleware())
     dispatcher.callback_query.middleware(ConsultationBookingProvenanceMiddleware())
+    dispatcher.callback_query.middleware(ConsultationChangeProvenanceMiddleware())
     dispatcher.callback_query.middleware(ConsultationDescriptionProvenanceMiddleware())
     dispatcher.callback_query.middleware(ClientMessageProvenanceMiddleware())
     dispatcher.callback_query.middleware(ClientDocumentUploadStageProtectionMiddleware())
