@@ -33,8 +33,17 @@ def test_document_review_and_sla_use_guard_timezone_patch_but_payment_keeps_own_
     )[0]
 
     assert "_inject_business_timezone_ui(SLA_CENTER_HTML)" in sla
+    assert "_inject_sla_guided_copy(html)" in sla
     assert "_inject_business_timezone_ui(REVIEW_HTML)" in document
     assert "_inject_business_timezone_ui(PAYMENT_REVIEW_CENTER_HTML)" not in payment
+
+
+def test_sla_card_uses_now_then_main_next_step_before_secondary_actions():
+    source = read("app/api/staff_ui_guards.py")
+
+    assert '<div class="rule"><b>Сейчас</b></div>' in source
+    assert '"<b>Главный следующий шаг</b>"' in source
+    assert "guided-card markers not found" in source
 
 
 def test_staff_review_product_routes_keep_guarded_canonical_ui_owners():
