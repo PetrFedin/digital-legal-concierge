@@ -7,6 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 from sqlalchemy import select
 
+from app.bot.case_callback_scope import bound_case_callback
 from app.bot.context import BotContextService
 from app.bot.document_replacement_protection import client_document_upload_allowed
 from app.bot.keyboards import one
@@ -171,7 +172,10 @@ async def finish_documents_for_exact_case(
                 f"Передано файлов: {submitted}. Теперь выберите свободное время."
             )
             buttons = [
-                ("📅 Выбрать время", "consult_slot_open"),
+                (
+                    "📅 Выбрать дату и время",
+                    bound_case_callback("consult_booking_start", case_id),
+                ),
                 ("📄 Документы", "documents_open"),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
@@ -288,7 +292,10 @@ async def skip_documents_for_exact_m2_case(
     await callback.message.edit_text(
         "Хорошо. Документы сейчас не обязательны. Можно выбрать время консультации, а материалы добавить позже, если это ещё будет допустимо на этапе дела.",
         reply_markup=one(
-            ("📅 Выбрать время", "consult_slot_open"),
+            (
+                "📅 Выбрать дату и время",
+                bound_case_callback("consult_booking_start", case_id),
+            ),
             ("📄 Документы", "documents_open"),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
