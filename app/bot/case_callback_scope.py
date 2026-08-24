@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from aiogram.types import CallbackQuery
@@ -20,6 +21,7 @@ CASE_BOUND_MUTATING_ACTIONS = frozenset(
     {
         *PAYMENT_CASE_BOUND_ACTIONS,
         "calc_recover",
+        "message_create",
         "consult_subject_start",
         "consult_description_start",
         "consult_booking_start",
@@ -29,6 +31,7 @@ CASE_BOUND_MUTATING_ACTIONS = frozenset(
         "consult_follow_up_start",
     }
 )
+_CASE_NUMBER_PATTERN = re.compile(r"\bDLC-\d{4}-\d{6}\b")
 
 
 @dataclass(frozen=True)
@@ -56,10 +59,10 @@ def bind_payment_case_action(action: str, case_id: int) -> str:
     """Bind every known Case-sensitive action emitted by My Case.
 
     The helper name is retained for compatibility with the existing My Case
-    renderer. It originally covered payments only; calculator recovery and M2
-    question/booking/change actions also carry workflow state and must not be
-    reinterpreted against whichever Case happens to be selected later.
-    Read-only/navigation callbacks remain unchanged.
+    renderer. It originally covered payments only; message entry, calculator
+    recovery and M2 question/booking/change actions also carry workflow state
+    and must not be reinterpreted against whichever Case happens to be selected
+    later. Read-only/navigation callbacks remain unchanged.
     """
 
     clean_action = str(action or "").strip()
@@ -94,24 +97,48 @@ def parse_bound_case_id(data: str | None, action: str) -> tuple[bool, int | None
     return False, case_id
 
 
-def _legacy_message_mentions_selected_case(callback: CallbackQuery, selected_case) -> bool:
-    """Recognize a trusted bot-rendered legacy screen with visible Case context.
+def _legacy_message_text(callback: CallbackQuery) -> str:
+    message = getattr(callback, "message", None)
+    return str(
+        getattr(message, "text", "") or getattr(message, "caption", "") or ""
+    )
 
-    During the v2 callback rollout some already-rendered action-center buttons
-    still use the historical raw token. When the client has multiple Cases, such
-    a button is accepted only if the bot message itself visibly contains the
-    exact selected case number. A stale message from another Case therefore
-    fails closed after the client switches context.
-    """
+
+def _legacy_message_case_numbers(callback: CallbackQuery) -> frozenset[str]:
+    """Extract only canonical bot Case numbers visible on a legacy screen."""
+
+    return frozenset(_CASE_NUMBER_PATTERN.findall(_legacy_message_text(callback)))
+
+
+def _legacy_message_mentions_selected_case(callback: CallbackQuery, selected_case) -> bool:
+    """Recognize a trusted bot-rendered legacy screen with visible Case context."""
 
     if selected_case is None:
         return False
     case_number = str(getattr(selected_case, "case_number", "") or "").strip()
     if not case_number:
         return False
-    message = getattr(callback, "message", None)
-    text = str(getattr(message, "text", "") or getattr(message, "caption", "") or "")
-    return case_number in text
+    return case_number in _legacy_message_case_numbers(callback)
+
+
+def _legacy_message_names_other_case(callback: CallbackQuery, selected_case) -> bool:
+    """Detect a stale legacy screen even when only one active Case remains.
+
+    Before v2 rollout, callbacks carried no Case id. A client can finish Case A,
+    later open Case B, and still press a raw button on an old bot screen for A.
+    Counting active cases alone would reinterpret that stale action as Case B.
+    If the trusted bot-rendered screen visibly names a canonical Case number that
+    is not the currently selected one, fail closed instead. Legacy screens with
+    no Case number keep the one-active-Case compatibility path.
+    """
+
+    numbers = _legacy_message_case_numbers(callback)
+    if not numbers:
+        return False
+    selected_number = str(
+        getattr(selected_case, "case_number", "") if selected_case is not None else ""
+    ).strip()
+    return not selected_number or selected_number not in numbers
 
 
 async def resolve_case_callback_scope(
@@ -124,13 +151,14 @@ async def resolve_case_callback_scope(
     """Resolve a mutation against the explicitly selected active Case.
 
     New callbacks must carry ``:v2:<case_id>``. Historical unbound buttons stay
-    usable only while the client has zero/one active Case. With several active
-    matters an old unbound mutation is ambiguous and therefore fails closed.
+    usable only while their context is unambiguous. With several active matters
+    an old unbound mutation is blocked unless the bot-rendered message visibly
+    names the exact selected Case.
 
-    For a short migration window a caller may opt into trusted message
-    provenance: a raw legacy button is then allowed only when the bot-rendered
-    message visibly names the exact currently selected Case. This keeps old
-    action-center messages usable without ever silently switching Case context.
+    A raw legacy button is also blocked when its bot message visibly names a
+    *different* canonical Case, even if only one active Case remains now. This
+    closes the terminal-Case-A -> new-Case-B stale-screen reinterpretation gap
+    while preserving compatibility for genuinely old screens with no Case number.
 
     A bound button never switches the cabinet implicitly: if the client has
     selected another Case since the message was rendered, the mutation is
@@ -159,6 +187,25 @@ async def resolve_case_callback_scope(
         and allow_legacy_message_case_context
         and _legacy_message_mentions_selected_case(callback, selected_case)
     )
+    legacy_message_conflict = bool(
+        legacy_unbound
+        and allow_legacy_message_case_context
+        and _legacy_message_names_other_case(callback, selected_case)
+    )
+
+    if legacy_message_conflict:
+        await callback.message.edit_text(
+            "Эта старая кнопка относится к другому обращению, чем выбрано сейчас. "
+            "Действие не выполнено: старый экран не может быть перенесён в новый контекст автоматически.\n\n"
+            "Откройте актуальное дело и повторите действие с нового экрана.",
+            reply_markup=one(
+                ("📁 Мои обращения", "my_cases_open"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return None
+
     if legacy_unbound and len(active_cases) > 1 and not legacy_message_bound:
         await callback.message.edit_text(
             "Эта старая кнопка не содержит номер обращения, а у вас сейчас несколько активных дел. "
