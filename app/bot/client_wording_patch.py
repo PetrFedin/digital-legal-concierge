@@ -22,6 +22,7 @@ def document_detail_for_client(view) -> str:
 def install_client_wording() -> None:
     """Install client presentation and fail-closed runtime compatibility rules."""
 
+    from app.bot.case_callback_scope import bound_case_callback
     from app.bot.client_case_view import CLIENT_ACTIONS, ClientAction
     from app.bot.keyboards import one
     from app.bot.screens import (
@@ -157,7 +158,10 @@ def install_client_wording() -> None:
             if documents._case_status(case) != CaseStatus.M2_PAYMENT_PENDING:
                 return tuple(buttons)
             primary = (
-                ("Подтвердить выбранное время", "consult_pay")
+                (
+                    "Подтвердить выбранное время",
+                    bound_case_callback("consult_pay", int(case.id)),
+                )
                 if payments_disabled()
                 else ("💳 Открыть актуальную оплату", "payments_open")
             )
@@ -238,7 +242,12 @@ def install_client_wording() -> None:
                 return (
                     "Документы переданы юридической команде и не блокируют запись. "
                     "Следующий обязательный шаг — выбрать свободное время консультации.",
-                    [("📅 Выбрать время", "consult_slot_open")],
+                    [
+                        (
+                            "📅 Выбрать дату и время",
+                            bound_case_callback("consult_booking_start", int(case.id)),
+                        )
+                    ],
                 )
             return (
                 "Документы переданы юридической команде. Их проверка идёт параллельно; "
