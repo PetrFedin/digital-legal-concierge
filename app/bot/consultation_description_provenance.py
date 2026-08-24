@@ -6,6 +6,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, Telegra
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 
+from app.bot.case_callback_scope import callback_matches_action, resolve_case_callback_scope
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.domain.consultations.consultation_intake import ConsultationIntakeService
@@ -13,11 +14,18 @@ from app.models.consultation import Consultation
 
 logger = logging.getLogger(__name__)
 
-_DESCRIPTION_ENTRY_CALLBACKS = {
+_DESCRIPTION_ENTRY_CALLBACKS = (
     "consult_subject_start",
     "consult_description_start",
     "consult_question_start",
-}
+)
+
+
+def _description_entry_action(value: str | None) -> str | None:
+    for action in _DESCRIPTION_ENTRY_CALLBACKS:
+        if callback_matches_action(value, action):
+            return action
+    return None
 
 
 async def _current_context(event, db):
@@ -47,8 +55,9 @@ async def _recover(event, state, text: str) -> None:
         except Exception:
             logger.warning("Не удалось очистить FSM после смены консультации")
     markup = one(
-        ("📝 Открыть актуальный вопрос", "consult_subject_start"),
+        ("📁 Выбрать обращение", "my_cases_open"),
         ("📁 Моё дело", "my_case_open"),
+        ("💬 Юридическая помощь", "contact_lawyer"),
         ("✉️ Написать команде", "message_create"),
         ("🏠 Главная", "nav_home"),
     )
@@ -74,22 +83,33 @@ class ConsultationDescriptionProvenanceMiddleware:
 
     If no Case is selected, the first explicit Telegram entry click is also the
     source-idempotent creation operation for a new M2 matter. If another Case is
-    already selected, this middleware never creates a parallel matter on its
-    own: the canonical route policy decides whether that selected Case may enter
-    or resume M2.
+    already selected, the entry itself is now Case-scoped before any form is
+    shown: a stale Case A button cannot silently open an editor for Case B.
+    Text input remains bound to the Case/Consultation snapshot stored in FSM.
     """
 
     async def __call__(self, handler, event, data):
         state = data.get("state")
         db = data.get("db")
+        entry_action = (
+            _description_entry_action(event.data)
+            if isinstance(event, CallbackQuery)
+            else None
+        )
 
-        if isinstance(event, CallbackQuery) and str(event.data or "") in _DESCRIPTION_ENTRY_CALLBACKS:
+        if isinstance(event, CallbackQuery) and entry_action is not None:
             if db is not None:
                 try:
-                    ctx = BotContextService(db)
-                    user = await ctx.get_user_from_callback(event)
-                    selected = await ctx.case_service.get_active_case_for_user(user.id)
-                    if selected is None:
+                    scope = await resolve_case_callback_scope(
+                        event,
+                        db,
+                        action=entry_action,
+                        allow_legacy_message_case_context=True,
+                    )
+                    if scope is None:
+                        return None
+                    user = scope.user
+                    if scope.case is None:
                         # A duplicate delivery of this exact callback uses the
                         # same operation key and resolves to the same Case.
                         await ConsultationIntakeService(db).get_or_create_context(
@@ -100,12 +120,12 @@ class ConsultationDescriptionProvenanceMiddleware:
                     # Keep creation and the underlying screen in one transaction.
                     # The handler/recovery path will roll back; never leave a
                     # half-created M2 Case solely because provenance ran first.
-                    logger.exception("Не удалось подготовить идемпотентный M2 context")
+                    logger.exception("Не удалось подготовить точный M2 context")
                     await db.rollback()
                     await _recover(
                         event,
                         state,
-                        "Не удалось безопасно открыть консультационное обращение. Новое дело не создано; повторите действие.",
+                        "Не удалось безопасно открыть вопрос для выбранного обращения. Новое дело не создано и другое обращение не изменено.",
                     )
                     return None
 
@@ -128,7 +148,7 @@ class ConsultationDescriptionProvenanceMiddleware:
                 await _recover(
                     event,
                     state,
-                    "Форма вопроса не была привязана к обращению. Для безопасности откройте её заново.",
+                    "Форма вопроса не была привязана к обращению. Для безопасности откройте нужное дело и начните вопрос заново.",
                 )
                 return None
             return result
