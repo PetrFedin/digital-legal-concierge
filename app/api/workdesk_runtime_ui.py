@@ -61,6 +61,19 @@ _WORKDESK_PRODUCT_EXTENSION = r"""
     else url.searchParams.delete('case_id');
     history.replaceState(null,'',url.pathname+url.search+url.hash);
   }
+  function applyGuidedCaseHierarchy(){
+    const actionBox=cv.querySelector('.action');
+    if(!actionBox)return;
+    const heading=actionBox.querySelector('b');
+    if(heading)heading.textContent='Сейчас';
+    if(actionBox.querySelector('.main-step-label'))return;
+    const actionText=actionBox.querySelector('div');
+    if(!actionText)return;
+    const label=document.createElement('span');
+    label.className='eyebrow main-step-label';
+    label.textContent='Главный следующий шаг';
+    actionBox.insertBefore(label,actionText);
+  }
 
   // Reassignment of a case whose stored lawyer can no longer operate must use
   // the snapshot-locked repair action, not a generic auto-assign retry.
@@ -111,7 +124,10 @@ _WORKDESK_PRODUCT_EXTENSION = r"""
     const id=Number(rawId);
     const result=await originalOpenCase(id);
     if(!Number.isInteger(id)||id<=0||selected!==id)return result;
-    if(!cv.querySelector('.error'))syncCaseUrl(id);
+    if(!cv.querySelector('.error')){
+      syncCaseUrl(id);
+      applyGuidedCaseHierarchy();
+    }
 
     let responsibility;
     try{
