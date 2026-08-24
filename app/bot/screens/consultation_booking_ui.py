@@ -291,10 +291,10 @@ async def consultation_action_center(callback: CallbackQuery, db):
         description_ready=description_ready,
         active_document_count=active_document_count,
     )
-    if primary[1] == "consult_pay":
+    if primary[1] in {"consult_pay", "consult_booking_start", "consult_slot_open"}:
         primary = (
             primary[0],
-            bound_case_callback("consult_pay", case_id),
+            bound_case_callback(primary[1], case_id),
         )
     stage, progress_hint = consultation_progress(
         status=status,
@@ -309,8 +309,20 @@ async def consultation_action_center(callback: CallbackQuery, db):
     _append_unique(buttons, ("📄 Документы", "documents_open"))
     _append_unique(buttons, ("✉️ Задать вопрос команде", "message_create"))
     if status == ConsultationStatus.BOOKED:
-        _append_unique(buttons, ("🔄 Перенести консультацию", "consult_reschedule"))
-        _append_unique(buttons, ("Отменить консультацию", "consult_cancel"))
+        _append_unique(
+            buttons,
+            (
+                "🔄 Перенести консультацию",
+                bound_case_callback("consult_reschedule", case_id),
+            ),
+        )
+        _append_unique(
+            buttons,
+            (
+                "Отменить консультацию",
+                bound_case_callback("consult_cancel", case_id),
+            ),
+        )
     _append_unique(buttons, ("📁 Моё дело", "my_case_open"))
     _append_unique(buttons, ("🏠 Главная", "nav_home"))
 
