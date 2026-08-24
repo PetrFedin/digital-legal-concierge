@@ -43,6 +43,23 @@ def test_back_to_payments_remains_presentation_only():
     assert "reconcile(" not in replay
 
 
+def test_explicit_payments_click_resumes_current_exact_m2_before_navigation_router():
+    direct = read("app/bot/screens/payment_list_resume_guard.py")
+    bot = read("app/bot/bot.py")
+
+    assert 'callback_matches_action(c.data, "payments_open")' in direct
+    assert "navigation_history_guard._direct_case_context_is_safe" in direct
+    assert 'action="payments_open"' in direct
+    assert "payment_archive_guard.guard_active_m2_payment_list" in direct
+    assert 'navigation_history_guard._record(state, "payments_open")' in direct
+    assert bot.index("payment_list_resume_guard.router,") < bot.index(
+        "navigation_history_guard.router,"
+    )
+    assert "nav_back" not in direct.split("@router.callback_query", 1)[1].split(
+        "async def direct_payment_list_resume", 1
+    )[0]
+
+
 def test_back_to_messages_preserves_multi_case_fail_closed_and_draft_guard():
     source = read("app/bot/screens/navigation_history_guard.py")
     helper = source.split("async def _render_current_message_history", 1)[1].split(
