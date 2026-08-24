@@ -42,15 +42,26 @@ def test_free_text_keeps_provenance_until_description_flow_really_finishes():
     source = read("app/bot/consultation_description_provenance.py")
 
     message_branch = source.split("if not isinstance(event, Message) or state is None:", 1)[1]
+    assert "current_state not in _DESCRIPTION_STATES" in message_branch
     assert "await _validate_snapshot(event, state, db)" in message_branch
     assert "await _clear_provenance_if_flow_finished(state)" in message_branch
 
     clearer = source.split("async def _clear_provenance_if_flow_finished", 1)[1].split(
         "class ConsultationDescriptionProvenanceMiddleware", 1
     )[0]
-    assert "if current_state is None:" in clearer
+    assert "if current_state not in _DESCRIPTION_STATES:" in clearer
     assert "consult_description_case_id=None" in clearer
     assert "consult_description_id=None" in clearer
+
+
+def test_entry_does_not_attach_provenance_when_form_never_opened():
+    source = read("app/bot/consultation_description_provenance.py")
+
+    entry = source.split("result = await handler(event, data)", 1)[1].split(
+        "if isinstance(event, CallbackQuery) and _is_description_flow_callback", 1
+    )[0]
+    assert "current_state not in _DESCRIPTION_STATES" in entry
+    assert "await _clear_provenance_if_flow_finished(state)" in entry
 
 
 def test_description_recovery_clears_fsm_and_routes_to_explicit_case_selection():
