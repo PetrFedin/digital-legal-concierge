@@ -77,3 +77,48 @@ def test_archive_result_is_exact_case_and_never_falls_back_to_another_result():
     assert "case_id=case_id" in result_block
     assert "Результат другого дела не подставляется" in result_block
     assert 'f"client_archive_result:v2:{case_id}"' in source
+
+
+def test_read_only_message_history_keeps_exact_archive_case_across_navigation_and_errors():
+    source = read("app/bot/screens/message_history_guard.py")
+
+    assert '("🕘 История этого обращения", f"case_history_open:v2:{case_id}")' in source
+    assert '("🗄 Архив обращения", f"my_case_archive:v2:{case_id}")' in source
+    assert "def _history_error_keyboard" in source
+    assert 'f"message_history:v2:{case_id}:{max(0, page)}"' in source
+    assert "Read tracking is a mutation" in source
+    assert "visible_team_ids and not read_only and selected_same_case" in source
+
+
+def test_completed_timeline_returns_to_exact_archive_not_whichever_case_is_active():
+    source = read("app/bot/screens/history.py")
+
+    completed_block = source.split("if completed:", 1)[1].split("elif selected_same_case:", 1)[0]
+    assert '("🗄 Архив обращения", f"my_case_archive:v2:{case_id}")' in completed_block
+    assert '("📁 Активное дело", "my_case_open")' in completed_block
+    assert 'f"case_history_before:v2:{case_id}:{int(next_before_id)}"' in source
+    assert 'f"case_history_open:v2:{case_id}"' in source
+
+
+def test_completed_payment_detail_is_intercepted_before_live_payment_logic_and_keeps_exact_case():
+    source = read("app/bot/screens/client_archive_payment_guard.py")
+    bot = read("app/bot/bot.py")
+
+    assert "str(case.status) not in _COMPLETED_VALUES" in source
+    assert 'f"client_archive_payments:v2:{case_id}:0"' in source
+    assert 'f"case_history_open:v2:{case_id}"' in source
+    assert 'f"my_case_archive:v2:{case_id}"' in source
+    assert "create_payment_link(" not in source
+    assert "reconcile(" not in source
+    assert "await payment_archive_guard.guard_archived_payment_open" in source
+    assert "await payment_archive_guard.guard_archived_fake_success" in source
+    assert bot.index("client_archive_payment_guard.router,") < bot.index(
+        "payment_archive_guard.router,"
+    )
+
+
+def test_archive_payment_guard_is_physically_imported_and_precedes_legacy_payment_router():
+    bot = read("app/bot/bot.py")
+
+    assert "client_archive_payment_guard," in bot
+    assert bot.index("client_archive_payment_guard.router,") < bot.index("payments.router,")
