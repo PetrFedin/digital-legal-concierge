@@ -8,6 +8,7 @@ from app.domain.cases.case_service import CaseService
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.consultation_statuses import ConsultationStatus
+from app.models.audit_log import AuditLog
 from app.models.case import Case
 from app.models.consultation import Consultation
 
@@ -26,11 +27,81 @@ class LegacyConsultationOutcomeResolutionService:
     """
 
     VALID_DECISIONS = frozenset({"close", "to_m1", "follow_up"})
+    RESOLUTION_ACTION = "CONSULTATION_LEGACY_OUTCOME_RESOLVED"
 
     def __init__(self, db: AsyncSession):
         self.db = db
         self.cases = CaseService(db)
         self.notifications = NotificationEngine(db)
+
+    async def _lock_case(self, case_id: int) -> Case:
+        case = (
+            await self.db.execute(
+                select(Case)
+                .where(Case.id == int(case_id))
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if case is None:
+            raise LookupError("Дело не найдено")
+        return case
+
+    async def _latest_resolution_event(
+        self,
+        *,
+        case_id: int,
+        consultation_id: int,
+    ) -> AuditLog | None:
+        """Load exact historical-resolution provenance without an age window."""
+
+        events = list(
+            (
+                await self.db.execute(
+                    select(AuditLog)
+                    .where(
+                        AuditLog.entity_type == "case",
+                        AuditLog.entity_id == int(case_id),
+                        AuditLog.action == self.RESOLUTION_ACTION,
+                    )
+                    .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+                )
+            ).scalars().all()
+        )
+        for event in events:
+            value = event.new_value or {}
+            try:
+                event_consultation_id = int(value.get("consultation_id") or 0)
+            except (TypeError, ValueError):
+                event_consultation_id = 0
+            if event_consultation_id == int(consultation_id):
+                return event
+        return None
+
+    async def _require_exact_retry_or_conflict(
+        self,
+        *,
+        consultation: Consultation,
+        admin_id: int,
+        decision: str,
+        comment: str,
+    ) -> Case:
+        event = await self._latest_resolution_event(
+            case_id=int(consultation.case_id),
+            consultation_id=int(consultation.id),
+        )
+        value = event.new_value or {} if event is not None else {}
+        event_decision = str(value.get("consultation_decision") or "").strip().lower()
+        if (
+            event is None
+            or event.actor_id != int(admin_id)
+            or str(event.comment or "").strip() != comment
+            or event_decision != decision
+        ):
+            raise LegacyConsultationOutcomeResolutionError(
+                "Старый результат уже завершён другим администратором, другим решением или с другим основанием. "
+                "Старое действие не применено; обновите карточку."
+            )
+        return await self._lock_case(int(consultation.case_id))
 
     async def resolve(
         self,
@@ -68,23 +139,19 @@ class LegacyConsultationOutcomeResolutionService:
         current_decision = str(consultation.decision or "").strip().lower()
         if current_decision != "other":
             if current_decision == normalized_decision:
-                case = await self.db.get(Case, consultation.case_id)
-                if case is None:
-                    raise LookupError("Дело не найдено")
+                case = await self._require_exact_retry_or_conflict(
+                    consultation=consultation,
+                    admin_id=admin_id,
+                    decision=normalized_decision,
+                    comment=normalized_comment,
+                )
                 return consultation, case
             raise LegacyConsultationOutcomeResolutionError(
-                "У консультации уже есть поддерживаемое конечное решение"
+                "У консультации уже есть другое поддерживаемое конечное решение. "
+                "Старое действие не применено; обновите карточку."
             )
 
-        case = (
-            await self.db.execute(
-                select(Case)
-                .where(Case.id == consultation.case_id)
-                .with_for_update()
-            )
-        ).scalar_one_or_none()
-        if case is None:
-            raise LookupError("Дело не найдено")
+        case = await self._lock_case(int(consultation.case_id))
         if str(case.route or "") != "M2" or str(case.status) != CaseStatus.M2_CONSULTATION_DONE.value:
             raise LegacyConsultationOutcomeResolutionError(
                 "Дело уже изменилось. Откройте актуальную карточку перед повторным решением"
@@ -129,7 +196,7 @@ class LegacyConsultationOutcomeResolutionService:
             actor_type="admin",
             actor_id=admin_id,
             case_id=case.id,
-            action="CONSULTATION_LEGACY_OUTCOME_RESOLVED",
+            action=self.RESOLUTION_ACTION,
             old_value=old_value,
             new_value={
                 "consultation_id": consultation.id,
