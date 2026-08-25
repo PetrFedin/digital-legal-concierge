@@ -53,6 +53,68 @@ def test_lawyer_with_auxiliary_operator_label_stays_lawyer_scoped(monkeypatch):
     assert scope.lawyer_id == 77
 
 
+def test_lawyer_scoped_projection_drops_foreign_conversations_and_recounts_metrics():
+    scope = StaffScope(
+        payload={"uid": 42},
+        roles=frozenset({"lawyer", "operator"}),
+        lawyer_id=77,
+    )
+    payload = {
+        "conversation_count": 3,
+        "unread_count": 9,
+        "waiting_count": 3,
+        "critical_count": 2,
+        "today_count": 1,
+        "unassigned_count": 1,
+        "overdue_count": 2,
+        "priority_note": "keep me",
+        "items": [
+            {
+                "case_id": 1,
+                "responsibility": {"lawyer_id": 77},
+                "unread_count": 2,
+                "waiting_for_reply": True,
+                "critical": True,
+                "today": False,
+                "unassigned": False,
+                "overdue": True,
+            },
+            {
+                "case_id": 2,
+                "responsibility": {"lawyer_id": 88},
+                "unread_count": 6,
+                "waiting_for_reply": True,
+                "critical": True,
+                "today": True,
+                "unassigned": False,
+                "overdue": True,
+            },
+            {
+                "case_id": 3,
+                "responsibility": {"lawyer_id": None},
+                "unread_count": 1,
+                "waiting_for_reply": True,
+                "critical": False,
+                "today": False,
+                "unassigned": True,
+                "overdue": False,
+            },
+        ],
+    }
+
+    result = module._filter_guided_status_to_scope(payload, scope)
+
+    assert [item["case_id"] for item in result["items"]] == [1]
+    assert result["conversation_count"] == 1
+    assert result["unread_count"] == 2
+    assert result["waiting_count"] == 1
+    assert result["critical_count"] == 1
+    assert result["today_count"] == 0
+    assert result["unassigned_count"] == 0
+    assert result["overdue_count"] == 1
+    assert result["priority_note"] == "keep me"
+
+
 def test_admin_with_auxiliary_operator_label_keeps_broad_operational_scope(monkeypatch):
     expected = StaffScope(
         payload={"uid": 43},
