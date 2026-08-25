@@ -9,6 +9,7 @@ from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.sla_service import CaseSLAService
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.models.admin_user import AdminUser
+from app.models.audit_log import AuditLog
 from app.models.case import Case
 from app.models.lawyer import Lawyer
 from app.security.access_control import ROLE_LAWYER, normalize_roles
@@ -22,6 +23,11 @@ CLOSED_CASE_STATUSES = {
     "M1_CLOSED",
     "M2_CLOSED",
 }
+ASSIGNMENT_MUTATION_ACTIONS = (
+    "case_lawyer_assigned",
+    "case_lawyer_reassigned",
+    "case_lawyer_unassigned",
+)
 _UNSET = object()
 
 
@@ -79,9 +85,7 @@ class CaseAssignmentService:
             "load_ratio": (
                 active_cases / workload_limit if workload_limit else 1.0
             ),
-            "is_available": (
-                workload_limit > 0 and active_cases < workload_limit
-            ),
+            "is_available": workload_limit > 0 and active_cases < workload_limit,
             "login_ready": True,
         }
 
@@ -172,26 +176,74 @@ class CaseAssignmentService:
         return lawyers
 
     @staticmethod
+    def _normalized_expected_lawyer(expected_lawyer_id):
+        if expected_lawyer_id is _UNSET:
+            return _UNSET
+        if expected_lawyer_id in (None, ""):
+            return None
+        return int(expected_lawyer_id)
+
+    @classmethod
     def _assert_expected_snapshot(
+        cls,
         case: Case,
         *,
         expected_lawyer_id=_UNSET,
         expected_status: str | None = None,
     ) -> None:
-        if expected_lawyer_id is not _UNSET:
-            normalized_lawyer_id = (
-                int(expected_lawyer_id)
-                if expected_lawyer_id not in (None, "")
-                else None
+        normalized_lawyer_id = cls._normalized_expected_lawyer(expected_lawyer_id)
+        if (
+            normalized_lawyer_id is not _UNSET
+            and case.assigned_lawyer_id != normalized_lawyer_id
+        ):
+            raise ValueError(
+                "Назначение дела изменилось после загрузки экрана. Обновите данные"
             )
-            if case.assigned_lawyer_id != normalized_lawyer_id:
-                raise ValueError(
-                    "Назначение дела изменилось после загрузки экрана. Обновите данные"
-                )
         if expected_status is not None and str(case.status) != str(expected_status):
             raise ValueError(
                 "Статус дела изменился после загрузки экрана. Обновите данные"
             )
+
+    async def _latest_assignment_mutation(self, case_id: int) -> AuditLog | None:
+        result = await self.db.execute(
+            select(AuditLog)
+            .where(
+                AuditLog.entity_type == "case",
+                AuditLog.entity_id == int(case_id),
+                AuditLog.action.in_(ASSIGNMENT_MUTATION_ACTIONS),
+            )
+            .order_by(AuditLog.id.desc())
+        )
+        # No arbitrary history window: the newest assignment mutation is the
+        # provenance boundary, regardless of how old the case is.
+        return result.scalars().first()
+
+    async def _is_exact_auto_assign_retry(
+        self,
+        *,
+        case: Case,
+        actor_type: str,
+        actor_id: int | None,
+        comment: str | None,
+    ) -> bool:
+        if actor_id is None or case.assigned_lawyer_id is None:
+            return False
+        event = await self._latest_assignment_mutation(case.id)
+        if event is None or event.action != "case_lawyer_assigned":
+            return False
+        old_value = event.old_value or {}
+        new_value = event.new_value or {}
+        try:
+            recorded_lawyer_id = int(new_value.get("assigned_lawyer_id"))
+        except (TypeError, ValueError):
+            return False
+        return (
+            event.actor_type == actor_type
+            and event.actor_id == actor_id
+            and event.comment == comment
+            and old_value.get("assigned_lawyer_id") is None
+            and recorded_lawyer_id == int(case.assigned_lawyer_id)
+        )
 
     async def assign_case(
         self,
@@ -234,6 +286,27 @@ class CaseAssignmentService:
         expected_status: str | None = None,
     ) -> Case | None:
         case = await self._get_case(case_id, for_update=True)
+        if expected_status is not None and str(case.status) != str(expected_status):
+            raise ValueError(
+                "Статус дела изменился после загрузки экрана. Обновите данные"
+            )
+
+        normalized_expected = self._normalized_expected_lawyer(expected_lawyer_id)
+        if (
+            normalized_expected is None
+            and case.assigned_lawyer_id is not None
+        ):
+            if await self._is_exact_auto_assign_retry(
+                case=case,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                comment=comment,
+            ):
+                return case
+            raise ValueError(
+                "Назначение дела изменилось после загрузки экрана. Обновите данные"
+            )
+
         self._assert_expected_snapshot(
             case,
             expected_lawyer_id=expected_lawyer_id,
@@ -307,9 +380,7 @@ class CaseAssignmentService:
                 if best["workload_limit"]
                 else 1.0
             )
-            best["is_available"] = (
-                best["active_cases"] < best["workload_limit"]
-            )
+            best["is_available"] = best["active_cases"] < best["workload_limit"]
             assigned.append(
                 {
                     "case_id": case.id,
@@ -324,9 +395,7 @@ class CaseAssignmentService:
             "assigned_count": len(assigned),
             "unassigned_count": len(cases) - len(assigned),
             "assigned": assigned,
-            "capacity_exhausted": (
-                bool(cases) and len(assigned) < len(cases)
-            ),
+            "capacity_exhausted": bool(cases) and len(assigned) < len(cases),
         }
 
     async def unassign_case(
