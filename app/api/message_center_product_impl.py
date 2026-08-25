@@ -79,16 +79,48 @@ async def require_product_staff_scope(
     )
 
 
+def _filter_guided_status_to_scope(payload: dict, scope: StaffScope) -> dict:
+    """Remove compatibility-broad rows before a lawyer queue leaves the API.
+
+    The historical guided projection still understands ROLE_OPERATOR as broad.
+    Product scope is stricter, so a lawyer carrying that auxiliary label must
+    receive only rows for the lawyer responsibility resolved above. Admin and
+    superadmin remain broad by contract.
+    """
+
+    if scope.lawyer_id is None:
+        return payload
+
+    items = [
+        item
+        for item in list(payload.get("items") or [])
+        if int(((item.get("responsibility") or {}).get("lawyer_id") or 0))
+        == int(scope.lawyer_id)
+    ]
+    result = dict(payload)
+    result["items"] = items
+    result["conversation_count"] = len(items)
+    result["unread_count"] = sum(int(item.get("unread_count") or 0) for item in items)
+    result["waiting_count"] = sum(bool(item.get("waiting_for_reply")) for item in items)
+    result["critical_count"] = sum(bool(item.get("critical")) for item in items)
+    result["today_count"] = sum(bool(item.get("today")) for item in items)
+    result["unassigned_count"] = sum(
+        bool(item.get("waiting_for_reply")) and bool(item.get("unassigned"))
+        for item in items
+    )
+    result["overdue_count"] = sum(bool(item.get("overdue")) for item in items)
+    return result
+
+
 @router.get("/message-center/status", name="message_center_status")
 async def message_center_status(
     request: Request,
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    # The guided projection uses the same compatibility data model; run the
-    # product-role guard first so an auxiliary operator token cannot reach it.
-    await require_product_staff_scope(request, db, x_admin_token)
-    return await guided_message_center_status(request, db, x_admin_token)
+    scope = await require_product_staff_scope(request, db, x_admin_token)
+    payload = await guided_message_center_status(request, db, x_admin_token)
+    return _filter_guided_status_to_scope(payload, scope)
 
 
 @router.get(
