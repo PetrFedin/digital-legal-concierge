@@ -274,6 +274,43 @@ def _inject_business_timezone_ui(html: str) -> str:
     }});
   }};
 
+  async function clientNoShowProductAction(id,mode,path,button,success,confirmation){{
+    const row=rowsById.get(Number(id));
+    const comment=document.getElementById(`comment_${{id}}_${{mode}}`)?.value||'';
+    rememberDraft(id,mode,comment);
+    if(!row){{feedback('Консультация уже изменилась. Обновите список.','bad');return}}
+    if(!validComment(comment))return;
+    if(!confirm(confirmation.replace('{{case}}',row.case_number||'—')))return;
+    return withConsultationAction(id,button,async()=>{{
+      try{{
+        await api(path,{{method:'POST',body:JSON.stringify({{comment:comment.trim()}})}});
+        drafts.delete(draftKey(id,mode));
+        feedback(success,'ok');
+        try{{await load()}}catch(e){{feedback(`Действие сохранено, но список не обновился: ${{e.message}}`,'warn')}}
+      }}catch(e){{
+        if(await refreshAfterConflict(e,row))return;
+        feedback(`Действие по делу ${{row.case_number}} не сохранено: ${{e.message}}. Черновик остаётся на экране.`,'bad');
+      }}
+    }});
+  }}
+
+  window.clientNoShowRebook=(id,button)=>clientNoShowProductAction(
+    id,
+    'client_rebook',
+    `/admin/consultation-outcomes/${{id}}/client-no-show/rebook`,
+    button,
+    'Новая запись подготовлена. Клиенту открыт следующий актуальный шаг.',
+    'Открыть новую платную запись по делу {{case}}? Старый платёж не будет переиспользован.'
+  );
+  window.clientNoShowClose=(id,button)=>clientNoShowProductAction(
+    id,
+    'client_close',
+    `/admin/consultation-outcomes/${{id}}/client-no-show/close`,
+    button,
+    'Обращение закрыто. Неявка и платёжная история сохранены.',
+    'Закрыть обращение {{case}} после подтверждённой неявки клиента? Платёжная история останется без изменений.'
+  );
+
   const subtitle=document.querySelector('header .header p');
   if(subtitle)subtitle.textContent=subtitle.textContent+' · Время: '+(businessTimeLabel||businessTimeZone);
 
