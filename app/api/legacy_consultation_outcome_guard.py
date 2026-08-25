@@ -150,7 +150,20 @@ _LEGACY_OUTCOME_UI_PATCH = r"""
         drafts.delete(draftKey(id,'legacy'));
         feedback(`Старый итог завершён. Новый статус дела: ${result.case_status}.`,'ok');
         try{await load()}catch(e){feedback(`Решение сохранено, но очередь не обновилась: ${e.message}`,'warn')}
-      }catch(e){feedback(`Решение не сохранено: ${e.message}. Черновик оставлен.`,'bad')}
+      }catch(e){
+        if(Number(e?.status)===409){
+          let refreshed=true;
+          try{await load()}catch(_){refreshed=false}
+          feedback(
+            `Данные по делу ${row.case_number||'уже'} изменились в другой вкладке или другим сотрудником. Старое решение не применено. `+
+            (refreshed?'Показано актуальное состояние. ':'Не удалось обновить очередь автоматически. ')+
+            `Черновик оставлен. ${e.message||''}`,
+            'warn'
+          );
+          return;
+        }
+        feedback(`Решение не сохранено: ${e.message}. Черновик оставлен.`,'bad')
+      }
     });
   };
 
