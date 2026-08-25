@@ -10,6 +10,7 @@ from app.domain.consultations.consultation_service import ConsultationService
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.consultation_statuses import ConsultationStatus
+from app.models.audit_log import AuditLog
 from app.models.case import Case
 from app.models.consultation import Consultation
 
@@ -26,6 +27,9 @@ class ClientNoShowResolutionService:
     not reuse the old payment/reservation. Closing leaves the no-show record in
     history and closes only the case. Both actions are explicit admin decisions.
     """
+
+    REBOOK_ACTION = "CONSULTATION_CLIENT_NO_SHOW_REBOOKING_OPENED"
+    CLOSE_ACTION = "CONSULTATION_CLIENT_NO_SHOW_CASE_CLOSED"
 
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -66,6 +70,55 @@ class ClientNoShowResolutionService:
             raise LookupError("Дело не найдено")
         return case
 
+    async def _latest_resolution_event(
+        self,
+        *,
+        case_id: int,
+        consultation_id: int,
+        action: str,
+        consultation_key: str,
+    ) -> AuditLog | None:
+        """Find exact no-show resolution evidence without a history window."""
+
+        events = list(
+            (
+                await self.db.execute(
+                    select(AuditLog)
+                    .where(
+                        AuditLog.entity_type == "case",
+                        AuditLog.entity_id == int(case_id),
+                        AuditLog.action == action,
+                    )
+                    .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+                )
+            ).scalars().all()
+        )
+        for event in events:
+            value = event.new_value or {}
+            try:
+                event_consultation_id = int(value.get(consultation_key) or 0)
+            except (TypeError, ValueError):
+                event_consultation_id = 0
+            if event_consultation_id == int(consultation_id):
+                return event
+        return None
+
+    @staticmethod
+    def _require_exact_actor_comment(
+        *,
+        event: AuditLog | None,
+        admin_id: int | None,
+        comment: str,
+        conflict_message: str,
+    ) -> AuditLog:
+        if (
+            event is None
+            or event.actor_id != admin_id
+            or str(event.comment or "").strip() != comment
+        ):
+            raise ClientNoShowResolutionError(conflict_message)
+        return event
+
     async def prepare_new_paid_booking(
         self,
         *,
@@ -77,16 +130,41 @@ class ClientNoShowResolutionService:
         original = await self._lock_consultation(consultation_id)
         case = await self._lock_case(original.case_id)
 
-        # Idempotent retry after a committed response/UI failure.
+        # Exact network retry after a committed response/UI failure.
         if (
             original.status == ConsultationStatus.RESCHEDULED
             and str(original.decision or "") == "client_no_show_rebook"
         ):
+            event = await self._latest_resolution_event(
+                case_id=int(case.id),
+                consultation_id=int(original.id),
+                action=self.REBOOK_ACTION,
+                consultation_key="previous_consultation_id",
+            )
+            event = self._require_exact_actor_comment(
+                event=event,
+                admin_id=admin_id,
+                comment=normalized_comment,
+                conflict_message=(
+                    "Новая запись после неявки уже была открыта другим администратором или с другими данными. "
+                    "Старое действие не применено; обновите карточку."
+                ),
+            )
+            event_value = event.new_value or {}
+            try:
+                replacement_id = int(event_value.get("consultation_id") or 0)
+            except (TypeError, ValueError):
+                replacement_id = 0
             current = await self.consultations.get_current_for_case(case.id)
-            if current is not None:
+            if (
+                current is not None
+                and replacement_id > 0
+                and int(current.id) == replacement_id
+            ):
                 return original, current, case
             raise ClientNoShowResolutionError(
-                "Перезапись уже была открыта, но текущая консультация не найдена. Требуется ручная проверка."
+                "Перезапись уже была открыта, но текущая консультация не совпадает с зафиксированной заменой. "
+                "Старое действие не применено; требуется ручная проверка."
             )
 
         if original.status != ConsultationStatus.CLIENT_NO_SHOW:
@@ -154,7 +232,7 @@ class ClientNoShowResolutionService:
             actor_type="admin",
             actor_id=admin_id,
             case_id=case.id,
-            action="CONSULTATION_CLIENT_NO_SHOW_REBOOKING_OPENED",
+            action=self.REBOOK_ACTION,
             old_value=old_value,
             new_value={
                 "previous_consultation_id": original.id,
@@ -169,7 +247,7 @@ class ClientNoShowResolutionService:
             comment=normalized_comment,
         )
         await self.notifications.emit(
-            event_code="CONSULTATION_CLIENT_NO_SHOW_REBOOKING_OPENED",
+            event_code=self.REBOOK_ACTION,
             case_id=case.id,
             payload={
                 "case_number": case.case_number,
@@ -200,6 +278,21 @@ class ClientNoShowResolutionService:
             and str(consultation.decision or "") == "client_no_show_closed"
             and case_status == CaseStatus.M2_CLOSED
         ):
+            event = await self._latest_resolution_event(
+                case_id=int(case.id),
+                consultation_id=int(consultation.id),
+                action=self.CLOSE_ACTION,
+                consultation_key="consultation_id",
+            )
+            self._require_exact_actor_comment(
+                event=event,
+                admin_id=admin_id,
+                comment=normalized_comment,
+                conflict_message=(
+                    "Обращение после неявки уже закрыто другим администратором или с другим основанием. "
+                    "Старое действие не применено; обновите карточку."
+                ),
+            )
             return consultation, case
 
         if consultation.status != ConsultationStatus.CLIENT_NO_SHOW:
@@ -233,7 +326,7 @@ class ClientNoShowResolutionService:
             actor_type="admin",
             actor_id=admin_id,
             case_id=case.id,
-            action="CONSULTATION_CLIENT_NO_SHOW_CASE_CLOSED",
+            action=self.CLOSE_ACTION,
             old_value=old_value,
             new_value={
                 "consultation_id": consultation.id,
@@ -246,7 +339,7 @@ class ClientNoShowResolutionService:
             comment=normalized_comment,
         )
         await self.notifications.emit(
-            event_code="CONSULTATION_CLIENT_NO_SHOW_CASE_CLOSED",
+            event_code=self.CLOSE_ACTION,
             case_id=case.id,
             payload={"case_number": case.case_number},
             dedupe_key=f"consultation:{consultation.id}:client-no-show:closed",
