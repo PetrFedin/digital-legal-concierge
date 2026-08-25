@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -131,15 +132,80 @@ def test_client_no_show_retry_with_changed_comment_conflicts():
         )
 
 
-def test_lawyer_no_show_retry_with_changed_comment_conflicts():
-    consultation = SimpleNamespace(
+def _lawyer_no_show_consultation():
+    return SimpleNamespace(
         id=506,
+        case_id=606,
+        slot_id=706,
         lawyer_id=71,
         status=ConsultationStatus.LAWYER_NO_SHOW,
         lawyer_result="Юрист не подключился, факт подтверждён администратором.",
         decision="lawyer_no_show",
     )
+
+
+def _lawyer_no_show_event(*, actor_id: int, comment: str):
+    return SimpleNamespace(
+        actor_id=actor_id,
+        new_value={
+            "consultation_id": 506,
+            "comment": comment,
+        },
+    )
+
+
+def test_exact_lawyer_no_show_retry_requires_same_admin_comment_and_slot():
+    consultation = _lawyer_no_show_consultation()
     service = _service(consultation)
+    service._latest_consultation_history_event = AsyncMock(
+        return_value=_lawyer_no_show_event(
+            actor_id=91,
+            comment="Юрист не подключился, факт подтверждён администратором.",
+        )
+    )
+
+    result = asyncio.run(
+        service.mark_lawyer_no_show(
+            consultation_id=506,
+            admin_id=91,
+            comment="Юрист не подключился, факт подтверждён администратором.",
+            expected_slot_id=706,
+        )
+    )
+
+    assert result is consultation
+    service._latest_consultation_history_event.assert_awaited_once_with(
+        case_id=606,
+        consultation_id=506,
+        action="CONSULTATION_LAWYER_NO_SHOW",
+    )
+
+
+def test_lawyer_no_show_retry_from_other_admin_conflicts_even_with_same_text():
+    consultation = _lawyer_no_show_consultation()
+    service = _service(consultation)
+    service._latest_consultation_history_event = AsyncMock(
+        return_value=_lawyer_no_show_event(
+            actor_id=91,
+            comment="Юрист не подключился, факт подтверждён администратором.",
+        )
+    )
+
+    with pytest.raises(ConsultationOutcomeError, match="другим администратором"):
+        asyncio.run(
+            service.mark_lawyer_no_show(
+                consultation_id=506,
+                admin_id=92,
+                comment="Юрист не подключился, факт подтверждён администратором.",
+                expected_slot_id=706,
+            )
+        )
+
+
+def test_lawyer_no_show_retry_with_changed_comment_conflicts_before_idempotency_lookup():
+    consultation = _lawyer_no_show_consultation()
+    service = _service(consultation)
+    service._latest_consultation_history_event = AsyncMock()
 
     with pytest.raises(ConsultationOutcomeError, match="другим комментарием"):
         asyncio.run(
@@ -147,5 +213,33 @@ def test_lawyer_no_show_retry_with_changed_comment_conflicts():
                 consultation_id=506,
                 admin_id=91,
                 comment="Старая вкладка отправляет другое описание неявки юриста.",
+                expected_slot_id=706,
             )
         )
+
+    service._latest_consultation_history_event.assert_not_awaited()
+
+
+def test_lawyer_no_show_retry_for_old_slot_conflicts_before_actor_retry():
+    consultation = _lawyer_no_show_consultation()
+    service = _service(consultation)
+    service._latest_consultation_history_event = AsyncMock()
+
+    with pytest.raises(ConsultationOutcomeError, match="Время консультации изменилось"):
+        asyncio.run(
+            service.mark_lawyer_no_show(
+                consultation_id=506,
+                admin_id=91,
+                comment="Юрист не подключился, факт подтверждён администратором.",
+                expected_slot_id=705,
+            )
+        )
+
+    service._latest_consultation_history_event.assert_not_awaited()
+
+
+def test_lawyer_no_show_idempotency_evidence_has_no_arbitrary_history_limit():
+    source = inspect.getsource(ConsultationOutcomeService._latest_consultation_history_event)
+    assert "AuditLog.action == action" in source
+    assert "AuditLog.entity_id == int(case_id)" in source
+    assert ".limit(" not in source
