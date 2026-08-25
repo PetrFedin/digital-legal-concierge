@@ -4,10 +4,15 @@ import inspect
 
 from app.api import lawyer_m1_claim, lawyer_m1_enforcement, lawyer_poa
 from app.api.access_management import PRODUCT_WORKSPACE_ROLES
-from app.api.consultation_outcomes_product import product_mark_lawyer_no_show
+from app.api.consultation_outcomes_product import (
+    _inject_business_timezone_ui,
+    product_mark_lawyer_no_show,
+)
+from app.api.guided_consultation_outcomes import _inject_client_no_show_ui
 from app.api.message_center_product_impl import require_product_staff_scope
 from app.api.payment_review_center import require_admin as require_payment_review_admin
 from app.api.refund_center import require_admin as require_refund_admin
+from app.api.consultation_outcomes import OUTCOMES_HTML
 from app.bot.case_callback_scope import (
     CASE_BOUND_MUTATING_ACTIONS,
     PAYMENT_CASE_BOUND_ACTIONS,
@@ -17,6 +22,9 @@ from app.bot.case_callback_scope import (
 from app.domain.cases.admin_manual_status_policy import (
     DOMAIN_MANAGED_STATUSES,
     manual_status_change_allowed,
+)
+from app.domain.consultations.client_no_show_resolution_service import (
+    ClientNoShowResolutionService,
 )
 from app.domain.consultations.no_show_resolution_service import NoShowResolutionService
 from app.domain.consultations.outcome_service import ConsultationOutcomeService
@@ -162,6 +170,17 @@ def test_m2_admin_no_show_is_bound_to_exact_slot_and_exact_admin_provenance():
     assert "_latest_consultation_history_event" in service
 
 
+def test_m2_lawyer_no_show_rebook_exact_retry_is_actor_slot_and_comment_bound():
+    service = _source(ConsultationOutcomeService.rebook_after_lawyer_no_show)
+
+    assert "ConsultationStatus.BOOKED" in service
+    assert 'action="CONSULTATION_REBOOKED_AFTER_LAWYER_NO_SHOW"' in service
+    assert "event.actor_id != admin_id" in service
+    assert "event_slot_id != normalized_slot_id" in service
+    assert "str(event.comment or \"\").strip() != normalized_comment" in service
+    assert "int(consultation.slot_id or 0) != normalized_slot_id" in service
+
+
 def test_m2_no_show_refund_resolution_is_atomic_and_audit_bound():
     source = _source(NoShowResolutionService.route_lawyer_no_show_to_refund)
     retry = _source(NoShowResolutionService._require_exact_refund_retry_or_conflict)
@@ -176,6 +195,34 @@ def test_m2_no_show_refund_resolution_is_atomic_and_audit_bound():
     assert "event_payment_id != int(payment.id)" in retry
     assert "slot.consultation_id = None" in release
     assert 'slot.status = "available"' in release
+
+
+def test_m2_client_no_show_rebook_and_close_require_exact_admin_provenance():
+    rebook = _source(ClientNoShowResolutionService.prepare_new_paid_booking)
+    close = _source(ClientNoShowResolutionService.close_case)
+    audit = _source(ClientNoShowResolutionService._latest_resolution_event)
+
+    assert "self.REBOOK_ACTION" in rebook
+    assert "_require_exact_actor_comment" in rebook
+    assert "replacement_id" in rebook
+    assert "int(current.id) == replacement_id" in rebook
+    assert "self.CLOSE_ACTION" in close
+    assert "_require_exact_actor_comment" in close
+    assert "AuditLog.action == action" in audit
+    assert ".limit(" not in audit
+
+
+def test_m2_outcomes_browser_keeps_drafts_and_refreshes_after_conflict():
+    html = _inject_client_no_show_ui(OUTCOMES_HTML)
+    html = _inject_business_timezone_ui(html)
+
+    assert "async function refreshAfterConflict" in html
+    assert "window.clientNoShowRebook" in html
+    assert "window.clientNoShowClose" in html
+    assert "rememberDraft(id,mode,comment)" in html
+    assert "if(await refreshAfterConflict(e,row))return" in html
+    assert "Введённый черновик не удалён" in html
+    assert "try{await load()}" in html
 
 
 def test_terminal_role_matrix_keeps_business_close_separate_from_generic_admin_edit():
