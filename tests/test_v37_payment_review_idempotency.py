@@ -77,6 +77,54 @@ def test_orphan_refund_retry_requires_same_actor_comment_and_encoded_context():
     assert "_require_exact_retry_or_conflict(" in route
 
 
+def test_payment_review_resolution_is_durable_case_audit_history():
+    service = read("app/domain/payments/payment_review_service.py")
+    history = read("app/domain/cases/case_history.py")
+    audit_center = read("app/api/audit_center.py")
+    record = service.split("async def _record_resolution", 1)[1].split(
+        "async def confirm_existing_booking", 1
+    )[0]
+
+    assert "await add_case_history_event(" in record
+    assert 'action="CONSULTATION_PAYMENT_REVIEW_RESOLVED"' in record
+    assert '"payment_id": payment.id' in record
+    assert '"consultation_id": consultation.id' in record
+    assert '"decision": decision' in record
+    assert "comment=comment" in record
+
+    # add_case_history_event is the canonical case audit writer: Payment Review
+    # therefore lands in the same immutable AuditLog chain as other case history.
+    assert "AuditLog(" in history
+    assert "entity_type='case'" in history
+    assert "entity_id=case_id" in history
+    assert "action=action" in history
+
+    # Audit Center deliberately has no action allow-list, so this new action is
+    # visible to the superadmin audit-history without another projection layer.
+    assert "select(AuditLog)" in audit_center
+    assert ".order_by(AuditLog.chain_sequence.desc(), AuditLog.id.desc())" in audit_center
+    assert "AuditLog.action.in_(" not in audit_center
+    assert '"action": audit.action' in audit_center
+    assert '"entity_id": audit.entity_id' in audit_center
+    assert '"comment": audit.comment' in audit_center
+
+
+def test_payment_review_409_rolls_back_before_returning_conflict():
+    source = read("app/api/payment_review_center.py")
+    endpoint = source.split('@router.post("/{payment_id}/resolve")', 1)[1].split(
+        '@router.get("/ui"', 1
+    )[0]
+    conflict = endpoint.split("except (", 1)[1].split("except Exception", 1)[0]
+
+    assert "PaymentReviewResolutionError" in conflict
+    assert "SlotUnavailableError" in conflict
+    assert "await db.rollback()" in conflict
+    assert "raise HTTPException(status_code=409" in conflict
+    assert conflict.index("await db.rollback()") < conflict.index(
+        "raise HTTPException(status_code=409"
+    )
+
+
 def test_payment_review_ui_uses_durable_origin_and_preserves_stale_decision_draft():
     source = read("app/api/payment_review_center.py")
     review_context = source.split("async def review_event_context", 1)[1].split(
@@ -94,6 +142,18 @@ def test_payment_review_ui_uses_durable_origin_and_preserves_stale_decision_draf
     assert "await load()" in source
     assert "решение не применено" in source
     assert "Ваш допустимый выбор и комментарий сохранены" in source
+
+
+def test_payment_review_409_reloads_server_truth_before_restoring_valid_draft():
+    source = read("app/api/payment_review_center.py")
+    resolve = source.split("async function resolveReview", 1)[1]
+    stale = resolve.split("if(e.status===409)", 1)[1]
+
+    assert "await load()" in stale
+    assert "restoreDraftSelections(id)" in stale
+    assert stale.index("await load()") < stale.index("restoreDraftSelections(id)")
+    assert "решение не применено" in stale
+    assert "Ваш допустимый выбор и комментарий сохранены" in stale
 
 
 def test_payment_review_card_matches_staff_action_hierarchy():
