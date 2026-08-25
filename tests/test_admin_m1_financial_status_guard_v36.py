@@ -26,7 +26,7 @@ from app.domain.statuses.case_statuses import CaseStatus
 )
 def test_generic_admin_status_cannot_touch_financial_managed_chain(current, target):
     assert manual_status_change_allowed(current, target) is False
-    with pytest.raises(ValueError, match="финальный финансовый контур M1"):
+    with pytest.raises(ValueError, match="реальное юридическое, консультационное или финансовое событие"):
         assert_manual_status_change_allowed(current, target)
 
 
