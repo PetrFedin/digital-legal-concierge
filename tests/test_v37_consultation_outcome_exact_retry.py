@@ -238,6 +238,91 @@ def test_lawyer_no_show_retry_for_old_slot_conflicts_before_actor_retry():
     service._latest_consultation_history_event.assert_not_awaited()
 
 
+def _rebooked_consultation():
+    return SimpleNamespace(
+        id=507,
+        case_id=607,
+        slot_id=707,
+        lawyer_id=72,
+        status=ConsultationStatus.BOOKED,
+        lawyer_result=None,
+        decision=None,
+    )
+
+
+def _rebook_event(*, actor_id: int, comment: str, slot_id: int):
+    return SimpleNamespace(
+        actor_id=actor_id,
+        comment=comment,
+        new_value={
+            "consultation_id": 507,
+            "slot_id": slot_id,
+        },
+    )
+
+
+def test_exact_no_show_rebook_retry_is_idempotent_for_same_admin_slot_and_comment():
+    consultation = _rebooked_consultation()
+    service = _service(consultation)
+    service._latest_consultation_history_event = AsyncMock(
+        return_value=_rebook_event(
+            actor_id=93,
+            comment="Клиенту согласован бесплатный перенос",
+            slot_id=707,
+        )
+    )
+
+    result = asyncio.run(
+        service.rebook_after_lawyer_no_show(
+            consultation_id=507,
+            new_slot_id=707,
+            admin_id=93,
+            comment="Клиенту согласован бесплатный перенос",
+        )
+    )
+
+    assert result is consultation
+    service._latest_consultation_history_event.assert_awaited_once_with(
+        case_id=607,
+        consultation_id=507,
+        action="CONSULTATION_REBOOKED_AFTER_LAWYER_NO_SHOW",
+    )
+
+
+@pytest.mark.parametrize(
+    ("admin_id", "slot_id", "comment"),
+    (
+        (94, 707, "Клиенту согласован бесплатный перенос"),
+        (93, 708, "Клиенту согласован бесплатный перенос"),
+        (93, 707, "Другой комментарий из старой вкладки"),
+    ),
+)
+def test_no_show_rebook_retry_with_other_actor_slot_or_comment_conflicts(
+    admin_id,
+    slot_id,
+    comment,
+):
+    consultation = _rebooked_consultation()
+    service = _service(consultation)
+    service._latest_consultation_history_event = AsyncMock(
+        return_value=_rebook_event(
+            actor_id=93,
+            comment="Клиенту согласован бесплатный перенос",
+            slot_id=707,
+        )
+    )
+
+    with pytest.raises(ConsultationOutcomeError, match="уже перенесена"):
+        asyncio.run(
+            service.rebook_after_lawyer_no_show(
+                consultation_id=507,
+                new_slot_id=slot_id,
+                admin_id=admin_id,
+                comment=comment,
+            )
+        )
+
+
 def test_lawyer_no_show_idempotency_evidence_has_no_arbitrary_history_limit():
     source = inspect.getsource(ConsultationOutcomeService._latest_consultation_history_event)
     assert "AuditLog.action == action" in source
