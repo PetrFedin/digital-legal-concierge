@@ -24,18 +24,59 @@ from app.api.guided_message_center import (
 from app.api.message_center import (
     MAX_REPLY_LENGTH,
     ReplyPayload,
+    StaffScope,
     _deliver_message_notifications,
     _message_payload,
     require_staff_scope,
 )
+from app.config import settings
 from app.db.session import get_db
 from app.domain.messages.message_service import MessageService
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.models.case import Case
 from app.models.message import Message
 from app.models.user import User
+from app.security.access_control import ROLE_ADMIN, ROLE_LAWYER, ROLE_SUPERADMIN
+from app.security.lawyer_access import require_lawyer_actor
 
 router = APIRouter(tags=["message-center-product"])
+
+
+async def require_product_staff_scope(
+    request: Request,
+    db: AsyncSession,
+    header_token: str | None = None,
+) -> StaffScope:
+    """Apply the current product-role contract to Message Center access.
+
+    ``operator`` is an auxiliary account label, not an independent product
+    authority. Historical accounts must therefore not gain broad correspondence
+    access merely because the compatibility scope recognises ROLE_OPERATOR.
+    Likewise, a lawyer carrying the auxiliary operator label must remain scoped
+    to the exact lawyer responsibility instead of becoming broad staff access.
+    """
+
+    scope = await require_staff_scope(request, db, header_token)
+    if scope.roles.intersection({ROLE_ADMIN, ROLE_SUPERADMIN}):
+        return scope
+    if ROLE_LAWYER not in scope.roles:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Роль «Оператор» является дополнительной и не даёт самостоятельного "
+                "доступа к переписке. Требуется базовая роль администратора или юриста."
+            ),
+        )
+    if scope.lawyer_id is not None:
+        return scope
+
+    token = header_token or request.cookies.get(settings.admin_session_cookie)
+    lawyer_actor = await require_lawyer_actor(db, token)
+    return StaffScope(
+        payload=scope.payload,
+        roles=scope.roles,
+        lawyer_id=int(lawyer_actor.lawyer.id),
+    )
 
 
 @router.get("/message-center/status", name="message_center_status")
@@ -44,6 +85,9 @@ async def message_center_status(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
+    # The guided projection uses the same compatibility data model; run the
+    # product-role guard first so an auxiliary operator token cannot reach it.
+    await require_product_staff_scope(request, db, x_admin_token)
     return await guided_message_center_status(request, db, x_admin_token)
 
 
@@ -57,7 +101,7 @@ async def case_messages(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    scope = await require_staff_scope(request, db, x_admin_token)
+    scope = await require_product_staff_scope(request, db, x_admin_token)
     try:
         case = await db.get(Case, int(case_id))
         if case is None:
@@ -108,7 +152,7 @@ async def reply_to_client(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    scope = await require_staff_scope(request, db, x_admin_token)
+    scope = await require_product_staff_scope(request, db, x_admin_token)
     text = payload.text.strip()
     if len(text) < 2:
         raise HTTPException(status_code=400, detail="Введите текст ответа")
@@ -217,7 +261,7 @@ async def mark_message_read(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    scope = await require_staff_scope(request, db, x_admin_token)
+    scope = await require_product_staff_scope(request, db, x_admin_token)
     try:
         message = await db.get(Message, int(message_id))
         if message is None:
@@ -254,6 +298,7 @@ async def message_center_ui(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
+    await require_product_staff_scope(request, db, x_admin_token)
     return await guided_message_center_ui(request, db, x_admin_token)
 
 
