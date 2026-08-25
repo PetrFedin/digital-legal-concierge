@@ -443,8 +443,37 @@ class ConsultationOutcomeService:
             raise ConsultationOutcomeError(
                 "Укажите комментарий к бесплатному переносу"
             )
+        try:
+            normalized_slot_id = int(new_slot_id)
+        except (TypeError, ValueError) as error:
+            raise ConsultationOutcomeError("Выберите корректное новое время") from error
+        if normalized_slot_id <= 0:
+            raise ConsultationOutcomeError("Выберите корректное новое время")
 
         consultation = await self._lock_consultation(consultation_id)
+        if consultation.status == ConsultationStatus.BOOKED:
+            event = await self._latest_consultation_history_event(
+                case_id=int(consultation.case_id),
+                consultation_id=int(consultation.id),
+                action="CONSULTATION_REBOOKED_AFTER_LAWYER_NO_SHOW",
+            )
+            event_value = event.new_value or {} if event is not None else {}
+            try:
+                event_slot_id = int(event_value.get("slot_id") or 0)
+            except (TypeError, ValueError):
+                event_slot_id = 0
+            if (
+                event is None
+                or event.actor_id != admin_id
+                or str(event.comment or "").strip() != normalized_comment
+                or event_slot_id != normalized_slot_id
+                or int(consultation.slot_id or 0) != normalized_slot_id
+            ):
+                raise ConsultationOutcomeError(
+                    "Консультация уже перенесена другим администратором, в другое время или с другими данными. "
+                    "Старое действие не применено; обновите карточку."
+                )
+            return consultation
         if consultation.status != ConsultationStatus.LAWYER_NO_SHOW:
             raise ConsultationOutcomeError(
                 "Бесплатный перенос доступен только после неявки юриста"
@@ -471,7 +500,7 @@ class ConsultationOutcomeService:
 
         try:
             new_slot = await self.slots.book_available_slot(
-                slot_id=new_slot_id,
+                slot_id=normalized_slot_id,
                 user_id=case.client_id,
                 consultation_id=consultation.id,
             )
