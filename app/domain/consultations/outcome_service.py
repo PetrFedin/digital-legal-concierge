@@ -123,6 +123,15 @@ class ConsultationOutcomeService:
         consultation = await self._lock_consultation(consultation_id)
         self._require_assigned_lawyer(consultation, lawyer_id)
         if consultation.status == ConsultationStatus.DONE:
+            stored_result = str(consultation.lawyer_result or "").strip()
+            stored_decision = str(consultation.decision or "").strip().lower()
+            if (
+                stored_result != normalized_result
+                or stored_decision != normalized_decision
+            ):
+                raise ConsultationOutcomeError(
+                    "Консультация уже завершена другим итогом. Старое действие не применено; обновите карточку."
+                )
             return consultation
         if consultation.status != ConsultationStatus.BOOKED:
             raise ConsultationOutcomeError(
@@ -220,6 +229,12 @@ class ConsultationOutcomeService:
         consultation = await self._lock_consultation(consultation_id)
         self._require_assigned_lawyer(consultation, lawyer_id)
         if consultation.status == ConsultationStatus.CLIENT_NO_SHOW:
+            stored_comment = str(consultation.lawyer_result or "").strip()
+            stored_decision = str(consultation.decision or "").strip().lower()
+            if stored_decision != "client_no_show" or stored_comment != normalized_comment:
+                raise ConsultationOutcomeError(
+                    "Неявка клиента уже зафиксирована с другим комментарием. Старое действие не применено; обновите карточку."
+                )
             return consultation
         if consultation.status != ConsultationStatus.BOOKED:
             raise ConsultationOutcomeError(
@@ -290,6 +305,12 @@ class ConsultationOutcomeService:
 
         consultation = await self._lock_consultation(consultation_id)
         if consultation.status == ConsultationStatus.LAWYER_NO_SHOW:
+            stored_comment = str(consultation.lawyer_result or "").strip()
+            stored_decision = str(consultation.decision or "").strip().lower()
+            if stored_decision != "lawyer_no_show" or stored_comment != normalized_comment:
+                raise ConsultationOutcomeError(
+                    "Неявка юриста уже зафиксирована с другим комментарием. Старое действие не применено; обновите карточку."
+                )
             return consultation
         if consultation.status != ConsultationStatus.BOOKED:
             raise ConsultationOutcomeError(
