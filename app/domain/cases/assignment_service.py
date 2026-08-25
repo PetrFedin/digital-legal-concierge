@@ -65,6 +65,82 @@ class CaseAssignmentService:
                 "Создайте/восстановите сотрудника через Управление доступом и только потом назначайте дело"
             )
 
+    @staticmethod
+    def _capacity_payload(lawyer: Lawyer, active_cases: int) -> dict:
+        active_cases = int(active_cases)
+        workload_limit = max(int(lawyer.workload_limit or 0), 0)
+        return {
+            "id": lawyer.id,
+            "full_name": lawyer.full_name,
+            "specialization": lawyer.specialization,
+            "workload_limit": workload_limit,
+            "active_cases": active_cases,
+            "available_slots": max(workload_limit - active_cases, 0),
+            "load_ratio": (
+                active_cases / workload_limit if workload_limit else 1.0
+            ),
+            "is_available": (
+                workload_limit > 0 and active_cases < workload_limit
+            ),
+            "login_ready": True,
+        }
+
+    async def _active_case_counts(self) -> dict[int, int]:
+        result = await self.db.execute(
+            select(
+                Case.assigned_lawyer_id,
+                func.count(Case.id),
+            )
+            .where(
+                Case.assigned_lawyer_id.is_not(None),
+                Case.status.notin_(tuple(CLOSED_CASE_STATUSES)),
+            )
+            .group_by(Case.assigned_lawyer_id)
+        )
+        return {
+            int(lawyer_id): int(active_cases)
+            for lawyer_id, active_cases in result.all()
+            if lawyer_id is not None
+        }
+
+    async def _locked_active_lawyers(self) -> list[dict]:
+        """Lock assignable Lawyer rows before reading authoritative workload.
+
+        Case row locks protect two admins from racing on the same case. They do
+        not protect two different cases from concurrently consuming the last
+        capacity slot of the same lawyer. Serializing on Lawyer rows closes that
+        cross-case TOCTOU window for manual, automatic and queue assignment.
+
+        Rows are locked in deterministic id order so all assignment paths use a
+        consistent Case -> Lawyer lock order.
+        """
+
+        login_emails = await self._active_lawyer_login_emails()
+        result = await self.db.execute(
+            select(Lawyer)
+            .where(Lawyer.is_active.is_(True))
+            .order_by(Lawyer.id.asc())
+            .with_for_update()
+        )
+        lawyers = list(result.scalars().all())
+
+        # Recalculate only after the lawyer locks have been acquired. At
+        # PostgreSQL READ COMMITTED this statement sees assignments committed by
+        # a transaction that held the same Lawyer lock before us.
+        active_counts = await self._active_case_counts()
+        rows: list[dict] = []
+        for lawyer in lawyers:
+            email = str(lawyer.email or "").strip().lower()
+            if not email or email not in login_emails:
+                continue
+            rows.append(
+                self._capacity_payload(
+                    lawyer,
+                    active_counts.get(int(lawyer.id), 0),
+                )
+            )
+        return rows
+
     async def list_active_lawyers(self) -> list[dict]:
         workload = (
             select(
@@ -92,25 +168,7 @@ class CaseAssignmentService:
             lawyer_email = str(lawyer.email or "").strip().lower()
             if not lawyer_email or lawyer_email not in login_emails:
                 continue
-            active_cases = int(active_cases)
-            workload_limit = max(int(lawyer.workload_limit or 0), 0)
-            lawyers.append(
-                {
-                    "id": lawyer.id,
-                    "full_name": lawyer.full_name,
-                    "specialization": lawyer.specialization,
-                    "workload_limit": workload_limit,
-                    "active_cases": active_cases,
-                    "available_slots": max(workload_limit - active_cases, 0),
-                    "load_ratio": (
-                        active_cases / workload_limit if workload_limit else 1.0
-                    ),
-                    "is_available": (
-                        workload_limit > 0 and active_cases < workload_limit
-                    ),
-                    "login_ready": True,
-                }
-            )
+            lawyers.append(self._capacity_payload(lawyer, int(active_cases)))
         return lawyers
 
     @staticmethod
@@ -153,7 +211,7 @@ class CaseAssignmentService:
             expected_lawyer_id=expected_lawyer_id,
             expected_status=expected_status,
         )
-        lawyer = await self._get_lawyer(lawyer_id)
+        lawyer = await self._get_lawyer(lawyer_id, for_update=True)
         active_cases = await self._count_active_cases(lawyer.id)
         return await self._assign_case_model(
             case=case,
@@ -185,12 +243,14 @@ class CaseAssignmentService:
             return case
         self._ensure_case_can_be_assigned(case)
 
-        lawyer_rows = await self.list_active_lawyers()
+        lawyer_rows = await self._locked_active_lawyers()
         best = self._choose_best_lawyer(lawyer_rows)
         if best is None:
             return None
 
-        lawyer = await self._get_lawyer(best["id"])
+        # The row was locked by _locked_active_lawyers(); fetching it again in
+        # this transaction is only to obtain the ORM model used downstream.
+        lawyer = await self._get_lawyer(best["id"], for_update=True)
         return await self._assign_case_model(
             case=case,
             lawyer=lawyer,
@@ -220,14 +280,14 @@ class CaseAssignmentService:
             .with_for_update(skip_locked=True)
         )
         cases = list(result.scalars().all())
-        lawyer_rows = await self.list_active_lawyers()
+        lawyer_rows = await self._locked_active_lawyers()
 
         assigned: list[dict] = []
         for case in cases:
             best = self._choose_best_lawyer(lawyer_rows)
             if best is None:
                 break
-            lawyer = await self._get_lawyer(best["id"])
+            lawyer = await self._get_lawyer(best["id"], for_update=True)
             await self._assign_case_model(
                 case=case,
                 lawyer=lawyer,
@@ -316,11 +376,8 @@ class CaseAssignmentService:
         if not lawyer.is_active:
             raise ValueError("Нельзя назначить неактивного юриста")
 
-        workload_limit = max(int(lawyer.workload_limit or 0), 0)
-        if workload_limit == 0 and not allow_overload:
-            raise ValueError("У юриста отсутствует доступная ёмкость")
-        if active_cases >= workload_limit and not allow_overload:
-            raise ValueError("У юриста достигнут лимит активных дел")
+        # Exact retry of an already visible assignment must not fail merely
+        # because the current case itself fills the last capacity slot.
         if case.assigned_lawyer_id == lawyer.id:
             if case.sla_status in {None, "", "NOT_STARTED"}:
                 await self.sla.start_assignment_sla(
@@ -331,6 +388,12 @@ class CaseAssignmentService:
                     comment=comment,
                 )
             return case
+
+        workload_limit = max(int(lawyer.workload_limit or 0), 0)
+        if workload_limit == 0 and not allow_overload:
+            raise ValueError("У юриста отсутствует доступная ёмкость")
+        if active_cases >= workload_limit and not allow_overload:
+            raise ValueError("У юриста достигнут лимит активных дел")
 
         previous_lawyer_id = case.assigned_lawyer_id
         await self.sla.start_assignment_sla(
@@ -405,12 +468,16 @@ class CaseAssignmentService:
             raise LookupError("Дело не найдено")
         return case
 
-    async def _get_lawyer(self, lawyer_id: int) -> Lawyer:
-        lawyer = (
-            await self.db.execute(
-                select(Lawyer).where(Lawyer.id == lawyer_id)
-            )
-        ).scalar_one_or_none()
+    async def _get_lawyer(
+        self,
+        lawyer_id: int,
+        *,
+        for_update: bool = False,
+    ) -> Lawyer:
+        query = select(Lawyer).where(Lawyer.id == lawyer_id)
+        if for_update:
+            query = query.with_for_update()
+        lawyer = (await self.db.execute(query)).scalar_one_or_none()
         if lawyer is None:
             raise LookupError("Юрист не найден")
         await self._assert_lawyer_login_ready(lawyer)
