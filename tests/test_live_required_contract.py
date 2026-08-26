@@ -31,10 +31,12 @@ def test_live_required_workflow_is_manual_complete_and_fail_closed() -> None:
         assert job in text
 
     assert "LIVE_TELEGRAM_BOT_TOKEN" in text
+    assert "LIVE_TELEGRAM_ADMIN_CHAT_ID" in text
+    assert "LIVE_TELEGRAM_CLIENT_CHAT_ID" in text
     assert "LIVE_YOOKASSA_SHOP_ID" in text
     assert "LIVE_YOOKASSA_SECRET_KEY" in text
     assert "LIVE_PUBLIC_BASE_URL" in text
-    assert "Fail closed when Telegram live secret is absent" in text
+    assert "Fail closed when Telegram live secrets are absent" in text
     assert "Fail closed when provider sandbox secrets are absent" in text
 
     assert "if: ${{ always() }}" in text
@@ -87,7 +89,9 @@ async def test_provider_smoke_uses_production_adapter_contract_and_requires_test
     assert set(call) == {"payment_id", "amount", "currency", "title", "metadata"}
     assert call["amount"] == Decimal("1.00")
     assert call["currency"] == "RUB"
-    assert call["metadata"]["live_required"] == "true"  # type: ignore[index]
+    metadata = call["metadata"]
+    assert isinstance(metadata, dict)
+    assert metadata["live_required"] == "true"
 
 
 @pytest.mark.asyncio
@@ -106,6 +110,54 @@ async def test_provider_smoke_accepts_only_test_mode_response(
 
     monkeypatch.setattr(live_required_smoke, "YooKassaPaymentProvider", Provider)
     await live_required_smoke._provider_smoke()
+
+
+@pytest.mark.asyncio
+async def test_telegram_smoke_delivers_to_distinct_admin_and_client_and_cleans_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BOT_TOKEN", "123456789:" + ("T" * 35))
+    monkeypatch.setenv("LIVE_TELEGRAM_ADMIN_CHAT_ID", "1001")
+    monkeypatch.setenv("LIVE_TELEGRAM_CLIENT_CHAT_ID", "1002")
+    sent: list[tuple[int, str, bool]] = []
+    deleted: list[tuple[int, int]] = []
+
+    class Session:
+        async def close(self) -> None:
+            return None
+
+    class Bot:
+        def __init__(self, token: str) -> None:
+            assert token.startswith("123456789:")
+            self.session = Session()
+
+        async def get_me(self):  # noqa: ANN202
+            return SimpleNamespace(is_bot=True, id=999)
+
+        async def send_message(
+            self,
+            *,
+            chat_id: int,
+            text: str,
+            disable_notification: bool,
+        ):  # noqa: ANN202
+            sent.append((chat_id, text, disable_notification))
+            return SimpleNamespace(
+                chat=SimpleNamespace(id=chat_id),
+                message_id=2000 + len(sent),
+            )
+
+        async def delete_message(self, *, chat_id: int, message_id: int) -> bool:
+            deleted.append((chat_id, message_id))
+            return True
+
+    monkeypatch.setattr(live_required_smoke, "Bot", Bot)
+
+    await live_required_smoke._telegram_smoke()
+
+    assert [item[0] for item in sent] == [1001, 1002]
+    assert all(item[2] is True for item in sent)
+    assert deleted == [(1002, 2002), (1001, 2001)]
 
 
 def test_required_live_secret_never_degrades_to_skip(monkeypatch: pytest.MonkeyPatch) -> None:
