@@ -15,13 +15,18 @@ from scripts.live_required_evidence import (
 SHA = "a" * 40
 
 
-def _set_run_env(monkeypatch: pytest.MonkeyPatch, *, run_id: str = "12345") -> None:
+def _set_run_env(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    run_id: str = "12345",
+    run_attempt: str = "1",
+) -> None:
     monkeypatch.setenv("GITHUB_SERVER_URL", "https://github.com")
     monkeypatch.setenv("GITHUB_REPOSITORY", "PetrFedin/digital-legal-concierge")
     monkeypatch.setenv("GITHUB_WORKFLOW", "LIVE_REQUIRED Release Matrix")
     monkeypatch.setenv("GITHUB_REF", "refs/heads/release-candidate")
     monkeypatch.setenv("GITHUB_RUN_ID", run_id)
-    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", run_attempt)
 
 
 def _write_all(
@@ -30,8 +35,13 @@ def _write_all(
     *,
     sha: str = SHA,
     run_id: str = "12345",
+    run_attempt: str = "1",
 ) -> None:
-    _set_run_env(monkeypatch, run_id=run_id)
+    _set_run_env(
+        monkeypatch,
+        run_id=run_id,
+        run_attempt=run_attempt,
+    )
     for component in DEFAULT_REQUIRED_COMPONENTS:
         write_component_evidence(
             component=component,
@@ -41,7 +51,7 @@ def _write_all(
         )
 
 
-def test_component_evidence_records_exact_sha_run_and_success(
+def test_component_evidence_records_exact_sha_run_attempt_and_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -62,6 +72,7 @@ def test_component_evidence_records_exact_sha_run_and_success(
     assert payload["status"] == "success"
     assert payload["sha"] == SHA
     assert payload["run_id"] == "12345"
+    assert payload["run_attempt"] == "1"
     assert payload["run_url"].endswith("/actions/runs/12345")
     assert payload["recorded_at"].endswith("+00:00")
 
@@ -85,9 +96,12 @@ def test_aggregate_builds_one_live_pass_manifest_for_exact_components(
     assert manifest["kind"] == "live_required_manifest"
     assert manifest["status"] == "LIVE_PASS"
     assert manifest["sha"] == SHA
+    assert manifest["run_id"] == "12345"
+    assert manifest["run_attempt"] == "1"
     assert tuple(manifest["required_components"]) == DEFAULT_REQUIRED_COMPONENTS
     assert set(manifest["components"]) == set(DEFAULT_REQUIRED_COMPONENTS)
     assert {item["run_id"] for item in manifest["components"].values()} == {"12345"}
+    assert {item["run_attempt"] for item in manifest["components"].values()} == {"1"}
 
 
 def test_aggregate_fails_closed_when_component_is_missing(
@@ -143,6 +157,29 @@ def test_aggregate_rejects_component_from_different_workflow_run(
     _set_run_env(monkeypatch, run_id="12345")
 
     with pytest.raises(RuntimeError, match="belongs to workflow run"):
+        aggregate_evidence(
+            input_dir=components,
+            sha=SHA,
+            output=tmp_path / "manifest.json",
+        )
+
+
+def test_aggregate_rejects_component_from_different_workflow_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    components = tmp_path / "components"
+    _write_all(components, monkeypatch)
+    _set_run_env(monkeypatch, run_attempt="2")
+    write_component_evidence(
+        component="browser",
+        sha=SHA,
+        output=components / "browser.json",
+        detail="different workflow attempt",
+    )
+    _set_run_env(monkeypatch, run_attempt="1")
+
+    with pytest.raises(RuntimeError, match="belongs to workflow attempt"):
         aggregate_evidence(
             input_dir=components,
             sha=SHA,
