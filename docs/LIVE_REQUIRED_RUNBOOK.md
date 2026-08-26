@@ -14,7 +14,7 @@ The aggregate `live-required` job is successful only when every required compone
 
 1. **PostgreSQL** — production migration chain plus multi-Case, payment/refund and staff concurrency contracts on PostgreSQL 16.
 2. **Redis** — Redis FSM restart/loss recovery with PostgreSQL as persistent Case source of truth.
-3. **Telegram** — a real Bot API `getMe` call using the staging/test bot token; a mocked aiogram transport is not accepted as this component's evidence.
+3. **Telegram** — a real Bot API identity call plus real silent message delivery to two distinct dedicated acceptance chats (admin and client), followed by cleanup. A mocked aiogram transport is not accepted as this component's evidence.
 4. **Browser** — Playwright staff E2E against the application and PostgreSQL.
 5. **Provider sandbox** — the production `YooKassaPaymentProvider` creates one small unconfirmed payment with test-shop credentials and the returned provider object must explicitly contain `test=true`. The confirmation URL is validated but never opened by the smoke.
 
@@ -25,6 +25,8 @@ A failed, cancelled or skipped component fails the aggregate gate. Missing exter
 Configure these before dispatching the workflow:
 
 - `LIVE_TELEGRAM_BOT_TOKEN` — token of the dedicated non-production Telegram bot used for acceptance;
+- `LIVE_TELEGRAM_ADMIN_CHAT_ID` — dedicated admin acceptance chat already reachable by that bot;
+- `LIVE_TELEGRAM_CLIENT_CHAT_ID` — a distinct dedicated client acceptance chat already reachable by that bot;
 - `LIVE_YOOKASSA_SHOP_ID` — YooKassa **test-shop** identifier;
 - `LIVE_YOOKASSA_SECRET_KEY` — matching YooKassa **test-shop** secret;
 - `LIVE_PUBLIC_BASE_URL` — externally valid HTTPS staging/test base URL used by the provider redirect contract.
@@ -46,9 +48,15 @@ A production-shop response is a hard failure, not a degraded pass.
 
 ## Telegram safety contract
 
-`scripts/live_required_smoke.py telegram` performs only the read-only Bot API identity request `getMe`. It confirms that the configured token reaches Telegram and resolves to a bot identity; it does not send a message to a real client.
+`scripts/live_required_smoke.py telegram`:
 
-This external smoke complements, but does not replace, the dispatcher/Redis acceptance paths in the test suite.
+- calls `getMe` against the real Telegram Bot API;
+- requires two distinct configured acceptance chats rather than silently collapsing admin and client evidence into one recipient;
+- sends one silent smoke message to each chat and verifies Telegram returned the exact target chat and a message id;
+- deletes both smoke messages after delivery and fails if cleanup cannot be confirmed;
+- prints only the bot id and delivery count, never the bot token or chat ids.
+
+This proves external Bot API reachability and delivery to both acceptance roles. It complements, but does not replace, the dispatcher/Redis business-flow acceptance paths in the test suite or the later full M1/M2 persona walkthrough.
 
 ## Evidence required from a successful run
 
@@ -59,6 +67,7 @@ Do not change acceptance state from `LIVE_REQUIRED` to `LIVE_PASS` unless all of
 - the aggregate `LIVE_REQUIRED aggregate gate` job executed and concluded `success`;
 - no component was skipped because of missing configuration;
 - the commit SHA under test is the exact release candidate SHA;
+- Telegram delivery succeeded to both distinct acceptance chats and cleanup succeeded;
 - any provider-side test payment id retained in logs belongs to the configured test shop;
 - browser/application logs do not show hidden server failures despite a passing browser assertion.
 
