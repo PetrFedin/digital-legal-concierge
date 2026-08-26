@@ -16,26 +16,29 @@ def test_each_live_required_component_uploads_success_evidence() -> None:
         "provider-sandbox",
     ):
         assert f"--component {component}" in text
-        assert f"live-required-evidence-{component}" in text
+        assert f"live-required-evidence-{component}-${{{{ github.run_attempt }}}}" in text
 
     assert text.count("uses: actions/upload-artifact@v4") >= 6
     assert text.count("if-no-files-found: error") >= 6
     assert text.count("retention-days: 30") >= 5
 
 
-def test_aggregate_gate_downloads_same_run_evidence_and_uploads_exact_sha_manifest() -> None:
+def test_aggregate_gate_downloads_same_attempt_evidence_and_uploads_exact_sha_manifest() -> None:
     text = WORKFLOW.read_text(encoding="utf-8")
     aggregate = text.split("  live-required:\n", 1)[1]
 
     assert "if: ${{ always() }}" in aggregate
     assert "uses: actions/download-artifact@v4" in aggregate
-    assert "pattern: live-required-evidence-*" in aggregate
+    assert "pattern: live-required-evidence-*-${{ github.run_attempt }}" in aggregate
     assert "merge-multiple: true" in aggregate
     assert "python scripts/live_required_evidence.py aggregate" in aggregate
     assert '--sha "$GITHUB_SHA"' in aggregate
     assert "--require postgres redis telegram browser provider-sandbox" in aggregate
     assert "LIVE_REQUIRED_MANIFEST.json" in aggregate
-    assert "live-required-release-evidence-${{ github.sha }}" in aggregate
+    assert (
+        "live-required-release-evidence-${{ github.sha }}-attempt-${{ github.run_attempt }}"
+        in aggregate
+    )
     assert "retention-days: 90" in aggregate
 
 
@@ -45,7 +48,7 @@ def test_manifest_is_built_only_after_all_component_conclusions_are_success() ->
 
     status_gate = aggregate.index("Fail unless every required live component succeeded")
     download = aggregate.index("Download component evidence")
-    verify = aggregate.index("Verify one-run one-SHA evidence and build manifest")
+    verify = aggregate.index("Verify one-run one-attempt one-SHA evidence and build manifest")
     upload = aggregate.index("Upload release evidence manifest")
 
     assert status_gate < download < verify < upload
