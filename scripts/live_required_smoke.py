@@ -85,6 +85,26 @@ async def _telegram_smoke() -> None:
             ) from cleanup_error
 
 
+def _validate_test_payment_result(result, *, label: str) -> None:  # noqa: ANN001
+    confirmation = urlparse(result.payment_url)
+    if not result.provider_payment_id:
+        raise RuntimeError(f"YooKassa {label} did not return a provider payment id")
+    if confirmation.scheme != "https" or not confirmation.netloc:
+        raise RuntimeError(f"YooKassa {label} did not return an HTTPS confirmation URL")
+
+    raw = result.raw or {}
+    if raw.get("test") is not True:
+        raise RuntimeError(
+            "YooKassa response is not marked test=true; LIVE_REQUIRED refuses to "
+            "accept production-shop credentials as sandbox evidence"
+        )
+    if raw.get("paid") is not False or str(raw.get("status") or "") != "pending":
+        raise RuntimeError(
+            "YooKassa sandbox smoke must remain an unpaid pending payment; "
+            "confirmation is never allowed in this gate"
+        )
+
+
 async def _provider_smoke() -> None:
     if str(settings.payment_provider or "").strip().lower() != "yookassa":
         raise RuntimeError("PAYMENT_PROVIDER must be yookassa for LIVE_REQUIRED")
@@ -114,38 +134,47 @@ async def _provider_smoke() -> None:
     payment_id = 9_000_000_000 + (marker % 900_000_000)
     case_id = 8_000_000_000 + (marker % 900_000_000)
     amount = (Decimal(amount_minor) / Decimal("100")).quantize(Decimal("0.01"))
+    create_kwargs = {
+        "payment_id": payment_id,
+        "amount": amount,
+        "currency": currency,
+        "title": "Digital Legal Concierge LIVE_REQUIRED sandbox smoke",
+        "metadata": {
+            "case_id": str(case_id),
+            "live_required": "true",
+        },
+    }
 
     # This deliberately exercises the production provider adapter and its
     # idempotence-key/redirect construction. The confirmation URL is never opened,
     # so the smoke creates only an unpaid provider-side test payment.
     provider = YooKassaPaymentProvider()
-    result = await provider.create_payment(
-        payment_id=payment_id,
-        amount=amount,
-        currency=currency,
-        title="Digital Legal Concierge LIVE_REQUIRED sandbox smoke",
-        metadata={
-            "case_id": str(case_id),
-            "live_required": "true",
-        },
-    )
+    result = await provider.create_payment(**create_kwargs)
+    _validate_test_payment_result(result, label="create")
 
-    confirmation = urlparse(result.payment_url)
-    if not result.provider_payment_id:
-        raise RuntimeError("YooKassa did not return a provider payment id")
-    if confirmation.scheme != "https" or not confirmation.netloc:
-        raise RuntimeError("YooKassa did not return an HTTPS confirmation URL")
-
-    raw = result.raw or {}
-    if raw.get("test") is not True:
+    # Exact retry uses the same internal payment id, therefore the production
+    # adapter must emit the same YooKassa Idempotence-Key and resolve to the same
+    # provider payment rather than create a second operation.
+    retry = await provider.create_payment(**create_kwargs)
+    _validate_test_payment_result(retry, label="idempotent retry")
+    if retry.provider_payment_id != result.provider_payment_id:
         raise RuntimeError(
-            "YooKassa response is not marked test=true; LIVE_REQUIRED refuses to "
-            "accept production-shop credentials as sandbox evidence"
+            "YooKassa idempotent retry returned a different payment id; "
+            "LIVE_REQUIRED refuses duplicate provider operations"
         )
+
+    retrieved = await provider.retrieve_payment(result.provider_payment_id)
+    if str(retrieved.get("id") or "") != result.provider_payment_id:
+        raise RuntimeError("YooKassa retrieval did not return the created payment")
+    if retrieved.get("test") is not True:
+        raise RuntimeError("Retrieved YooKassa payment is not marked test=true")
+    if retrieved.get("paid") is not False or str(retrieved.get("status") or "") != "pending":
+        raise RuntimeError("Retrieved YooKassa smoke payment is no longer unpaid/pending")
 
     print(
         "LIVE_REQUIRED YooKassa test-shop OK: "
-        f"provider_payment_id={result.provider_payment_id}; confirmation_not_opened=true"
+        f"provider_payment_id={result.provider_payment_id}; "
+        "idempotent_retry=true; retrieve=true; confirmation_not_opened=true"
     )
 
 
