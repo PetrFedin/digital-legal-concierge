@@ -60,6 +60,37 @@ def test_each_terminal_payment_review_branch_requires_exact_retry_evidence():
     assert 'decision="refund_pending"' in refund
 
 
+def test_exact_retry_returns_before_any_new_resolution_audit_write():
+    service = read("app/domain/payments/payment_review_service.py")
+    confirm = service.split("async def confirm_existing_booking", 1)[1].split(
+        "async def assign_new_slot", 1
+    )[0]
+    assign = service.split("async def assign_new_slot", 1)[1].split(
+        "async def route_to_refund", 1
+    )[0]
+    refund = service.split("async def route_to_refund", 1)[1].split(
+        "async def resolve", 1
+    )[0]
+
+    for branch, terminal_check in (
+        (confirm, "if payment.status == PaymentStatus.PAID:"),
+        (assign, "if payment.status == PaymentStatus.PAID:"),
+        (refund, "if payment.status == PaymentStatus.REFUND_PENDING:"),
+    ):
+        retry_start = branch.index(terminal_check)
+        retry_return = branch.index("return payment, consultation", retry_start)
+        audit_write = branch.index("await self._record_resolution(", retry_return)
+        assert retry_start < retry_return < audit_write
+
+    orphan = read("app/domain/payments/orphan_payment_review_service.py").split(
+        "async def route_to_refund", 1
+    )[1]
+    retry_start = orphan.index("if payment.status == PaymentStatus.REFUND_PENDING:")
+    retry_return = orphan.index("return payment", retry_start)
+    audit_write = orphan.index("await add_case_history_event(", retry_return)
+    assert retry_start < retry_return < audit_write
+
+
 def test_orphan_refund_retry_requires_same_actor_comment_and_encoded_context():
     source = read("app/domain/payments/orphan_payment_review_service.py")
     exact = source.split("async def _require_exact_retry_or_conflict", 1)[1].split(
@@ -146,12 +177,21 @@ def test_payment_review_ui_uses_durable_origin_and_preserves_stale_decision_draf
 
 def test_payment_review_409_reloads_server_truth_before_restoring_valid_draft():
     source = read("app/api/payment_review_center.py")
+    load = source.split("async function load()", 1)[1].split(
+        "function paymentControls", 1
+    )[0]
     resolve = source.split("async function resolveReview", 1)[1]
     stale = resolve.split("if(e.status===409)", 1)[1]
 
+    # The 409 branch refreshes authoritative server state. Draft restoration is
+    # deliberately centralized inside load(), after rowsById and the DOM have
+    # been rebuilt, so adding a second restore call here would be redundant.
     assert "await load()" in stale
-    assert "restoreDraftSelections(id)" in stale
-    assert stale.index("await load()") < stale.index("restoreDraftSelections(id)")
+    assert "rowsById=new Map" in load
+    assert "restoreDraftSelections(x.payment_id)" in load
+    assert load.index("rowsById=new Map") < load.index(
+        "restoreDraftSelections(x.payment_id)"
+    )
     assert "решение не применено" in stale
     assert "Ваш допустимый выбор и комментарий сохранены" in stale
 
