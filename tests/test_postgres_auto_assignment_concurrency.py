@@ -29,9 +29,19 @@ def _telegram_id() -> int:
     return 8_700_000_000_000 + (uuid.uuid4().int % 1_000_000_000)
 
 
-async def _seed() -> tuple[int, int, int]:
+async def _seed() -> tuple[int, int, int, dict[int, bool]]:
     async with AsyncSessionLocal() as db:
+        previous_states = {
+            int(lawyer_id): bool(is_active)
+            for lawyer_id, is_active in (
+                await db.execute(select(Lawyer.id, Lawyer.is_active))
+            ).all()
+        }
+        # Temporarily make this fixture's lawyer the only assignable profile so
+        # the race always targets one exact last capacity slot, regardless of
+        # data left by an earlier PostgreSQL scenario in the same workflow DB.
         await db.execute(update(Lawyer).values(is_active=False))
+
         email = f"assignment-{uuid.uuid4().hex}@example.test"
         lawyer = Lawyer(
             full_name="PostgreSQL Assignment Lawyer",
@@ -67,9 +77,34 @@ async def _seed() -> tuple[int, int, int]:
         )
         db.add_all([first_case, second_case])
         await db.flush()
-        result = int(first_case.id), int(second_case.id), int(lawyer.id)
+        result = (
+            int(first_case.id),
+            int(second_case.id),
+            int(lawyer.id),
+            previous_states,
+        )
         await db.commit()
         return result
+
+
+async def _restore_lawyer_fixture(
+    *,
+    lawyer_id: int,
+    previous_states: dict[int, bool],
+) -> None:
+    async with AsyncSessionLocal() as db:
+        for previous_id, was_active in previous_states.items():
+            await db.execute(
+                update(Lawyer)
+                .where(Lawyer.id == previous_id)
+                .values(is_active=was_active)
+            )
+        await db.execute(
+            update(Lawyer)
+            .where(Lawyer.id == lawyer_id)
+            .values(is_active=False)
+        )
+        await db.commit()
 
 
 async def _assign(case_id: int, barrier: asyncio.Barrier) -> int | None:
@@ -84,7 +119,11 @@ async def _assign(case_id: int, barrier: asyncio.Barrier) -> int | None:
                 expected_lawyer_id=None,
                 expected_status=CaseStatus.M1_DOCUMENTS_RECEIVED.value,
             )
-            assigned = int(case.assigned_lawyer_id) if case and case.assigned_lawyer_id else None
+            assigned = (
+                int(case.assigned_lawyer_id)
+                if case and case.assigned_lawyer_id
+                else None
+            )
             await db.commit()
             return assigned
         except Exception:
@@ -93,52 +132,65 @@ async def _assign(case_id: int, barrier: asyncio.Barrier) -> int | None:
 
 
 async def _scenario() -> None:
-    first_case_id, second_case_id, lawyer_id = await _seed()
-    barrier = asyncio.Barrier(2)
-    results = await asyncio.gather(
-        _assign(first_case_id, barrier),
-        _assign(second_case_id, barrier),
-    )
+    first_case_id, second_case_id, lawyer_id, previous_states = await _seed()
+    try:
+        barrier = asyncio.Barrier(2)
+        results = await asyncio.gather(
+            _assign(first_case_id, barrier),
+            _assign(second_case_id, barrier),
+        )
 
-    assert sum(item is not None for item in results) == 1
-    assert next(item for item in results if item is not None) == lawyer_id
+        assert sum(item is not None for item in results) == 1
+        assert next(item for item in results if item is not None) == lawyer_id
 
-    async with AsyncSessionLocal() as db:
-        cases = list(
-            (
-                await db.execute(
-                    select(Case)
-                    .where(Case.id.in_([first_case_id, second_case_id]))
-                    .order_by(Case.id.asc())
+        async with AsyncSessionLocal() as db:
+            cases = list(
+                (
+                    await db.execute(
+                        select(Case)
+                        .where(Case.id.in_([first_case_id, second_case_id]))
+                        .order_by(Case.id.asc())
+                    )
+                ).scalars().all()
+            )
+            assigned = [case for case in cases if case.assigned_lawyer_id is not None]
+            unassigned = [case for case in cases if case.assigned_lawyer_id is None]
+            assert len(assigned) == 1
+            assert len(unassigned) == 1
+            assert int(assigned[0].assigned_lawyer_id) == lawyer_id
+            assert assigned[0].assigned_at is not None
+            assert assigned[0].sla_status == "FIRST_RESPONSE_PENDING"
+
+            active_count = await db.scalar(
+                select(func.count(Case.id)).where(
+                    Case.assigned_lawyer_id == lawyer_id,
+                    Case.status.notin_(
+                        (
+                            "CLOSED",
+                            "ARCHIVED",
+                            "CANCELLED",
+                            "COMPLETED",
+                            "M1_CLOSED",
+                            "M2_CLOSED",
+                        )
+                    ),
                 )
-            ).scalars().all()
-        )
-        assigned = [case for case in cases if case.assigned_lawyer_id is not None]
-        unassigned = [case for case in cases if case.assigned_lawyer_id is None]
-        assert len(assigned) == 1
-        assert len(unassigned) == 1
-        assert int(assigned[0].assigned_lawyer_id) == lawyer_id
-        assert assigned[0].assigned_at is not None
-        assert assigned[0].sla_status == "FIRST_RESPONSE_PENDING"
-
-        active_count = await db.scalar(
-            select(func.count(Case.id)).where(
-                Case.assigned_lawyer_id == lawyer_id,
-                Case.status.notin_(
-                    ("CLOSED", "ARCHIVED", "CANCELLED", "COMPLETED", "M1_CLOSED", "M2_CLOSED")
-                ),
             )
-        )
-        assert int(active_count or 0) == 1
+            assert int(active_count or 0) == 1
 
-        assignment_events = await db.scalar(
-            select(func.count(AuditLog.id)).where(
-                AuditLog.entity_type == "case",
-                AuditLog.entity_id.in_([first_case_id, second_case_id]),
-                AuditLog.action == "case_lawyer_assigned",
+            assignment_events = await db.scalar(
+                select(func.count(AuditLog.id)).where(
+                    AuditLog.entity_type == "case",
+                    AuditLog.entity_id.in_([first_case_id, second_case_id]),
+                    AuditLog.action == "case_lawyer_assigned",
+                )
             )
+            assert int(assignment_events or 0) == 1
+    finally:
+        await _restore_lawyer_fixture(
+            lawyer_id=lawyer_id,
+            previous_states=previous_states,
         )
-        assert int(assignment_events or 0) == 1
 
 
 def test_concurrent_assignment_respects_last_capacity_slot() -> None:
