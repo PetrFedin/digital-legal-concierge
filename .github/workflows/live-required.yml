@@ -132,12 +132,14 @@ jobs:
         run: pytest -q tests/test_telegram_redis_runtime.py
 
   telegram:
-    name: Real Telegram Bot API identity smoke
+    name: Real Telegram Bot API delivery smoke
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
       APP_ENV: test
       BOT_TOKEN: ${{ secrets.LIVE_TELEGRAM_BOT_TOKEN }}
+      LIVE_TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.LIVE_TELEGRAM_ADMIN_CHAT_ID }}
+      LIVE_TELEGRAM_CLIENT_CHAT_ID: ${{ secrets.LIVE_TELEGRAM_CLIENT_CHAT_ID }}
       RUN_BOT: "false"
       RUN_SCHEDULER: "false"
     steps:
@@ -146,11 +148,21 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Fail closed when Telegram live secret is absent
+      - name: Fail closed when Telegram live secrets are absent
         shell: bash
         run: |
+          missing=0
           if [ -z "${BOT_TOKEN:-}" ]; then
             echo "::error::LIVE_TELEGRAM_BOT_TOKEN is required for LIVE_REQUIRED"
+            missing=1
+          fi
+          for name in LIVE_TELEGRAM_ADMIN_CHAT_ID LIVE_TELEGRAM_CLIENT_CHAT_ID; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::${name} is required for LIVE_REQUIRED"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
             exit 1
           fi
 
@@ -163,7 +175,7 @@ jobs:
       - name: Install
         run: pip install -e .
 
-      - name: Call real Telegram getMe
+      - name: Call Telegram and deliver to dedicated test chats
         run: python scripts/live_required_smoke.py telegram
 
   browser:
