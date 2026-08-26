@@ -108,7 +108,9 @@ def aggregate_evidence(
     required_components: tuple[str, ...] = DEFAULT_REQUIRED_COMPONENTS,
 ) -> dict:
     sha = _required(sha, label="sha")
-    required = tuple(_required(item, label="required component") for item in required_components)
+    required = tuple(
+        _required(item, label="required component") for item in required_components
+    )
     if len(set(required)) != len(required):
         raise RuntimeError("LIVE_REQUIRED required component list contains duplicates")
 
@@ -120,6 +122,9 @@ def aggregate_evidence(
         )
 
     expected_run_id = str(os.getenv("GITHUB_RUN_ID") or "").strip() or None
+    expected_run_attempt = (
+        str(os.getenv("GITHUB_RUN_ATTEMPT") or "").strip() or None
+    )
     for component in required:
         payload = components[component]
         if str(payload.get("sha") or "") != sha:
@@ -135,6 +140,14 @@ def aggregate_evidence(
             raise RuntimeError(
                 f"Component {component!r} belongs to workflow run {component_run_id!r}, "
                 f"expected {expected_run_id!r}"
+            )
+        component_run_attempt = (
+            str(payload.get("run_attempt") or "").strip() or None
+        )
+        if expected_run_attempt and component_run_attempt != expected_run_attempt:
+            raise RuntimeError(
+                f"Component {component!r} belongs to workflow attempt "
+                f"{component_run_attempt!r}, expected {expected_run_attempt!r}"
             )
 
     metadata = _github_metadata()
