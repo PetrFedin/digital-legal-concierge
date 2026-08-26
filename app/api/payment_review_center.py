@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Header, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -58,6 +58,83 @@ def actor_id_from_token(payload: dict) -> int | None:
     except (TypeError, ValueError):
         value = 0
     return value or None
+
+
+async def payment_review_conflict_snapshot(
+    db: AsyncSession,
+    *,
+    payment_id: int,
+) -> dict:
+    """Return server-authoritative state after a stale Payment Review command.
+
+    A review item can disappear from the active queue immediately after another
+    administrator resolves it. Returning only a textual 409 would force the stale
+    browser to infer what happened from an empty queue. This snapshot keeps the
+    conflict self-describing without permitting an automatic retry or overwrite.
+    """
+
+    payment = await db.get(Payment, int(payment_id))
+    if payment is None:
+        return {
+            "snapshot_available": False,
+            "payment_id": int(payment_id),
+            "payment_status": None,
+            "case_id": None,
+            "case_status": None,
+            "case_next_action": None,
+            "payment_updated_at": None,
+            "resolution": None,
+        }
+
+    case = await db.get(Case, int(payment.case_id))
+    resolution = None
+    events = list(
+        (
+            await db.execute(
+                select(AuditLog)
+                .where(
+                    AuditLog.entity_type == "case",
+                    AuditLog.entity_id == int(payment.case_id),
+                    AuditLog.action == "CONSULTATION_PAYMENT_REVIEW_RESOLVED",
+                )
+                .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+            )
+        ).scalars().all()
+    )
+    for event in events:
+        new_value = event.new_value or {}
+        try:
+            event_payment_id = int(new_value.get("payment_id") or 0)
+        except (TypeError, ValueError):
+            event_payment_id = 0
+        if event_payment_id != int(payment.id):
+            continue
+        resolution = {
+            "decision": str(new_value.get("decision") or "") or None,
+            "consultation_id": new_value.get("consultation_id"),
+            "slot_id": new_value.get("slot_id"),
+            "orphan_consultation_id": new_value.get("orphan_consultation_id"),
+            "orphan_slot_id": new_value.get("orphan_slot_id"),
+            "actor_id": int(event.actor_id) if event.actor_id is not None else None,
+            "comment": event.comment,
+            "resolved_at": (
+                event.created_at.isoformat() if event.created_at else None
+            ),
+        }
+        break
+
+    return {
+        "snapshot_available": True,
+        "payment_id": int(payment.id),
+        "payment_status": str(payment.status),
+        "case_id": int(payment.case_id),
+        "case_status": str(case.status) if case else None,
+        "case_next_action": case.next_action if case else None,
+        "payment_updated_at": (
+            payment.updated_at.isoformat() if payment.updated_at else None
+        ),
+        "resolution": resolution,
+    }
 
 
 async def review_event_context(
@@ -408,7 +485,17 @@ async def resolve_payment_review(
         ValueError,
     ) as error:
         await db.rollback()
-        raise HTTPException(status_code=409, detail=str(error)) from error
+        conflict = await payment_review_conflict_snapshot(
+            db,
+            payment_id=payment_id,
+        )
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": str(error),
+                "conflict": conflict,
+            },
+        )
     except Exception:
         await db.rollback()
         raise
@@ -441,7 +528,7 @@ PAYMENT_REVIEW_CENTER_HTML = r"""
 </main>
 <script>
 const params=new URLSearchParams(location.search),requestedPaymentId=Number(params.get('payment_id')||0),requestedCaseId=Number(params.get('case_id')||0);let token='',slots=[],rowsById=new Map(),terminalCaseId=requestedCaseId||0,businessTimeZone='Europe/Moscow',businessTimeLabel='МСК';const pendingPayments=new Set(),reviewDrafts=new Map();
-async function api(path,opts={}){const r=await fetch(path,{...opts,credentials:'same-origin',cache:'no-store',headers:{'x-admin-token':token,'Content-Type':'application/json',...(opts.headers||{})}});if(r.status===401||r.status===403){location.href='/login';const e=new Error('Сессия истекла или недостаточно прав');e.status=r.status;throw e}const d=await r.json().catch(()=>({}));if(!r.ok){const e=new Error(d.detail||'Ошибка');e.status=r.status;e.detail=d.detail||'';throw e}return d}
+async function api(path,opts={}){const r=await fetch(path,{...opts,credentials:'same-origin',cache:'no-store',headers:{'x-admin-token':token,'Content-Type':'application/json',...(opts.headers||{})}});if(r.status===401||r.status===403){location.href='/login';const e=new Error('Сессия истекла или недостаточно прав');e.status=r.status;throw e}const d=await r.json().catch(()=>({}));if(!r.ok){const detail=typeof d.detail==='string'?d.detail:'Ошибка';const e=new Error(detail);e.status=r.status;e.detail=d.detail||'';e.conflict=d.conflict||null;throw e}return d}
 function feedback(text,state='ok'){message.textContent=text;message.className='muted '+state}
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function formatDate(v){if(!v)return '—';try{const rendered=new Intl.DateTimeFormat('ru-RU',{dateStyle:'short',timeStyle:'short',timeZone:businessTimeZone}).format(new Date(v));return businessTimeLabel?rendered+' '+businessTimeLabel:rendered}catch{return String(v)}}
@@ -459,7 +546,8 @@ async function load(){const data=await Promise.all([api('/admin/payment-reviews'
 function paymentControls(id){return Array.from(document.querySelectorAll(`[data-payment-id="${id}"]`))}
 async function withPaymentAction(id,button,work){if(pendingPayments.has(id))return;pendingPayments.add(id);const controls=paymentControls(id),labels=new Map(controls.filter(x=>x.tagName==='BUTTON').map(x=>[x,x.textContent]));controls.forEach(x=>{x.disabled=true;x.setAttribute('aria-busy','true')});if(button)button.textContent='Выполняется…';try{return await work()}finally{pendingPayments.delete(id);controls.forEach(x=>{x.disabled=false;x.removeAttribute('aria-busy')});labels.forEach((label,x)=>x.textContent=label)}}
 function decisionLabel(decision){return decision==='confirm_existing'?'подтвердить связь с бронью':decision==='assign_slot'?'назначить новый слот без второй оплаты':decision==='refund_orphan'?'вернуть orphan-платёж без изменения дела':'направить платёж на возврат'}
-async function resolveReview(id,decision,button){const x=rowsById.get(Number(id)),candidate=selectedCandidate(x),orphan=decision==='refund_orphan';if(!candidate&&!orphan){feedback('Сначала выберите консультацию после сверки истории','bad');return}let slotId=null;if(decision==='assign_slot'){slotId=Number(document.getElementById('slot_'+id)?.value||0);if(!slotId){feedback('Выберите свободный слот','bad');return}}const previous=reviewDrafts.get(Number(id)),defaultComment=previous&&previous.decision===decision?previous.comment:'';const question=decision==='refund_pending'||orphan?'Укажите основание возврата:':'Укажите результат сверки:';const entered=prompt(question,defaultComment);if(entered===null)return;const comment=entered.trim();if(comment.length<5){feedback('Комментарий должен содержать не менее 5 символов','bad');return}const consultationId=candidate?Number(candidate.id):null;reviewDrafts.set(Number(id),{decision,comment,consultationId,slotId});let warning=`Подтвердите: ${decisionLabel(decision)} по платежу #${id}.`;if(decision==='refund_pending'&&candidate?.existing_booking_valid)warning+=' Подтверждённая консультация останется без изменений.';if(orphan)warning+=' Дело, текущая консультация и слот останутся без изменений.';if(!confirm(warning+' Действие будет записано в историю.'))return;return withPaymentAction(id,button,async()=>{try{const result=await api('/admin/payment-reviews/'+id+'/resolve',{method:'POST',body:JSON.stringify({decision,slot_id:slotId,consultation_id:consultationId,comment})});reviewDrafts.delete(Number(id));terminalCaseId=Number(result.case_id)||terminalCaseId;feedback(`Решение по платежу #${result.payment_id} сохранено. Новый статус оплаты: ${result.payment_status}`,'ok');try{await load()}catch(e){feedback(`Решение сохранено, но экран не обновился: ${e.message}`,'warn')}}catch(e){if(e.status===409){try{await load()}catch(refreshError){feedback(`Карточка платежа #${id} устарела, решение не применено. Не удалось обновить очередь: ${refreshError.message}. Ваш выбор и комментарий сохранены в этой вкладке.`,'bad');return}feedback(`Карточка платежа #${id} устарела, решение не применено. Очередь обновлена; проверьте актуальный контекст перед повтором. Ваш допустимый выбор и комментарий сохранены в этой вкладке.`,'warn');return}feedback(`Решение не сохранено: ${e.message}`,'bad')}})}
+function conflictSummary(conflict){if(!conflict||!conflict.snapshot_available)return '';const parts=[];if(conflict.payment_status)parts.push(`Текущий статус оплаты: ${conflict.payment_status}.`);const resolution=conflict.resolution;if(resolution?.decision){let winner=`На сервере уже сохранено решение: ${decisionLabel(resolution.decision)}`;if(resolution.actor_id)winner+=` администратором #${resolution.actor_id}`;if(resolution.resolved_at)winner+=` (${formatDate(resolution.resolved_at)})`;parts.push(winner+'.')}return parts.join(' ')}
+async function resolveReview(id,decision,button){const x=rowsById.get(Number(id)),candidate=selectedCandidate(x),orphan=decision==='refund_orphan';if(!candidate&&!orphan){feedback('Сначала выберите консультацию после сверки истории','bad');return}let slotId=null;if(decision==='assign_slot'){slotId=Number(document.getElementById('slot_'+id)?.value||0);if(!slotId){feedback('Выберите свободный слот','bad');return}}const previous=reviewDrafts.get(Number(id)),defaultComment=previous&&previous.decision===decision?previous.comment:'';const question=decision==='refund_pending'||orphan?'Укажите основание возврата:':'Укажите результат сверки:';const entered=prompt(question,defaultComment);if(entered===null)return;const comment=entered.trim();if(comment.length<5){feedback('Комментарий должен содержать не менее 5 символов','bad');return}const consultationId=candidate?Number(candidate.id):null;reviewDrafts.set(Number(id),{decision,comment,consultationId,slotId});let warning=`Подтвердите: ${decisionLabel(decision)} по платежу #${id}.`;if(decision==='refund_pending'&&candidate?.existing_booking_valid)warning+=' Подтверждённая консультация останется без изменений.';if(orphan)warning+=' Дело, текущая консультация и слот останутся без изменений.';if(!confirm(warning+' Действие будет записано в историю.'))return;return withPaymentAction(id,button,async()=>{try{const result=await api('/admin/payment-reviews/'+id+'/resolve',{method:'POST',body:JSON.stringify({decision,slot_id:slotId,consultation_id:consultationId,comment})});reviewDrafts.delete(Number(id));terminalCaseId=Number(result.case_id)||terminalCaseId;feedback(`Решение по платежу #${result.payment_id} сохранено. Новый статус оплаты: ${result.payment_status}`,'ok');try{await load()}catch(e){feedback(`Решение сохранено, но экран не обновился: ${e.message}`,'warn')}}catch(e){if(e.status===409){const serverTruth=conflictSummary(e.conflict);if(e.conflict?.case_id)terminalCaseId=Number(e.conflict.case_id)||terminalCaseId;try{await load()}catch(refreshError){feedback(`Карточка платежа #${id} устарела, решение не применено. ${serverTruth?serverTruth+' ':''}Не удалось обновить очередь: ${refreshError.message}. Ваш выбор и комментарий сохранены в этой вкладке.`,'bad');return}feedback(`Карточка платежа #${id} устарела, решение не применено. ${serverTruth?serverTruth+' ':''}Очередь обновлена; проверьте актуальный контекст перед повтором. Ваш допустимый выбор и комментарий сохранены в этой вкладке.`,'warn');return}feedback(`Решение не сохранено: ${e.message}`,'bad')}})}
 boot();
 </script>
 </body>
