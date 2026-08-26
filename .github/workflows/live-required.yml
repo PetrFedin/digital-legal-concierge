@@ -264,7 +264,7 @@ jobs:
         run: cat /tmp/dlc-live-browser.log || true
 
   provider-sandbox:
-    name: YooKassa test-shop create-payment smoke
+    name: YooKassa test-shop create/retry/retrieve smoke
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -275,6 +275,7 @@ jobs:
       PAYMENT_PROVIDER: yookassa
       YOOKASSA_SHOP_ID: ${{ secrets.LIVE_YOOKASSA_SHOP_ID }}
       YOOKASSA_SECRET_KEY: ${{ secrets.LIVE_YOOKASSA_SECRET_KEY }}
+      LIVE_YOOKASSA_TEST_PAYMENT_ID: ${{ secrets.LIVE_YOOKASSA_TEST_PAYMENT_ID }}
       PUBLIC_BASE_URL: ${{ secrets.LIVE_PUBLIC_BASE_URL }}
       LIVE_PROVIDER_AMOUNT_MINOR: "100"
       LIVE_PROVIDER_CURRENCY: RUB
@@ -288,7 +289,11 @@ jobs:
         shell: bash
         run: |
           missing=0
-          for name in YOOKASSA_SHOP_ID YOOKASSA_SECRET_KEY PUBLIC_BASE_URL; do
+          for name in \
+            YOOKASSA_SHOP_ID \
+            YOOKASSA_SECRET_KEY \
+            LIVE_YOOKASSA_TEST_PAYMENT_ID \
+            PUBLIC_BASE_URL; do
             if [ -z "${!name:-}" ]; then
               echo "::error::${name} is required for LIVE_REQUIRED provider sandbox"
               missing=1
@@ -307,7 +312,7 @@ jobs:
       - name: Install
         run: pip install -e .
 
-      - name: Create an unconfirmed YooKassa test-shop payment
+      - name: Prove test shop then create, retry and retrieve an unconfirmed payment
         run: python scripts/live_required_smoke.py provider
 
   live-required:
