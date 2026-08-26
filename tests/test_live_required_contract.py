@@ -63,6 +63,14 @@ def _provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def _provider_result(payment_id: str, *, test: bool = True) -> SimpleNamespace:
+    return SimpleNamespace(
+        provider_payment_id=payment_id,
+        payment_url="https://yookassa.test/confirmation",
+        raw={"id": payment_id, "test": test, "paid": False, "status": "pending"},
+    )
+
+
 @pytest.mark.asyncio
 async def test_provider_smoke_uses_production_adapter_contract_and_requires_test_shop(
     monkeypatch: pytest.MonkeyPatch,
@@ -73,11 +81,7 @@ async def test_provider_smoke_uses_production_adapter_contract_and_requires_test
     class Provider:
         async def create_payment(self, **kwargs):  # noqa: ANN003, ANN202
             calls.append(kwargs)
-            return SimpleNamespace(
-                provider_payment_id="provider-payment",
-                payment_url="https://yookassa.test/confirmation",
-                raw={"test": False},
-            )
+            return _provider_result("provider-payment", test=False)
 
     monkeypatch.setattr(live_required_smoke, "YooKassaPaymentProvider", Provider)
 
@@ -95,21 +99,54 @@ async def test_provider_smoke_uses_production_adapter_contract_and_requires_test
 
 
 @pytest.mark.asyncio
-async def test_provider_smoke_accepts_only_test_mode_response(
+async def test_provider_smoke_retries_same_payment_and_retrieves_provider_truth(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _provider_env(monkeypatch)
+    create_calls: list[dict[str, object]] = []
+    retrieve_calls: list[str] = []
 
     class Provider:
         async def create_payment(self, **kwargs):  # noqa: ANN003, ANN202
-            return SimpleNamespace(
-                provider_payment_id="provider-payment",
-                payment_url="https://yookassa.test/confirmation",
-                raw={"test": True},
-            )
+            create_calls.append(kwargs)
+            return _provider_result("provider-payment")
+
+        async def retrieve_payment(self, provider_payment_id: str) -> dict:
+            retrieve_calls.append(provider_payment_id)
+            return {
+                "id": provider_payment_id,
+                "test": True,
+                "paid": False,
+                "status": "pending",
+            }
 
     monkeypatch.setattr(live_required_smoke, "YooKassaPaymentProvider", Provider)
     await live_required_smoke._provider_smoke()
+
+    assert len(create_calls) == 2
+    assert create_calls[0] == create_calls[1]
+    assert retrieve_calls == ["provider-payment"]
+
+
+@pytest.mark.asyncio
+async def test_provider_smoke_rejects_non_idempotent_provider_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _provider_env(monkeypatch)
+    call_count = 0
+
+    class Provider:
+        async def create_payment(self, **kwargs):  # noqa: ANN003, ANN202
+            nonlocal call_count
+            call_count += 1
+            return _provider_result(f"provider-payment-{call_count}")
+
+    monkeypatch.setattr(live_required_smoke, "YooKassaPaymentProvider", Provider)
+
+    with pytest.raises(RuntimeError, match="different payment id"):
+        await live_required_smoke._provider_smoke()
+
+    assert call_count == 2
 
 
 @pytest.mark.asyncio
