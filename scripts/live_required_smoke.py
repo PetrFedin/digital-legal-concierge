@@ -20,20 +20,73 @@ def _required_env(name: str) -> str:
     return value
 
 
+def _required_chat_id(name: str) -> int:
+    raw = _required_env(name)
+    try:
+        chat_id = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer Telegram chat id") from exc
+    if chat_id == 0:
+        raise RuntimeError(f"{name} must not be zero")
+    return chat_id
+
+
 async def _telegram_smoke() -> None:
     token = _required_env("BOT_TOKEN")
+    admin_chat_id = _required_chat_id("LIVE_TELEGRAM_ADMIN_CHAT_ID")
+    client_chat_id = _required_chat_id("LIVE_TELEGRAM_CLIENT_CHAT_ID")
+    if admin_chat_id == client_chat_id:
+        raise RuntimeError(
+            "LIVE_TELEGRAM_ADMIN_CHAT_ID and LIVE_TELEGRAM_CLIENT_CHAT_ID must be distinct"
+        )
+
     bot = Bot(token=token)
+    sent_messages: list[tuple[int, int]] = []
+    cleanup_error: Exception | None = None
     try:
         identity = await bot.get_me()
         if not identity.is_bot or not identity.id:
             raise RuntimeError("Telegram getMe did not return a valid bot identity")
-        print(f"LIVE_REQUIRED Telegram OK: bot_id={identity.id}")
+
+        for role, chat_id in (
+            ("admin", admin_chat_id),
+            ("client", client_chat_id),
+        ):
+            message = await bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    "Digital Legal Concierge LIVE_REQUIRED connectivity smoke "
+                    f"({role}). No action is required."
+                ),
+                disable_notification=True,
+            )
+            if int(message.chat.id) != chat_id or not message.message_id:
+                raise RuntimeError(
+                    f"Telegram did not confirm delivery to the configured {role} test chat"
+                )
+            sent_messages.append((chat_id, int(message.message_id)))
+
+        print(
+            "LIVE_REQUIRED Telegram OK: "
+            f"bot_id={identity.id}; delivered_test_chats=2"
+        )
     finally:
+        for chat_id, message_id in reversed(sent_messages):
+            try:
+                deleted = await bot.delete_message(chat_id=chat_id, message_id=message_id)
+                if deleted is not True:
+                    raise RuntimeError("Telegram deleteMessage returned a non-success result")
+            except Exception as exc:  # pragma: no cover - exercised only by live API
+                cleanup_error = cleanup_error or exc
         await bot.session.close()
+        if cleanup_error is not None:
+            raise RuntimeError(
+                "Telegram LIVE_REQUIRED smoke delivered a message but could not clean it up"
+            ) from cleanup_error
 
 
 async def _provider_smoke() -> None:
-    if settings.payment_provider.strip().lower() != "yookassa":
+    if str(settings.payment_provider or "").strip().lower() != "yookassa":
         raise RuntimeError("PAYMENT_PROVIDER must be yookassa for LIVE_REQUIRED")
 
     _required_env("YOOKASSA_SHOP_ID")
