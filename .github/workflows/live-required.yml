@@ -82,7 +82,7 @@ jobs:
       - name: Upload PostgreSQL evidence
         uses: actions/upload-artifact@v4
         with:
-          name: live-required-evidence-postgres
+          name: live-required-evidence-postgres-${{ github.run_attempt }}
           path: .live-required/postgres.json
           if-no-files-found: error
           retention-days: 30
@@ -159,7 +159,7 @@ jobs:
       - name: Upload Redis evidence
         uses: actions/upload-artifact@v4
         with:
-          name: live-required-evidence-redis
+          name: live-required-evidence-redis-${{ github.run_attempt }}
           path: .live-required/redis.json
           if-no-files-found: error
           retention-days: 30
@@ -222,7 +222,7 @@ jobs:
       - name: Upload Telegram evidence
         uses: actions/upload-artifact@v4
         with:
-          name: live-required-evidence-telegram
+          name: live-required-evidence-telegram-${{ github.run_attempt }}
           path: .live-required/telegram.json
           if-no-files-found: error
           retention-days: 30
@@ -319,7 +319,7 @@ jobs:
       - name: Upload browser evidence
         uses: actions/upload-artifact@v4
         with:
-          name: live-required-evidence-browser
+          name: live-required-evidence-browser-${{ github.run_attempt }}
           path: .live-required/browser.json
           if-no-files-found: error
           retention-days: 30
@@ -391,7 +391,7 @@ jobs:
       - name: Upload provider evidence
         uses: actions/upload-artifact@v4
         with:
-          name: live-required-evidence-provider-sandbox
+          name: live-required-evidence-provider-sandbox-${{ github.run_attempt }}
           path: .live-required/provider-sandbox.json
           if-no-files-found: error
           retention-days: 30
@@ -450,11 +450,11 @@ jobs:
       - name: Download component evidence
         uses: actions/download-artifact@v4
         with:
-          pattern: live-required-evidence-*
+          pattern: live-required-evidence-*-${{ github.run_attempt }}
           path: .live-required/components
           merge-multiple: true
 
-      - name: Verify one-run one-SHA evidence and build manifest
+      - name: Verify one-run one-attempt one-SHA evidence and build manifest
         run: >-
           python scripts/live_required_evidence.py aggregate
           --input-dir .live-required/components
@@ -465,7 +465,7 @@ jobs:
       - name: Upload release evidence manifest
         uses: actions/upload-artifact@v4
         with:
-          name: live-required-release-evidence-${{ github.sha }}
+          name: live-required-release-evidence-${{ github.sha }}-attempt-${{ github.run_attempt }}
           path: .live-required/LIVE_REQUIRED_MANIFEST.json
           if-no-files-found: error
           retention-days: 90
