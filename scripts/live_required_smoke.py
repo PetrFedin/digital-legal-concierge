@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import os
 import uuid
+from decimal import Decimal
 from urllib.parse import urlparse
 
 from aiogram import Bot
@@ -37,15 +38,17 @@ async def _provider_smoke() -> None:
 
     _required_env("YOOKASSA_SHOP_ID")
     _required_env("YOOKASSA_SECRET_KEY")
-    amount_raw = _required_env("LIVE_PROVIDER_AMOUNT_MINOR")
+    amount_minor_raw = _required_env("LIVE_PROVIDER_AMOUNT_MINOR")
     currency = _required_env("LIVE_PROVIDER_CURRENCY").upper()
 
     try:
-        amount = int(amount_raw)
+        amount_minor = int(amount_minor_raw)
     except ValueError as exc:
         raise RuntimeError("LIVE_PROVIDER_AMOUNT_MINOR must be an integer") from exc
-    if amount <= 0:
-        raise RuntimeError("LIVE_PROVIDER_AMOUNT_MINOR must be positive")
+    if not 1 <= amount_minor <= 10_000:
+        raise RuntimeError(
+            "LIVE_PROVIDER_AMOUNT_MINOR must be between 1 and 10000 for the sandbox smoke"
+        )
     if len(currency) != 3 or not currency.isalpha():
         raise RuntimeError("LIVE_PROVIDER_CURRENCY must be a three-letter currency code")
 
@@ -57,28 +60,39 @@ async def _provider_smoke() -> None:
     marker = uuid.uuid4().int
     payment_id = 9_000_000_000 + (marker % 900_000_000)
     case_id = 8_000_000_000 + (marker % 900_000_000)
-    idempotency_key = f"live-required-{uuid.uuid4()}"
-    return_url = f"{public_base_url}/payment/return?payment_id={payment_id}"
+    amount = (Decimal(amount_minor) / Decimal("100")).quantize(Decimal("0.01"))
 
+    # This deliberately exercises the production provider adapter and its
+    # idempotence-key/redirect construction. The confirmation URL is never opened,
+    # so the smoke creates only an unpaid provider-side test payment.
     provider = YooKassaPaymentProvider()
     result = await provider.create_payment(
         payment_id=payment_id,
-        case_id=case_id,
         amount=amount,
         currency=currency,
-        idempotency_key=idempotency_key,
-        return_url=return_url,
+        title="Digital Legal Concierge LIVE_REQUIRED sandbox smoke",
+        metadata={
+            "case_id": str(case_id),
+            "live_required": "true",
+        },
     )
 
-    confirmation = urlparse(result.confirmation_url)
-    if not result.payment_id:
+    confirmation = urlparse(result.payment_url)
+    if not result.provider_payment_id:
         raise RuntimeError("YooKassa did not return a provider payment id")
     if confirmation.scheme != "https" or not confirmation.netloc:
         raise RuntimeError("YooKassa did not return an HTTPS confirmation URL")
 
+    raw = result.raw or {}
+    if raw.get("test") is not True:
+        raise RuntimeError(
+            "YooKassa response is not marked test=true; LIVE_REQUIRED refuses to "
+            "accept production-shop credentials as sandbox evidence"
+        )
+
     print(
         "LIVE_REQUIRED YooKassa test-shop OK: "
-        f"provider_payment_id={result.payment_id}; confirmation_not_opened=true"
+        f"provider_payment_id={result.provider_payment_id}; confirmation_not_opened=true"
     )
 
 
