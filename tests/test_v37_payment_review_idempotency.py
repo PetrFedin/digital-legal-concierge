@@ -140,7 +140,26 @@ def test_payment_review_resolution_is_durable_case_audit_history():
     assert '"comment": audit.comment' in audit_center
 
 
-def test_payment_review_409_rolls_back_before_returning_conflict():
+def test_payment_review_conflict_snapshot_uses_exact_payment_resolution_history():
+    source = read("app/api/payment_review_center.py")
+    snapshot = source.split("async def payment_review_conflict_snapshot", 1)[1].split(
+        "async def review_event_context", 1
+    )[0]
+
+    assert ".limit(" not in snapshot
+    assert 'AuditLog.action == "CONSULTATION_PAYMENT_REVIEW_RESOLVED"' in snapshot
+    assert 'new_value.get("payment_id")' in snapshot
+    assert "event_payment_id != int(payment.id)" in snapshot
+    assert '"payment_status": str(payment.status)' in snapshot
+    assert '"case_status": str(case.status) if case else None' in snapshot
+    assert '"case_next_action": case.next_action if case else None' in snapshot
+    assert '"decision": str(new_value.get("decision") or "") or None' in snapshot
+    assert '"actor_id": int(event.actor_id) if event.actor_id is not None else None' in snapshot
+    assert '"comment": event.comment' in snapshot
+    assert '"resolved_at": (' in snapshot
+
+
+def test_payment_review_409_rolls_back_then_returns_authoritative_snapshot():
     source = read("app/api/payment_review_center.py")
     endpoint = source.split('@router.post("/{payment_id}/resolve")', 1)[1].split(
         '@router.get("/ui"', 1
@@ -150,10 +169,14 @@ def test_payment_review_409_rolls_back_before_returning_conflict():
     assert "PaymentReviewResolutionError" in conflict
     assert "SlotUnavailableError" in conflict
     assert "await db.rollback()" in conflict
-    assert "raise HTTPException(status_code=409" in conflict
+    assert "await payment_review_conflict_snapshot(" in conflict
+    assert "return JSONResponse(" in conflict
+    assert "status_code=409" in conflict
+    assert '"detail": str(error)' in conflict
+    assert '"conflict": conflict' in conflict
     assert conflict.index("await db.rollback()") < conflict.index(
-        "raise HTTPException(status_code=409"
-    )
+        "await payment_review_conflict_snapshot("
+    ) < conflict.index("return JSONResponse(")
 
 
 def test_payment_review_ui_uses_durable_origin_and_preserves_stale_decision_draft():
@@ -165,6 +188,7 @@ def test_payment_review_ui_uses_durable_origin_and_preserves_stale_decision_draf
     assert ".limit(" not in review_context
     assert 'new_value.get("payment_id")' in review_context
     assert "e.status=r.status" in source
+    assert "e.conflict=d.conflict||null" in source
     assert "reviewDrafts=new Map()" in source
     assert "restoreDraftSelections" in source
     assert "consultationId,slotId" in source
@@ -194,6 +218,22 @@ def test_payment_review_409_reloads_server_truth_before_restoring_valid_draft():
     )
     assert "решение не применено" in stale
     assert "Ваш допустимый выбор и комментарий сохранены" in stale
+
+
+def test_payment_review_409_explains_the_winning_server_state_without_auto_retry():
+    source = read("app/api/payment_review_center.py")
+    summary = source.split("function conflictSummary", 1)[1].split(
+        "async function resolveReview", 1
+    )[0]
+    stale = source.split("if(e.status===409)", 1)[1]
+
+    assert "conflict.payment_status" in summary
+    assert "resolution?.decision" in summary
+    assert "resolution.actor_id" in summary
+    assert "resolution.resolved_at" in summary
+    assert "const serverTruth=conflictSummary(e.conflict)" in stale
+    assert "await load()" in stale
+    assert "resolveReview(" not in stale
 
 
 def test_payment_review_card_matches_staff_action_hierarchy():
