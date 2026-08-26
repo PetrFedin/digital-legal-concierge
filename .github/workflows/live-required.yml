@@ -70,6 +70,22 @@ jobs:
           tests/test_postgres_refund_retry_race.py
           tests/test_postgres_staff_concurrency.py
 
+      - name: Record PostgreSQL evidence
+        run: >-
+          python scripts/live_required_evidence.py write
+          --component postgres
+          --sha "$GITHUB_SHA"
+          --output .live-required/postgres.json
+          --detail "PostgreSQL 16 migrations plus multi-case, payment/refund and staff concurrency contracts passed"
+
+      - name: Upload PostgreSQL evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-required-evidence-postgres
+          path: .live-required/postgres.json
+          if-no-files-found: error
+          retention-days: 30
+
   redis:
     name: Redis FSM restart with PostgreSQL source of truth
     runs-on: ubuntu-24.04
@@ -131,6 +147,22 @@ jobs:
       - name: Verify Redis-backed Telegram restart contract
         run: pytest -q tests/test_telegram_redis_runtime.py
 
+      - name: Record Redis evidence
+        run: >-
+          python scripts/live_required_evidence.py write
+          --component redis
+          --sha "$GITHUB_SHA"
+          --output .live-required/redis.json
+          --detail "Redis FSM restart/loss recovery passed with PostgreSQL as persistent case source of truth"
+
+      - name: Upload Redis evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-required-evidence-redis
+          path: .live-required/redis.json
+          if-no-files-found: error
+          retention-days: 30
+
   telegram:
     name: Real Telegram Bot API delivery smoke
     runs-on: ubuntu-24.04
@@ -177,6 +209,22 @@ jobs:
 
       - name: Call Telegram and deliver to dedicated test chats
         run: python scripts/live_required_smoke.py telegram
+
+      - name: Record Telegram evidence
+        run: >-
+          python scripts/live_required_evidence.py write
+          --component telegram
+          --sha "$GITHUB_SHA"
+          --output .live-required/telegram.json
+          --detail "Real Telegram Bot API identity, delivery to distinct admin/client acceptance chats and cleanup passed"
+
+      - name: Upload Telegram evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-required-evidence-telegram
+          path: .live-required/telegram.json
+          if-no-files-found: error
+          retention-days: 30
 
   browser:
     name: Staff browser E2E against PostgreSQL
@@ -259,6 +307,22 @@ jobs:
       - name: Run staff browser E2E
         run: pytest -q tests/test_browser_staff_e2e.py
 
+      - name: Record browser evidence
+        run: >-
+          python scripts/live_required_evidence.py write
+          --component browser
+          --sha "$GITHUB_SHA"
+          --output .live-required/browser.json
+          --detail "Authenticated staff Playwright E2E passed against the application with PostgreSQL"
+
+      - name: Upload browser evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-required-evidence-browser
+          path: .live-required/browser.json
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Application log
         if: always()
         run: cat /tmp/dlc-live-browser.log || true
@@ -315,6 +379,22 @@ jobs:
       - name: Prove test shop then create, retry and retrieve an unconfirmed payment
         run: python scripts/live_required_smoke.py provider
 
+      - name: Record provider evidence
+        run: >-
+          python scripts/live_required_evidence.py write
+          --component provider-sandbox
+          --sha "$GITHUB_SHA"
+          --output .live-required/provider-sandbox.json
+          --detail "YooKassa test-shop preflight, create, exact idempotent retry and retrieve passed while payment stayed test/unpaid/pending"
+
+      - name: Upload provider evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-required-evidence-provider-sandbox
+          path: .live-required/provider-sandbox.json
+          if-no-files-found: error
+          retention-days: 30
+
   live-required:
     name: LIVE_REQUIRED aggregate gate
     if: ${{ always() }}
@@ -354,4 +434,40 @@ jobs:
             echo "::error::LIVE_REQUIRED is not satisfied; every component must be success"
             exit 1
           fi
-          echo "LIVE_REQUIRED matrix completed successfully"
+          echo "LIVE_REQUIRED component conclusions are all success"
+
+      - name: Checkout exact release candidate
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Download component evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: live-required-evidence-*
+          path: .live-required/components
+          merge-multiple: true
+
+      - name: Verify one-run one-SHA evidence and build manifest
+        run: >-
+          python scripts/live_required_evidence.py aggregate
+          --input-dir .live-required/components
+          --sha "$GITHUB_SHA"
+          --output .live-required/LIVE_REQUIRED_MANIFEST.json
+          --require postgres redis telegram browser provider-sandbox
+
+      - name: Upload release evidence manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-required-release-evidence-${{ github.sha }}
+          path: .live-required/LIVE_REQUIRED_MANIFEST.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: LIVE_REQUIRED passed
+        run: echo "LIVE_REQUIRED matrix and release evidence manifest completed successfully"
