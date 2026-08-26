@@ -105,12 +105,22 @@ def _validate_test_payment_result(result, *, label: str) -> None:  # noqa: ANN00
         )
 
 
+def _validate_test_probe(payment: dict, *, expected_id: str) -> None:
+    if str(payment.get("id") or "") != expected_id:
+        raise RuntimeError("YooKassa test-shop probe returned a different payment id")
+    if payment.get("test") is not True:
+        raise RuntimeError(
+            "YooKassa credential probe is not marked test=true; refusing any create call"
+        )
+
+
 async def _provider_smoke() -> None:
     if str(settings.payment_provider or "").strip().lower() != "yookassa":
         raise RuntimeError("PAYMENT_PROVIDER must be yookassa for LIVE_REQUIRED")
 
     _required_env("YOOKASSA_SHOP_ID")
     _required_env("YOOKASSA_SECRET_KEY")
+    test_probe_payment_id = _required_env("LIVE_YOOKASSA_TEST_PAYMENT_ID")
     amount_minor_raw = _required_env("LIVE_PROVIDER_AMOUNT_MINOR")
     currency = _required_env("LIVE_PROVIDER_CURRENCY").upper()
 
@@ -130,6 +140,14 @@ async def _provider_smoke() -> None:
     if parsed_base.scheme != "https" or not parsed_base.netloc:
         raise RuntimeError("PUBLIC_BASE_URL must be an absolute HTTPS URL for LIVE_REQUIRED")
 
+    provider = YooKassaPaymentProvider()
+
+    # Prove the configured credentials can retrieve a known test-shop payment
+    # before creating anything. This prevents accidental production-shop
+    # credentials from causing even an unpaid production payment object.
+    probe = await provider.retrieve_payment(test_probe_payment_id)
+    _validate_test_probe(probe, expected_id=test_probe_payment_id)
+
     marker = uuid.uuid4().int
     payment_id = 9_000_000_000 + (marker % 900_000_000)
     case_id = 8_000_000_000 + (marker % 900_000_000)
@@ -148,7 +166,6 @@ async def _provider_smoke() -> None:
     # This deliberately exercises the production provider adapter and its
     # idempotence-key/redirect construction. The confirmation URL is never opened,
     # so the smoke creates only an unpaid provider-side test payment.
-    provider = YooKassaPaymentProvider()
     result = await provider.create_payment(**create_kwargs)
     _validate_test_payment_result(result, label="create")
 
@@ -174,7 +191,8 @@ async def _provider_smoke() -> None:
     print(
         "LIVE_REQUIRED YooKassa test-shop OK: "
         f"provider_payment_id={result.provider_payment_id}; "
-        "idempotent_retry=true; retrieve=true; confirmation_not_opened=true"
+        "preflight_test_probe=true; idempotent_retry=true; retrieve=true; "
+        "confirmation_not_opened=true"
     )
 
 
