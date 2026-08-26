@@ -11,6 +11,7 @@ from scripts import live_required_smoke
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "live-required.yml"
+PROBE_PAYMENT_ID = "test-probe-payment"
 
 
 def test_live_required_workflow_is_manual_complete_and_fail_closed() -> None:
@@ -35,6 +36,7 @@ def test_live_required_workflow_is_manual_complete_and_fail_closed() -> None:
     assert "LIVE_TELEGRAM_CLIENT_CHAT_ID" in text
     assert "LIVE_YOOKASSA_SHOP_ID" in text
     assert "LIVE_YOOKASSA_SECRET_KEY" in text
+    assert "LIVE_YOOKASSA_TEST_PAYMENT_ID" in text
     assert "LIVE_PUBLIC_BASE_URL" in text
     assert "Fail closed when Telegram live secrets are absent" in text
     assert "Fail closed when provider sandbox secrets are absent" in text
@@ -51,6 +53,7 @@ def test_live_required_workflow_is_manual_complete_and_fail_closed() -> None:
 def _provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("YOOKASSA_SHOP_ID", "test-shop")
     monkeypatch.setenv("YOOKASSA_SECRET_KEY", "test-secret")
+    monkeypatch.setenv("LIVE_YOOKASSA_TEST_PAYMENT_ID", PROBE_PAYMENT_ID)
     monkeypatch.setenv("LIVE_PROVIDER_AMOUNT_MINOR", "100")
     monkeypatch.setenv("LIVE_PROVIDER_CURRENCY", "RUB")
     monkeypatch.setattr(
@@ -71,6 +74,35 @@ def _provider_result(payment_id: str, *, test: bool = True) -> SimpleNamespace:
     )
 
 
+def _probe_result(*, test: bool = True) -> dict[str, object]:
+    return {"id": PROBE_PAYMENT_ID, "test": test, "status": "canceled", "paid": False}
+
+
+@pytest.mark.asyncio
+async def test_provider_smoke_refuses_create_when_probe_is_not_test_shop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _provider_env(monkeypatch)
+    create_count = 0
+
+    class Provider:
+        async def retrieve_payment(self, provider_payment_id: str) -> dict[str, object]:
+            assert provider_payment_id == PROBE_PAYMENT_ID
+            return _probe_result(test=False)
+
+        async def create_payment(self, **kwargs):  # noqa: ANN003, ANN202
+            nonlocal create_count
+            create_count += 1
+            return _provider_result("must-not-be-created")
+
+    monkeypatch.setattr(live_required_smoke, "YooKassaPaymentProvider", Provider)
+
+    with pytest.raises(RuntimeError, match="refusing any create call"):
+        await live_required_smoke._provider_smoke()
+
+    assert create_count == 0
+
+
 @pytest.mark.asyncio
 async def test_provider_smoke_uses_production_adapter_contract_and_requires_test_shop(
     monkeypatch: pytest.MonkeyPatch,
@@ -79,6 +111,10 @@ async def test_provider_smoke_uses_production_adapter_contract_and_requires_test
     calls: list[dict[str, object]] = []
 
     class Provider:
+        async def retrieve_payment(self, provider_payment_id: str) -> dict[str, object]:
+            assert provider_payment_id == PROBE_PAYMENT_ID
+            return _probe_result()
+
         async def create_payment(self, **kwargs):  # noqa: ANN003, ANN202
             calls.append(kwargs)
             return _provider_result("provider-payment", test=False)
@@ -111,8 +147,10 @@ async def test_provider_smoke_retries_same_payment_and_retrieves_provider_truth(
             create_calls.append(kwargs)
             return _provider_result("provider-payment")
 
-        async def retrieve_payment(self, provider_payment_id: str) -> dict:
+        async def retrieve_payment(self, provider_payment_id: str) -> dict[str, object]:
             retrieve_calls.append(provider_payment_id)
+            if provider_payment_id == PROBE_PAYMENT_ID:
+                return _probe_result()
             return {
                 "id": provider_payment_id,
                 "test": True,
@@ -125,7 +163,7 @@ async def test_provider_smoke_retries_same_payment_and_retrieves_provider_truth(
 
     assert len(create_calls) == 2
     assert create_calls[0] == create_calls[1]
-    assert retrieve_calls == ["provider-payment"]
+    assert retrieve_calls == [PROBE_PAYMENT_ID, "provider-payment"]
 
 
 @pytest.mark.asyncio
@@ -136,6 +174,10 @@ async def test_provider_smoke_rejects_non_idempotent_provider_retry(
     call_count = 0
 
     class Provider:
+        async def retrieve_payment(self, provider_payment_id: str) -> dict[str, object]:
+            assert provider_payment_id == PROBE_PAYMENT_ID
+            return _probe_result()
+
         async def create_payment(self, **kwargs):  # noqa: ANN003, ANN202
             nonlocal call_count
             call_count += 1
