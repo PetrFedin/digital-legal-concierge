@@ -16,7 +16,7 @@ The aggregate `live-required` job is successful only when every required compone
 2. **Redis** — Redis FSM restart/loss recovery with PostgreSQL as persistent Case source of truth.
 3. **Telegram** — a real Bot API identity call plus real silent message delivery to two distinct dedicated acceptance chats (admin and client), followed by cleanup. A mocked aiogram transport is not accepted as this component's evidence.
 4. **Browser** — Playwright staff E2E against the application and PostgreSQL.
-5. **Provider sandbox** — the production `YooKassaPaymentProvider` creates one small unconfirmed payment with test-shop credentials and the returned provider object must explicitly contain `test=true`. The confirmation URL is validated but never opened by the smoke.
+5. **Provider sandbox** — the production `YooKassaPaymentProvider` creates one small unconfirmed payment with test-shop credentials, repeats the exact create command to prove provider idempotency, retrieves the resulting provider truth, and requires `test=true`, `paid=false`, `status=pending` throughout. The confirmation URL is validated but never opened by the smoke.
 
 A failed, cancelled or skipped component fails the aggregate gate. Missing external secrets fail their job explicitly. There is no `continue-on-error` escape hatch.
 
@@ -40,11 +40,14 @@ The workflow deliberately maps the YooKassa secrets to the application's existin
 - uses the existing `YooKassaPaymentProvider` code path;
 - limits the smoke amount to 1..10,000 minor currency units; the workflow currently uses 100 minor units (`1.00 RUB`);
 - creates a unique internal smoke identifier so the provider idempotence key cannot collide with an application Payment;
+- calls the same create operation twice with the same internal payment id and requires the same provider payment id on retry;
+- retrieves that payment from YooKassa after the retry and requires the retrieved id to match;
+- requires create, retry and retrieve evidence to remain test-mode, unpaid and pending;
 - never follows the returned confirmation URL and therefore never completes the user confirmation step;
 - refuses to count the result as sandbox evidence unless the YooKassa response is marked `test=true`;
 - does not print credentials or the confirmation URL.
 
-A production-shop response is a hard failure, not a degraded pass.
+A production-shop response, non-idempotent retry or unexpectedly paid/non-pending smoke payment is a hard failure, not a degraded pass.
 
 ## Telegram safety contract
 
@@ -68,6 +71,7 @@ Do not change acceptance state from `LIVE_REQUIRED` to `LIVE_PASS` unless all of
 - no component was skipped because of missing configuration;
 - the commit SHA under test is the exact release candidate SHA;
 - Telegram delivery succeeded to both distinct acceptance chats and cleanup succeeded;
+- provider create + exact idempotent retry + retrieve resolved to one test-shop payment that stayed unpaid/pending;
 - any provider-side test payment id retained in logs belongs to the configured test shop;
 - browser/application logs do not show hidden server failures despite a passing browser assertion.
 
