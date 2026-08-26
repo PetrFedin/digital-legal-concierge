@@ -1,0 +1,340 @@
+name: LIVE_REQUIRED Release Matrix
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-required-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PIP_NO_INPUT: "1"
+
+jobs:
+  postgres:
+    name: PostgreSQL migration and race contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: concierge_live_required
+          POSTGRES_USER: concierge
+          POSTGRES_PASSWORD: concierge-live-required
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U concierge -d concierge_live_required"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgresql+asyncpg://concierge:concierge-live-required@127.0.0.1:5432/concierge_live_required
+      BOT_TOKEN: CHANGE_ME
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: admin-change-me
+      ADMIN_API_TOKEN: live-required-admin-token-not-for-production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[test]"
+
+      - name: Apply production schema
+        run: |
+          alembic upgrade head
+          alembic check
+
+      - name: Verify PostgreSQL multi-case, money and staff races
+        run: >-
+          pytest -q
+          tests/test_postgres_multi_case_concurrency.py
+          tests/test_postgres_payment_concurrency.py
+          tests/test_postgres_refund_retry_race.py
+          tests/test_postgres_staff_concurrency.py
+
+  redis:
+    name: Redis FSM restart with PostgreSQL source of truth
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: concierge_live_redis
+          POSTGRES_USER: concierge
+          POSTGRES_PASSWORD: concierge-live-redis
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U concierge -d concierge_live_redis"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgresql+asyncpg://concierge:concierge-live-redis@127.0.0.1:5432/concierge_live_redis
+      BOT_TOKEN: CHANGE_ME
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+      FSM_STORAGE_BACKEND: redis
+      REDIS_URL: redis://127.0.0.1:6379/15
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: admin-change-me
+      ADMIN_API_TOKEN: live-required-admin-token-not-for-production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[test]"
+
+      - name: Apply production schema
+        run: |
+          alembic upgrade head
+          alembic check
+
+      - name: Verify Redis-backed Telegram restart contract
+        run: pytest -q tests/test_telegram_redis_runtime.py
+
+  telegram:
+    name: Real Telegram Bot API identity smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      APP_ENV: test
+      BOT_TOKEN: ${{ secrets.LIVE_TELEGRAM_BOT_TOKEN }}
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Fail closed when Telegram live secret is absent
+        shell: bash
+        run: |
+          if [ -z "${BOT_TOKEN:-}" ]; then
+            echo "::error::LIVE_TELEGRAM_BOT_TOKEN is required for LIVE_REQUIRED"
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e .
+
+      - name: Call real Telegram getMe
+        run: python scripts/live_required_smoke.py telegram
+
+  browser:
+    name: Staff browser E2E against PostgreSQL
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: concierge_live_browser
+          POSTGRES_USER: concierge
+          POSTGRES_PASSWORD: concierge-live-browser
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U concierge -d concierge_live_browser"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgresql+asyncpg://concierge:concierge-live-browser@127.0.0.1:5432/concierge_live_browser
+      BOT_TOKEN: CHANGE_ME
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+      BOOTSTRAP_ADMIN: "false"
+      BOOTSTRAP_DEMO_DATA: "false"
+      STARTUP_BACKUP_ENABLED: "false"
+      PAYMENT_PROVIDER: disabled
+      PUBLIC_BASE_URL: http://127.0.0.1:8000
+      ALLOW_TOKEN_QUERY: "false"
+      ADMIN_API_TOKEN: browser-e2e-admin-token-not-for-production
+      SESSION_SIGNING_KEY: browser-e2e-session-signing-key-2026-00000001
+      SECURITY_HMAC_KEY: browser-e2e-security-hmac-key-2026-0000000002
+      MFA_ENCRYPTION_KEY: browser-e2e-mfa-encryption-key-2026-000000003
+      AUDIT_INTEGRITY_KEY: browser-e2e-audit-integrity-key-2026-00000004
+      DOCUMENT_ENCRYPTION_KEY: browser-e2e-document-encryption-key-2026-000005
+      BACKUP_ENCRYPTION_KEY: browser-e2e-backup-encryption-key-2026-0000006
+      STORAGE_DIR: /tmp/dlc-live-browser-storage
+      BACKUP_DIR: /tmp/dlc-live-browser-backups
+      BROWSER_E2E: "1"
+      BROWSER_E2E_BASE_URL: http://127.0.0.1:8000
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install application and test dependencies
+        run: pip install -e ".[test]"
+
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Apply production schema
+        run: alembic upgrade head
+
+      - name: Prepare runtime directories
+        run: mkdir -p "$STORAGE_DIR" "$BACKUP_DIR"
+
+      - name: Start application
+        run: |
+          uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/dlc-live-browser.log 2>&1 &
+          echo $! > /tmp/dlc-live-browser.pid
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:8000/health >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/dlc-live-browser.log
+          exit 1
+
+      - name: Run staff browser E2E
+        run: pytest -q tests/test_browser_staff_e2e.py
+
+      - name: Application log
+        if: always()
+        run: cat /tmp/dlc-live-browser.log || true
+
+  provider-sandbox:
+    name: YooKassa test-shop create-payment smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      APP_ENV: test
+      BOT_TOKEN: CHANGE_ME
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+      PAYMENT_PROVIDER: yookassa
+      YOOKASSA_SHOP_ID: ${{ secrets.LIVE_YOOKASSA_SHOP_ID }}
+      YOOKASSA_SECRET_KEY: ${{ secrets.LIVE_YOOKASSA_SECRET_KEY }}
+      PUBLIC_BASE_URL: ${{ secrets.LIVE_PUBLIC_BASE_URL }}
+      LIVE_PROVIDER_AMOUNT_MINOR: "100"
+      LIVE_PROVIDER_CURRENCY: RUB
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Fail closed when provider sandbox secrets are absent
+        shell: bash
+        run: |
+          missing=0
+          for name in YOOKASSA_SHOP_ID YOOKASSA_SECRET_KEY PUBLIC_BASE_URL; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::${name} is required for LIVE_REQUIRED provider sandbox"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e .
+
+      - name: Create an unconfirmed YooKassa test-shop payment
+        run: python scripts/live_required_smoke.py provider
+
+  live-required:
+    name: LIVE_REQUIRED aggregate gate
+    if: ${{ always() }}
+    needs:
+      - postgres
+      - redis
+      - telegram
+      - browser
+      - provider-sandbox
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Fail unless every required live component succeeded
+        env:
+          POSTGRES_RESULT: ${{ needs.postgres.result }}
+          REDIS_RESULT: ${{ needs.redis.result }}
+          TELEGRAM_RESULT: ${{ needs.telegram.result }}
+          BROWSER_RESULT: ${{ needs.browser.result }}
+          PROVIDER_RESULT: ${{ needs.provider-sandbox.result }}
+        shell: bash
+        run: |
+          failed=0
+          for pair in \
+            "postgres=${POSTGRES_RESULT}" \
+            "redis=${REDIS_RESULT}" \
+            "telegram=${TELEGRAM_RESULT}" \
+            "browser=${BROWSER_RESULT}" \
+            "provider-sandbox=${PROVIDER_RESULT}"; do
+            name="${pair%%=*}"
+            result="${pair#*=}"
+            echo "${name}: ${result}"
+            if [ "$result" != "success" ]; then
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::LIVE_REQUIRED is not satisfied; every component must be success"
+            exit 1
+          fi
+          echo "LIVE_REQUIRED matrix completed successfully"
