@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ from app.models.case import Case
 from app.models.document import Document
 from app.models.payment import Payment
 from app.models.payment_event import PaymentEvent
+from app.security.audit_integrity import verify_audit_chain
 from app.security.document_encryption import ENCRYPTION_STATUS, decrypt_file_bytes
 
 
@@ -139,75 +141,100 @@ def _public_database_identity(identity: dict[str, str]) -> dict[str, str]:
     }
 
 
-def _relative_under_root(path: Path, *, root: Path, error_message: str) -> str:
-    resolved_root = root.resolve()
-    resolved = path.resolve(strict=False)
+def _safe_storage_root(value: Path) -> Path:
+    candidate = Path(value)
+    if candidate.is_symlink():
+        raise RestoreEvidenceError("Storage root must not be a symbolic link")
+    resolved = candidate.resolve(strict=False)
+    if not resolved.is_dir():
+        raise RestoreEvidenceError("Storage root does not exist or is not a directory")
+    return resolved
+
+
+def _lexical_absolute(path: Path) -> Path:
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def _is_lexically_within(path: Path, root: Path) -> bool:
     try:
-        relative = resolved.relative_to(resolved_root)
-    except ValueError as error:
-        raise RestoreEvidenceError(error_message) from error
-    if not relative.parts:
-        raise RestoreEvidenceError("Document path does not identify a file")
-    return relative.as_posix()
-
-
-def _source_storage_location(file_path: str, *, storage_root: Path) -> tuple[str, Path]:
-    root = storage_root.resolve()
-    raw = str(file_path or "").strip()
-    if not raw:
-        raise RestoreEvidenceError("Document file_path is empty")
-    candidate = Path(raw)
-    if candidate.is_absolute():
-        resolved = candidate.resolve(strict=False)
-    else:
-        # Current writes persist an absolute path. This fallback keeps older
-        # relative records usable while still requiring the resolved file to be
-        # inside the configured protected storage root.
-        root_relative = (root / candidate).resolve(strict=False)
-        cwd_relative = (Path.cwd() / candidate).resolve(strict=False)
-        candidates = [root_relative, cwd_relative]
-        resolved = next(
-            (
-                item
-                for item in candidates
-                if item.exists()
-                and _is_within(item, root)
-            ),
-            root_relative,
-        )
-    relative = _relative_under_root(
-        resolved,
-        root=root,
-        error_message="Document path is outside configured storage root",
-    )
-    if resolved.is_symlink() or not resolved.is_file():
-        raise RestoreEvidenceError("Encrypted source document is missing or unsafe")
-    return relative, resolved
-
-
-def _is_within(path: Path, root: Path) -> bool:
-    try:
-        path.resolve(strict=False).relative_to(root.resolve())
+        _lexical_absolute(path).relative_to(root)
         return True
     except ValueError:
         return False
 
 
+def _assert_no_symlink_components(root: Path, relative: Path) -> None:
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise RestoreEvidenceError("Symbolic links are forbidden in restore evidence storage paths")
+
+
+def _relative_storage_path(path: Path, *, root: Path, error_message: str) -> Path:
+    lexical = _lexical_absolute(path)
+    try:
+        relative = lexical.relative_to(root)
+    except ValueError as error:
+        raise RestoreEvidenceError(error_message) from error
+    if not relative.parts:
+        raise RestoreEvidenceError("Document path does not identify a file")
+    _assert_no_symlink_components(root, relative)
+    resolved = lexical.resolve(strict=False)
+    try:
+        resolved.relative_to(root)
+    except ValueError as error:
+        raise RestoreEvidenceError(error_message) from error
+    return relative
+
+
+def _source_storage_location(file_path: str, *, storage_root: Path) -> tuple[str, Path]:
+    root = _safe_storage_root(storage_root)
+    raw = str(file_path or "").strip()
+    if not raw:
+        raise RestoreEvidenceError("Document file_path is empty")
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        selected = candidate
+    else:
+        # Current writes persist an absolute path. This fallback keeps older
+        # relative records usable while still requiring the selected location to
+        # be lexically and physically inside the configured protected root.
+        candidates = [root / candidate, Path.cwd() / candidate]
+        selected = next(
+            (
+                item
+                for item in candidates
+                if item.exists() and _is_lexically_within(item, root)
+            ),
+            candidates[0],
+        )
+    relative = _relative_storage_path(
+        selected,
+        root=root,
+        error_message="Document path is outside configured storage root",
+    )
+    resolved = _lexical_absolute(selected).resolve(strict=False)
+    if not resolved.is_file():
+        raise RestoreEvidenceError("Encrypted source document is missing or unsafe")
+    return relative.as_posix(), resolved
+
+
 def _restored_storage_path(relative_path: str, *, restored_storage_root: Path) -> Path:
-    root = restored_storage_root.resolve()
+    root = _safe_storage_root(restored_storage_root)
     raw = str(relative_path or "").strip()
     if not raw:
         raise RestoreEvidenceError("Snapshot document path is empty")
     relative = Path(raw)
-    if relative.is_absolute() or ".." in relative.parts:
+    if relative.is_absolute() or ".." in relative.parts or not relative.parts:
         raise RestoreEvidenceError("Snapshot document path is not a safe relative path")
+    _assert_no_symlink_components(root, relative)
     candidate = (root / relative).resolve(strict=False)
-    _relative_under_root(
-        candidate,
-        root=root,
-        error_message="Snapshot document path escapes restored storage",
-    )
-    if candidate.is_symlink() or not candidate.is_file():
+    try:
+        candidate.relative_to(root)
+    except ValueError as error:
+        raise RestoreEvidenceError("Snapshot document path escapes restored storage") from error
+    if not candidate.is_file():
         raise RestoreEvidenceError("Restored encrypted document is missing or unsafe")
     return candidate
 
@@ -292,6 +319,18 @@ def _audit_fact(event: AuditLog) -> dict[str, object]:
     }
 
 
+def _audit_chain_fact(result: dict[str, Any]) -> dict[str, object]:
+    return {
+        "event_count": int(result["event_count"]),
+        "checked_count": int(result["checked_count"]),
+        "head_event_count": int(result["head_event_count"]),
+        "head_hash": str(result["head_hash"]),
+        "last_verified_hash": str(result["last_verified_hash"]),
+        "head_matches": bool(result["head_matches"]),
+        "key_ids": list(result["key_ids"]),
+    }
+
+
 def _staff_fact(account: AdminUser) -> dict[str, object]:
     return {
         "id": int(account.id),
@@ -318,6 +357,14 @@ async def _collect_facts(
         if revision != expected_revision:
             raise RestoreEvidenceError(
                 f"Database revision {revision!r} is not current head {expected_revision!r}"
+            )
+
+        audit_chain = await verify_audit_chain(db)
+        if not bool(audit_chain.get("ok")):
+            invalid = audit_chain.get("first_invalid") or {}
+            raise RestoreEvidenceError(
+                "Audit integrity chain is invalid: "
+                + str(invalid.get("reason") or "unknown_integrity_failure")
             )
 
         case = await db.get(Case, int(case_id))
@@ -421,6 +468,7 @@ async def _collect_facts(
 
         return {
             "database_revision": revision,
+            "audit_chain": _audit_chain_fact(audit_chain),
             "case": _case_fact(case),
             "document": document_fact,
             "payment": _payment_fact(payment),
@@ -557,6 +605,7 @@ async def verify(args: argparse.Namespace) -> dict[str, object]:
             "alembic_current": True,
             "different_database_endpoint": True,
             "safe_restore_database_name": True,
+            "audit_chain_valid": True,
             "case_exact_match": True,
             "historical_document_decryption": True,
             "payment_exact_match": True,
@@ -566,8 +615,9 @@ async def verify(args: argparse.Namespace) -> dict[str, object]:
             "restored_storage_file_verified": True,
         },
         "counts": {
+            "audit_chain_events": int(target_facts["audit_chain"]["event_count"]),
             "payment_events": len(target_facts["payment_events"]),
-            "audit_events": len(target_facts["audit_events"]),
+            "case_audit_events": len(target_facts["audit_events"]),
         },
     }
     _write_json(Path(args.output), result)
