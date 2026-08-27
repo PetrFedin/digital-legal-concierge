@@ -72,7 +72,7 @@ def test_legacy_absolute_discard_never_deletes_source_storage(tmp_path: Path) ->
     assert not new_document.exists()
 
 
-def test_legacy_absolute_read_uses_rebased_ciphertext(
+def test_legacy_absolute_read_uses_rebased_ciphertext_with_existing_api_signature(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -89,9 +89,11 @@ def test_legacy_absolute_read_uses_rebased_ciphertext(
 
     monkeypatch.setattr(storage_module, "decrypt_file_bytes", fake_decrypt)
 
+    # document_access.py currently calls read_document_bytes(document.file_path,
+    # ...envelope metadata...) without a case-id argument. Legacy rebasing must
+    # therefore remain safe and portable for that existing authorized API path.
     plaintext = storage.read_document_bytes(
         str(old_document),
-        expected_case_id=42,
         expected_sha256="b" * 64,
     )
 
