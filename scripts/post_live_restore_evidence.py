@@ -5,7 +5,6 @@ import asyncio
 import hashlib
 import hmac
 import json
-import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -30,7 +29,7 @@ from app.security.audit_integrity import verify_audit_chain
 from app.security.document_encryption import ENCRYPTION_STATUS, decrypt_file_bytes
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 KIND_SNAPSHOT = "post_live_restore_snapshot"
 KIND_VERIFICATION = "post_live_restore_verification"
 _SAFE_TARGET_SUFFIXES = (
@@ -45,6 +44,7 @@ _SAFE_TARGET_SUFFIXES = (
 )
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_DOCUMENT_CIPHERTEXT_NAME = re.compile(r"^[0-9a-fA-F]{32}\.dlcenc$")
 
 
 class RestoreEvidenceError(RuntimeError):
@@ -151,92 +151,112 @@ def _safe_storage_root(value: Path) -> Path:
     return resolved
 
 
-def _lexical_absolute(path: Path) -> Path:
-    return Path(os.path.abspath(os.fspath(path)))
-
-
-def _is_lexically_within(path: Path, root: Path) -> bool:
-    try:
-        _lexical_absolute(path).relative_to(root)
-        return True
-    except ValueError:
-        return False
-
-
 def _assert_no_symlink_components(root: Path, relative: Path) -> None:
     current = root
     for part in relative.parts:
         current = current / part
         if current.is_symlink():
-            raise RestoreEvidenceError("Symbolic links are forbidden in restore evidence storage paths")
+            raise RestoreEvidenceError(
+                "Symbolic links are forbidden in restore evidence storage paths"
+            )
 
 
-def _relative_storage_path(path: Path, *, root: Path, error_message: str) -> Path:
-    lexical = _lexical_absolute(path)
-    try:
-        relative = lexical.relative_to(root)
-    except ValueError as error:
-        raise RestoreEvidenceError(error_message) from error
-    if not relative.parts:
-        raise RestoreEvidenceError("Document path does not identify a file")
-    _assert_no_symlink_components(root, relative)
-    resolved = lexical.resolve(strict=False)
-    try:
-        resolved.relative_to(root)
-    except ValueError as error:
-        raise RestoreEvidenceError(error_message) from error
-    return relative
+def _document_storage_key(file_path: str, *, expected_case_id: int) -> Path:
+    """Normalize current relative keys and legacy absolute paths identically to runtime.
 
+    Current rows must be exactly ``cases/<case_id>/<uuid>.dlcenc``. Legacy
+    absolute rows may have an arbitrary historical root prefix, but only their
+    terminal canonical document key is retained. Prefixed relative paths are
+    rejected instead of being suffix-normalized.
+    """
 
-def _source_storage_location(file_path: str, *, storage_root: Path) -> tuple[str, Path]:
-    root = _safe_storage_root(storage_root)
     raw = str(file_path or "").strip()
     if not raw:
         raise RestoreEvidenceError("Document file_path is empty")
     candidate = Path(raw)
+    if ".." in candidate.parts:
+        raise RestoreEvidenceError("Document path contains traversal")
+    parts = candidate.parts
+
     if candidate.is_absolute():
-        selected = candidate
+        if len(parts) < 3 or parts[-3] != "cases":
+            raise RestoreEvidenceError("Legacy absolute document path has no canonical storage key")
+        case_part = parts[-2]
+        file_part = parts[-1]
     else:
-        # Current writes persist an absolute path. This fallback keeps older
-        # relative records usable while still requiring the selected location to
-        # be lexically and physically inside the configured protected root.
-        candidates = [root / candidate, Path.cwd() / candidate]
-        selected = next(
-            (
-                item
-                for item in candidates
-                if item.exists() and _is_lexically_within(item, root)
-            ),
-            candidates[0],
-        )
-    relative = _relative_storage_path(
-        selected,
-        root=root,
-        error_message="Document path is outside configured storage root",
-    )
-    resolved = _lexical_absolute(selected).resolve(strict=False)
-    if not resolved.is_file():
-        raise RestoreEvidenceError("Encrypted source document is missing or unsafe")
-    return relative.as_posix(), resolved
+        if len(parts) != 3 or parts[0] != "cases":
+            raise RestoreEvidenceError("Relative document path is not a canonical storage key")
+        case_part = parts[1]
+        file_part = parts[2]
+
+    if not case_part.isdigit() or int(case_part) <= 0:
+        raise RestoreEvidenceError("Document storage key has an invalid case id")
+    if int(case_part) != int(expected_case_id):
+        raise RestoreEvidenceError("Document storage key belongs to a different Case")
+    if not _DOCUMENT_CIPHERTEXT_NAME.fullmatch(file_part):
+        raise RestoreEvidenceError("Document storage key has an invalid ciphertext name")
+    return Path("cases") / str(int(case_part)) / file_part
 
 
-def _restored_storage_path(relative_path: str, *, restored_storage_root: Path) -> Path:
-    root = _safe_storage_root(restored_storage_root)
-    raw = str(relative_path or "").strip()
-    if not raw:
-        raise RestoreEvidenceError("Snapshot document path is empty")
-    relative = Path(raw)
-    if relative.is_absolute() or ".." in relative.parts or not relative.parts:
-        raise RestoreEvidenceError("Snapshot document path is not a safe relative path")
-    _assert_no_symlink_components(root, relative)
-    candidate = (root / relative).resolve(strict=False)
+def _storage_file_for_key(
+    relative_key: Path,
+    *,
+    storage_root: Path,
+    missing_message: str,
+) -> Path:
+    root = _safe_storage_root(storage_root)
+    if relative_key.is_absolute() or ".." in relative_key.parts:
+        raise RestoreEvidenceError("Document storage key is not a safe relative path")
+    _assert_no_symlink_components(root, relative_key)
+    candidate = (root / relative_key).resolve(strict=False)
     try:
         candidate.relative_to(root)
     except ValueError as error:
-        raise RestoreEvidenceError("Snapshot document path escapes restored storage") from error
+        raise RestoreEvidenceError("Document storage key escapes configured storage") from error
     if not candidate.is_file():
-        raise RestoreEvidenceError("Restored encrypted document is missing or unsafe")
+        raise RestoreEvidenceError(missing_message)
     return candidate
+
+
+def _source_storage_location(
+    file_path: str,
+    *,
+    storage_root: Path,
+    expected_case_id: int,
+) -> tuple[str, Path]:
+    relative = _document_storage_key(
+        file_path,
+        expected_case_id=expected_case_id,
+    )
+    selected = _storage_file_for_key(
+        relative,
+        storage_root=storage_root,
+        missing_message="Encrypted source document is missing or unsafe",
+    )
+    return relative.as_posix(), selected
+
+
+def _restored_storage_path(
+    relative_path: str,
+    *,
+    restored_storage_root: Path,
+    expected_case_id: int,
+) -> Path:
+    raw = str(relative_path or "").strip()
+    if not raw:
+        raise RestoreEvidenceError("Snapshot document path is empty")
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        raise RestoreEvidenceError("Snapshot document path is not a safe relative path")
+    relative = _document_storage_key(
+        raw,
+        expected_case_id=expected_case_id,
+    )
+    return _storage_file_for_key(
+        relative,
+        storage_root=restored_storage_root,
+        missing_message="Restored encrypted document is missing or unsafe",
+    )
 
 
 def _case_fact(case: Case) -> dict[str, object]:
@@ -426,12 +446,14 @@ async def _collect_facts(
             relative_path, encrypted_path = _source_storage_location(
                 str(document.file_path),
                 storage_root=storage_root,
+                expected_case_id=int(case.id),
             )
         else:
             relative_path = str(expected_storage_relative_path)
             encrypted_path = _restored_storage_path(
                 relative_path,
                 restored_storage_root=storage_root,
+                expected_case_id=int(case.id),
             )
 
         plaintext, metadata = decrypt_file_bytes(
