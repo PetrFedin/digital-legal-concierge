@@ -2,251 +2,281 @@
 
 Status: **authoritative current acceptance contract** for the existing M1/M2 product.
 
-Historical persona matrices are evidence/history only. They do not override this file. A scenario may be marked source-correct while still requiring live proof; source inspection is never presented as a completed runtime test.
+Historical persona matrices and GO_LIVE/FINAL documents are evidence/history only. They do not override this file. Source inspection or the presence of a workflow/test is never presented as completed runtime proof.
+
+The exact execution order and evidence-retention procedure is defined in `docs/POST_LIVE_RELEASE_EVIDENCE.md`. `docs/LIVE_REQUIRED_RUNBOOK.md` defines the automated LIVE_REQUIRED component contract.
 
 ## Evidence states
 
-- **SOURCE_OK** — current source/schema design satisfies the stated contract by inspection and/or non-live tests.
-- **LIVE_REQUIRED** — must be executed against the production-like runtime stack before release.
-- **BLOCKED_INFRA** — cannot be executed because required infrastructure is unavailable; never treated as PASS.
-- **LIVE_PASS** — scenario was actually executed and UI, PostgreSQL state and required audit/history/evidence agreed.
-- **LIVE_FAIL** — runtime result disagreed with the contract.
+- **SOURCE_OK** — source/schema/test design satisfies the stated contract by inspection and/or non-live tests.
+- **LIVE_REQUIRED** — must execute against the required production-like runtime before release.
+- **BLOCKED_INFRA** — required infrastructure cannot execute; never treated as PASS or as an application test failure.
+- **LIVE_PASS** — the scenario actually executed and UI/runtime state/PostgreSQL/audit/evidence agreed.
+- **LIVE_FAIL** — an executed runtime result disagreed with the contract.
 
-A release claim requires the mandatory scenarios below to be `LIVE_PASS`, not merely `SOURCE_OK`.
+A release claim requires all mandatory gates for the frozen candidate SHA to be `LIVE_PASS` in the required order.
 
-## Current automated evidence present in the branch
+## Mandatory release evidence order
 
-The following gates now exist in source and are part of the intended CI/runtime pyramid:
+For one immutable candidate SHA:
 
-- `tests/test_telegram_multi_case_runtime.py` — real aiogram `Dispatcher.feed_update` coverage for persistent Calculate, duplicate callback idempotency, multi-Case selector, stale Case-bound payment action and exact read-only message history;
-- `tests/test_telegram_redis_runtime.py` + `.github/workflows/telegram-runtime.yml` — Redis FSM restart/persistence and exact Case binding;
-- `tests/test_postgres_multi_case_concurrency.py` — same/different Case creation operation keys, terminal-operation replay and Calculation history under PostgreSQL;
-- `tests/test_postgres_payment_concurrency.py` — payment creation, duplicate success, duplicate refund confirmation and M2 hold-expiry/payment-success races;
-- `tests/test_postgres_staff_concurrency.py` — conflicting Document review and conflicting Case branch decisions under PostgreSQL;
-- `tests/test_v37_api_import_inventory.py` — exactly one runtime `(HTTP method, path)` owner plus canonical hardened owners for staff/payment/lawyer/backup/workdesk surfaces;
-- lifecycle/transaction tests for Payment timestamps/events, PaymentEvent immutability, Case closure/archive, business timezone and AsyncSession presentation boundaries;
-- source regressions for calculator new-vs-resume separation, exact Case-bound unknown-data recovery and stale selected-Case reply-menu behavior.
+1. GitHub Actions runner allocation is restored and jobs execute real steps.
+2. Full CI and all required PR checks execute and pass.
+3. Dedicated PostgreSQL concurrency → Redis/Telegram runtime → browser staff E2E workflows execute and pass on that SHA.
+4. One complete `.github/workflows/live-required.yml` run passes and produces one SHA/run/attempt-bound `LIVE_REQUIRED_MANIFEST.json`.
+5. Real Telegram M1 and M2 persona walkthroughs execute with UI ↔ PostgreSQL ↔ Audit/PaymentEvent reconciliation.
+6. Encrypted backup → separate empty staging/restore database and storage → application evidence → normal restored-runtime usability executes and passes.
+7. Only after Gates 1–6 pass may YooKassa test-shop evidence be deliberately expanded to provider-side paid/refund scenarios that can be completed safely without any production credential, production shop, production callback or production operation.
+8. Only then may the release/merge decision be made.
 
-Until the workflows actually execute on allocated runners, this is **SOURCE_OK evidence only**. It does not change any `LIVE_REQUIRED` state below.
+Any source, migration, workflow or evidence-script change after evidence collection begins creates a new candidate SHA and restarts the chain from full CI. Evidence from another SHA or another LIVE_REQUIRED attempt is diagnostic only.
 
-## Corrected multi-Case acceptance
+## Automated/source evidence present in the branch
+
+The branch includes, among other gates:
+
+- `tests/test_telegram_multi_case_runtime.py` — aiogram `Dispatcher.feed_update`, duplicate callbacks, multi-Case selector, stale Case-bound actions and read-only history;
+- `tests/test_telegram_redis_runtime.py` + `.github/workflows/telegram-runtime.yml` — Redis FSM restart/persistence and Case binding;
+- `tests/test_postgres_multi_case_concurrency.py` — Case creation idempotency/history races;
+- `tests/test_postgres_payment_concurrency.py` — payment creation/success/refund/review and hold-expiry races;
+- `tests/test_postgres_staff_concurrency.py` — conflicting Document/Case staff mutations;
+- `tests/test_postgres_auto_assignment_concurrency.py` — two M1 Cases compete for one final lawyer capacity slot without oversubscription;
+- `tests/test_browser_staff_e2e.py` — staff auth/role isolation and two-tab stale Payment Review 409 recovery;
+- `tests/test_live_required_evidence.py` + `tests/test_live_required_evidence_workflow_contract.py` — exact SHA/run/run-attempt manifest contract;
+- `tests/test_post_live_restore_evidence.py` — post-LIVE restore evidence tamper/source-target/storage/privacy contract;
+- `tests/test_document_storage_portability.py` — portable encrypted storage keys, legacy absolute-path rebasing and traversal/symlink/case-scope protection;
+- `tests/test_document_download_storage_scope_contract.py` — normal authorized document download must pass the authorized Case id into storage resolution;
+- lifecycle/transaction tests for Payment timestamps/events, `PaymentEvent` immutability, Case closure/archive, business timezone and transaction boundaries;
+- `tests/test_v37_api_import_inventory.py` + `scripts/architecture_check.py` — one runtime `(HTTP method, path)` owner.
+
+Until runners execute these gates, their presence is **SOURCE_OK only**.
+
+## Multi-Case acceptance
 
 ### C-010 — global Calculate while another Case is active
 
-Expected contract:
+Expected:
 
-1. Client has active Case A; Case A may itself be an unfinished calculator flow.
-2. Client presses persistent **Calculate** or current inline **new calculation** entry.
-3. The explicit global `calc_start` means **new calculation / new legal matter** and must not be reinterpreted by router precedence as “resume Case A”.
-4. A genuinely new source operation may create active Case B.
-5. Case A remains unchanged and active.
-6. A redelivery/retry of the **same operation key** returns/deduplicates to the same Case instead of creating Case C.
-7. Calculation history is one-to-many per Case.
-8. No client-wide active-Case uniqueness error occurs.
-9. Resuming an unfinished calculation in Case A is a separate explicit Case-bound action (`calc_recover:v2:<case_id>`); a stale recovery action must fail closed rather than implicitly creating a replacement Case.
+1. Client has active Case A.
+2. Persistent **Calculate** / explicit global `calc_start` means a new calculation/legal matter, not implicit resume of A.
+3. A distinct operation may create active Case B while A remains unchanged.
+4. Retry/redelivery of the same operation key returns the same Case rather than creating C.
+5. Calculation history is one-to-many per Case.
+6. Resume of unfinished A is a separate Case-bound `calc_recover:v2:<case_id>` operation.
+7. Stale recovery fails closed and never fabricates a replacement Case.
 
-The former expectation “a second active Case must not be created” is obsolete and incorrect. Likewise, overloading the global Calculate callback as an implicit resume command is incorrect.
-
-State before release: **LIVE_REQUIRED**.
+State: **LIVE_REQUIRED**.
 
 ### C-011 — Back navigation
 
-Expected contract:
+Expected:
 
-1. Client opens a sequence of replay-safe screens such as My Case → Documents → History.
-2. Back returns to the previous logical replay-safe screen when available.
-3. A payment creation, slot reservation, contract/legal confirmation or other mutation is never replayed by Back.
-4. When logical history is unavailable, the fallback is My Case/Home without deleting persisted data.
-5. Redis/bot restart must not corrupt persistent Case state; missing navigation state degrades safely.
+1. Back replays only read/idempotent screens.
+2. Payment creation, slot reservation, contract/legal confirmation and other mutations are never replayed by Back.
+3. Missing logical history degrades to My Case/Home without deleting persisted data.
+4. Redis/bot restart cannot corrupt persistent Case state.
 
-The former statement “true Back is a P2 gap” is obsolete.
+State: **LIVE_REQUIRED**.
 
-State before release: **LIVE_REQUIRED**.
+### Mandatory stale/multi-Case matrix
 
-## Mandatory multi-Case / stale Telegram scenarios
-
-| ID | Scenario | Expected result | Pre-release state |
+| ID | Scenario | Expected result | State |
 | --- | --- | --- | --- |
-| MC-01 | two distinct Calculate operations by same client | two independent Cases; neither overwrites the other | LIVE_REQUIRED |
-| MC-02 | duplicate same Calculate callback/operation | one Case for that source operation | LIVE_REQUIRED |
-| MC-03 | My Case with two active Cases | explicit selector; selected Case visibly identified | LIVE_REQUIRED |
-| MC-04 | stale selector for now-terminal Case | selection rejected; context unchanged | LIVE_REQUIRED |
-| MC-05 | stale payment/legal v2 callback from Case A after selecting B | mutation rejected; Case B untouched | LIVE_REQUIRED |
-| MC-06 | old raw mutation callback with multiple active Cases | fails closed unless narrowly proven by trusted exact message context | LIVE_REQUIRED |
-| MC-07 | message-history pagination after Case switch | exact Case id preserved; no cross-Case messages | LIVE_REQUIRED |
-| MC-08 | Case-history pagination after Case switch | exact Case id preserved; no cross-Case events | LIVE_REQUIRED |
-| MC-09 | documents/replacement callback from old Case | exact document/Case/version check; no cross-Case upload mutation | LIVE_REQUIRED |
-| MC-10 | selected unfinished calculator Case + persistent/global New Calculate | new Case is created; unfinished selected Case is not resumed or modified | LIVE_REQUIRED |
-| MC-11 | Case-bound calculator recovery after switching/closing Case | stale recovery fails closed; current selected Case remains untouched; no replacement Case is created | LIVE_REQUIRED |
+| MC-01 | two distinct Calculate operations | two independent Cases | LIVE_REQUIRED |
+| MC-02 | duplicate same Calculate operation | one Case for that operation key | LIVE_REQUIRED |
+| MC-03 | My Case with two active Cases | explicit selector and visible selected Case | LIVE_REQUIRED |
+| MC-04 | stale selector for terminal Case | rejected; context unchanged | LIVE_REQUIRED |
+| MC-05 | stale payment/legal callback from A after selecting B | rejected; B untouched | LIVE_REQUIRED |
+| MC-06 | old raw mutation callback with multiple active Cases | fail closed unless exact trusted context proves scope | LIVE_REQUIRED |
+| MC-07 | message pagination after Case switch | exact Case only | LIVE_REQUIRED |
+| MC-08 | Case-history pagination after switch | exact Case only | LIVE_REQUIRED |
+| MC-09 | old document/replacement callback | exact Case/document/version only | LIVE_REQUIRED |
+| MC-10 | selected unfinished calculator + global New Calculate | new Case; selected unfinished Case unchanged | LIVE_REQUIRED |
+| MC-11 | stale Case-bound calculator recovery | fail closed; no replacement Case | LIVE_REQUIRED |
 
 ## M1 persona acceptance
 
-Execute as real Telegram client + separate real lawyer/admin accounts against PostgreSQL/Redis and the same application image intended for production.
+Execute with a real Telegram acceptance client plus separate real lawyer/admin acceptance accounts against PostgreSQL/Redis and the same application image intended for release.
 
-Required full path:
+Required path:
 
-calculation → M1 choice → exact-version consent → DDU/document upload → lawyer review → accept/request/reject branches → service contract evidence → initial payment → power of attorney → claim preparation/sent evidence → 30-day gate → court stage/evidence → second payment → enforcement → actual recovered amount → success fee → `M1_CLOSED` with structured close reason → archive/read-only access.
+calculation → M1 choice → exact-version consent → DDU/document upload → lawyer review → accept/request/reject branches → service-contract evidence → initial payment → power of attorney → claim preparation/sent evidence → 30-day gate → court/evidence → second payment → enforcement → actual recovered amount → success fee → structured `M1_CLOSED` → archive/read-only.
 
-Failure/recovery variants must include:
+Mandatory recovery/edge variants include duplicate callback delivery, presentation failure after committed mutation, stale message after status change, document replacement/version history, payment timeout/retry/duplicate provider evidence, scheduler/client race and process restart between major stages.
 
-- duplicate callback delivery;
-- Telegram presentation failure after committed mutation;
-- stale messages after status change;
-- document replacement while old version exists;
-- provider timeout/duplicate webhook/late failure;
-- scheduler and client action race;
-- process restart between major stages.
+Acceptance requires client UI, Case/Document/Payment projections, Case history/AuditLog, consent evidence and normalized payment ledger to agree.
 
-Acceptance rule: client-facing result, PostgreSQL Case/Document/Payment state, Case history/audit, consent evidence and payment ledger must agree.
-
-State before release: **LIVE_REQUIRED**.
+State: **LIVE_REQUIRED**.
 
 ## M2 persona acceptance
 
-Required full path:
+Required path:
 
-question description → optional documents → slot list → reservation → confirmation/payment → booked consultation → preparation → lawyer result → close / follow-up / to-M1.
+question description → optional documents → slot list → reservation → confirmation/payment → booked consultation → preparation → lawyer result → close/follow-up/to-M1.
 
-Mandatory exception paths:
+Mandatory exceptions include two-client slot race, hold expiry during payment creation, paid stale reservation, duplicate success, late failure after success, stale reschedule after Case switch, cancellation, client no-show, lawyer no-show, rebook/refund, Payment Review recovery and Redis restart/loss behavior.
 
-- two clients race for one slot;
-- hold expires during payment creation;
-- paid stale reservation;
-- duplicate payment success;
-- success followed by late failure;
-- reschedule after Case switch/stale Telegram message;
-- cancellation;
-- client no-show → explicit rebook or close with structured reason;
-- lawyer no-show → free rebook or refund path;
-- payment review/refund resolution;
-- restart with Redis FSM preserved;
-- Redis state unavailable/lost: persistent Case remains safe and no accidental mutation is inferred.
+Persistent Case state must remain safe when Redis state is missing; no mutation may be inferred from transient FSM loss.
 
-State before release: **LIVE_REQUIRED**.
+State: **LIVE_REQUIRED**.
 
 ## Payment acceptance
 
-For each real/sandbox financial transition verify:
+For every persisted financial transition verify:
 
 1. current `payments.status`;
 2. correct business timestamp (`paid_at`, `failed_at`, `cancelled_at`, `refunded_at`, `expired_at`);
-3. one normalized `payment_events` transition per persisted status change;
-4. provider evidence in `payment_webhook_events` when event came from provider;
-5. Case/Audit history explains business application/review/refund outcome;
-6. no stale money changes the wrong Case/slot/legal stage.
+3. one normalized `payment_events` record per persisted transition;
+4. `payment_webhook_events` when provider evidence exists;
+5. Case/Audit history explaining business application/review/refund outcome;
+6. no stale money mutating the wrong Case, slot or legal stage.
 
-Historical `payment_events` rows are append-only evidence at the application boundary: ordinary ORM update/delete must fail closed; corrections are represented by later financial events, not rewritten history.
+`PaymentEvent` is append-only evidence. Corrections are later events, never history rewrites.
 
-Mandatory provider matrix: create, provider timeout after successful creation, idempotent retry, duplicate success, duplicate webhook, late failure, stale reservation payment, stale M1 payment, refund pending, refund confirmed, refund declined/review, process restart.
+### Automated LIVE_REQUIRED provider baseline
 
-State before release: **LIVE_REQUIRED**.
+The provider component of LIVE_REQUIRED is intentionally limited to a safe YooKassa **test-shop** preflight + create + exact idempotent retry + retrieve. Every object must prove `test=true`; the payment remains unpaid/pending and the smoke does not open/complete confirmation.
 
-## Consent / service-contract evidence acceptance
+This baseline proves provider connectivity/idempotent creation only. It does **not** prove provider-side paid/refund lifecycle.
 
-For consent:
+### Application/PostgreSQL financial semantics
 
-- exact version token resolves to exact text/SHA;
-- Telegram user owns Case;
-- duplicate CallbackQuery id is idempotent;
-- stale version is rejected;
-- acceptance/decline writes status/date/version/text hash/provenance;
-- Case history references the evidence.
+Before provider-side paid/refund expansion, application/PostgreSQL gates must already prove duplicate success, webhook↔admin Payment Review convergence, stale reservation payment, refund confirmation/retry and hold-expiry/payment races. Those are application semantics, not provider-side sandbox proof.
 
-For the service contract, execute the legally approved acceptance/signing model and verify the stored evidence is no stronger/weaker than the approved legal procedure.
+### Provider-side paid/refund sandbox matrix
 
-Legal decision about click-accept vs signed document/external e-sign must be recorded before production. Technical implementation must not call a Telegram click a qualified electronic signature.
+Only after Telegram persona acceptance **and** encrypted backup→restore acceptance pass may the test-shop run be expanded to safe provider-side paid/refund scenarios. Target scenarios include, where YooKassa test-shop behavior deterministically supports them: confirmation→paid, duplicate/retried success evidence, refundable paid object, refund creation/retrieve/terminal result and provider failure/review states.
 
-State before release: consent source path **SOURCE_OK**, legal-operational signing decision **LIVE_REQUIRED / business approval required**.
+Hard requirements:
+
+- credentials are proven test-shop credentials before mutation;
+- every provider object reports `test=true`;
+- no production shop/payment/callback/credential is used;
+- required user/test-card confirmation is performed explicitly rather than bypassed;
+- unsupported or ambiguous sandbox behavior is recorded as **NOT PROVEN**, never fabricated;
+- application-only tests cannot satisfy provider-side proof.
+
+State before Gate 7: baseline **LIVE_REQUIRED** through LIVE_REQUIRED; paid/refund provider-side expansion **BLOCKED_BY_SEQUENCE / LIVE_REQUIRED AFTER RESTORE**.
+
+## Consent and service-contract evidence
+
+Consent must prove exact version→exact text/SHA, Case ownership, duplicate CallbackQuery idempotency, stale-version rejection, status/date/version/text/provenance persistence and Case history reference.
+
+The service-contract procedure must store evidence that is neither stronger nor weaker than the legally approved signing/acceptance model. A Telegram click must not be described as a qualified electronic signature unless an approved legal mechanism actually makes it so.
+
+State: consent source path **SOURCE_OK**; legal-operational signing approval **LIVE_REQUIRED / business approval required**.
 
 ## PostgreSQL concurrency acceptance
 
-Must run on real PostgreSQL, not SQLite only:
+Must execute on PostgreSQL, not SQLite only:
 
 - same Case creation operation twice;
 - two distinct Case operations for one client;
-- delayed replay of a creation operation after its original Case has closed while another Case is selected;
+- replay after original Case terminal state;
 - repeated Calculations;
-- two clients attempt same slot;
-- slot cleanup vs payment webhook;
+- two clients racing for one slot;
+- slot cleanup vs payment success/webhook;
 - double payment creation;
-- duplicate provider webhook;
-- webhook vs admin payment review/refund;
+- duplicate provider webhook/success;
+- webhook vs admin Payment Review/refund;
 - duplicate refund confirmation/retry;
-- two staff update one Document;
-- two staff update one Case;
+- two staff updating one Document;
+- two staff updating one Case;
+- two M1 Cases competing for one last lawyer capacity slot;
 - scheduler vs client callback.
 
-Source tests now cover the Case/calculation, core payment/refund/slot and staff Document/Case races listed above. Provider/admin/scheduler race variants that require a fuller runtime remain mandatory.
+State: **LIVE_REQUIRED**.
 
-State before release: **LIVE_REQUIRED**.
+## Telegram + Redis acceptance
 
-## Telegram + Redis integration acceptance
+Use real aiogram updates plus Redis FSM in automated runtime gates, then a real Telegram acceptance bot for persona proof. Cover commands, reply buttons, callbacks, stale v2/raw messages, drafts, Case switch, Back, restart and callback redelivery.
 
-Feed real aiogram `Update` objects through the dispatcher with Redis FSM and production router order. Cover commands, persistent reply buttons, callbacks, stale v2/raw messages, drafts, multi-Case switch, Back, restart and callback redelivery.
+Verify global New Calculate never becomes implicit resume; `calc_recover:v2:<case_id>` resumes only its exact active Case. Client activity timestamps must not commit unfinished legal transactions. Reminder dedupe is based on stable client/stage facts, not unrelated staff `updated_at` changes.
 
-The branch now contains direct `Dispatcher.feed_update` multi-Case tests and a Redis-backed restart contract. These do not replace a real Telegram test-bot/staging walkthrough.
-
-Explicitly verify that an unfinished selected calculator Case does not shadow global **New Calculate**, while `calc_recover:v2:<case_id>` resumes only its exact still-active Case.
-
-Verify client activity timestamps do not commit unfinished legal transactions and inactivity reminders deduplicate by stable client/stage snapshot. Unrelated staff/system updates to `Case.updated_at` must not postpone a reminder; a newly entered client-action stage receives its own quiet period.
-
-State before release: **LIVE_REQUIRED**.
+State: **LIVE_REQUIRED**.
 
 ## Staff browser acceptance
 
-Use browser E2E (Playwright or equivalent) for:
+Browser E2E must cover login → MFA where configured → role boundaries → Workdesk → lawyer workspace → document review → messages → consultation outcomes/no-show → Payment Review/refund → session expiry/revoke.
 
-login → MFA where configured → role boundaries → Workdesk → Lawyer workspace → document review → messages → consultation outcome/no-show → payment review/refund → session expiry/revoke.
+Payment Review must include the two-tab stale decision case: the winner commits exactly once; the stale tab receives 409 + authoritative server truth, preserves its local draft/comment and cannot create a second resolution.
 
-A staff UI route must have one runtime owner; role safety must not depend on router include order. Current regression contract requires route-free retired facades rather than shadow routes for superseded staff UI guards.
+A staff route must have one runtime owner; authorization may not depend on router include order.
 
-State before release: **LIVE_REQUIRED**.
+State: **LIVE_REQUIRED**.
+
+## Auto-assignment / SLA acceptance
+
+Automatic assignment applies only to approved M1 working states after documents and never to M2/calculator/client-decision states.
+
+Required proof includes active lawyer+staff identity, workload/capacity enforcement, assignment audit/SLA start, exact retry vs stale snapshot handling, and the PostgreSQL race where two eligible Cases compete for one final capacity slot: exactly one assignment is allowed and oversubscription is forbidden.
+
+State: **LIVE_REQUIRED**.
 
 ## Timezone acceptance
 
-Persist sample consultation timestamps in UTC and verify Telegram/home/action-center/scheduler notifications render the configured business timezone consistently, including DST-capable zone conversion even if default Moscow does not currently switch DST.
+Persist UTC timestamps and verify Telegram/staff/scheduler rendering uses configured `BUSINESS_TIMEZONE`, including DST-capable conversion behavior.
 
-State before release: **LIVE_REQUIRED**.
+State: **LIVE_REQUIRED**.
 
-## Security / document acceptance
+## Security / encrypted document acceptance
 
-Run at minimum:
+At minimum execute: zero-byte/broken PDF, content-type disguise, oversized upload, duplicate content, same name/different content, replacement/version history, expired one-time grant, revoked staff access, reassignment, multiple tabs, historical decrypt after key rotation, quarantine cleanup, session revoke and compromised-admin response drill.
 
-0-byte/broken PDF, content-type disguise, oversized upload, duplicate content, same filename different content, replacement while old version is open, expired download grant, revoked staff access, reassigned Case, multiple tabs, historical decrypt after key rotation, quarantine cleanup, session revoke, compromised admin response drill.
+Storage-specific acceptance:
 
-State before release: **LIVE_REQUIRED**.
+- new `Document.file_path` values are canonical portable keys `cases/<case_id>/<32hex>.dlcenc`;
+- prefixed relative paths are rejected, not suffix-normalized;
+- legacy absolute paths are reduced only to their terminal canonical key and rebased onto the **current** `STORAGE_DIR`;
+- old source filesystem prefixes are never dereferenced after restore;
+- traversal and symlink components fail closed;
+- normal authorized download passes the authorized Case id to storage resolution, so a wrong-Case storage key cannot be opened through a valid grant.
+
+State: **LIVE_REQUIRED**.
 
 ## Backup / restore acceptance
 
-A backup is not accepted merely because an encrypted archive exists.
+An encrypted archive alone is not acceptance.
 
-Mandatory drill:
+This gate executes **after** Telegram M1/M2 personas so the backup contains exercised business evidence.
 
-backup → separate staging restore → migrations/schema check → staff login → open Case → decrypt historical Document → read Audit/Case history → verify Payment + payment events → start bot smoke against restored DB.
+Required sequence:
 
-State before release: **LIVE_REQUIRED**.
+1. capture a privacy-minimized pre-backup witness using `scripts/post_live_restore_evidence.py snapshot` from the exact candidate SHA;
+2. independently retain the snapshot file SHA-256;
+3. create and verify the authenticated encrypted backup;
+4. restore only into a separate empty PostgreSQL database with a safe staging/restore/drill/test name plus separate restored storage;
+5. run `post_live_restore_evidence.py verify` against the restored environment;
+6. require current Alembic head, valid complete AuditLog hash-chain, exact Case/Document/Payment/PaymentEvent/Case-audit/staff facts, canonical storage key and historical V2 document decryption;
+7. start the same application image against restored DB/storage and isolated Redis;
+8. authenticate through normal staff login, open the Case/history/payment state and open/decrypt the historical document through the normal authorized application path;
+9. start bot/dispatcher smoke without any production Telegram/provider side effect.
 
-## CI / release gate
+Evidence schema v2 uses the same portable-key rules as runtime. A legacy absolute DB path may be rebased to current restored storage; a prefixed relative path, wrong Case key, traversal or symlink fails closed.
 
-Required automated gate includes at least compile/static architecture check, migration chain, SQLite fast tests, PostgreSQL migration/integration/concurrency tests, Redis/deployment contract tests, container build/start smoke and backup/restore checks configured by CI.
+Only encrypted backup verification + safe restore + `RESTORE_PASS` application evidence + normal restored-runtime usability equals **backup→restore LIVE_PASS**.
 
-The repository contains dedicated PostgreSQL concurrency and Telegram/Redis runtime workflows, and PR-trigger rules were widened so non-`main` base PRs are eligible to run. A configured workflow is not evidence of execution.
+State: **LIVE_REQUIRED after Telegram personas**.
 
-GitHub Actions runner execution is tracked by infrastructure issue **#116**. If a job stops before runner allocation/steps, current status is **BLOCKED_INFRA**, not PASS. The branch must not be described as CI-green or production-ready until runners actually allocate and mandatory jobs pass.
+## CI / infrastructure gate
+
+Required automated gate includes compile/static architecture, Alembic chain, fast tests, PostgreSQL migration/integration/concurrency, Redis runtime, browser E2E, reproducible dependencies, deployment readiness, container build/start and technical backup/restore checks.
+
+GitHub issue **#116** tracks the current runner/billing/spending blocker. `runner_id=0`, `steps=null`/empty steps or a run ending before runner execution is **BLOCKED_INFRA**. It is never reported as CI-green or as an application test failure.
 
 ## Production-release decision
 
-Release is allowed only when:
+Release/merge is allowed only when the frozen candidate SHA has one coherent evidence chain satisfying the ordered gates above, including:
 
-- no duplicate runtime `(method, path)` ownership;
-- current migrations apply cleanly to production-like PostgreSQL;
-- mandatory M1/M2 personas are LIVE_PASS;
-- payment sandbox matrix is LIVE_PASS;
-- Redis/Telegram restart cases are LIVE_PASS;
-- staff browser E2E is LIVE_PASS;
-- backup restore/security drills are evidenced;
-- actionable monitoring/alert ownership exists;
-- legal consent/contract signing procedure is approved;
-- GitHub Actions/infrastructure blocker is removed and required CI gates pass.
+- one runtime owner per `(method, path)`;
+- clean PostgreSQL migration chain;
+- full CI + dedicated runtime workflows PASS;
+- one exact LIVE_REQUIRED manifest PASS;
+- M1/M2 Telegram personas PASS;
+- staff browser/Redis/security acceptance PASS;
+- encrypted backup→restore PASS;
+- provider-side paid/refund sandbox evidence completed to the extent safely and deterministically supported by YooKassa test shop, with unsupported scenarios explicitly marked rather than assumed;
+- owned monitoring/alerts and approved legal consent/contract procedure;
+- no unresolved release blocker.
 
-Visual polish may continue after these technical gates, but no new legal route is part of this release.
+PR #114 must remain unmerged until this evidence exists. No automatic merge is authorized.
