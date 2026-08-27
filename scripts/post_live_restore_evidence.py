@@ -25,10 +25,7 @@ from app.models.case import Case
 from app.models.document import Document
 from app.models.payment import Payment
 from app.models.payment_event import PaymentEvent
-from app.security.document_encryption import (
-    ENCRYPTION_STATUS,
-    decrypt_file_bytes,
-)
+from app.security.document_encryption import ENCRYPTION_STATUS, decrypt_file_bytes
 
 
 SCHEMA_VERSION = 1
@@ -45,6 +42,7 @@ _SAFE_TARGET_SUFFIXES = (
     "-test",
 )
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class RestoreEvidenceError(RuntimeError):
@@ -103,14 +101,14 @@ async def _database_revision(db) -> str:  # noqa: ANN001
     try:
         value = await db.scalar(text("SELECT version_num FROM alembic_version LIMIT 1"))
     except Exception as error:
-        raise RestoreEvidenceError("Unable to read restored Alembic revision") from error
+        raise RestoreEvidenceError("Unable to read Alembic revision") from error
     normalized = str(value or "").strip()
     if not normalized:
         raise RestoreEvidenceError("Database has no Alembic revision")
     return normalized
 
 
-def _database_identity() -> dict[str, object]:
+def _database_identity() -> dict[str, str]:
     try:
         url = make_url(str(settings.database_url))
     except Exception as error:
@@ -121,36 +119,94 @@ def _database_identity() -> dict[str, object]:
     database = str(url.database or "").strip()
     if not database:
         raise RestoreEvidenceError("DATABASE_URL has no database name")
-    endpoint = f"{str(url.host or 'localhost').lower().rstrip('.')}:{int(url.port or 5432)}:{database}"
+    endpoint = (
+        f"{str(url.host or 'localhost').lower().rstrip('.')}:"
+        f"{int(url.port or 5432)}:{database}"
+    )
     return {
         "backend": "postgresql",
         "database": database,
+        "database_sha256": _sha256_bytes(database.encode("utf-8")),
         "endpoint_sha256": _sha256_bytes(endpoint.encode("utf-8")),
     }
 
 
-def _safe_relative_storage_path(file_path: str, *, storage_root: Path) -> str:
-    root = storage_root.resolve()
-    candidate = Path(str(file_path or ""))
-    if not str(candidate):
-        raise RestoreEvidenceError("Document file_path is empty")
-    resolved = candidate.resolve() if candidate.is_absolute() else (root / candidate).resolve()
+def _public_database_identity(identity: dict[str, str]) -> dict[str, str]:
+    return {
+        "backend": identity["backend"],
+        "database_sha256": identity["database_sha256"],
+        "endpoint_sha256": identity["endpoint_sha256"],
+    }
+
+
+def _relative_under_root(path: Path, *, root: Path, error_message: str) -> str:
+    resolved_root = root.resolve()
+    resolved = path.resolve(strict=False)
     try:
-        relative = resolved.relative_to(root)
+        relative = resolved.relative_to(resolved_root)
     except ValueError as error:
-        raise RestoreEvidenceError("Document path is outside configured storage root") from error
+        raise RestoreEvidenceError(error_message) from error
     if not relative.parts:
         raise RestoreEvidenceError("Document path does not identify a file")
     return relative.as_posix()
 
 
+def _source_storage_location(file_path: str, *, storage_root: Path) -> tuple[str, Path]:
+    root = storage_root.resolve()
+    raw = str(file_path or "").strip()
+    if not raw:
+        raise RestoreEvidenceError("Document file_path is empty")
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        resolved = candidate.resolve(strict=False)
+    else:
+        # Current writes persist an absolute path. This fallback keeps older
+        # relative records usable while still requiring the resolved file to be
+        # inside the configured protected storage root.
+        root_relative = (root / candidate).resolve(strict=False)
+        cwd_relative = (Path.cwd() / candidate).resolve(strict=False)
+        candidates = [root_relative, cwd_relative]
+        resolved = next(
+            (
+                item
+                for item in candidates
+                if item.exists()
+                and _is_within(item, root)
+            ),
+            root_relative,
+        )
+    relative = _relative_under_root(
+        resolved,
+        root=root,
+        error_message="Document path is outside configured storage root",
+    )
+    if resolved.is_symlink() or not resolved.is_file():
+        raise RestoreEvidenceError("Encrypted source document is missing or unsafe")
+    return relative, resolved
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve(strict=False).relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def _restored_storage_path(relative_path: str, *, restored_storage_root: Path) -> Path:
     root = restored_storage_root.resolve()
-    candidate = (root / relative_path).resolve()
-    try:
-        candidate.relative_to(root)
-    except ValueError as error:
-        raise RestoreEvidenceError("Snapshot document path escapes restored storage") from error
+    raw = str(relative_path or "").strip()
+    if not raw:
+        raise RestoreEvidenceError("Snapshot document path is empty")
+    relative = Path(raw)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise RestoreEvidenceError("Snapshot document path is not a safe relative path")
+    candidate = (root / relative).resolve(strict=False)
+    _relative_under_root(
+        candidate,
+        root=root,
+        error_message="Snapshot document path escapes restored storage",
+    )
     if candidate.is_symlink() or not candidate.is_file():
         raise RestoreEvidenceError("Restored encrypted document is missing or unsafe")
     return candidate
@@ -159,7 +215,7 @@ def _restored_storage_path(relative_path: str, *, restored_storage_root: Path) -
 def _case_fact(case: Case) -> dict[str, object]:
     return {
         "id": int(case.id),
-        "case_number": str(case.case_number),
+        "case_number_sha256": _hash_optional(case.case_number),
         "route": str(case.route) if case.route is not None else None,
         "status": str(case.status),
         "assigned_lawyer_id": (
@@ -176,7 +232,7 @@ def _payment_fact(payment: Payment) -> dict[str, object]:
     return {
         "id": int(payment.id),
         "case_id": int(payment.case_id),
-        "payment_code": str(payment.payment_code),
+        "payment_code_sha256": _hash_optional(payment.payment_code),
         "amount": _decimal(payment.amount),
         "currency": str(payment.currency),
         "status": str(payment.status),
@@ -199,7 +255,7 @@ def _payment_event_fact(event: PaymentEvent) -> dict[str, object]:
         "event_type": str(event.event_type),
         "status_before": event.status_before,
         "status_after": str(event.status_after),
-        "payment_code": str(event.payment_code),
+        "payment_code_sha256": _hash_optional(event.payment_code),
         "amount": _decimal(event.amount),
         "currency": str(event.currency),
         "provider": event.provider,
@@ -239,7 +295,7 @@ def _audit_fact(event: AuditLog) -> dict[str, object]:
 def _staff_fact(account: AdminUser) -> dict[str, object]:
     return {
         "id": int(account.id),
-        "username": str(account.username or ""),
+        "username_sha256": _hash_optional(account.username),
         "role": str(account.role),
         "is_active": bool(account.is_active),
         "mfa_enabled": bool(account.mfa_enabled),
@@ -254,6 +310,7 @@ async def _collect_facts(
     payment_id: int,
     staff_username: str,
     storage_root: Path,
+    expected_storage_relative_path: str | None = None,
 ) -> dict[str, object]:
     async with AsyncSessionLocal() as db:
         revision = await _database_revision(db)
@@ -274,9 +331,9 @@ async def _collect_facts(
             raise RestoreEvidenceError("Selected Payment does not belong to selected Case")
 
         username = str(staff_username or "").strip()
-        account = await db.scalar(
-            select(AdminUser).where(AdminUser.username == username)
-        )
+        if not username:
+            raise RestoreEvidenceError("Selected staff username is empty")
+        account = await db.scalar(select(AdminUser).where(AdminUser.username == username))
         if account is None:
             raise RestoreEvidenceError("Selected staff account does not exist")
         if not account.is_active:
@@ -315,14 +372,21 @@ async def _collect_facts(
             )
         if document.data_key_destroyed_at is not None:
             raise RestoreEvidenceError("Selected Document data key has been destroyed")
-        relative_path = _safe_relative_storage_path(
-            str(document.file_path),
-            storage_root=storage_root,
-        )
-        encrypted_path = _restored_storage_path(
-            relative_path,
-            restored_storage_root=storage_root,
-        )
+        if not document.sha256:
+            raise RestoreEvidenceError("Selected Document has no persisted SHA-256")
+
+        if expected_storage_relative_path is None:
+            relative_path, encrypted_path = _source_storage_location(
+                str(document.file_path),
+                storage_root=storage_root,
+            )
+        else:
+            relative_path = str(expected_storage_relative_path)
+            encrypted_path = _restored_storage_path(
+                relative_path,
+                restored_storage_root=storage_root,
+            )
+
         plaintext, metadata = decrypt_file_bytes(
             encrypted_path,
             expected_sha256=document.sha256,
@@ -338,16 +402,17 @@ async def _collect_facts(
             "id": int(document.id),
             "case_id": int(document.case_id),
             "document_type": str(document.document_type),
-            "title": str(document.title),
-            "file_name": str(document.file_name),
+            "title_sha256": _hash_optional(document.title),
+            "file_name_sha256": _hash_optional(document.file_name),
+            "db_file_path_sha256": _hash_optional(document.file_path),
             "version": int(document.version),
             "status": str(document.status),
             "security_status": str(document.security_status),
             "encryption_status": str(document.encryption_status),
             "encryption_key_id": document.encryption_key_id,
             "encryption_format_version": int(document.encryption_format_version or 0),
-            "encryption_envelope_id": document.encryption_envelope_id,
-            "sha256": str(document.sha256 or "").lower() or None,
+            "encryption_envelope_id_sha256": _hash_optional(document.encryption_envelope_id),
+            "sha256": str(document.sha256).lower(),
             "file_size": int(document.file_size) if document.file_size is not None else None,
             "storage_relative_path": relative_path,
             "decrypted_sha256": metadata.sha256,
@@ -366,11 +431,12 @@ async def _collect_facts(
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
+    if path.exists() or path.is_symlink():
+        raise RestoreEvidenceError(f"Evidence output already exists: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    with path.open("x", encoding="utf-8") as stream:
+        json.dump(payload, stream, ensure_ascii=False, indent=2, sort_keys=True)
+        stream.write("\n")
 
 
 def _read_snapshot(path: Path, *, expected_sha256: str) -> dict[str, Any]:
@@ -379,7 +445,7 @@ def _read_snapshot(path: Path, *, expected_sha256: str) -> dict[str, Any]:
     raw = path.read_bytes()
     actual = _sha256_bytes(raw)
     expected = str(expected_sha256 or "").strip().lower()
-    if not re.fullmatch(r"[0-9a-f]{64}", expected):
+    if not _SHA256_RE.fullmatch(expected):
         raise RestoreEvidenceError("Expected source snapshot SHA-256 is invalid")
     if not hmac.compare_digest(actual, expected):
         raise RestoreEvidenceError("Source snapshot file SHA-256 does not match recorded value")
@@ -387,7 +453,10 @@ def _read_snapshot(path: Path, *, expected_sha256: str) -> dict[str, Any]:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise RestoreEvidenceError("Source snapshot JSON is invalid") from error
-    if payload.get("kind") != KIND_SNAPSHOT or int(payload.get("schema_version") or 0) != SCHEMA_VERSION:
+    if (
+        payload.get("kind") != KIND_SNAPSHOT
+        or int(payload.get("schema_version") or 0) != SCHEMA_VERSION
+    ):
         raise RestoreEvidenceError("Source snapshot has unsupported schema")
     facts = payload.get("facts")
     if not isinstance(facts, dict):
@@ -414,14 +483,18 @@ async def snapshot(args: argparse.Namespace) -> dict[str, object]:
         "status": "SOURCE_SNAPSHOT_OK",
         "release_sha": release_sha,
         "recorded_at": datetime.now(timezone.utc).isoformat(),
-        "source_database": _database_identity(),
+        "source_database": _public_database_identity(_database_identity()),
         "facts": facts,
         "facts_sha256": _sha256_json(facts),
     }
     output = Path(args.output)
     _write_json(output, payload)
-    payload["snapshot_file_sha256"] = _sha256_bytes(output.read_bytes())
-    return payload
+    return {
+        **payload,
+        # The snapshot hash is intentionally not embedded into the snapshot itself.
+        # Record this stdout value independently and require it for restore verify.
+        "snapshot_file_sha256": _sha256_bytes(output.read_bytes()),
+    }
 
 
 async def verify(args: argparse.Namespace) -> dict[str, object]:
@@ -434,24 +507,35 @@ async def verify(args: argparse.Namespace) -> dict[str, object]:
     if str(source.get("release_sha") or "") != release_sha:
         raise RestoreEvidenceError("Source snapshot belongs to a different release SHA")
 
-    source_database = source.get("source_database") or {}
+    source_database = source.get("source_database")
+    if not isinstance(source_database, dict):
+        raise RestoreEvidenceError("Source snapshot has no database identity")
     target_database = _database_identity()
     if target_database["endpoint_sha256"] == source_database.get("endpoint_sha256"):
         raise RestoreEvidenceError("Restore verification refuses to run against source database endpoint")
-    target_name = str(target_database.get("database") or "").lower()
+    target_name = target_database["database"].lower()
     if not target_name.endswith(_SAFE_TARGET_SUFFIXES):
         raise RestoreEvidenceError(
             "Restore verification target database must end with staging, restore, drill or test"
         )
 
     source_facts = source["facts"]
+    staff_username = str(args.staff_username or "").strip()
+    expected_staff_hash = str(source_facts["staff"].get("username_sha256") or "")
+    actual_staff_hash = _hash_optional(staff_username) or ""
+    if not expected_staff_hash or not hmac.compare_digest(expected_staff_hash, actual_staff_hash):
+        raise RestoreEvidenceError("Staff identity does not match source snapshot")
+
     restored_storage = Path(args.restored_storage_dir)
     target_facts = await _collect_facts(
         case_id=int(source_facts["case"]["id"]),
         document_id=int(source_facts["document"]["id"]),
         payment_id=int(source_facts["payment"]["id"]),
-        staff_username=str(source_facts["staff"]["username"]),
+        staff_username=staff_username,
         storage_root=restored_storage,
+        expected_storage_relative_path=str(
+            source_facts["document"]["storage_relative_path"]
+        ),
     )
     source_facts_sha = str(source.get("facts_sha256") or "")
     target_facts_sha = _sha256_json(target_facts)
@@ -468,9 +552,11 @@ async def verify(args: argparse.Namespace) -> dict[str, object]:
         "verified_at": datetime.now(timezone.utc).isoformat(),
         "source_snapshot_sha256": str(args.expected_snapshot_sha256).lower(),
         "facts_sha256": target_facts_sha,
-        "target_database": target_database,
+        "target_database": _public_database_identity(target_database),
         "checks": {
             "alembic_current": True,
+            "different_database_endpoint": True,
+            "safe_restore_database_name": True,
             "case_exact_match": True,
             "historical_document_decryption": True,
             "payment_exact_match": True,
@@ -484,8 +570,7 @@ async def verify(args: argparse.Namespace) -> dict[str, object]:
             "audit_events": len(target_facts["audit_events"]),
         },
     }
-    if args.output:
-        _write_json(Path(args.output), result)
+    _write_json(Path(args.output), result)
     return result
 
 
@@ -497,7 +582,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     source = sub.add_parser(
         "snapshot",
-        help="Capture non-secret application facts before creating the encrypted backup",
+        help="Capture privacy-minimized application facts before creating the encrypted backup",
     )
     source.add_argument("--release-sha", required=True)
     source.add_argument("--case-id", type=int, required=True)
@@ -514,6 +599,7 @@ def build_parser() -> argparse.ArgumentParser:
     restored.add_argument("--release-sha", required=True)
     restored.add_argument("--snapshot", required=True)
     restored.add_argument("--expected-snapshot-sha256", required=True)
+    restored.add_argument("--staff-username", required=True)
     restored.add_argument("--restored-storage-dir", required=True)
     restored.add_argument("--output", required=True)
     return parser
