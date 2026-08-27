@@ -2,7 +2,9 @@
 
 Status: **SOURCE_OK / BLOCKED_INFRA until a hosted runner actually allocates and executes every job**.
 
-This document defines the single fail-closed runtime gate for the current M1/M2 release. It supplements `docs/ACCEPTANCE_CURRENT.md`; it does not convert any acceptance item to `LIVE_PASS` by itself.
+This document defines the single fail-closed automated LIVE_REQUIRED matrix for the current M1/M2 release. It supplements `docs/ACCEPTANCE_CURRENT.md`; it does not convert any separate acceptance item to `LIVE_PASS` by itself.
+
+**Prerequisite order:** after runner allocation is restored, first execute full CI/required PR checks, then the dedicated PostgreSQL concurrency → Redis/Telegram runtime → browser staff E2E workflows for the same frozen candidate SHA. Dispatch LIVE_REQUIRED only after those gates pass. The complete ordered release chain is authoritative in `docs/POST_LIVE_RELEASE_EVIDENCE.md`.
 
 ## Gate
 
@@ -48,7 +50,7 @@ The aggregator fails closed when:
 
 Only after those checks does it create `LIVE_REQUIRED_MANIFEST.json` and upload `live-required-release-evidence-<SHA>-attempt-<run_attempt>` for 90 days. The manifest names the exact release SHA and embeds the verified component records, so the acceptance package no longer depends on reconstructing five transient job pages later.
 
-The manifest field `status: LIVE_PASS` means **the automated LIVE_REQUIRED matrix represented by this workflow passed for that one SHA/run/attempt**. It does not waive separate manual acceptance items that `docs/ACCEPTANCE_CURRENT.md` still marks as required, including full persona walkthroughs, backup/restore or other explicitly separate drills.
+The manifest field `status: LIVE_PASS` means **the automated LIVE_REQUIRED matrix represented by this workflow passed for that one SHA/run/attempt**. It does not waive separate manual acceptance items that `docs/ACCEPTANCE_CURRENT.md` still marks as required, including full persona walkthroughs and the later backup/restore/provider-side lifecycle gates.
 
 ## Required GitHub Actions secrets
 
@@ -81,7 +83,9 @@ The workflow deliberately maps the YooKassa secrets to the application's existin
 
 A failed test-shop probe, production-shop response, non-idempotent retry or unexpectedly paid/non-pending smoke payment is a hard failure, not a degraded pass.
 
-This provider smoke proves connectivity, test-shop isolation and create/retry/retrieve idempotency. It **does not** by itself prove a real paid/refund lifecycle at YooKassa because the gate deliberately never confirms the payment. Paid/review/refund race and recovery semantics are covered separately by the PostgreSQL/application suites and must not be described as provider-side live proof until a dedicated safe sandbox scenario actually executes them.
+This provider smoke proves connectivity, test-shop isolation and create/retry/retrieve idempotency. It **does not** prove a real paid/refund lifecycle at YooKassa because the gate deliberately never confirms the payment. Paid/review/refund race and recovery semantics are covered separately by PostgreSQL/application suites and must not be described as provider-side live proof.
+
+Provider-side paid/refund sandbox expansion is a later Gate 7 operation. It is not permitted until the same candidate SHA has passed LIVE_REQUIRED, real Telegram M1/M2 persona walkthroughs and the encrypted backup→restore drill. See `docs/ACCEPTANCE_CURRENT.md` and `docs/POST_LIVE_RELEASE_EVIDENCE.md`.
 
 ## Telegram safety contract
 
@@ -97,8 +101,9 @@ This proves external Bot API reachability and delivery to both acceptance roles.
 
 ## Evidence required from a successful run
 
-Do not change acceptance state from `LIVE_REQUIRED` to `LIVE_PASS` unless all of the following are true for the same workflow run and attempt:
+Do not change this automated matrix from `LIVE_REQUIRED` to `LIVE_PASS` unless all of the following are true for the same workflow run and attempt:
 
+- prerequisite full CI and dedicated runtime workflows already passed for the same candidate SHA;
 - each of the five component jobs has a real runner allocation and executed steps;
 - each component conclusion is `success`;
 - the aggregate `LIVE_REQUIRED aggregate gate` job executed and concluded `success`;
@@ -119,6 +124,6 @@ The release evidence package must retain the workflow run URL/id, run attempt, c
 
 ## Infrastructure-blocked state
 
-GitHub Actions infrastructure issue **#116** currently governs runner execution evidence. A workflow run that terminates before runner allocation, has `runner_id=0`, or contains no executed steps is **BLOCKED_INFRA**. It is never `LIVE_PASS`, even if GitHub's high-level run object appears completed.
+GitHub Actions infrastructure issue **#116** governs runner execution evidence. A workflow run that terminates before runner allocation, has `runner_id=0`, or contains no executed steps is **BLOCKED_INFRA**. It is never `LIVE_PASS`, even if GitHub's high-level run object appears completed.
 
-When runner execution resumes, run this workflow first. Only after it produces real step-level evidence and the same-run/same-attempt manifest should the wider manual M1/M2 persona, payment lifecycle, backup/restore and security drills in `docs/ACCEPTANCE_CURRENT.md` be promoted to live acceptance evidence.
+When runner execution resumes, **do not dispatch LIVE_REQUIRED first**. Freeze the candidate SHA, run full CI/required checks, then the dedicated PostgreSQL concurrency → Redis/Telegram runtime → browser E2E gates. Only if those pass, dispatch one complete LIVE_REQUIRED run for that same SHA. After its SHA/run/attempt-bound manifest passes, execute real Telegram M1/M2 personas, then encrypted backup→restore, and only then the safe YooKassa provider-side paid/refund expansion. No later gate can compensate for a missing earlier gate.
