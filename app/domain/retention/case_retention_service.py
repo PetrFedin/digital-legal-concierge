@@ -3,11 +3,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import os
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -24,6 +22,8 @@ from app.models.document_access_grant import DocumentAccessGrant
 from app.models.message import Message
 from app.models.notification import Notification
 from app.models.payment import Payment
+from app.security.document_encryption import DocumentEncryptionError
+from app.storage import LocalStorageService
 
 POLICY_VERSION = "case-content-v1"
 STATUS_DISCOVERED = "DISCOVERED"
@@ -92,9 +92,13 @@ class CaseRetentionService:
 
     The service intentionally preserves the case tombstone, payment ledger and
     tamper-evident audit chain. It deletes encrypted document files and clears
-    operational case content only after a two-person approval. File removal is
-    an unlink + directory fsync operation; it does not make false guarantees
-    about physical block overwriting on SSD/COW filesystems.
+    operational case content only after a two-person approval.
+
+    Document deletion uses the same ``LocalStorageService`` boundary as normal
+    authorized reads. Current relative keys are Case-bound portable keys;
+    historical absolute rows are rebased onto the current storage root. This is
+    required so a restored environment never dereferences or deletes the old
+    source filesystem prefix.
     """
 
     def __init__(self, db: AsyncSession):
@@ -425,42 +429,35 @@ class CaseRetentionService:
         await self.db.flush()
         return record
 
-    def _storage_root(self) -> Path:
-        return Path(settings.storage_dir).resolve(strict=False)
+    @staticmethod
+    def _storage_error(error: DocumentEncryptionError) -> CaseRetentionError:
+        return CaseRetentionError(f"Небезопасный путь документа: {error}")
 
-    def _resolve_document_path(self, raw_path: str) -> Path:
-        root = self._storage_root()
-        candidate = Path(str(raw_path or ""))
-        if not candidate.is_absolute():
-            candidate = root / candidate
-        lexical = Path(os.path.abspath(candidate))
-        try:
-            relative = lexical.relative_to(root)
-        except ValueError as error:
-            raise CaseRetentionError(
-                "Документ находится вне настроенного хранилища"
-            ) from error
-
-        current = root
-        for part in relative.parts:
-            current = current / part
-            if current.is_symlink():
-                raise CaseRetentionError(
-                    "Удаление через символические ссылки запрещено"
+    def _preflight_documents(self, documents: list[Document]) -> None:
+        storage = LocalStorageService()
+        for document in documents:
+            try:
+                resolved = storage.resolve_storage_path(
+                    document.file_path,
+                    expected_case_id=int(document.case_id),
                 )
-        resolved = lexical.resolve(strict=False)
-        try:
-            resolved.relative_to(root)
-        except ValueError as error:
-            raise CaseRetentionError(
-                "Путь документа выходит за границы хранилища"
-            ) from error
-        if resolved.exists() and not resolved.is_file():
-            raise CaseRetentionError("Путь документа не является обычным файлом")
-        return resolved
+            except DocumentEncryptionError as error:
+                raise self._storage_error(error) from error
+            if resolved.exists() and not resolved.is_file():
+                raise CaseRetentionError("Путь документа не является обычным файлом")
 
-    def _preflight_documents(self, documents: list[Document]) -> list[Path]:
-        return [self._resolve_document_path(document.file_path) for document in documents]
+    def _delete_document_files(self, documents: list[Document]) -> None:
+        storage = LocalStorageService()
+        for document in documents:
+            try:
+                # Missing files are accepted for idempotent retry after a process
+                # stopped between unlink and the final database commit.
+                storage.discard_stored_file(
+                    document.file_path,
+                    expected_case_id=int(document.case_id),
+                )
+            except DocumentEncryptionError as error:
+                raise self._storage_error(error) from error
 
     @staticmethod
     def _content_digest(documents: list[Document]) -> str:
@@ -475,24 +472,6 @@ class CaseRetentionService:
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
-
-    @staticmethod
-    def _unlink_and_sync(path: Path) -> bool:
-        if not path.exists():
-            return False
-        if path.is_symlink() or not path.is_file():
-            raise CaseRetentionError("Небезопасный тип файла при удалении")
-        parent = path.parent
-        path.unlink()
-        try:
-            descriptor = os.open(parent, os.O_RDONLY)
-            try:
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-        except OSError:
-            pass
-        return True
 
     async def execute_deletion(
         self,
@@ -521,8 +500,8 @@ class CaseRetentionService:
                 raise CaseRetentionError("Удаление уже выполняется другим процессом")
         await self._assert_eligible(record, case, now=current)
 
-        # Validate every path before revoking access or changing durable state.
-        # Filesystem calls run outside the event loop to avoid blocking API and bot work.
+        # Validate every document key before revoking access or changing durable
+        # state. Filesystem work runs outside the event loop.
         preflight_documents = (
             await self.db.execute(
                 select(Document)
@@ -622,12 +601,9 @@ class CaseRetentionService:
                     .order_by(Document.id.asc())
                 )
             ).scalars().all()
-            paths = await asyncio.to_thread(
-                self._preflight_documents, list(documents)
-            )
+            await asyncio.to_thread(self._preflight_documents, list(documents))
             digest = self._content_digest(list(documents))
-            for path in paths:
-                await asyncio.to_thread(self._unlink_and_sync, path)
+            await asyncio.to_thread(self._delete_document_files, list(documents))
 
             await self.db.execute(
                 delete(DocumentAccessGrant).where(
