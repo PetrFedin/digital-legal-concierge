@@ -13,6 +13,8 @@ from scripts import post_live_restore_evidence as evidence
 
 SHA = "a" * 40
 STAFF_USERNAME = "restore-verifier"
+CIPHERTEXT_NAME = "b" * 32 + ".dlcenc"
+STORAGE_KEY = f"cases/11/{CIPHERTEXT_NAME}"
 
 
 def _facts(*, staff_username: str = STAFF_USERNAME) -> dict[str, object]:
@@ -30,7 +32,7 @@ def _facts(*, staff_username: str = STAFF_USERNAME) -> dict[str, object]:
         "case": {"id": 11, "status": "M2_CONSULTATION_BOOKED"},
         "document": {
             "id": 22,
-            "storage_relative_path": "cases/11/document.dlcenc",
+            "storage_relative_path": STORAGE_KEY,
         },
         "payment": {"id": 33, "status": "PAID"},
         "payment_events": [{"id": 44, "status_after": "PAID"}],
@@ -119,31 +121,87 @@ def test_evidence_output_is_write_once(tmp_path: Path) -> None:
         evidence._write_json(output, {"status": "SECOND"})
 
 
-def test_storage_path_rejects_traversal_and_symlink_components(tmp_path: Path) -> None:
+def test_storage_path_contract_is_canonical_case_bound_and_restore_portable(
+    tmp_path: Path,
+) -> None:
     root = tmp_path / "storage"
-    document = root / "cases" / "11" / "document.dlcenc"
+    document = root / STORAGE_KEY
     document.parent.mkdir(parents=True)
     document.write_bytes(b"ciphertext")
 
     relative, selected = evidence._source_storage_location(
-        str(document),
+        STORAGE_KEY,
         storage_root=root,
+        expected_case_id=11,
     )
-    assert relative == "cases/11/document.dlcenc"
+    assert relative == STORAGE_KEY
     assert selected == document.resolve()
+
+    legacy_root = tmp_path / "old-host-storage"
+    legacy_absolute = legacy_root / STORAGE_KEY
+    relative, selected = evidence._source_storage_location(
+        str(legacy_absolute),
+        storage_root=root,
+        expected_case_id=11,
+    )
+    assert relative == STORAGE_KEY
+    assert selected == document.resolve()
+    assert selected != legacy_absolute.resolve()
+
+    with pytest.raises(evidence.RestoreEvidenceError, match="canonical storage key"):
+        evidence._source_storage_location(
+            f"stale-prefix/{STORAGE_KEY}",
+            storage_root=root,
+            expected_case_id=11,
+        )
+
+    with pytest.raises(evidence.RestoreEvidenceError, match="different Case"):
+        evidence._source_storage_location(
+            STORAGE_KEY,
+            storage_root=root,
+            expected_case_id=12,
+        )
 
     with pytest.raises(evidence.RestoreEvidenceError, match="safe relative path"):
         evidence._restored_storage_path(
-            "../outside.dlcenc",
+            str(legacy_absolute),
             restored_storage_root=root,
+            expected_case_id=11,
         )
 
-    alias = root / "alias"
-    alias.symlink_to(root / "cases", target_is_directory=True)
+
+def test_storage_path_rejects_traversal_symlink_and_invalid_ciphertext(tmp_path: Path) -> None:
+    root = tmp_path / "storage"
+    document = root / STORAGE_KEY
+    document.parent.mkdir(parents=True)
+    document.write_bytes(b"ciphertext")
+
+    with pytest.raises(evidence.RestoreEvidenceError, match="traversal"):
+        evidence._restored_storage_path(
+            f"cases/11/../12/{CIPHERTEXT_NAME}",
+            restored_storage_root=root,
+            expected_case_id=11,
+        )
+
+    with pytest.raises(evidence.RestoreEvidenceError, match="invalid ciphertext name"):
+        evidence._restored_storage_path(
+            "cases/11/client-controlled.pdf",
+            restored_storage_root=root,
+            expected_case_id=11,
+        )
+
+    alias = root / "cases"
+    real_cases = tmp_path / "real-cases"
+    real_document = real_cases / "11" / CIPHERTEXT_NAME
+    real_document.parent.mkdir(parents=True)
+    real_document.write_bytes(b"ciphertext")
+    alias.rename(root / "real-cases-local")
+    alias.symlink_to(real_cases, target_is_directory=True)
     with pytest.raises(evidence.RestoreEvidenceError, match="Symbolic links"):
         evidence._restored_storage_path(
-            "alias/11/document.dlcenc",
+            STORAGE_KEY,
             restored_storage_root=root,
+            expected_case_id=11,
         )
 
 
@@ -311,7 +369,7 @@ def test_verify_emits_restore_pass_only_for_exact_restored_facts(
         "payment_events": 1,
         "case_audit_events": 1,
     }
-    assert captured["expected_storage_relative_path"] == "cases/11/document.dlcenc"
+    assert captured["expected_storage_relative_path"] == STORAGE_KEY
     assert captured["staff_username"] == STAFF_USERNAME
     assert "database" not in result["target_database"]
     persisted = json.loads(Path(args.output).read_text(encoding="utf-8"))
