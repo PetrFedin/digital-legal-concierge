@@ -36,6 +36,18 @@ def test_portable_storage_key_is_relative_and_case_bound(tmp_path: Path) -> None
     assert storage.resolve_storage_path(key, expected_case_id=42) == document.resolve()
 
 
+def test_prefixed_relative_document_key_is_never_suffix_normalized(tmp_path: Path) -> None:
+    root = tmp_path / "storage"
+    storage = LocalStorageService(str(root))
+    _document(root)
+
+    with pytest.raises(DocumentEncryptionError, match="хранилищу выбранного дела"):
+        storage.resolve_storage_path(
+            f"stale-prefix/cases/42/{CIPHERTEXT_NAME}",
+            expected_case_id=42,
+        )
+
+
 def test_legacy_absolute_path_is_rebased_to_current_restore_root(tmp_path: Path) -> None:
     old_root = tmp_path / "source-storage"
     new_root = tmp_path / "restored-storage"
@@ -72,7 +84,7 @@ def test_legacy_absolute_discard_never_deletes_source_storage(tmp_path: Path) ->
     assert not new_document.exists()
 
 
-def test_legacy_absolute_read_uses_rebased_ciphertext_with_existing_api_signature(
+def test_legacy_absolute_read_uses_rebased_ciphertext_and_case_scope(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -89,17 +101,22 @@ def test_legacy_absolute_read_uses_rebased_ciphertext_with_existing_api_signatur
 
     monkeypatch.setattr(storage_module, "decrypt_file_bytes", fake_decrypt)
 
-    # document_access.py currently calls read_document_bytes(document.file_path,
-    # ...envelope metadata...) without a case-id argument. Legacy rebasing must
-    # therefore remain safe and portable for that existing authorized API path.
     plaintext = storage.read_document_bytes(
         str(old_document),
+        expected_case_id=42,
         expected_sha256="b" * 64,
     )
 
     assert plaintext == b"restored-plaintext"
     assert captured["path"] == new_document.resolve()
     assert captured["path"] != old_document.resolve()
+
+    with pytest.raises(DocumentEncryptionError, match="другому storage scope"):
+        storage.read_document_bytes(
+            str(old_document),
+            expected_case_id=41,
+            expected_sha256="b" * 64,
+        )
 
 
 def test_wrong_case_storage_scope_is_rejected(tmp_path: Path) -> None:
