@@ -1,212 +1,274 @@
 # RUNBOOK — CURRENT
 
-Status: **authoritative current operations/release runbook** for existing M1/M2.
+Status: **authoritative current operations/release runbook** for the existing M1/M2 product.
 
-This runbook does not expand product scope. It defines what must be operated and proven before/after exposing the existing M1/M2 product to real clients and real money.
+This file does not expand product scope. It defines what must be operated and proven before exposing the existing M1/M2 product to real clients and real money. Acceptance criteria live in `docs/ACCEPTANCE_CURRENT.md`; exact post-LIVE evidence order lives in `docs/POST_LIVE_RELEASE_EVIDENCE.md`; automated matrix details live in `docs/LIVE_REQUIRED_RUNBOOK.md`.
 
 ## Environment contract
 
-Production-like staging and production use the same application/container artifact and migration chain. Required runtime dependencies are:
+Production-like staging and production use the same application/container artifact and migration chain. Runtime dependencies are:
 
 - PostgreSQL;
-- Redis for Telegram FSM and singleton/coordination mechanisms where configured;
-- Telegram bot token/account;
-- configured payment provider (YooKassa for the current production payment path, or the explicitly disabled/offline mode);
-- encrypted document storage and configured keyrings;
+- Redis for Telegram FSM and singleton/coordination mechanisms;
+- Telegram bot account/token;
+- YooKassa for the current online payment path, or explicitly disabled/offline mode;
+- encrypted document storage and external document/audit keyrings;
 - scheduler;
 - staff authentication/MFA/session infrastructure;
-- backup storage.
+- authenticated encrypted backup storage.
 
-SQLite and in-memory FSM are development/test conveniences only and are not production acceptance environments.
-
-Persisted datetimes remain UTC. Outward presentation uses `BUSINESS_TIMEZONE` (default `Europe/Moscow`) and `BUSINESS_TIMEZONE_LABEL` (default `МСК`).
+SQLite and in-memory FSM are development/test conveniences only. Persisted datetimes are UTC; outward presentation uses `BUSINESS_TIMEZONE` and `BUSINESS_TIMEZONE_LABEL`.
 
 ## Current infrastructure blocker
 
-GitHub issue **#116** tracks the Actions runner/billing/spending blocker. Jobs stopping before runner allocation are an infrastructure failure, not a successful CI run.
+GitHub issue **#116** tracks the Actions runner/billing/spending blocker. Jobs that stop before runner allocation/steps are infrastructure failures, not application PASS/FAIL evidence.
 
-Until #116 is resolved and the required workflows actually execute, release status is **blocked**. Do not mark the branch CI-green based on source inspection or a workflow file existing in the repository.
+Until #116 is resolved and required workflows actually execute, release status remains **BLOCKED_INFRA**. Do not repeatedly rerun the complete release matrix while the external blocker is unchanged.
+
+## Ordered release procedure
+
+For one frozen candidate SHA execute strictly in this order:
+
+1. restore real Actions runner allocation;
+2. execute full CI and required PR checks;
+3. execute dedicated PostgreSQL concurrency → Redis/Telegram runtime → browser staff E2E workflows;
+4. execute one complete LIVE_REQUIRED run and retain its SHA/run/attempt-bound manifest;
+5. execute real Telegram M1 and M2 persona walkthroughs and reconcile UI ↔ PostgreSQL ↔ Audit/PaymentEvent evidence;
+6. execute encrypted backup → separate empty staging/restore DB and storage → application restore evidence → normal restored-runtime usability;
+7. only then deliberately expand YooKassa **test-shop** proof to provider-side paid/refund scenarios that are safely supported without any production operation;
+8. make the release/merge decision.
+
+If source, migration, workflow or evidence code changes after evidence collection starts, freeze the new SHA and restart from full CI. Never combine evidence from different candidate SHAs or LIVE_REQUIRED attempts.
 
 ## Pre-deployment gate
 
 Before deploying a candidate image:
 
-1. confirm `PRODUCT_SCOPE_CURRENT.md`, `SYSTEM_CONTRACT_CURRENT.md` and `ACCEPTANCE_CURRENT.md` match the branch;
-2. confirm one linear Alembic head and apply migrations to a fresh PostgreSQL database and a production-like upgraded copy;
-3. run `scripts/architecture_check.py` without exemptions for duplicate runtime routes;
-4. run the complete automated test workflows after Actions runners allocate;
-5. build the exact container image intended for staging/production;
-6. start it against PostgreSQL + Redis with production deployment settings;
-7. execute mandatory M1/M2 smoke/persona cases from `ACCEPTANCE_CURRENT.md`;
-8. verify scheduler heartbeat and notification delivery;
-9. verify payment provider contract/sandbox before enabling real payment creation;
-10. verify a fresh encrypted backup and a recent successful restore drill.
+1. confirm `PRODUCT_SCOPE_CURRENT.md`, `SYSTEM_CONTRACT_CURRENT.md`, `ACCEPTANCE_CURRENT.md` and this runbook match the branch;
+2. confirm one Alembic head and apply migrations to fresh PostgreSQL plus a production-like upgraded copy;
+3. run `scripts/architecture_check.py` without duplicate-route exemptions;
+4. execute the full automated gate after runners allocate;
+5. build the exact image intended for staging/production;
+6. start it against PostgreSQL + Redis using production-like deployment settings;
+7. follow the ordered release procedure above rather than cherry-picking later gates;
+8. verify scheduler heartbeat, notification delivery and owned alerting;
+9. leave online production payment creation disabled until provider acceptance for the candidate is complete;
+10. require a fresh encrypted backup and successful ordered restore drill before release declaration.
 
-A failed gate stops deployment; it is not converted to a warning by manual approval.
+A failed or missing gate stops deployment; manual approval does not turn it into PASS.
 
 ## Database migration procedure
 
-- Take/verify a restorable encrypted backup before a production schema change.
-- Apply Alembic migrations once from the deployment/migration job, not concurrently from all application replicas.
-- Verify the expected migration head after upgrade.
-- For migrations that backfill historical business timestamps/events, treat approximated legacy values as approximations; do not relabel them as exact provider facts.
-- Never restore removed invalid invariants such as one active Case per client during downgrade planning.
-
-Current production-hardening migrations include multi-Case/calculation history, consent evidence, payment lifecycle timestamps, Case activity/closure semantics and normalized payment event ledger. Validate the full chain on PostgreSQL before release.
+- Take and verify a restorable encrypted backup before a production schema change.
+- Apply Alembic migrations once from the deployment/migration job, never concurrently from every replica.
+- Verify expected head afterward.
+- Historical timestamps/events that were approximated during backfill remain labelled as approximations.
+- Never restore obsolete invariants such as client-wide one-active-Case uniqueness.
+- Do not destructive-downgrade financial/consent/audit ledgers merely to boot an older image.
 
 ## Telegram operations
 
-Production FSM must use Redis. Polling must hold the configured singleton lease so two replicas cannot process the same update stream concurrently.
+Production FSM uses Redis. Polling must hold the configured singleton lease so two replicas cannot process the same update stream concurrently.
 
-On bot restart:
+On restart:
 
-- persistent Cases/Documents/Payments must remain intact;
-- Redis drafts/navigation may resume when Redis is healthy;
-- if transient FSM state is absent, the client must land on database-backed Home/My Case rather than a fabricated mutation state;
-- stale Telegram mutation callbacks remain Case-bound and fail closed when the selected Case/state differs.
+- persistent Cases/Documents/Payments remain intact;
+- Redis drafts/navigation may resume when healthy;
+- absent transient state degrades to database-backed Home/My Case, never to a fabricated mutation state;
+- stale mutation callbacks remain Case-bound and fail closed.
 
-If Telegram delivery fails **after** a committed legal/financial mutation, do not retry the domain mutation manually from the same old button. Open the current Case/Payment state first; presentation failure is not transaction failure.
+If Telegram delivery fails **after** a committed mutation, do not repeat the domain action from the stale button. First read current Case/Payment state; presentation failure is not transaction failure.
+
+## Real Telegram persona operation
+
+The post-LIVE persona gate uses dedicated non-production acceptance identities/chats. Run M1 and M2 end to end, including documented recovery paths. At each material write reconcile the client/staff UI result with PostgreSQL Case/Document/Payment state, Case/Audit history and `PaymentEvent` evidence.
+
+Screenshots alone are not acceptance evidence. Do not record bot tokens, document plaintext or payment credentials in the evidence package.
 
 ## Payment incident procedure
 
-For any payment anomaly, inspect three complementary evidence layers:
+For any anomaly inspect together:
 
-- `payments` — current projection and lifecycle timestamps;
-- `payment_events` — normalized creation/status transition ledger;
-- `payment_webhook_events` + Case/Audit history — provider evidence and business/actor context.
+- `payments` — current projection and business timestamps;
+- `payment_events` — normalized append-only creation/status ledger;
+- `payment_webhook_events` — raw/normalized provider evidence where applicable;
+- Case/Audit history — business/actor context.
 
-Never manually move a Case merely because a client shows a payment screenshot. Reconcile provider/bank evidence first.
+Never move a Case because a client shows only a payment screenshot. Reconcile provider/bank evidence first.
 
-If a stale M1/M2 payment arrives:
+For stale M1/M2 money:
 
 - preserve the received-money fact;
-- do not reopen/advance an obsolete Case or reserve a different slot;
-- use the existing review/refund path;
-- verify refund resolution in current Payment status, business timestamp, normalized ledger and Case/Audit history.
+- never reopen/advance an obsolete Case or reserve another slot automatically;
+- use Payment Review/refund paths;
+- verify resolution across Payment projection, business timestamps, event ledger and Case/Audit history.
 
-Provider timeout after create must be treated as an idempotency/reconciliation scenario, not an invitation to create unlimited new provider payments.
+Provider timeout after create is an idempotency/reconciliation case, not permission to create unlimited replacement payments.
 
-## Payment provider enable/disable
+## Payment provider enable/disable and sandbox sequence
 
-When online payments are disabled, Telegram must not manufacture external payment links. Existing obligations/history remain visible and staff confirmation follows the approved offline/manual reconciliation procedure.
+When online payments are disabled, Telegram must not manufacture external payment links. Existing obligations/history remain visible and staff use the approved offline/manual reconciliation path.
 
-Before switching online payments on in production, run the complete sandbox matrix from `ACCEPTANCE_CURRENT.md`: create, timeout, idempotent retry, duplicate success/webhook, late failure, stale reservation, stale M1 payment, refund/review and restart.
+### LIVE_REQUIRED baseline
+
+Before post-LIVE manual acceptance, the automated provider smoke may only:
+
+- prove credentials belong to a YooKassa test shop;
+- create a small test payment;
+- repeat create with the exact idempotency key;
+- retrieve the same payment;
+- require `test=true`, unpaid/pending state;
+- avoid opening/completing the confirmation URL.
+
+This is connectivity/idempotency evidence, not provider-side paid/refund proof.
+
+### Provider-side paid/refund expansion
+
+Do **not** expand provider mutations before Telegram personas and encrypted backup→restore both pass for the same candidate SHA.
+
+After those gates, execute only YooKassa test-shop scenarios that are deterministic and safe. Every object must report `test=true`. Production shop ids, secrets, payment ids, callbacks and production cards/operations are forbidden. If YooKassa requires explicit test-card/user confirmation, perform and record that test-shop step; do not bypass it. Unsupported behavior is recorded as not proven rather than simulated.
+
+Only after this later gate may production online payment enablement be considered.
 
 ## Scheduler operations
 
-The scheduler runs under a singleton cycle lease and reports per-job success/failure. Mandatory jobs include backup, payment reminders, client inactivity reminders, slot release, consultation reminders/completion overdue, SLA, retention discovery, security cleanup, claim deadlines and pending notification delivery.
+The scheduler uses a singleton cycle lease and reports per-job success/failure. Mandatory jobs include backup, payment reminders, client inactivity reminders, slot release, consultation reminders/completion overdue, SLA, retention discovery, security cleanup, claim deadlines and pending notification delivery.
 
-Operational alerting must detect at least:
-
-- scheduler heartbeat missing;
-- repeated scheduler job failure;
-- notification pending/failed backlog growth;
-- payment review/refund backlog growth;
-- webhook processing lag/failure;
-- database/Redis unavailability;
-- backup freshness failure;
-- document storage capacity/health failure;
-- Telegram bot unable to poll/send.
-
-A dashboard alone is insufficient: each production alert needs an owned notification/escalation destination.
+Operational alerting must detect at least scheduler heartbeat loss, repeated job failure, notification backlog, Payment Review/refund backlog, webhook lag/failure, PostgreSQL/Redis unavailability, backup freshness failure, document storage health/capacity and Telegram polling/sending failure. Every production alert needs an owned escalation destination.
 
 ## Client inactivity reminders
 
-`last_activity_at`/`last_client_action_at` are client facts and must not be replaced by generic `updated_at`.
+`last_activity_at` and `last_client_action_at` are client facts; generic `updated_at` is not a substitute. Reminder dedupe is once per stable `(Case, status, last client action)` snapshot and never changes Case state.
 
-The reminder service emits once per stable `(Case, status, last client action)` snapshot after the configured inactivity period. It must never change Case state. If reminders are noisy or misrouted, disable `CLIENT_INACTIVITY_REMINDERS_ENABLED` while preserving the underlying Case/draft data, then investigate timestamps/dedupe before re-enabling.
+If reminders are noisy/misrouted, disable `CLIENT_INACTIVITY_REMINDERS_ENABLED` while preserving data, investigate timestamps/dedupe, then re-enable only after verification.
+
+## Encrypted document storage contract
+
+New `Document.file_path` writes are portable keys only:
+
+`cases/<case_id>/<32hex>.dlcenc`
+
+Operational rules:
+
+- relative document paths must be exactly this three-component form;
+- prefixed relative values are invalid and are never suffix-normalized;
+- legacy absolute rows may be read for backward compatibility only by extracting their terminal canonical `cases/<id>/<ciphertext>` key and rebasing it onto the **current** `STORAGE_DIR`;
+- the historical absolute source prefix is never dereferenced;
+- traversal and symlink components fail closed;
+- normal authorized document download binds storage resolution to the authorized `Case.id`;
+- raw storage paths must never be shown to clients/operators as a normal download mechanism.
+
+This contract is essential for restoring DB+storage into a different root without accidentally reading the source environment.
 
 ## Document/security incident procedure
 
 For suspicious upload/access:
 
-- preserve relevant audit records/hashes;
-- quarantine/reject unsafe content according to the existing upload pipeline;
-- revoke access/session credentials where compromise is suspected;
-- do not distribute raw document-storage paths;
-- verify one-time/short-lived download grant behavior;
-- inspect Case assignment/role at access time.
+- preserve audit records/hashes;
+- quarantine/reject unsafe content via the existing pipeline;
+- revoke affected credentials/sessions where compromise is suspected;
+- never distribute raw storage paths;
+- verify one-time/short-lived grant behavior and Case assignment/role at access time.
 
-For a compromised staff/admin account:
+For compromised staff/admin:
 
-1. disable/revoke the account and active sessions/tokens;
-2. rotate exposed secrets/keys according to their cryptographic domain;
-3. inspect AuditLog/document download/payment/admin actions for the affected period;
+1. disable account and revoke sessions/tokens;
+2. rotate exposed secrets/keys by cryptographic domain;
+3. inspect AuditLog/document download/payment/admin actions for the period;
 4. preserve incident evidence before destructive cleanup;
 5. restore access only after credential/MFA reset and role review.
 
 ## Key rotation
 
-Cryptographic domains are intentionally separated (session signing, security HMAC, MFA encryption, audit integrity, document encryption, backup encryption). Rotate only the affected domain unless incident scope requires broader rotation.
+Session signing, security HMAC, MFA encryption, audit integrity, document encryption and backup encryption are separate cryptographic domains. Rotate the affected domain unless incident scope requires more.
 
-Previous keyrings are verification/decryption-only. Test historical document decrypt and backup restore after rotation before retiring an old key.
-
-Never delete an old document/backup key merely because the new key is active; first prove all retained encrypted material has been migrated or remains decryptable through the approved keyring.
+Previous document/audit keys remain verification/decryption-only until all retained material is proven migrated or decryptable. Test historical document decrypt and restore after rotation before retiring an old key.
 
 ## Session revoke / access drill
 
-Before production and periodically thereafter, verify:
+Before production and periodically verify:
 
-- revoked staff session cannot continue browsing privileged pages;
+- revoked staff session loses privileged browsing;
 - role downgrade/reassignment removes document access immediately;
-- expired document grants cannot be reused;
-- MFA/session version revocation behaves across multiple browser tabs;
-- client Telegram identity cannot open another client's Case/payment/document data.
+- expired/used/revoked download grants cannot be reused;
+- MFA/session version revocation works across browser tabs;
+- one client cannot access another client's Case/payment/document data.
 
-## Backup and restore drill
+## Encrypted backup and restore drill
 
-Backup success is accepted only after restore proof.
+This mandatory release drill runs **after** real Telegram M1/M2 personas so the backup contains the business state actually exercised.
 
-Procedure:
+### Phase A — pre-backup witness
 
-1. generate/locate authenticated encrypted backup;
-2. restore it into an isolated staging PostgreSQL/database environment;
-3. verify migration/schema head;
-4. start the same application image against restored data;
-5. authenticate staff;
-6. open representative M1 and M2 Cases;
-7. decrypt/open representative historical Documents;
-8. verify Case/Audit/Payment/PaymentEvent evidence;
-9. run Telegram read-only smoke against the restored environment;
-10. record drill date, backup identity, operator and result.
+Select a meaningful persona Case with an encrypted V2 historical Document, Payment + `PaymentEvent`, Case Audit history and active staff witness. Run:
 
-Never perform an untested destructive restore directly over production as the first proof that backups work.
+```bash
+python scripts/post_live_restore_evidence.py snapshot \
+  --release-sha <40-char-candidate-SHA> \
+  --case-id <CASE_ID> \
+  --document-id <DOCUMENT_ID> \
+  --payment-id <PAYMENT_ID> \
+  --staff-username <STAFF_USERNAME> \
+  --output /secure-evidence/POST_LIVE_RESTORE_SOURCE.json
+```
+
+Record the emitted snapshot file SHA-256 separately. Evidence schema v2 enforces the same canonical/case-bound portable-storage contract as runtime and verifies the full AuditLog hash chain plus historical document decryption without writing plaintext to evidence.
+
+### Phase B — encrypted backup
+
+Create and verify with the existing backup CLI. Backup/document/audit keys remain external secret-manager material; never package runtime secrets into the archive.
+
+### Phase C — separate safe restore
+
+Restore only into an empty database whose name has a staging/restore/drill/test suffix and into a separate restore directory. Never use production as the first restore proof.
+
+### Phase D — exact application verification
+
+Run `post_live_restore_evidence.py verify` with the same candidate SHA, source snapshot, independently recorded snapshot SHA, staff identity and restored storage. Require `RESTORE_PASS` only if source/target DB endpoints differ, current Alembic head matches, full AuditLog chain verifies, exact business facts match and restored ciphertext decrypts from the restored storage root.
+
+### Phase E — normal runtime usability
+
+Start the same application image against restored DB/storage plus isolated Redis and verify through supported application paths:
+
+- staff login;
+- selected M1/M2 Case open;
+- Case/Audit history;
+- Payment/PaymentEvent state;
+- historical document grant/download/decrypt;
+- bot/dispatcher startup/read-only smoke;
+- zero production Telegram/provider side effects.
+
+Only archive verification + safe restore + `RESTORE_PASS` + normal restored-runtime usability equals backup→restore PASS.
 
 ## Retention / legal hold
 
-Business closure, archive and content deletion are separate facts. Retention deletion must follow the existing protected retention workflow and approval policy.
-
-Where a legal hold/investigation requires preservation, retention execution must be blocked for affected material according to the approved operating procedure. Destructive retention must be auditable and must not be triggered merely by changing a Case status.
+Business closure, archive and content deletion are separate facts. Retention deletion follows the protected workflow and approval policy. Legal hold/investigation must block destructive retention for affected material. Changing Case status alone never authorizes destruction.
 
 ## Staff product operations
 
-Ordinary legal staff should work in Workdesk/Lawyer surfaces, not release/maintenance pages. Platform/release/backup/diagnostic actions belong to superadmin/DevOps-level operating roles.
-
-Generic manual Case-status editing is not a normal operating tool. Staff must use the dedicated business actions so evidence, notifications and state transitions remain consistent.
+Ordinary legal staff work in Workdesk/Lawyer surfaces. Platform/release/backup/diagnostic actions belong to superadmin/DevOps-level roles. Generic manual Case-status editing is not an ordinary operating path; use dedicated business actions so evidence and notifications remain coherent.
 
 ## Incident severity guidance
 
 Treat as urgent/high severity:
 
 - wrong-client/wrong-Case document/payment/message exposure;
-- money received but lost/misapplied;
-- stale callback mutates another Case;
+- received money lost/misapplied;
+- stale callback mutating another Case;
 - duplicate paid reservation/slot conflict;
 - audit/document encryption integrity failure;
-- inability to restore backups;
+- inability to restore backup;
 - privileged account compromise;
 - state-machine corruption preventing safe legal continuation.
 
-For these incidents, prefer disabling the affected mutation/payment entry point while preserving read access/evidence rather than attempting broad manual status corrections.
+Prefer disabling the affected mutation/payment entry point while preserving read access/evidence over broad manual status corrections.
 
 ## Rollback principle
 
-Application rollback must be schema-compatible with already-applied migrations. Do not blindly Alembic-downgrade production financial/consent/audit ledgers to make an old image boot.
-
-If a new release fails after migrations, prefer a forward-compatible hotfix or a previously prepared compatible image. Preserve new evidence tables/columns even if an older UI does not display them.
+Application rollback must remain schema-compatible with migrations already applied. Prefer a forward-compatible hotfix or prepared compatible image. Preserve new evidence tables/columns even if an older UI does not render them.
 
 ## Release declaration
 
-The phrase **production ready** may be used only after the mandatory gates in `ACCEPTANCE_CURRENT.md` have real evidence, GitHub Actions are no longer blocked, and staging/restore/security/payment drills have been executed.
+Use **production ready** only after the ordered mandatory gates in `ACCEPTANCE_CURRENT.md` have real evidence for one frozen candidate SHA, #116 is cleared, and no unresolved release blocker remains.
 
-Until then, repository work may be described as production-hardening/source-complete for particular areas, but not as live-proven production operation.
+Until then, specific areas may be described as source-hardened/SOURCE_OK, but not live-proven production operation. PR #114 is not merged automatically and remains blocked until the complete evidence chain exists.
