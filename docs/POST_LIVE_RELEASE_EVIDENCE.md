@@ -23,7 +23,7 @@ If any source, migration, workflow or release-evidence script changes after step
 
 ## Gate 1 — runner allocation
 
-Issue #116 is cleared only when relevant Actions jobs show a real runner allocation and executed steps. `runner_id=0`, an empty step list, or a run that terminates before runner execution remains `BLOCKED_INFRA`.
+Issue #116 is cleared only when relevant Actions jobs show a real runner allocation and executed steps. `runner_id=0`, an empty/null step list, or a run that terminates before runner execution remains `BLOCKED_INFRA`.
 
 Do not rerun the whole release matrix repeatedly while the infrastructure state is unchanged. The dedicated runner watch may be used to detect the meaningful transition.
 
@@ -35,7 +35,7 @@ The main CI currently includes:
 
 - source compilation and architecture check;
 - Alembic migration/idempotency/schema checks;
-- the complete fast `pytest -q` suite, including `tests/test_post_live_restore_evidence.py`;
+- the complete fast `pytest -q` suite, including `tests/test_post_live_restore_evidence.py`, `tests/test_document_storage_portability.py` and the normal-download storage-scope contract;
 - PostgreSQL migration plus technical encrypted backup/empty-staging-restore integration;
 - container build/start smoke.
 
@@ -108,17 +108,22 @@ python scripts/post_live_restore_evidence.py snapshot \
   --output /secure-evidence/POST_LIVE_RESTORE_SOURCE.json
 ```
 
-The script:
+The current evidence format is **schema v2**. The script:
 
 - requires PostgreSQL at the current Alembic head;
-- validates the complete audit hash chain;
+- validates the complete AuditLog hash chain;
 - proves the selected encrypted document can be decrypted with the configured historical keyring and matches its persisted SHA-256;
 - captures Case, Document, Payment, PaymentEvent, case-audit and staff facts in privacy-minimized form;
 - hashes direct identifiers such as case number, original filename, DB file path, payment code, provider payment id, reservation key and staff username;
 - never writes document plaintext into evidence;
-- refuses to overwrite an existing evidence file.
+- refuses to overwrite an existing evidence file;
+- applies the same document-storage contract as runtime: a current relative key must be exactly `cases/<case_id>/<32hex>.dlcenc`; a prefixed relative key, traversal, invalid ciphertext name or wrong Case fails closed;
+- accepts a historical absolute `Document.file_path` only as legacy metadata: only its terminal canonical `cases/<case_id>/<32hex>.dlcenc` key is retained and the ciphertext is read from the **current configured `STORAGE_DIR`**, never from the historical source prefix;
+- rejects symbolic-link components in the selected storage path.
 
 Record the `snapshot_file_sha256` printed by the command in a separate protected release record. This external value is required by the post-restore verifier; changing both a snapshot and its internal checksum is therefore insufficient to pass unnoticed.
+
+A snapshot from another evidence schema is not silently upgraded. It is invalid for the current candidate and must be regenerated from the exact current SHA before the backup is created.
 
 ### 6.3 Create and verify the encrypted backup
 
@@ -163,16 +168,17 @@ python scripts/post_live_restore_evidence.py verify \
   --output /secure-evidence/POST_LIVE_RESTORE_RESULT.json
 ```
 
-The verifier fails closed unless:
+The schema-v2 verifier fails closed unless:
 
-- the source snapshot has the recorded external SHA-256 and a valid internal facts checksum;
+- the source snapshot has the recorded external SHA-256, the supported schema and a valid internal facts checksum;
 - the release SHA is identical;
 - the target DB endpoint differs from the source and has a safe restore suffix;
 - the database is at the current Alembic head;
-- the complete restored audit hash chain verifies;
+- the complete restored AuditLog hash chain verifies;
 - the exact selected Case/Document/Payment/PaymentEvent/case-audit/staff facts match the pre-backup snapshot;
-- the ciphertext copied into restored `storage/` decrypts with the restored DB envelope metadata and matches the original plaintext SHA-256;
-- storage traversal and symlink paths are rejected.
+- the witness storage key is the same canonical Case-bound key captured before backup;
+- the ciphertext is read only from the supplied restored `storage/` root, decrypts with restored DB envelope metadata and matches the original plaintext SHA-256;
+- a prefixed relative key, wrong-Case key, traversal, invalid ciphertext name, absolute snapshot key or symbolic-link component is rejected.
 
 `status: RESTORE_PASS` in this script means the **application data/storage evidence sub-gate** passed. It does not by itself complete the whole backup acceptance gate below.
 
@@ -183,7 +189,8 @@ Before marking backup/restore as complete, start the application against the res
 - the selected staff account can authenticate through the normal supported staff login path;
 - the selected Case opens in the staff UI;
 - Case/Audit history and Payment/PaymentEvent state are readable and agree with `POST_LIVE_RESTORE_RESULT.json`;
-- the selected historical Document opens/decrypts through the normal authorized document path, not by a direct filesystem shortcut;
+- the selected historical Document opens/decrypts through the normal authorized document-grant/download path, not by a direct filesystem shortcut;
+- normal document download binds storage resolution to the authorized `Case.id`; a corrupted/wrong-Case storage key must fail closed;
 - the bot process/dispatcher can start against the restored PostgreSQL/Redis state without mutating the source environment;
 - no provider or Telegram production-side effect is triggered during the restore drill.
 
