@@ -29,7 +29,9 @@ async def save_staff_upload(
     The HTTP layer never writes client/staff-controlled names into the storage
     tree and never buffers the whole document in memory. Bytes first land in an
     isolated random incoming file, are size-bounded, content-inspected, then
-    envelope-encrypted into the case directory.
+    envelope-encrypted into the case directory. The database-facing path is a
+    portable ``cases/<case_id>/<random>.dlcenc`` key, never a host-specific
+    absolute filesystem path.
     """
 
     storage = LocalStorageService()
@@ -88,7 +90,7 @@ async def save_staff_upload(
             pass
         return StoredFile(
             original_name=inspection.safe_name,
-            storage_path=str(target),
+            storage_path=storage.storage_key_for_case_path(target, case_id=case_id),
             mime_type=inspection.mime_type,
             file_size=inspection.size_bytes,
             sha256=inspection.sha256,
