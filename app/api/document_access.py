@@ -215,6 +215,7 @@ async def download_document_once(
         try:
             content = LocalStorageService().read_document_bytes(
                 document.file_path,
+                expected_case_id=int(case.id),
                 expected_sha256=document.sha256,
                 encryption_key_id=document.encryption_key_id,
                 encryption_envelope_id=document.encryption_envelope_id,
