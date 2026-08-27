@@ -57,6 +57,10 @@ class LocalStorageService:
     that exact case-storage shape; they are then *rebased* onto the currently
     configured storage root and are never read from the legacy absolute root.
 
+    Relative document keys are stricter: they must be exactly the canonical
+    three-component form. A prefixed relative value such as
+    ``tmp/cases/<id>/<file>`` is never silently truncated to a valid key.
+
     Client-controlled names are never used as storage keys. Incoming bytes are
     isolated, validated, encrypted with a unique per-document data key and only
     then moved into a case directory. The wrapped data key is returned to the
@@ -89,12 +93,12 @@ class LocalStorageService:
         *,
         expected_case_id: int | None = None,
     ) -> Path | None:
-        """Return the terminal portable key for a document path when present.
+        """Return the canonical portable key for a document path when present.
 
         Absolute legacy values are deliberately reduced to their final
         ``cases/<id>/<ciphertext>`` suffix. Any earlier host/root components are
-        ignored rather than followed. This is what makes a DB+storage restore
-        portable without giving a restored process access to the source root.
+        ignored rather than followed. Relative values must already be exactly
+        the canonical key and are never suffix-normalized.
         """
 
         raw = str(storage_path or "").strip()
@@ -104,14 +108,26 @@ class LocalStorageService:
         if ".." in candidate.parts:
             raise DocumentEncryptionError("Недопустимый путь документа")
         parts = candidate.parts
-        if len(parts) < 3 or parts[-3] != "cases":
-            if expected_case_id is not None:
-                raise DocumentEncryptionError(
-                    "Путь документа не соответствует хранилищу выбранного дела"
-                )
-            return None
-        case_part = parts[-2]
-        file_part = parts[-1]
+
+        if candidate.is_absolute():
+            if len(parts) < 3 or parts[-3] != "cases":
+                if expected_case_id is not None:
+                    raise DocumentEncryptionError(
+                        "Путь документа не соответствует хранилищу выбранного дела"
+                    )
+                return None
+            case_part = parts[-2]
+            file_part = parts[-1]
+        else:
+            if len(parts) != 3 or parts[0] != "cases":
+                if expected_case_id is not None:
+                    raise DocumentEncryptionError(
+                        "Путь документа не соответствует хранилищу выбранного дела"
+                    )
+                return None
+            case_part = parts[1]
+            file_part = parts[2]
+
         if (
             not case_part.isdigit()
             or int(case_part) <= 0
@@ -173,8 +189,9 @@ class LocalStorageService:
             expected_case_id=expected_case_id,
         )
         if portable_key is not None:
-            # This branch is used for both current relative keys and legacy
-            # absolute paths. The old absolute prefix is never dereferenced.
+            # This branch is used for current canonical relative keys and for
+            # legacy absolute paths. The old absolute prefix is never
+            # dereferenced.
             lexical = self.base_dir / portable_key
             relative = portable_key
         else:
