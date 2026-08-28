@@ -182,3 +182,18 @@ Current automated regression surfaces include:
 - transaction-boundary, payment lifecycle/event ledger, Case lifecycle/timezone and route-ownership regression tests.
 
 These test files/workflows being present is **SOURCE_OK evidence only until they actually execute**. SQLite/source tests remain fast regression layers but cannot replace PostgreSQL concurrency, Redis FSM, provider contract, browser E2E and staging persona tests.
+
+## 14. Living process-map governance
+
+`docs/PROCESS_MAP_CURRENT.md` is the mandatory living implementation inventory for this contract. It is subordinate to the product/system/acceptance/runbook contracts: it may describe implementation, evidence state, discovered inconsistencies and technical debt, but it may not silently expand M1/M2 scope or weaken any authoritative rule above.
+
+Every pull request that changes repository behavior, data, migrations, API/UI, Telegram, scheduler, security, storage, deployment, tests, workflows, evidence tooling or release procedure must update `docs/PROCESS_MAP_CURRENT.md` in the same PR. The `CI` job **Process map maintenance contract** enforces this requirement for pull requests.
+
+The map must keep four things current together:
+
+1. affected end-to-end `P-*` process and source-of-truth ownership;
+2. actual evidence state (`SOURCE_AUDITED`, `RUNTIME_PENDING`, `BLOCKED_INFRA`, `LIVE_PASS` or `LIVE_FAIL` as applicable);
+3. every discovered inconsistency/debt as a stable `PM-*` item until it is explicitly fixed or retired with evidence;
+4. a dated change-log entry describing the repository change and its release/evidence impact.
+
+A `PM-*` item is not closed merely because files were renamed or logic moved. Closure requires the corrective action to be identified and, where the contract requires runtime proof, the relevant gate to execute on the current candidate SHA. The process map itself is documentation/governance evidence, not runtime proof.
