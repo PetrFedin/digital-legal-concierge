@@ -17,6 +17,12 @@ TERMINAL_STATUSES = frozenset(
     }
 )
 
+# Historical values can remain readable so an old row can be upgraded through
+# its explicit outgoing compatibility edge, but current product code must never
+# create/re-enter them. This keeps backwards compatibility without allowing the
+# canonical M2 state machine to regress into the retired bootstrap state.
+READ_ONLY_COMPATIBILITY_STATUSES = frozenset({CaseStatus.M2_CONSULTATION_ROUTE})
+
 # Every normal transition is explicit. Administrative corrections remain possible
 # through CaseService(force=True), where the actor and explanation are audited.
 _TRANSITIONS: dict[CaseStatus, frozenset[CaseStatus]] = {
@@ -176,6 +182,22 @@ def normalize_status(value: str | CaseStatus) -> CaseStatus:
         raise CaseTransitionError(f"Неизвестный статус дела: {value}") from error
 
 
+def validate_initial_status(value: str | CaseStatus) -> CaseStatus:
+    """Validate a status used for a newly created Case.
+
+    Historical compatibility statuses remain parseable because persisted legacy
+    rows may still contain them, but no new Case may be born in such a state.
+    """
+
+    status = normalize_status(value)
+    if status in READ_ONLY_COMPATIBILITY_STATUSES:
+        raise CaseTransitionError(
+            f"Статус {status.value} доступен только для чтения исторических данных; "
+            "новое дело должно начинаться с канонического статуса"
+        )
+    return status
+
+
 def allowed_next_statuses(value: str | CaseStatus) -> frozenset[CaseStatus]:
     return _TRANSITIONS.get(normalize_status(value), frozenset())
 
@@ -186,7 +208,11 @@ def transition_allowed(
 ) -> bool:
     source = normalize_status(current)
     destination = normalize_status(target)
-    return source == destination or destination in allowed_next_statuses(source)
+    if source == destination:
+        return True
+    if destination in READ_ONLY_COMPATIBILITY_STATUSES:
+        return False
+    return destination in allowed_next_statuses(source)
 
 
 def validate_transition(
@@ -201,6 +227,11 @@ def validate_transition(
     destination = normalize_status(target)
     if source == destination:
         return source, destination
+    if destination in READ_ONLY_COMPATIBILITY_STATUSES:
+        raise CaseTransitionError(
+            f"Статус {destination.value} является историческим compatibility-only "
+            "состоянием и не может быть назначен заново"
+        )
     if force:
         if actor_type not in {"admin", "system"}:
             raise CaseTransitionError(
