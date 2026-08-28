@@ -4,7 +4,7 @@ Status: **authoritative current acceptance contract** for the existing M1/M2 pro
 
 Historical persona matrices and GO_LIVE/FINAL documents are evidence/history only. They do not override this file. Source inspection or the presence of a workflow/test is never presented as completed runtime proof.
 
-The exact execution order and evidence-retention procedure is defined in `docs/POST_LIVE_RELEASE_EVIDENCE.md`. `docs/LIVE_REQUIRED_RUNBOOK.md` defines the automated LIVE_REQUIRED component contract.
+The exact execution order and evidence-retention procedure is defined in `docs/POST_LIVE_RELEASE_EVIDENCE.md`. `docs/LIVE_REQUIRED_RUNBOOK.md` defines the automated LIVE_REQUIRED component contract. `docs/PROCESS_MAP_CURRENT.md` is the mandatory living implementation/debt/change inventory; it records what a repository change affected but never substitutes for runtime evidence required here.
 
 ## Evidence states
 
@@ -21,7 +21,7 @@ A release claim requires all mandatory gates for the frozen candidate SHA to be 
 For one immutable candidate SHA:
 
 1. GitHub Actions runner allocation is restored and jobs execute real steps.
-2. Full CI and all required PR checks execute and pass.
+2. Full CI and all required PR checks execute and pass, including the `Process map maintenance contract` governance check.
 3. Dedicated PostgreSQL concurrency → Redis/Telegram runtime → browser staff E2E workflows execute and pass on that SHA.
 4. One complete `.github/workflows/live-required.yml` run passes and produces one SHA/run/attempt-bound `LIVE_REQUIRED_MANIFEST.json`.
 5. Real Telegram M1 and M2 persona walkthroughs execute with UI ↔ PostgreSQL ↔ Audit/PaymentEvent reconciliation.
@@ -30,6 +30,12 @@ For one immutable candidate SHA:
 8. Only then may the release/merge decision be made.
 
 Any source, migration, workflow or evidence-script change after evidence collection begins creates a new candidate SHA and restarts the chain from full CI. Evidence from another SHA or another LIVE_REQUIRED attempt is diagnostic only.
+
+## Living process-map acceptance
+
+Every pull request must update `docs/PROCESS_MAP_CURRENT.md` in the same PR. The map must identify affected `P-*` process(es), update the `PM-*` inconsistency/debt register when a problem is discovered or resolved, and append the dated change log. CI enforces presence of that file in the PR diff through the `Process map maintenance contract` job.
+
+This is a repository-governance gate, not application runtime proof. Passing it cannot promote any process from `SOURCE_OK`/`RUNTIME_PENDING` to `LIVE_PASS`; failure means the PR is incomplete even when application tests are otherwise green.
 
 ## Automated/source evidence present in the branch
 
@@ -40,7 +46,7 @@ The branch includes, among other gates:
 - `tests/test_postgres_multi_case_concurrency.py` — Case creation idempotency/history races;
 - `tests/test_postgres_payment_concurrency.py` — payment creation/success/refund/review and hold-expiry races;
 - `tests/test_postgres_staff_concurrency.py` — conflicting Document/Case staff mutations;
-- `tests/test_postgres_auto_assignment_concurrency.py` — two M1 Cases compete for one final lawyer capacity slot without oversubscription;
+- `tests/test_postgres_auto_assignment_concurrency.py` — two M1 Cases compete for one final lawyer capacity slot without oversubscription; it is included in the dedicated `.github/workflows/postgres-concurrency.yml` gate as well as LIVE_REQUIRED;
 - `tests/test_browser_staff_e2e.py` — staff auth/role isolation and two-tab stale Payment Review 409 recovery;
 - `tests/test_live_required_evidence.py` + `tests/test_live_required_evidence_workflow_contract.py` — exact SHA/run/run-attempt manifest contract;
 - `tests/test_post_live_restore_evidence.py` — post-LIVE restore evidence tamper/source-target/storage/privacy contract;
@@ -185,6 +191,8 @@ Must execute on PostgreSQL, not SQLite only:
 - two M1 Cases competing for one last lawyer capacity slot;
 - scheduler vs client callback.
 
+The dedicated `PostgreSQL Concurrency` workflow must include the final-capacity auto-assignment race rather than relying on LIVE_REQUIRED alone to prove it.
+
 State: **LIVE_REQUIRED**.
 
 ## Telegram + Redis acceptance
@@ -260,7 +268,16 @@ State: **LIVE_REQUIRED after Telegram personas**.
 
 ## CI / infrastructure gate
 
-Required automated gate includes compile/static architecture, Alembic chain, fast tests, PostgreSQL migration/integration/concurrency, Redis runtime, browser E2E, reproducible dependencies, deployment readiness, container build/start and technical backup/restore checks.
+Required automated gate includes:
+
+- `Process map maintenance contract` — mandatory repository/process/debt/change inventory update for every PR;
+- compile/static architecture, Alembic chain and fast application tests;
+- PostgreSQL migration/integration plus technical encrypted backup/restore drill;
+- container build/start health;
+- deployment readiness and Redis persistence;
+- reproducible locked dependencies/images and complete locked-image test suite;
+- dedicated PostgreSQL concurrency, including auto-assignment final-capacity race;
+- dedicated Redis/Telegram runtime and browser E2E.
 
 GitHub issue **#116** tracks the current runner/billing/spending blocker. `runner_id=0`, `steps=null`/empty steps or a run ending before runner execution is **BLOCKED_INFRA**. It is never reported as CI-green or as an application test failure.
 
@@ -268,6 +285,7 @@ GitHub issue **#116** tracks the current runner/billing/spending blocker. `runne
 
 Release/merge is allowed only when the frozen candidate SHA has one coherent evidence chain satisfying the ordered gates above, including:
 
+- `docs/PROCESS_MAP_CURRENT.md` updated for the candidate with no discovered release blocker hidden outside its `PM-*` register;
 - one runtime owner per `(method, path)`;
 - clean PostgreSQL migration chain;
 - full CI + dedicated runtime workflows PASS;
