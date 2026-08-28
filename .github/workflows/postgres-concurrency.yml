@@ -59,10 +59,11 @@ jobs:
       - name: Apply production schema
         run: alembic upgrade head
 
-      - name: Verify multi-case, money and staff concurrency contracts
+      - name: Verify multi-case, money, staff and assignment concurrency contracts
         run: >-
           pytest -q
           tests/test_postgres_multi_case_concurrency.py
           tests/test_postgres_payment_concurrency.py
           tests/test_postgres_refund_retry_race.py
           tests/test_postgres_staff_concurrency.py
+          tests/test_postgres_auto_assignment_concurrency.py
