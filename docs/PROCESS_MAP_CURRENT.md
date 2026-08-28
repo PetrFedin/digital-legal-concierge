@@ -220,7 +220,8 @@ Canonical implementation:
 - `app/domain/cases/assignment_policy.py`;
 - `app/domain/cases/assignment_service.py` (`CaseAssignmentService`);
 - `app/domain/cases/sla_service.py`;
-- `app/api/assignment_queue.py` and related staff endpoints.
+- `app/api/assignment_queue.py` and related staff endpoints;
+- `scripts/architecture_check.py::check_legacy_assignment_imports` prevents production code from re-introducing the historical `app.domain.assignment` path while safe removal is audited.
 
 Important rule: M2 lawyer responsibility is slot/Consultation-driven, not generic M1 `Case.assigned_lawyer_id` auto-assignment.
 
@@ -499,7 +500,7 @@ Current infrastructure state: `BLOCKED_INFRA` under GitHub issue #116 until Acti
 
 - mandatory `Process map maintenance contract` for pull requests;
 - source compile;
-- architecture check;
+- architecture check, including fail-closed legacy assignment import containment;
 - SQLite application suite;
 - Alembic current/idempotency/check;
 - clean migration smoke;
@@ -557,7 +558,7 @@ Requires exact same run attempt/SHA evidence for:
 | PM-001 | Release infra | GitHub Actions jobs end before runner allocation (`runner_id=0`, empty/null steps); issue #116 | No runtime/test PASS can be claimed | `BLOCKED_INFRA`; external billing/spending/runner fix required |
 | PM-002 | PostgreSQL dedicated gate | `tests/test_postgres_auto_assignment_concurrency.py` existed and was required by acceptance/LIVE_REQUIRED but was absent from `.github/workflows/postgres-concurrency.yml` | Dedicated gate could pass without proving assignment capacity race | `FIXED_PENDING_RUNTIME`: added to dedicated workflow; requires real PostgreSQL gate execution |
 | PM-003 | M2 state machine | `M2_CONSULTATION_ROUTE` remains an enum/compatibility intake status, but canonical new M2 creation starts at `M2_DESCRIPTION_PENDING` and normal transition policy exposes no canonical incoming edge | Legacy/residue status can confuse diagrams, analytics, manual status handling | `DEBT_OPEN`: retain only as compatibility state until exact historical-row/runtime audit proves safe removal/migration |
-| PM-004 | Assignment architecture | `app/domain/assignment/AssignmentEngine` + `WorkloadService` coexist with canonical hardened `app/domain/cases/CaseAssignmentService` | Two assignment abstractions can drift on locking/capacity/audit semantics if legacy path is invoked | `DEBT_OPEN`: exact-ref reference audit required; no new product path may use legacy engine; consolidate/remove only with regression proof |
+| PM-004 | Assignment architecture | Historical `app/domain/assignment/AssignmentEngine` + `WorkloadService` coexist with canonical hardened `app/domain/cases/CaseAssignmentService`; exact-ref package has no public exports and repository code search found no current consumers, but search indexing alone is not proof of safe deletion | A future/reintroduced legacy import could bypass Case/candidate locking, active staff identity, workload/capacity and SLA/audit semantics | `DEBT_OPEN / SOURCE_CONTAINED`: `architecture_check.py::check_legacy_assignment_imports` now rejects any production import of `app.domain.assignment` outside the legacy package; retain files until safe-removal/historical-consumer audit, then delete only with regression/runtime proof |
 | PM-005 | Workdesk composition | `app/api/assignment_queue.py` still composes canonical Workdesk by injecting a responsibility/deep-link JS patch into `WORKDESK_HTML` at render time | UI behavior is distributed across modules and harder to reason about than a single canonical component | `DEBT_OPEN`: not a current route-ownership violation, but candidate for later source consolidation after release evidence is restored |
 | PM-006 | Repository governance | Private-repo ruleset API could not be independently inspected on current GitHub plan | Formal branch-protection required-context list is not independently proven through API | `DEBT_OPEN`: CI-level process-map contract is implemented; verify GitHub branch/rules settings manually when runner/billing is restored |
 | PM-007 | Runtime evidence | Storage portability, retention portability, restore schema-v2, Payment Review, assignment and process-map governance regressions exist but current runner has not executed them | Source correctness may hide runtime/governance regressions | `RUNTIME_PENDING`; must pass ordered release gates on the new candidate SHA |
@@ -585,3 +586,10 @@ Whenever code changes:
 - Added CI job `Process map maintenance contract`: every PR must include `docs/PROCESS_MAP_CURRENT.md` in its diff, and the file must exist/non-empty on other CI events.
 - Bound the living-map governance rule into `SYSTEM_CONTRACT_CURRENT.md`, `ACCEPTANCE_CURRENT.md` and `RUNBOOK_CURRENT.md`; the map remains subordinate to those authoritative contracts and cannot expand scope or replace runtime evidence.
 - Because this batch changes workflow/repository contracts, the previous frozen release SHA is invalidated; the new candidate must restart ordered verification from full CI once #116 is actually restored.
+
+## 2026-08-28 — PM-004 legacy assignment path source-contained
+
+- Audited the exact current legacy assignment package and canonical `CaseAssignmentService` boundary. The historical package remains present, but no public package exports were found and repository code search did not identify current consumers; because the GitHub code index is not treated as authoritative, this is not used as proof that deletion is safe.
+- Added `scripts/architecture_check.py::check_legacy_assignment_imports`, which rejects any production import from `app.domain.assignment` outside that historical package and directs new code to `app.domain.cases.assignment_service.CaseAssignmentService`.
+- PM-004 is now source-contained rather than merely documented: re-introducing the old assignment path becomes an architecture-gate failure. Physical removal remains deferred until historical/external consumer risk is closed and required regression/runtime gates can execute.
+- This architecture change supersedes the immediately previous candidate for release evidence; ordered verification must restart from full CI on the resulting branch head once #116 is restored.
