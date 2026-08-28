@@ -134,6 +134,58 @@ def check_forced_transition_bypasses() -> list[str]:
     return errors
 
 
+def check_legacy_assignment_imports() -> list[str]:
+    """Keep the hardened CaseAssignmentService as the only product assignment path.
+
+    ``app.domain.assignment`` is a historical package whose AssignmentEngine and
+    WorkloadService predate the Case-row/candidate locking, active staff identity,
+    workload/capacity and SLA/audit semantics in ``CaseAssignmentService``.  The
+    legacy modules remain importable for compatibility while their safe removal
+    is audited, but no production module may start depending on them again.
+    """
+
+    errors: list[str] = []
+    legacy_root = APP / "domain" / "assignment"
+    forbidden_module = "app.domain.assignment"
+
+    for path in python_files():
+        if legacy_root in path.parents:
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError as error:
+            errors.append(f"{path.relative_to(ROOT)}: syntax error: {error}")
+            continue
+
+        for node in ast.walk(tree):
+            violation = False
+            if isinstance(node, ast.Import):
+                violation = any(
+                    alias.name == forbidden_module
+                    or alias.name.startswith(forbidden_module + ".")
+                    for alias in node.names
+                )
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                violation = (
+                    module == forbidden_module
+                    or module.startswith(forbidden_module + ".")
+                    or (
+                        module == "app.domain"
+                        and any(alias.name == "assignment" for alias in node.names)
+                    )
+                )
+
+            if violation:
+                errors.append(
+                    f"{path.relative_to(ROOT)}:{node.lineno}: "
+                    "legacy app.domain.assignment is isolated; use "
+                    "app.domain.cases.assignment_service.CaseAssignmentService"
+                )
+
+    return errors
+
+
 def check_dead_bot_callbacks() -> list[str]:
     errors = []
     for path in (APP / "bot" / "screens").glob("*.py"):
@@ -200,6 +252,7 @@ def main() -> None:
         *check_case_status_writes(),
         *check_payment_status_writes(),
         *check_forced_transition_bypasses(),
+        *check_legacy_assignment_imports(),
         *check_dead_bot_callbacks(),
         *check_calculator_clock_boundary(),
         *check_runtime_routes(),
