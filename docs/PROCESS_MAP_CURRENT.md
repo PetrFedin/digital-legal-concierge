@@ -29,7 +29,7 @@ Before finishing a change:
 - never promote source inspection to `LIVE_PASS`;
 - make this map the **last governed commit in the batch**, or commit the governed change and map together.
 
-CI enforces this through `Process map maintenance contract`. The gate now checks both that the map changed somewhere in the PR and that no later governed repository commit exists after the latest map update. A code/test/workflow/docs-contract commit after the map makes the map stale and must be followed by another map update. `AGENTS.md` exposes the same rule before a PR is created.
+CI enforces this through `Process map maintenance contract`. The gate checks both that the map changed somewhere in the PR and that no later governed repository commit exists after the latest map update. A code/test/workflow/docs-contract commit after the map makes the map stale and must be followed by another map update. `AGENTS.md` exposes the same rule before a PR is created.
 
 ## Status vocabulary
 
@@ -64,7 +64,7 @@ Telegram remains the client cabinet. Staff work through authenticated browser/ad
 | Platform/security | `app/security/*`, `app/storage.py` | auth, grants, encryption, audit integrity, backup/restore, key rotation, storage safety | IMPLEMENTED / SOURCE_AUDITED / RUNTIME_PENDING |
 | Scheduler/notifications | `app/scheduler/*`, `app/domain/notifications/*` | reminders, slot release, SLA, retention, backup, cleanup, delivery | IMPLEMENTED / RUNTIME_PENDING |
 | Release evidence | `.github/workflows/*`, evidence scripts | CI, runtime matrix, manifests, restore proof | IMPLEMENTED / BLOCKED_INFRA |
-| Governance | `AGENTS.md`, CURRENT docs, this map, CI contract | force process/debt/change traceability and map freshness | IMPLEMENTED / FIXED_PENDING_RUNTIME |
+| Governance | `AGENTS.md`, CURRENT docs, this map, CI/architecture contracts | force process/debt/change traceability and boundary enforcement | IMPLEMENTED / FIXED_PENDING_RUNTIME |
 
 # End-to-end process map
 
@@ -116,14 +116,16 @@ Canonical Case path:
 
 Owners:
 
-- process state — `Case.status` through `CaseService`/dedicated domain services;
+- process state — `Case.status` through `CaseService`/approved dedicated domain boundary;
 - consent — immutable `ConsentAcceptance`;
 - documents — versioned `Document`/review facts;
 - M1 lawyer — `Case.assigned_lawyer_id`, assignment audit/SLA;
 - money — `Payment` + `PaymentEvent` + provider evidence + Case/Audit context;
 - terminal facts — `closed_at`, `close_reason`, `archived_at`, separate retention deletion fact.
 
-State: `IMPLEMENTED / RUNTIME_PENDING`.
+Static architecture enforcement for `Case.status` is model-aware: obvious direct writes, `setattr(..., "status", ...)`, aliased model classes, typed aliases and SQLAlchemy bulk update forms are rejected outside `CaseService`. This is a source guard, not a substitute for runtime/domain tests.
+
+State: `IMPLEMENTED / FIXED_PENDING_RUNTIME`.
 
 ## P-03 — Documents, encrypted storage, review, access and deletion
 
@@ -156,7 +158,7 @@ Rules:
 
 - M2 responsibility is consultation/slot-driven, not M1 `Case.assigned_lawyer_id` auto-assignment;
 - two eligible M1 Cases competing for one final capacity slot may produce exactly one assignment;
-- `architecture_check.py::check_legacy_assignment_imports` prevents production code from reintroducing historical `app.domain.assignment` semantics through absolute imports, relative `ImportFrom`, or literal dynamic imports (`importlib.import_module` / `__import__`).
+- `architecture_check.py::check_legacy_assignment_imports` prevents production code from reintroducing historical `app.domain.assignment` semantics through absolute imports, relative `ImportFrom`, or statically-resolvable literal dynamic imports (`importlib.import_module` / `__import__`).
 
 Evidence: `tests/test_postgres_auto_assignment_concurrency.py`, `tests/test_legacy_assignment_import_guard.py`.
 
@@ -177,7 +179,9 @@ Source split:
 
 Rules: late failure cannot overwrite received money; exact retry differs from stale command; stale Payment Review returns authoritative 409 without a duplicate resolution; M2 payment stays bound to exact reservation/consultation context; stale money never resurrects obsolete legal state.
 
-State: `IMPLEMENTED / RUNTIME_PENDING`.
+`PaymentLifecycleService` is the canonical application mutation boundary for an existing `Payment.status`. The model listener stamps/records invariant facts but is not the product decision boundary. Static architecture enforcement now recognizes obvious aliases/annotations/constructor aliases plus `setattr` and bulk SQLAlchemy status mutations outside `PaymentLifecycleService`.
+
+State: `IMPLEMENTED / FIXED_PENDING_RUNTIME`.
 
 ## P-06 — Messages and notifications
 
@@ -325,8 +329,10 @@ Current infrastructure state: `BLOCKED_INFRA` under issue #116 until Actions all
 - `Process map maintenance contract`: file must exist, must be changed in the PR, and its latest commit must be at least as new as the latest governed repository commit;
 - `tests/test_process_map_governance_contract.py` locks the presence/freshness source contract and root `AGENTS.md` wording;
 - source compile;
-- architecture check, including absolute/relative/literal-dynamic legacy assignment containment;
-- SQLite suite, including CaseService/M2 compatibility, Workdesk renderer and legacy-assignment import-guard regressions;
+- architecture check, including:
+  - absolute/relative/literal-dynamic legacy assignment containment;
+  - alias/type-aware direct/bulk `Case.status` and `Payment.status` mutation containment;
+- SQLite suite, including CaseService/M2 compatibility, Workdesk renderer, legacy-assignment import guard and status-mutation architecture regressions;
 - Alembic current/idempotency/check + clean migration smoke;
 - PostgreSQL migration + technical encrypted backup/restore drill;
 - production container build/start/health.
@@ -367,11 +373,12 @@ One exact SHA/run/attempt must prove PostgreSQL, Redis, real Telegram delivery, 
 | PM-001 | Release infra | Actions jobs end before runner allocation (`runner_id=0`, empty/null steps); issue #116 | No runtime/test PASS can be claimed | `BLOCKED_INFRA`; external billing/spending/runner fix required |
 | PM-002 | PostgreSQL dedicated gate | Auto-assignment capacity race existed in tests/acceptance/LIVE_REQUIRED but was omitted from dedicated PostgreSQL workflow | Dedicated gate could pass without assignment race proof | `FIXED_PENDING_RUNTIME`; test is now included in dedicated workflow |
 | PM-003 | M2 state machine | Historical `M2_CONSULTATION_ROUTE` can exist in string-backed old rows, while canonical current M2 begins at `M2_DESCRIPTION_PENDING` | Re-entry would split semantics; immediate deletion could break historical rows | `FIXED_PENDING_RUNTIME / COMPATIBILITY_READ_ONLY`; CaseService initial validation + no-reentry transition rule + ORM backstop + historical-row hydration/forward-upgrade regression; physical removal deferred until real DB audit |
-| PM-004 | Assignment architecture | Historical `AssignmentEngine`/`WorkloadService` coexist with hardened `CaseAssignmentService`; initial containment covered direct absolute imports but relative or literal dynamic imports could bypass it | Reintroduced legacy code could bypass Case/candidate locking, active staff identity, workload/capacity and SLA/audit semantics while still evading the architecture gate | `DEBT_OPEN / SOURCE_CONTAINED / HARDENED_PENDING_RUNTIME`; guard now resolves relative `ImportFrom` and detects absolute/relative literal dynamic imports through `importlib.import_module` aliases and `__import__`; `tests/test_legacy_assignment_import_guard.py` covers forbidden bypass forms and allowed canonical imports; physical legacy-module deletion still waits for historical/external-consumer audit + executable regressions |
+| PM-004 | Assignment architecture | Historical `AssignmentEngine`/`WorkloadService` coexist with hardened `CaseAssignmentService`; initial containment missed relative/literal-dynamic imports | Reintroduced legacy code could bypass locking/capacity/audit semantics while evading architecture check | `DEBT_OPEN / SOURCE_CONTAINED / HARDENED_PENDING_RUNTIME`; guard resolves relative `ImportFrom` and statically-resolvable literal dynamic imports; focused regression added; physical deletion still waits for historical/external-consumer audit + executable regressions |
 | PM-005 | Workdesk composition | Final UI was assembled by route-level responsibility JS patch plus separate integrity injection | Distributed UI ownership could omit/duplicate behavior | `FIXED_PENDING_RUNTIME / COMPOSITION_CENTRALIZED`; single `workdesk_renderer.py`, route module no longer patches HTML, regression locks boundary |
 | PM-006 | Repository governance | Private-repo ruleset required contexts cannot be independently enumerated through current GitHub API/plan | Formal branch protection contract is not API-proven | `DEBT_OPEN`; CI governance + root `AGENTS.md` implemented; manually verify repository rules after billing/runner recovery |
 | PM-007 | Runtime evidence | Current storage/restore/retention/Payment Review/assignment/M2/Workdesk/governance regressions have not run on an Actions runner | Source correctness may hide runtime regressions | `RUNTIME_PENDING`; ordered gates required on current candidate |
-| PM-008 | Living-map governance | Initial CI rule only required `PROCESS_MAP_CURRENT.md` to appear somewhere in the total PR diff; a long PR could update the map once and then add later governed commits without another map update | The repository could satisfy the check while the living process/debt/change inventory was already stale | `FIXED_PENDING_RUNTIME / FRESHNESS_ENFORCED`: CI resolves latest map commit and latest non-map governed commit and requires the latter to be an ancestor of the former; root `AGENTS.md` documents the same invariant; focused source regression locks the gate structure |
+| PM-008 | Living-map governance | Initial CI rule only required `PROCESS_MAP_CURRENT.md` to appear somewhere in total PR diff | A long PR could pass while the map had become stale | `FIXED_PENDING_RUNTIME / FRESHNESS_ENFORCED`; latest non-map governed commit must be an ancestor of latest map commit; AGENTS + focused regression lock the rule |
+| PM-009 | Case/Payment mutation architecture | Initial `Case.status` check depended on literal variable name `case`; Payment check relied mainly on names containing `payment` and direct `Payment` class reference. Typed aliases, `setattr`, model aliases and several bulk SQLAlchemy forms could evade the static boundary | Product code could bypass `CaseService` or `PaymentLifecycleService`, splitting process/audit/SLA or financial timestamp/ledger semantics | `FIXED_PENDING_RUNTIME / ALIAS_AWARE_GUARD`: architecture check infers obvious model variables from imports/aliases/annotations/constructors/simple aliases, preserves conventional names, catches `setattr(..., "status", ...)` and model-referenced `.values/.update` bulk forms; `tests/test_status_mutation_architecture_guard.py` covers forbidden and allowed cases. This remains static containment, not a claim that arbitrary Python reflection is impossible |
 
 # Development priority plan
 
@@ -380,7 +387,7 @@ One exact SHA/run/attempt must prove PostgreSQL, Redis, real Telegram delivery, 
 1. Resolve #116 externally and prove real runner allocation (`runner_id != 0` + executed steps).
 2. Freeze the then-current head and run `CI` + `Deployment Readiness` + `Reproducible Dependencies`.
 3. Treat a real failure as application evidence; fix it, update affected P-/PM-items/change log, create a new candidate and restart full CI.
-4. Validate PM-002, PM-003, PM-004, PM-005, PM-008, storage/retention portability and Payment Review recovery in executable gates.
+4. Validate PM-002, PM-003, PM-004, PM-005, PM-008, PM-009, storage/retention portability and Payment Review recovery in executable gates.
 5. Run dedicated PostgreSQL/Redis/browser gates, then one complete LIVE_REQUIRED attempt only after general gates are green.
 
 ## P1 — controlled debt closure after executable CI exists
@@ -389,6 +396,7 @@ One exact SHA/run/attempt must prove PostgreSQL, Redis, real Telegram delivery, 
 2. PM-006: verify actual branch/rules settings and exact required contexts; align them with the gate contract without weakening it.
 3. Browser-check centralized Workdesk renderer for M1/M2 responsibility/action semantics.
 4. Audit real staging/restore DB for remaining `M2_CONSULTATION_ROUTE` rows before considering a migration/removal of the compatibility enum.
+5. Review PM-009 runtime results and decide whether a later model/session-level mutation authorization backstop is justified; do not add one speculatively before executable CI proves the static guard behavior.
 
 ## P2 — post-LIVE evidence and release decision
 
@@ -455,23 +463,26 @@ Whenever anything changes:
 - Added root `AGENTS.md` as a pre-change repository contract for Cursor/Claude/Codex/other agents and developers.
 - `AGENTS.md` points to the authoritative CURRENT documents and this map, repeats the mandatory same-batch map-update rule, records source-of-truth boundaries, current release truth and no-auto-merge rule.
 - This closes the discoverability gap where the process-map rule previously became obvious only after reading CI/docs; CI remains the enforcement backstop.
-- This documentation/governance change creates a new candidate SHA and therefore supersedes the immediately prior release candidate; runtime evidence must start from full CI once #116 is restored.
 
 ## 2026-08-28 — PM-008 process-map freshness enforced
 
-- Audited the initial `Process map maintenance contract` and found it only proved that `docs/PROCESS_MAP_CURRENT.md` appeared somewhere in the total PR diff.
-- This allowed a long PR to update the map once, then add later code/test/workflow/docs-contract commits while the check still saw the historical map change.
-- Strengthened `.github/workflows/ci.yml`: the gate now resolves the latest map commit and latest non-map governed commit in `BASE_SHA..HEAD_SHA` and requires the governed commit to be an ancestor of the map commit. Same-commit changes pass; map-after-code passes; code-after-map fails closed.
-- Updated root `AGENTS.md` with the same last-governed-commit invariant.
-- Added `tests/test_process_map_governance_contract.py` to lock the presence/freshness source contract.
-- This map update is intentionally the final governed commit of the batch, satisfying the new invariant by construction.
-- PM-008 is `FIXED_PENDING_RUNTIME`: the gate and regression remain unexecuted until issue #116 is resolved.
+- Audited the initial `Process map maintenance contract` and found it only proved that `docs/PROCESS_MAP_CURRENT.md` appeared somewhere in total PR diff.
+- Strengthened `.github/workflows/ci.yml`: latest non-map governed commit must be an ancestor of latest process-map commit. Same-commit changes pass; map-after-code passes; code-after-map fails closed.
+- Updated root `AGENTS.md` and added `tests/test_process_map_governance_contract.py`.
+- PM-008 remains runtime pending because Actions has not allocated a runner.
 
 ## 2026-08-28 — PM-004 legacy assignment containment hardened against bypass imports
 
-- Re-audited `check_legacy_assignment_imports()` and found the first implementation covered direct absolute imports but could be bypassed by relative imports such as `from ..assignment import ...` or literal dynamic imports.
-- Added canonical package resolution for relative `ImportFrom` nodes.
-- Added literal dynamic-import detection for `importlib.import_module`, imported/aliased `import_module`, and `__import__`, including relative package/level forms when statically resolvable.
-- Added `tests/test_legacy_assignment_import_guard.py` with forbidden absolute/relative/dynamic forms and allowed canonical `app.domain.cases.assignment_service` forms.
-- Business assignment semantics were not changed; this is containment hardening around the already-canonical `CaseAssignmentService`.
-- PM-004 remains open for physical legacy-module removal, but the source boundary is materially stronger and remains runtime pending until #116 is restored.
+- Re-audited legacy assignment guard and found relative and literal dynamic import bypasses.
+- Added relative-module resolution plus detection for `importlib.import_module`, aliased `import_module`, and `__import__` when statically resolvable.
+- Added `tests/test_legacy_assignment_import_guard.py` with forbidden bypass forms and allowed canonical assignment-service imports.
+- Business assignment semantics were not changed; physical legacy-module deletion remains deferred.
+
+## 2026-08-28 — PM-009 Case/Payment mutation guards made alias-aware
+
+- Audited the two critical status-write architecture checks and found they could be bypassed by non-conventional variable aliases, typed aliases, `setattr`, aliased model classes or some bulk SQLAlchemy write forms.
+- Added model symbol resolution for `Case` and `Payment`, including relative model imports, class aliases, module aliases, function/variable annotations, constructors and simple alias propagation.
+- Expanded direct mutation detection to obvious subscript/conventional owners, `setattr(owner, "status", ...)`, `update(ModelAlias).values(status=...)`, model-referenced `.update({...})`, and equivalent statically-resolvable forms.
+- `Case.status` remains owned by `CaseService`; `Payment.status` mutation remains owned by `PaymentLifecycleService`. Creation-time `Payment(status=...)` is deliberately not treated as a transition violation.
+- Added `tests/test_status_mutation_architecture_guard.py`, including negative controls proving the rule does not globally ban another model such as `Document.status`.
+- This is source-level containment only. Runtime CI must prove the stronger architecture check does not reveal additional current violations; if it does, those are to be handled as real application debt rather than weakening the check.
