@@ -30,13 +30,22 @@ def _assignment_targets(node: ast.AST) -> list[ast.expr]:
 
 def _root_name(node: ast.AST | None) -> str | None:
     current = node
-    while isinstance(current, ast.Attribute):
+    while isinstance(current, (ast.Attribute, ast.Subscript)):
         current = current.value
     return current.id if isinstance(current, ast.Name) else None
 
 
 def _contains_name(node: ast.AST, value: str) -> bool:
     return any(isinstance(item, ast.Name) and item.id == value for item in ast.walk(node))
+
+
+def _dotted_name(node: ast.AST | None) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        base = _dotted_name(node.value)
+        return f"{base}.{node.attr}" if base else None
+    return None
 
 
 def _package_name_for_path(path: Path) -> str:
@@ -200,8 +209,282 @@ def _legacy_assignment_import_lines(path: Path, tree: ast.AST) -> list[int]:
     return sorted(lines)
 
 
+_MODEL_MODULES: dict[str, frozenset[str]] = {
+    "Case": frozenset({"app.models", "app.models.case"}),
+    "Payment": frozenset({"app.models", "app.models.payment"}),
+}
+
+
+def _model_symbols(
+    path: Path,
+    tree: ast.AST,
+    class_name: str,
+) -> tuple[set[str], dict[str, str]]:
+    """Return imported class aliases and module aliases for one ORM model."""
+
+    class_aliases: set[str] = set()
+    module_aliases: dict[str, str] = {}
+    modules = _MODEL_MODULES[class_name]
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            module = _resolve_import_from_module(path, node)
+            if module not in modules:
+                continue
+            for alias in node.names:
+                if alias.name == class_name:
+                    class_aliases.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in modules and alias.asname:
+                    module_aliases[alias.asname] = alias.name
+
+    return class_aliases, module_aliases
+
+
+def _node_references_model(
+    node: ast.AST,
+    *,
+    class_name: str,
+    class_aliases: set[str],
+    module_aliases: dict[str, str],
+) -> bool:
+    full_names = {
+        f"app.models.{class_name}",
+        f"app.models.{class_name.lower()}.{class_name}",
+    }
+
+    for item in ast.walk(node):
+        if isinstance(item, ast.Name) and item.id in class_aliases:
+            return True
+        dotted = _dotted_name(item)
+        if not dotted:
+            continue
+        if dotted in full_names:
+            return True
+        first, separator, rest = dotted.partition(".")
+        if separator and first in module_aliases:
+            if f"{module_aliases[first]}.{rest}" in full_names:
+                return True
+    return False
+
+
+def _annotation_references_model(
+    annotation: ast.AST | None,
+    *,
+    class_name: str,
+    class_aliases: set[str],
+    module_aliases: dict[str, str],
+) -> bool:
+    if annotation is None:
+        return False
+    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+        try:
+            annotation = ast.parse(annotation.value, mode="eval").body
+        except SyntaxError:
+            return False
+    return _node_references_model(
+        annotation,
+        class_name=class_name,
+        class_aliases=class_aliases,
+        module_aliases=module_aliases,
+    )
+
+
+def _model_variable_names(
+    path: Path,
+    tree: ast.AST,
+    class_name: str,
+) -> tuple[set[str], set[str], dict[str, str]]:
+    """Infer obvious variables bound to Case/Payment without whole-program typing."""
+
+    class_aliases, module_aliases = _model_symbols(path, tree, class_name)
+    variables: set[str] = set()
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            arguments = [
+                *node.args.posonlyargs,
+                *node.args.args,
+                *node.args.kwonlyargs,
+            ]
+            if node.args.vararg is not None:
+                arguments.append(node.args.vararg)
+            if node.args.kwarg is not None:
+                arguments.append(node.args.kwarg)
+            for argument in arguments:
+                if _annotation_references_model(
+                    argument.annotation,
+                    class_name=class_name,
+                    class_aliases=class_aliases,
+                    module_aliases=module_aliases,
+                ):
+                    variables.add(argument.arg)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            if _annotation_references_model(
+                node.annotation,
+                class_name=class_name,
+                class_aliases=class_aliases,
+                module_aliases=module_aliases,
+            ):
+                variables.add(node.target.id)
+
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(tree):
+            targets: list[str] = []
+            value: ast.AST | None = None
+            if isinstance(node, ast.Assign):
+                targets = [target.id for target in node.targets if isinstance(target, ast.Name)]
+                value = node.value
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                targets = [node.target.id]
+                value = node.value
+            if not targets or value is None:
+                continue
+
+            model_value = (
+                isinstance(value, ast.Call)
+                and _node_references_model(
+                    value.func,
+                    class_name=class_name,
+                    class_aliases=class_aliases,
+                    module_aliases=module_aliases,
+                )
+            ) or (isinstance(value, ast.Name) and value.id in variables)
+
+            if model_value:
+                for target in targets:
+                    if target not in variables:
+                        variables.add(target)
+                        changed = True
+
+    return variables, class_aliases, module_aliases
+
+
+def _looks_like_model_variable(name: str | None, class_name: str) -> bool:
+    if not name:
+        return False
+    normalized = name.lower()
+    if class_name == "Case":
+        return (
+            normalized == "case"
+            or normalized == "cases"
+            or normalized.startswith("case_")
+            or normalized.endswith("_case")
+        )
+    if class_name == "Payment":
+        return "payment" in normalized
+    return False
+
+
+def _owner_matches_model(
+    owner: ast.AST,
+    *,
+    variables: set[str],
+    class_name: str,
+) -> bool:
+    root = _root_name(owner)
+    return bool(
+        root
+        and (root in variables or _looks_like_model_variable(root, class_name))
+    )
+
+
+def _is_status_mapping_key(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Constant)
+        and node.value == "status"
+    ) or (
+        isinstance(node, ast.Attribute)
+        and node.attr == "status"
+    )
+
+
+def _call_sets_status(call: ast.Call) -> bool:
+    if any(keyword.arg == "status" for keyword in call.keywords):
+        return True
+    for argument in call.args:
+        if not isinstance(argument, ast.Dict):
+            continue
+        if any(
+            key is not None and _is_status_mapping_key(key)
+            for key in argument.keys
+        ):
+            return True
+    return False
+
+
+def _model_status_write_lines(
+    path: Path,
+    tree: ast.AST,
+    *,
+    class_name: str,
+) -> list[int]:
+    """Find obvious direct/bulk status mutations for Case or Payment.
+
+    This is deliberately model-aware rather than a blanket ``.status`` ban so
+    Document/Consultation/Notification state machines keep their own boundaries.
+    It recognizes conventional variable names plus variables proven by model
+    imports/aliases, annotations, constructors and simple alias propagation.
+    """
+
+    variables, class_aliases, module_aliases = _model_variable_names(
+        path,
+        tree,
+        class_name,
+    )
+    lines: set[int] = set()
+
+    for node in ast.walk(tree):
+        for target in _assignment_targets(node):
+            if (
+                isinstance(target, ast.Attribute)
+                and target.attr == "status"
+                and _owner_matches_model(
+                    target.value,
+                    variables=variables,
+                    class_name=class_name,
+                )
+            ):
+                lines.add(int(node.lineno))
+
+        if not isinstance(node, ast.Call):
+            continue
+
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "setattr"
+            and len(node.args) >= 2
+            and _constant_string(node.args[1]) == "status"
+            and _owner_matches_model(
+                node.args[0],
+                variables=variables,
+                class_name=class_name,
+            )
+        ):
+            lines.add(int(node.lineno))
+            continue
+
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"values", "update"}
+            and _call_sets_status(node)
+            and _node_references_model(
+                node.func.value,
+                class_name=class_name,
+                class_aliases=class_aliases,
+                module_aliases=module_aliases,
+            )
+        ):
+            lines.add(int(node.lineno))
+
+    return sorted(lines)
+
+
 def check_case_status_writes() -> list[str]:
-    errors = []
+    errors: list[str] = []
     allowed = APP / "domain" / "cases" / "case_service.py"
     for path in python_files():
         if path == allowed:
@@ -211,29 +494,20 @@ def check_case_status_writes() -> list[str]:
         except SyntaxError as error:
             errors.append(f"{path.relative_to(ROOT)}: syntax error: {error}")
             continue
-        for node in ast.walk(tree):
-            for target in _assignment_targets(node):
-                if (
-                    isinstance(target, ast.Attribute)
-                    and target.attr == "status"
-                    and isinstance(target.value, ast.Name)
-                    and target.value.id == "case"
-                ):
-                    errors.append(
-                        f"{path.relative_to(ROOT)}:{node.lineno}: "
-                        "case.status must be changed through CaseService"
-                    )
+        for lineno in _model_status_write_lines(path, tree, class_name="Case"):
+            errors.append(
+                f"{path.relative_to(ROOT)}:{lineno}: "
+                "Case.status must be changed through CaseService"
+            )
     return errors
 
 
 def check_payment_status_writes() -> list[str]:
     """Financial status writes must pass one lifecycle boundary.
 
-    Timestamps, PaymentEvent projection and future reconciliation rules all rely
-    on observing the same transition. Product code therefore may not mutate a
-    Payment status directly or through ``update(Payment).values(status=...)``.
-    Creation-time ``Payment(status=...)`` is intentionally allowed because that
-    is not a transition of an existing financial record.
+    Timestamps, PaymentEvent projection and reconciliation rules rely on the same
+    transition boundary. Creation-time ``Payment(status=...)`` remains allowed;
+    mutation of an existing financial record must use PaymentLifecycleService.
     """
 
     errors: list[str] = []
@@ -246,29 +520,11 @@ def check_payment_status_writes() -> list[str]:
         except SyntaxError as error:
             errors.append(f"{path.relative_to(ROOT)}: syntax error: {error}")
             continue
-
-        for node in ast.walk(tree):
-            for target in _assignment_targets(node):
-                if not isinstance(target, ast.Attribute) or target.attr != "status":
-                    continue
-                owner = (_root_name(target.value) or "").lower()
-                if "payment" in owner:
-                    errors.append(
-                        f"{path.relative_to(ROOT)}:{node.lineno}: "
-                        "Payment.status must be changed through PaymentLifecycleService"
-                    )
-
-            if not isinstance(node, ast.Call):
-                continue
-            if not isinstance(node.func, ast.Attribute) or node.func.attr != "values":
-                continue
-            if not any(keyword.arg == "status" for keyword in node.keywords):
-                continue
-            if _contains_name(node.func.value, "Payment"):
-                errors.append(
-                    f"{path.relative_to(ROOT)}:{node.lineno}: "
-                    "bulk Payment status updates must use PaymentLifecycleService"
-                )
+        for lineno in _model_status_write_lines(path, tree, class_name="Payment"):
+            errors.append(
+                f"{path.relative_to(ROOT)}:{lineno}: "
+                "Payment.status must be changed through PaymentLifecycleService"
+            )
     return errors
 
 
