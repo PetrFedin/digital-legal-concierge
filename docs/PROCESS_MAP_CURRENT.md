@@ -497,6 +497,7 @@ Current infrastructure state: `BLOCKED_INFRA` under GitHub issue #116 until Acti
 
 ### `CI`
 
+- mandatory `Process map maintenance contract` for pull requests;
 - source compile;
 - architecture check;
 - SQLite application suite;
@@ -554,12 +555,12 @@ Requires exact same run attempt/SHA evidence for:
 | ID | Area | Finding | Risk | State / action |
 | --- | --- | --- | --- | --- |
 | PM-001 | Release infra | GitHub Actions jobs end before runner allocation (`runner_id=0`, empty/null steps); issue #116 | No runtime/test PASS can be claimed | `BLOCKED_INFRA`; external billing/spending/runner fix required |
-| PM-002 | PostgreSQL dedicated gate | `tests/test_postgres_auto_assignment_concurrency.py` existed and was required by acceptance/LIVE_REQUIRED but was absent from `.github/workflows/postgres-concurrency.yml` | Dedicated gate could pass without proving assignment capacity race | `FIXED_PENDING_RUNTIME` in current batch: added to dedicated workflow |
+| PM-002 | PostgreSQL dedicated gate | `tests/test_postgres_auto_assignment_concurrency.py` existed and was required by acceptance/LIVE_REQUIRED but was absent from `.github/workflows/postgres-concurrency.yml` | Dedicated gate could pass without proving assignment capacity race | `FIXED_PENDING_RUNTIME`: added to dedicated workflow; requires real PostgreSQL gate execution |
 | PM-003 | M2 state machine | `M2_CONSULTATION_ROUTE` remains an enum/compatibility intake status, but canonical new M2 creation starts at `M2_DESCRIPTION_PENDING` and normal transition policy exposes no canonical incoming edge | Legacy/residue status can confuse diagrams, analytics, manual status handling | `DEBT_OPEN`: retain only as compatibility state until exact historical-row/runtime audit proves safe removal/migration |
 | PM-004 | Assignment architecture | `app/domain/assignment/AssignmentEngine` + `WorkloadService` coexist with canonical hardened `app/domain/cases/CaseAssignmentService` | Two assignment abstractions can drift on locking/capacity/audit semantics if legacy path is invoked | `DEBT_OPEN`: exact-ref reference audit required; no new product path may use legacy engine; consolidate/remove only with regression proof |
 | PM-005 | Workdesk composition | `app/api/assignment_queue.py` still composes canonical Workdesk by injecting a responsibility/deep-link JS patch into `WORKDESK_HTML` at render time | UI behavior is distributed across modules and harder to reason about than a single canonical component | `DEBT_OPEN`: not a current route-ownership violation, but candidate for later source consolidation after release evidence is restored |
-| PM-006 | Repository governance | Private-repo ruleset API could not be independently inspected on current GitHub plan | Formal branch-protection required-context list is not independently proven through API | `DEBT_OPEN`: CI-level process-map contract provides repository enforcement; verify GitHub branch/rules settings manually when runner/billing is restored |
-| PM-007 | Runtime evidence | Storage portability, retention portability, restore schema-v2, Payment Review and new assignment regressions exist but current runner has not executed them | Source correctness may hide runtime regressions | `RUNTIME_PENDING`; must pass ordered release gates on new candidate SHA |
+| PM-006 | Repository governance | Private-repo ruleset API could not be independently inspected on current GitHub plan | Formal branch-protection required-context list is not independently proven through API | `DEBT_OPEN`: CI-level process-map contract is implemented; verify GitHub branch/rules settings manually when runner/billing is restored |
+| PM-007 | Runtime evidence | Storage portability, retention portability, restore schema-v2, Payment Review, assignment and process-map governance regressions exist but current runner has not executed them | Source correctness may hide runtime/governance regressions | `RUNTIME_PENDING`; must pass ordered release gates on the new candidate SHA |
 
 # Change impact rule
 
@@ -574,11 +575,13 @@ Whenever code changes:
 
 # Change log
 
-## 2026-08-28 — Living process map introduced
+## 2026-08-28 — Living process map introduced and enforced
 
 - Created `docs/PROCESS_MAP_CURRENT.md` as the mandatory maintained implementation/process inventory.
 - Recorded M1, M2, documents, assignment/SLA, payments, messages/notifications, staff, audit, retention, scheduler, security, backup/restore and release-evidence processes.
 - Recorded current data/source-of-truth matrix and automated gate map.
 - Recorded known inconsistencies/debt PM-001..PM-007 rather than hiding them in historical chat/audit notes.
 - Fixed PM-002 in source: dedicated PostgreSQL Concurrency workflow now includes `tests/test_postgres_auto_assignment_concurrency.py`.
+- Added CI job `Process map maintenance contract`: every PR must include `docs/PROCESS_MAP_CURRENT.md` in its diff, and the file must exist/non-empty on other CI events.
+- Bound the living-map governance rule into `SYSTEM_CONTRACT_CURRENT.md`, `ACCEPTANCE_CURRENT.md` and `RUNBOOK_CURRENT.md`; the map remains subordinate to those authoritative contracts and cannot expand scope or replace runtime evidence.
 - Because this batch changes workflow/repository contracts, the previous frozen release SHA is invalidated; the new candidate must restart ordered verification from full CI once #116 is actually restored.
