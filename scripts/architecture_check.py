@@ -39,6 +39,167 @@ def _contains_name(node: ast.AST, value: str) -> bool:
     return any(isinstance(item, ast.Name) and item.id == value for item in ast.walk(node))
 
 
+def _package_name_for_path(path: Path) -> str:
+    relative = path.relative_to(ROOT).with_suffix("")
+    parts = list(relative.parts)
+    if parts and parts[-1] == "__init__":
+        parts.pop()
+    else:
+        parts = parts[:-1]
+    return ".".join(parts)
+
+
+def _resolve_relative_module(*, package: str, module: str, level: int) -> str:
+    if level <= 0:
+        return module
+    package_parts = [part for part in package.split(".") if part]
+    ascend = level - 1
+    if ascend > len(package_parts):
+        return ""
+    resolved = package_parts[: len(package_parts) - ascend]
+    if module:
+        resolved.extend(part for part in module.split(".") if part)
+    return ".".join(resolved)
+
+
+def _resolve_import_from_module(path: Path, node: ast.ImportFrom) -> str:
+    module = node.module or ""
+    if node.level <= 0:
+        return module
+    return _resolve_relative_module(
+        package=_package_name_for_path(path),
+        module=module,
+        level=node.level,
+    )
+
+
+def _is_legacy_assignment_module(module: str) -> bool:
+    forbidden = "app.domain.assignment"
+    return module == forbidden or module.startswith(forbidden + ".")
+
+
+def _constant_string(node: ast.AST | None) -> str | None:
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+
+def _constant_int(node: ast.AST | None) -> int | None:
+    value = node.value if isinstance(node, ast.Constant) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _keyword(call: ast.Call, name: str) -> ast.AST | None:
+    for keyword in call.keywords:
+        if keyword.arg == name:
+            return keyword.value
+    return None
+
+
+def _importlib_aliases(tree: ast.AST) -> tuple[set[str], set[str]]:
+    module_aliases: set[str] = set()
+    function_aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "importlib":
+                    module_aliases.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module == "importlib":
+            for alias in node.names:
+                if alias.name == "import_module":
+                    function_aliases.add(alias.asname or alias.name)
+    return module_aliases, function_aliases
+
+
+def _dynamic_import_target(
+    *,
+    path: Path,
+    call: ast.Call,
+    importlib_module_aliases: set[str],
+    import_module_aliases: set[str],
+) -> str | None:
+    if not call.args:
+        return None
+
+    target = _constant_string(call.args[0])
+    if target is None:
+        return None
+
+    is_builtin_import = isinstance(call.func, ast.Name) and call.func.id == "__import__"
+    is_direct_import_module = (
+        isinstance(call.func, ast.Name) and call.func.id in import_module_aliases
+    )
+    is_module_import_module = (
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr == "import_module"
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id in importlib_module_aliases
+    )
+
+    if is_builtin_import:
+        level_node = _keyword(call, "level")
+        if level_node is None and len(call.args) >= 5:
+            level_node = call.args[4]
+        level = _constant_int(level_node) or 0
+        if level <= 0:
+            return target
+        return _resolve_relative_module(
+            package=_package_name_for_path(path),
+            module=target,
+            level=level,
+        )
+
+    if not (is_direct_import_module or is_module_import_module):
+        return None
+
+    if not target.startswith("."):
+        return target
+
+    package_node = _keyword(call, "package")
+    if package_node is None and len(call.args) >= 2:
+        package_node = call.args[1]
+    package = _constant_string(package_node)
+    if package is None and isinstance(package_node, ast.Name) and package_node.id == "__package__":
+        package = _package_name_for_path(path)
+    if not package:
+        return None
+
+    level = len(target) - len(target.lstrip("."))
+    module = target[level:]
+    return _resolve_relative_module(package=package, module=module, level=level)
+
+
+def _legacy_assignment_import_lines(path: Path, tree: ast.AST) -> list[int]:
+    lines: set[int] = set()
+    importlib_module_aliases, import_module_aliases = _importlib_aliases(tree)
+
+    for node in ast.walk(tree):
+        violation = False
+        if isinstance(node, ast.Import):
+            violation = any(_is_legacy_assignment_module(alias.name) for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            module = _resolve_import_from_module(path, node)
+            violation = _is_legacy_assignment_module(module)
+            if not violation:
+                violation = any(
+                    _is_legacy_assignment_module(
+                        f"{module}.{alias.name}" if module else alias.name
+                    )
+                    for alias in node.names
+                )
+        elif isinstance(node, ast.Call):
+            target = _dynamic_import_target(
+                path=path,
+                call=node,
+                importlib_module_aliases=importlib_module_aliases,
+                import_module_aliases=import_module_aliases,
+            )
+            violation = target is not None and _is_legacy_assignment_module(target)
+
+        if violation and getattr(node, "lineno", None) is not None:
+            lines.add(int(node.lineno))
+
+    return sorted(lines)
+
+
 def check_case_status_writes() -> list[str]:
     errors = []
     allowed = APP / "domain" / "cases" / "case_service.py"
@@ -139,14 +300,14 @@ def check_legacy_assignment_imports() -> list[str]:
 
     ``app.domain.assignment`` is a historical package whose AssignmentEngine and
     WorkloadService predate the Case-row/candidate locking, active staff identity,
-    workload/capacity and SLA/audit semantics in ``CaseAssignmentService``.  The
+    workload/capacity and SLA/audit semantics in ``CaseAssignmentService``. The
     legacy modules remain importable for compatibility while their safe removal
-    is audited, but no production module may start depending on them again.
+    is audited, but production modules may not depend on them through absolute,
+    relative or literal dynamic imports.
     """
 
     errors: list[str] = []
     legacy_root = APP / "domain" / "assignment"
-    forbidden_module = "app.domain.assignment"
 
     for path in python_files():
         if legacy_root in path.parents:
@@ -157,31 +318,12 @@ def check_legacy_assignment_imports() -> list[str]:
             errors.append(f"{path.relative_to(ROOT)}: syntax error: {error}")
             continue
 
-        for node in ast.walk(tree):
-            violation = False
-            if isinstance(node, ast.Import):
-                violation = any(
-                    alias.name == forbidden_module
-                    or alias.name.startswith(forbidden_module + ".")
-                    for alias in node.names
-                )
-            elif isinstance(node, ast.ImportFrom):
-                module = node.module or ""
-                violation = (
-                    module == forbidden_module
-                    or module.startswith(forbidden_module + ".")
-                    or (
-                        module == "app.domain"
-                        and any(alias.name == "assignment" for alias in node.names)
-                    )
-                )
-
-            if violation:
-                errors.append(
-                    f"{path.relative_to(ROOT)}:{node.lineno}: "
-                    "legacy app.domain.assignment is isolated; use "
-                    "app.domain.cases.assignment_service.CaseAssignmentService"
-                )
+        for lineno in _legacy_assignment_import_lines(path, tree):
+            errors.append(
+                f"{path.relative_to(ROOT)}:{lineno}: "
+                "legacy app.domain.assignment is isolated; use "
+                "app.domain.cases.assignment_service.CaseAssignmentService"
+            )
 
     return errors
 
