@@ -2,7 +2,7 @@
 
 Status: **authoritative current operations/release runbook** for the existing M1/M2 product.
 
-This file does not expand product scope. It defines what must be operated and proven before exposing the existing M1/M2 product to real clients and real money. Acceptance criteria live in `docs/ACCEPTANCE_CURRENT.md`; exact post-LIVE evidence order lives in `docs/POST_LIVE_RELEASE_EVIDENCE.md`; automated matrix details live in `docs/LIVE_REQUIRED_RUNBOOK.md`.
+This file does not expand product scope. It defines what must be operated and proven before exposing the existing M1/M2 product to real clients and real money. Acceptance criteria live in `docs/ACCEPTANCE_CURRENT.md`; exact post-LIVE evidence order lives in `docs/POST_LIVE_RELEASE_EVIDENCE.md`; automated matrix details live in `docs/LIVE_REQUIRED_RUNBOOK.md`; the maintained implementation/process/debt inventory lives in `docs/PROCESS_MAP_CURRENT.md`.
 
 ## Environment contract
 
@@ -30,7 +30,7 @@ Until #116 is resolved and required workflows actually execute, release status r
 For one frozen candidate SHA execute strictly in this order:
 
 1. restore real Actions runner allocation;
-2. execute full CI and required PR checks;
+2. execute full CI and required PR checks, including the living process-map maintenance contract;
 3. execute dedicated PostgreSQL concurrency → Redis/Telegram runtime → browser staff E2E workflows;
 4. execute one complete LIVE_REQUIRED run and retain its SHA/run/attempt-bound manifest;
 5. execute real Telegram M1 and M2 persona walkthroughs and reconcile UI ↔ PostgreSQL ↔ Audit/PaymentEvent evidence;
@@ -40,20 +40,36 @@ For one frozen candidate SHA execute strictly in this order:
 
 If source, migration, workflow or evidence code changes after evidence collection starts, freeze the new SHA and restart from full CI. Never combine evidence from different candidate SHAs or LIVE_REQUIRED attempts.
 
+## Living process-map operation
+
+`docs/PROCESS_MAP_CURRENT.md` is maintained with every repository change. It is the operational index connecting implementation to end-to-end `P-*` processes, business source-of-truth ownership, evidence status, known `PM-*` inconsistencies/debt and the dated change log.
+
+For every PR/change batch:
+
+1. identify every affected `P-*` process;
+2. update implementation/source-of-truth/evidence state where the change alters them;
+3. create or update a stable `PM-*` item for each discovered inconsistency, duplication, legacy residue, blocker or design risk;
+4. record the corrective action without describing unexecuted source as runtime PASS;
+5. append a dated change-log entry with release/evidence impact;
+6. do not merge while the CI `Process map maintenance contract` is failing.
+
+The process map cannot expand M1/M2 scope and cannot override the authoritative product/system/acceptance/runbook contracts. If it conflicts with one of them, correct the map or raise the conflict explicitly; never silently choose the more convenient text.
+
 ## Pre-deployment gate
 
 Before deploying a candidate image:
 
-1. confirm `PRODUCT_SCOPE_CURRENT.md`, `SYSTEM_CONTRACT_CURRENT.md`, `ACCEPTANCE_CURRENT.md` and this runbook match the branch;
-2. confirm one Alembic head and apply migrations to fresh PostgreSQL plus a production-like upgraded copy;
-3. run `scripts/architecture_check.py` without duplicate-route exemptions;
-4. execute the full automated gate after runners allocate;
-5. build the exact image intended for staging/production;
-6. start it against PostgreSQL + Redis using production-like deployment settings;
-7. follow the ordered release procedure above rather than cherry-picking later gates;
-8. verify scheduler heartbeat, notification delivery and owned alerting;
-9. leave online production payment creation disabled until provider acceptance for the candidate is complete;
-10. require a fresh encrypted backup and successful ordered restore drill before release declaration.
+1. confirm `PRODUCT_SCOPE_CURRENT.md`, `SYSTEM_CONTRACT_CURRENT.md`, `ACCEPTANCE_CURRENT.md`, `PROCESS_MAP_CURRENT.md` and this runbook match the branch;
+2. confirm the process-map `PM-*` register contains every known unresolved release-relevant inconsistency and that no source change is missing from its change log;
+3. confirm one Alembic head and apply migrations to fresh PostgreSQL plus a production-like upgraded copy;
+4. run `scripts/architecture_check.py` without duplicate-route exemptions;
+5. execute the full automated gate after runners allocate;
+6. build the exact image intended for staging/production;
+7. start it against PostgreSQL + Redis using production-like deployment settings;
+8. follow the ordered release procedure above rather than cherry-picking later gates;
+9. verify scheduler heartbeat, notification delivery and owned alerting;
+10. leave online production payment creation disabled until provider acceptance for the candidate is complete;
+11. require a fresh encrypted backup and successful ordered restore drill before release declaration.
 
 A failed or missing gate stops deployment; manual approval does not turn it into PASS.
 
@@ -269,6 +285,6 @@ Application rollback must remain schema-compatible with migrations already appli
 
 ## Release declaration
 
-Use **production ready** only after the ordered mandatory gates in `ACCEPTANCE_CURRENT.md` have real evidence for one frozen candidate SHA, #116 is cleared, and no unresolved release blocker remains.
+Use **production ready** only after the ordered mandatory gates in `ACCEPTANCE_CURRENT.md` have real evidence for one frozen candidate SHA, the corresponding `PROCESS_MAP_CURRENT.md` inventory/change log is current, #116 is cleared, and no unresolved release blocker remains.
 
 Until then, specific areas may be described as source-hardened/SOURCE_OK, but not live-proven production operation. PR #114 is not merged automatically and remains blocked until the complete evidence chain exists.
