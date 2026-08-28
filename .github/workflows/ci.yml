@@ -45,6 +45,29 @@ jobs:
             exit 1
           fi
 
+          latest_map_commit=$(
+            git rev-list -1 "$BASE_SHA..$HEAD_SHA" -- docs/PROCESS_MAP_CURRENT.md
+          )
+          latest_governed_commit=$(
+            git rev-list -1 "$BASE_SHA..$HEAD_SHA" -- . ':(exclude)docs/PROCESS_MAP_CURRENT.md'
+          )
+
+          if [ -z "$latest_map_commit" ]; then
+            echo "::error::Unable to resolve a process-map update in the pull-request range."
+            exit 1
+          fi
+
+          if [ -n "$latest_governed_commit" ] && ! git merge-base --is-ancestor "$latest_governed_commit" "$latest_map_commit"; then
+            echo "::error::docs/PROCESS_MAP_CURRENT.md is stale: repository changes were committed after its latest update. Update the living map after the latest governed change."
+            echo "latest governed commit: $latest_governed_commit"
+            echo "latest process-map commit: $latest_map_commit"
+            exit 1
+          fi
+
+          echo "Process map freshness contract satisfied."
+          echo "latest governed commit: ${latest_governed_commit:-none}"
+          echo "latest process-map commit: $latest_map_commit"
+
   sqlite-tests:
     name: SQLite application tests
     runs-on: ubuntu-24.04
