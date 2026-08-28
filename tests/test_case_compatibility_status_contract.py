@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.domain.cases.case_service import CaseService
 from app.domain.cases.case_transition_policy import (
     CaseTransitionError,
     transition_allowed,
@@ -40,6 +42,20 @@ def test_new_case_cannot_start_in_legacy_m2_status() -> None:
         validate_initial_status(CaseStatus.M2_DESCRIPTION_PENDING)
         == CaseStatus.M2_DESCRIPTION_PENDING
     )
+
+
+def test_case_service_rejects_legacy_initial_status_before_persistence() -> None:
+    async def scenario() -> None:
+        service = CaseService(None)  # type: ignore[arg-type]
+        with pytest.raises(CaseTransitionError, match="исторических данных"):
+            await service.create_case(
+                client=SimpleNamespace(id=1),
+                route="M2",
+                status=CaseStatus.M2_CONSULTATION_ROUTE,
+                title="legacy bootstrap must fail",
+            )
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("force", [False, True])
