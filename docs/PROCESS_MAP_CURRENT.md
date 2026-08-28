@@ -311,7 +311,8 @@ Historical compatibility rule:
 - persisted legacy rows may contain `M2_CONSULTATION_ROUTE` because `cases.status` is string-backed;
 - the only supported use of that status is read/upgrade compatibility: `M2_CONSULTATION_ROUTE → M2_DESCRIPTION_PENDING` in consultation intake;
 - no new Case may be created in `M2_CONSULTATION_ROUTE` and no normal or forced transition may re-enter it;
-- the ORM status-write backstop also rejects direct recreation/re-entry, so bypassing `CaseService` cannot revive the retired bootstrap state.
+- the ORM status-write backstop also rejects direct recreation/re-entry, so bypassing `CaseService` cannot revive the retired bootstrap state;
+- regression coverage inserts a historical value directly through the table layer, proves ORM hydration remains readable, advances it to `M2_DESCRIPTION_PENDING`, then verifies the persisted upgraded state.
 
 Consultation statuses:
 
@@ -336,7 +337,7 @@ Concurrency-sensitive facts:
 - two clients competing for one slot;
 - stale reschedule/booking after Case switch.
 
-Evidence anchor added: `tests/test_case_compatibility_status_contract.py`.
+Evidence anchor: `tests/test_case_compatibility_status_contract.py`, including historical DB-row hydration/forward-upgrade coverage.
 
 State: `IMPLEMENTED / FIXED_PENDING_RUNTIME`.
 
@@ -516,7 +517,7 @@ Current infrastructure state: `BLOCKED_INFRA` under GitHub issue #116 until Acti
 - mandatory `Process map maintenance contract` for pull requests;
 - source compile;
 - architecture check, including fail-closed legacy assignment import containment;
-- SQLite application suite, including M2 compatibility-status and Workdesk composition regressions;
+- SQLite application suite, including M2 compatibility-status historical-row and Workdesk composition regressions;
 - Alembic current/idempotency/check;
 - clean migration smoke;
 - PostgreSQL migration + technical encrypted backup/restore drill;
@@ -573,11 +574,36 @@ Requires exact same run attempt/SHA evidence for:
 | --- | --- | --- | --- | --- |
 | PM-001 | Release infra | GitHub Actions jobs end before runner allocation (`runner_id=0`, empty/null steps); issue #116 | No runtime/test PASS can be claimed | `BLOCKED_INFRA`; external billing/spending/runner fix required |
 | PM-002 | PostgreSQL dedicated gate | `tests/test_postgres_auto_assignment_concurrency.py` existed and was required by acceptance/LIVE_REQUIRED but was absent from `.github/workflows/postgres-concurrency.yml` | Dedicated gate could pass without proving assignment capacity race | `FIXED_PENDING_RUNTIME`: added to dedicated workflow; requires real PostgreSQL gate execution |
-| PM-003 | M2 state machine | `M2_CONSULTATION_ROUTE` is a historical string-backed bootstrap status; canonical current M2 creation begins at `M2_DESCRIPTION_PENDING`, while old rows may still require one-way compatibility upgrade | New or forced re-entry would revive a retired state and split analytics/state-machine semantics; deleting the value outright could break historical rows | `FIXED_PENDING_RUNTIME / COMPATIBILITY_READ_ONLY`: existing legacy rows remain readable and may move only forward to `M2_DESCRIPTION_PENDING`; transition policy rejects all new/forced entry and ORM backstop rejects direct creation/re-entry; focused regression added; physical removal deferred until historical DB audit/migration is proven safe |
+| PM-003 | M2 state machine | `M2_CONSULTATION_ROUTE` is a historical string-backed bootstrap status; canonical current M2 creation begins at `M2_DESCRIPTION_PENDING`, while old rows may still require one-way compatibility upgrade | New or forced re-entry would revive a retired state and split analytics/state-machine semantics; deleting the value outright could break historical rows | `FIXED_PENDING_RUNTIME / COMPATIBILITY_READ_ONLY`: existing legacy rows remain readable and may move only forward to `M2_DESCRIPTION_PENDING`; transition policy rejects all new/forced entry and ORM backstop rejects direct creation/re-entry; focused regression includes raw-table historical-row insertion → ORM hydration → forward upgrade; physical removal deferred until historical production/staging DB audit/migration is proven safe |
 | PM-004 | Assignment architecture | Historical `app/domain/assignment/AssignmentEngine` + `WorkloadService` coexist with canonical hardened `app/domain/cases/CaseAssignmentService`; exact-ref package has no public exports and repository code search found no current consumers, but search indexing alone is not proof of safe deletion | A future/reintroduced legacy import could bypass Case/candidate locking, active staff identity, workload/capacity and SLA/audit semantics | `DEBT_OPEN / SOURCE_CONTAINED`: `architecture_check.py::check_legacy_assignment_imports` now rejects any production import of `app.domain.assignment` outside the legacy package; retain files until safe-removal/historical-consumer audit, then delete only with regression/runtime proof |
 | PM-005 | Workdesk composition | Canonical Workdesk route previously embedded a responsibility/deep-link JS patch in `assignment_queue.py` and then applied a second integrity HTML/JS injection, distributing final UI construction across route/data modules | UI ownership was harder to inspect and future route changes could accidentally omit/duplicate a cross-cutting patch | `FIXED_PENDING_RUNTIME / COMPOSITION_CENTRALIZED`: `app/api/workdesk_renderer.py` is now the single final composition boundary; `assignment_queue.py` only authenticates/serves the route and owns responsibility/queue data APIs, while renderer deterministically combines base UI, responsibility/deep-link behavior and integrity overlay. `tests/test_workdesk_renderer_contract.py` locks uniqueness and forbids route-level HTML patching |
 | PM-006 | Repository governance | Private-repo ruleset API could not be independently inspected on current GitHub plan | Formal branch-protection required-context list is not independently proven through API | `DEBT_OPEN`: CI-level process-map contract is implemented; verify GitHub branch/rules settings manually when runner/billing is restored |
 | PM-007 | Runtime evidence | Storage portability, retention portability, restore schema-v2, Payment Review, assignment, M2 compatibility-status, Workdesk renderer and process-map governance regressions exist but current runner has not executed them | Source correctness may hide runtime/governance regressions | `RUNTIME_PENDING`; must pass ordered release gates on the current candidate SHA |
+
+# Development priority plan
+
+## P0 — release-truth and runtime recovery
+
+1. Resolve #116 externally and prove real runner allocation (`runner_id != 0` with executed steps).
+2. Freeze the then-current head and run full general gates: CI + Deployment Readiness + Reproducible Dependencies.
+3. Treat any real failure as application evidence; fix it, record the affected P-/PM-item here, create a new candidate and restart full CI.
+4. Validate all current source fixes in runtime, especially PM-002, PM-003, PM-005, storage/retention portability and Payment Review recovery.
+5. Run dedicated PostgreSQL/Redis/browser gates, then one complete LIVE_REQUIRED attempt only after the general gates are green.
+
+## P1 — controlled debt closure after executable CI exists
+
+1. PM-004: complete exact-reference/historical consumer audit for `app.domain.assignment`; physically delete legacy assignment modules only if removal is proven safe and regression gates execute.
+2. PM-006: manually verify repository branch/rules settings and exact required contexts once GitHub plan/billing permits meaningful Actions operation; align required contexts with the actual gate contract without weakening it.
+3. Re-run focused staff browser checks for the centralized Workdesk renderer and confirm no visual/action regression for M1 vs M2 responsibility semantics.
+4. Audit real staging/restore databases for any remaining `M2_CONSULTATION_ROUTE` rows before considering a future data migration/removal of the compatibility enum.
+
+## P2 — post-LIVE evidence and release decision
+
+1. Real Telegram M1/M2 personas and evidence reconciliation.
+2. Encrypted backup→restore application/runtime proof.
+3. Safe provider-side YooKassa test-shop paid/refund expansion.
+4. Resolve or explicitly accept every remaining release-relevant PM-item.
+5. Release/merge decision; no automatic merge.
 
 # Change impact rule
 
@@ -626,3 +652,10 @@ Whenever code changes:
 - Removed `WORKDESK_HTML`, responsibility patch and integrity-injection handling from `assignment_queue.py`; that module now authenticates/serves `/admin/workdesk/ui` through `render_workdesk_html()` and keeps responsibility/queue data APIs only.
 - Added `tests/test_workdesk_renderer_contract.py` to prove the responsibility, repair, deep-link and integrity layers are each present exactly once and to prevent route-level HTML patching from returning.
 - PM-005 is source-fixed but remains browser/runtime pending. This source/test batch supersedes the previous candidate; ordered release verification must restart from full CI on the resulting head after #116 is restored.
+
+## 2026-08-28 — PM-003 historical-row hydration regression strengthened
+
+- Extended `tests/test_case_compatibility_status_contract.py` with an in-memory database scenario that inserts `M2_CONSULTATION_ROUTE` through the table layer to model an existing historical row, loads it through the ORM, advances it to `M2_DESCRIPTION_PENDING`, commits and verifies the upgraded persisted status.
+- This specifically guards the defensive ORM status listener from accidentally blocking database hydration of historical compatibility data while still preventing new/re-entry writes.
+- Added the P0/P1/P2 development priority plan above so the living map is also the maintained execution roadmap, not only an inventory/debt register.
+- This test/documentation batch supersedes the previous candidate for release evidence; ordered verification must restart from full CI on the resulting head after #116 is restored.
