@@ -27,9 +27,12 @@ Before finishing a change:
 3. create or update a stable `PM-*` item for every discovered inconsistency, duplication, legacy residue, blocker or design risk;
 4. never remove a `PM-*` item merely because code moved — close it only with an explicit corrective action and the evidence required by the contract;
 5. append a dated change-log entry explaining the change and release/evidence impact;
-6. keep unexecuted work as `SOURCE_AUDITED`, `RUNTIME_PENDING`, `FIXED_PENDING_RUNTIME` or `BLOCKED_INFRA`; never call source inspection `LIVE_PASS`.
+6. keep unexecuted work as `SOURCE_AUDITED`, `RUNTIME_PENDING`, `FIXED_PENDING_RUNTIME` or `BLOCKED_INFRA`; never call source inspection `LIVE_PASS`;
+7. make the process-map update the **last governed commit in the change batch**, or include the governed change and map update in the same commit.
 
-CI enforces this on pull requests through the `Process map maintenance contract` job, but agents/developers must update the map before CI rather than relying on CI to detect omission.
+CI enforces this on pull requests through the `Process map maintenance contract` job. The gate checks both that the map changed somewhere in the PR and that no later governed repository commit exists after the latest map update. A code/test/workflow/docs-contract commit made after the map therefore makes the map stale and must be followed by another map update.
+
+Agents/developers must update the map before relying on CI; the gate is a fail-closed backstop, not a substitute for maintaining the map.
 
 ## Current product boundary
 
