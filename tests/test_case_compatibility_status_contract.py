@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.domain.cases.case_transition_policy import (
     CaseTransitionError,
@@ -9,7 +12,7 @@ from app.domain.cases.case_transition_policy import (
     validate_transition,
 )
 from app.domain.statuses.case_statuses import CaseStatus
-from app.models import Case
+from app.models import Base, Case
 
 
 def test_legacy_m2_status_remains_readable_and_can_only_move_forward() -> None:
@@ -76,3 +79,41 @@ def test_orm_backstop_rejects_direct_reentry_into_legacy_m2_status() -> None:
 
     with pytest.raises(ValueError, match="повторный вход"):
         case.status = CaseStatus.M2_CONSULTATION_ROUTE
+
+
+def test_historical_legacy_m2_database_row_hydrates_and_moves_forward() -> None:
+    async def scenario() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+
+            session_factory = async_sessionmaker(engine, expire_on_commit=False)
+            async with session_factory() as session:
+                await session.execute(
+                    Case.__table__.insert().values(
+                        id=9_900_031,
+                        case_number="DLC-LEGACY-M2-READ",
+                        client_id=1,
+                        route="M2",
+                        status=CaseStatus.M2_CONSULTATION_ROUTE.value,
+                    )
+                )
+                await session.commit()
+
+            async with session_factory() as session:
+                case = await session.get(Case, 9_900_031)
+                assert case is not None
+                assert case.status == CaseStatus.M2_CONSULTATION_ROUTE.value
+
+                case.status = CaseStatus.M2_DESCRIPTION_PENDING.value
+                await session.commit()
+
+            async with session_factory() as session:
+                upgraded = await session.get(Case, 9_900_031)
+                assert upgraded is not None
+                assert upgraded.status == CaseStatus.M2_DESCRIPTION_PENDING.value
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
