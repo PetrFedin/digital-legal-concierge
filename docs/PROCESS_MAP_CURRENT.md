@@ -156,7 +156,9 @@ Rules:
 
 - M2 responsibility is consultation/slot-driven, not M1 `Case.assigned_lawyer_id` auto-assignment;
 - two eligible M1 Cases competing for one final capacity slot may produce exactly one assignment;
-- `architecture_check.py::check_legacy_assignment_imports` prevents production code from reintroducing historical `app.domain.assignment` semantics.
+- `architecture_check.py::check_legacy_assignment_imports` prevents production code from reintroducing historical `app.domain.assignment` semantics through absolute imports, relative `ImportFrom`, or literal dynamic imports (`importlib.import_module` / `__import__`).
+
+Evidence: `tests/test_postgres_auto_assignment_concurrency.py`, `tests/test_legacy_assignment_import_guard.py`.
 
 State: `IMPLEMENTED / FIXED_PENDING_RUNTIME`.
 
@@ -323,8 +325,8 @@ Current infrastructure state: `BLOCKED_INFRA` under issue #116 until Actions all
 - `Process map maintenance contract`: file must exist, must be changed in the PR, and its latest commit must be at least as new as the latest governed repository commit;
 - `tests/test_process_map_governance_contract.py` locks the presence/freshness source contract and root `AGENTS.md` wording;
 - source compile;
-- architecture check, including legacy assignment containment;
-- SQLite suite, including CaseService/M2 compatibility and Workdesk renderer regressions;
+- architecture check, including absolute/relative/literal-dynamic legacy assignment containment;
+- SQLite suite, including CaseService/M2 compatibility, Workdesk renderer and legacy-assignment import-guard regressions;
 - Alembic current/idempotency/check + clean migration smoke;
 - PostgreSQL migration + technical encrypted backup/restore drill;
 - production container build/start/health.
@@ -365,7 +367,7 @@ One exact SHA/run/attempt must prove PostgreSQL, Redis, real Telegram delivery, 
 | PM-001 | Release infra | Actions jobs end before runner allocation (`runner_id=0`, empty/null steps); issue #116 | No runtime/test PASS can be claimed | `BLOCKED_INFRA`; external billing/spending/runner fix required |
 | PM-002 | PostgreSQL dedicated gate | Auto-assignment capacity race existed in tests/acceptance/LIVE_REQUIRED but was omitted from dedicated PostgreSQL workflow | Dedicated gate could pass without assignment race proof | `FIXED_PENDING_RUNTIME`; test is now included in dedicated workflow |
 | PM-003 | M2 state machine | Historical `M2_CONSULTATION_ROUTE` can exist in string-backed old rows, while canonical current M2 begins at `M2_DESCRIPTION_PENDING` | Re-entry would split semantics; immediate deletion could break historical rows | `FIXED_PENDING_RUNTIME / COMPATIBILITY_READ_ONLY`; CaseService initial validation + no-reentry transition rule + ORM backstop + historical-row hydration/forward-upgrade regression; physical removal deferred until real DB audit |
-| PM-004 | Assignment architecture | Historical `AssignmentEngine`/`WorkloadService` coexist with hardened `CaseAssignmentService` | Reintroduced legacy import could bypass locking/capacity/audit semantics | `DEBT_OPEN / SOURCE_CONTAINED`; architecture gate forbids production imports; delete only after historical/external-consumer audit + executable regressions |
+| PM-004 | Assignment architecture | Historical `AssignmentEngine`/`WorkloadService` coexist with hardened `CaseAssignmentService`; initial containment covered direct absolute imports but relative or literal dynamic imports could bypass it | Reintroduced legacy code could bypass Case/candidate locking, active staff identity, workload/capacity and SLA/audit semantics while still evading the architecture gate | `DEBT_OPEN / SOURCE_CONTAINED / HARDENED_PENDING_RUNTIME`; guard now resolves relative `ImportFrom` and detects absolute/relative literal dynamic imports through `importlib.import_module` aliases and `__import__`; `tests/test_legacy_assignment_import_guard.py` covers forbidden bypass forms and allowed canonical imports; physical legacy-module deletion still waits for historical/external-consumer audit + executable regressions |
 | PM-005 | Workdesk composition | Final UI was assembled by route-level responsibility JS patch plus separate integrity injection | Distributed UI ownership could omit/duplicate behavior | `FIXED_PENDING_RUNTIME / COMPOSITION_CENTRALIZED`; single `workdesk_renderer.py`, route module no longer patches HTML, regression locks boundary |
 | PM-006 | Repository governance | Private-repo ruleset required contexts cannot be independently enumerated through current GitHub API/plan | Formal branch protection contract is not API-proven | `DEBT_OPEN`; CI governance + root `AGENTS.md` implemented; manually verify repository rules after billing/runner recovery |
 | PM-007 | Runtime evidence | Current storage/restore/retention/Payment Review/assignment/M2/Workdesk/governance regressions have not run on an Actions runner | Source correctness may hide runtime regressions | `RUNTIME_PENDING`; ordered gates required on current candidate |
@@ -378,7 +380,7 @@ One exact SHA/run/attempt must prove PostgreSQL, Redis, real Telegram delivery, 
 1. Resolve #116 externally and prove real runner allocation (`runner_id != 0` + executed steps).
 2. Freeze the then-current head and run `CI` + `Deployment Readiness` + `Reproducible Dependencies`.
 3. Treat a real failure as application evidence; fix it, update affected P-/PM-items/change log, create a new candidate and restart full CI.
-4. Validate PM-002, PM-003, PM-005, PM-008, storage/retention portability and Payment Review recovery in executable gates.
+4. Validate PM-002, PM-003, PM-004, PM-005, PM-008, storage/retention portability and Payment Review recovery in executable gates.
 5. Run dedicated PostgreSQL/Redis/browser gates, then one complete LIVE_REQUIRED attempt only after general gates are green.
 
 ## P1 — controlled debt closure after executable CI exists
@@ -464,3 +466,12 @@ Whenever anything changes:
 - Added `tests/test_process_map_governance_contract.py` to lock the presence/freshness source contract.
 - This map update is intentionally the final governed commit of the batch, satisfying the new invariant by construction.
 - PM-008 is `FIXED_PENDING_RUNTIME`: the gate and regression remain unexecuted until issue #116 is resolved.
+
+## 2026-08-28 — PM-004 legacy assignment containment hardened against bypass imports
+
+- Re-audited `check_legacy_assignment_imports()` and found the first implementation covered direct absolute imports but could be bypassed by relative imports such as `from ..assignment import ...` or literal dynamic imports.
+- Added canonical package resolution for relative `ImportFrom` nodes.
+- Added literal dynamic-import detection for `importlib.import_module`, imported/aliased `import_module`, and `__import__`, including relative package/level forms when statically resolvable.
+- Added `tests/test_legacy_assignment_import_guard.py` with forbidden absolute/relative/dynamic forms and allowed canonical `app.domain.cases.assignment_service` forms.
+- Business assignment semantics were not changed; this is containment hardening around the already-canonical `CaseAssignmentService`.
+- PM-004 remains open for physical legacy-module removal, but the source boundary is materially stronger and remains runtime pending until #116 is restored.
