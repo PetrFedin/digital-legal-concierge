@@ -103,6 +103,11 @@ _BUSINESS_CLOSED = {
     "M2_CLOSED": "M2_COMPLETED",
 }
 _TERMINAL = frozenset({*_BUSINESS_CLOSED, "ARCHIVED"})
+# Legacy database rows may still contain this historical M2 bootstrap value and
+# must remain readable so ConsultationIntakeService can advance them. New ORM
+# writes must never recreate/re-enter it; the canonical M2 start state is
+# M2_DESCRIPTION_PENDING.
+_WRITE_FORBIDDEN_COMPATIBILITY_STATUSES = frozenset({"M2_CONSULTATION_ROUTE"})
 
 
 def _status_value(value: object) -> str:
@@ -117,18 +122,25 @@ def _stamp_case_lifecycle_fact(
     oldvalue: object,
     _initiator,
 ) -> None:
-    """Backstop closure/archive timestamps for every sanctioned status writer.
+    """Protect lifecycle facts and historical compatibility states on writes.
 
-    CaseService remains the process-state owner. This listener only protects the
-    persisted lifecycle facts from being omitted by a dedicated domain service.
-    More specific services may set ``close_reason`` before assigning the terminal
-    status; the listener preserves that explicit value.
+    CaseService remains the process-state owner. This listener is a defensive
+    persistence backstop: it protects lifecycle facts from omission and rejects
+    recreation of retired compatibility-only statuses. SQLAlchemy row hydration
+    does not use this application-level assignment path, so historical rows stay
+    readable and can move forward through the explicit compatibility transition.
     """
 
     new_status = _status_value(value)
     old_status = _status_value(oldvalue)
     if not new_status or new_status == old_status:
         return
+
+    if new_status in _WRITE_FORBIDDEN_COMPATIBILITY_STATUSES:
+        raise ValueError(
+            f"Статус {new_status} доступен только для чтения исторических данных; "
+            "новые записи и повторный вход в него запрещены"
+        )
 
     now = datetime.now(timezone.utc)
     if new_status in _BUSINESS_CLOSED:
