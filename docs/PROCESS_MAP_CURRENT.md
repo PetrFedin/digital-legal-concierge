@@ -296,7 +296,7 @@ Canonical flow:
 
 `new consultation action → M2 Case → description → optional documents → slot selection → reservation/hold → payment or approved no-payment path → booked → result/no-show → reschedule/refund/follow-up/to-M1/closure`
 
-Case statuses:
+Canonical new Case statuses:
 
 `M2_DESCRIPTION_PENDING`
 → `M2_DOCUMENTS_OPTIONAL`
@@ -306,6 +306,13 @@ Case statuses:
 → `M2_CONSULTATION_DONE`
 → (`M2_CLOSED` | `M2_TO_M1` → `M1_DOCUMENTS_PENDING` | approved reschedule branch).
 
+Historical compatibility rule:
+
+- persisted legacy rows may contain `M2_CONSULTATION_ROUTE` because `cases.status` is string-backed;
+- the only supported use of that status is read/upgrade compatibility: `M2_CONSULTATION_ROUTE → M2_DESCRIPTION_PENDING` in consultation intake;
+- no new Case may be created in `M2_CONSULTATION_ROUTE` and no normal or forced transition may re-enter it;
+- the ORM status-write backstop also rejects direct recreation/re-entry, so bypassing `CaseService` cannot revive the retired bootstrap state.
+
 Consultation statuses:
 
 `DESCRIPTION_PENDING / DOCUMENTS_OPTIONAL / SLOT_PENDING / SLOT_RESERVED / PAYMENT_PENDING / BOOKED / DONE / CLIENT_NO_SHOW / LAWYER_NO_SHOW / CANCELLED / RESCHEDULED / CLOSED`.
@@ -313,6 +320,8 @@ Consultation statuses:
 Implementation anchors:
 
 - `app/domain/consultations/consultation_intake.py`;
+- `app/domain/cases/case_transition_policy.py` compatibility-only write guard;
+- `app/models/case.py` defensive ORM write guard;
 - `consultation_service.py`;
 - `slot_service.py`;
 - `consultation_change_service.py`;
@@ -327,7 +336,9 @@ Concurrency-sensitive facts:
 - two clients competing for one slot;
 - stale reschedule/booking after Case switch.
 
-State: `IMPLEMENTED / RUNTIME_PENDING`.
+Evidence anchor added: `tests/test_case_compatibility_status_contract.py`.
+
+State: `IMPLEMENTED / FIXED_PENDING_RUNTIME`.
 
 ## P-08 — Staff authentication, authorization and Workdesk
 
@@ -501,7 +512,7 @@ Current infrastructure state: `BLOCKED_INFRA` under GitHub issue #116 until Acti
 - mandatory `Process map maintenance contract` for pull requests;
 - source compile;
 - architecture check, including fail-closed legacy assignment import containment;
-- SQLite application suite;
+- SQLite application suite, including M2 compatibility-status write-lock regression;
 - Alembic current/idempotency/check;
 - clean migration smoke;
 - PostgreSQL migration + technical encrypted backup/restore drill;
@@ -557,11 +568,11 @@ Requires exact same run attempt/SHA evidence for:
 | --- | --- | --- | --- | --- |
 | PM-001 | Release infra | GitHub Actions jobs end before runner allocation (`runner_id=0`, empty/null steps); issue #116 | No runtime/test PASS can be claimed | `BLOCKED_INFRA`; external billing/spending/runner fix required |
 | PM-002 | PostgreSQL dedicated gate | `tests/test_postgres_auto_assignment_concurrency.py` existed and was required by acceptance/LIVE_REQUIRED but was absent from `.github/workflows/postgres-concurrency.yml` | Dedicated gate could pass without proving assignment capacity race | `FIXED_PENDING_RUNTIME`: added to dedicated workflow; requires real PostgreSQL gate execution |
-| PM-003 | M2 state machine | `M2_CONSULTATION_ROUTE` remains an enum/compatibility intake status, but canonical new M2 creation starts at `M2_DESCRIPTION_PENDING` and normal transition policy exposes no canonical incoming edge | Legacy/residue status can confuse diagrams, analytics, manual status handling | `DEBT_OPEN`: retain only as compatibility state until exact historical-row/runtime audit proves safe removal/migration |
+| PM-003 | M2 state machine | `M2_CONSULTATION_ROUTE` is a historical string-backed bootstrap status; canonical current M2 creation begins at `M2_DESCRIPTION_PENDING`, while old rows may still require one-way compatibility upgrade | New or forced re-entry would revive a retired state and split analytics/state-machine semantics; deleting the value outright could break historical rows | `FIXED_PENDING_RUNTIME / COMPATIBILITY_READ_ONLY`: existing legacy rows remain readable and may move only forward to `M2_DESCRIPTION_PENDING`; transition policy rejects all new/forced entry and ORM backstop rejects direct creation/re-entry; focused regression added; physical removal deferred until historical DB audit/migration is proven safe |
 | PM-004 | Assignment architecture | Historical `app/domain/assignment/AssignmentEngine` + `WorkloadService` coexist with canonical hardened `app/domain/cases/CaseAssignmentService`; exact-ref package has no public exports and repository code search found no current consumers, but search indexing alone is not proof of safe deletion | A future/reintroduced legacy import could bypass Case/candidate locking, active staff identity, workload/capacity and SLA/audit semantics | `DEBT_OPEN / SOURCE_CONTAINED`: `architecture_check.py::check_legacy_assignment_imports` now rejects any production import of `app.domain.assignment` outside the legacy package; retain files until safe-removal/historical-consumer audit, then delete only with regression/runtime proof |
 | PM-005 | Workdesk composition | `app/api/assignment_queue.py` still composes canonical Workdesk by injecting a responsibility/deep-link JS patch into `WORKDESK_HTML` at render time | UI behavior is distributed across modules and harder to reason about than a single canonical component | `DEBT_OPEN`: not a current route-ownership violation, but candidate for later source consolidation after release evidence is restored |
 | PM-006 | Repository governance | Private-repo ruleset API could not be independently inspected on current GitHub plan | Formal branch-protection required-context list is not independently proven through API | `DEBT_OPEN`: CI-level process-map contract is implemented; verify GitHub branch/rules settings manually when runner/billing is restored |
-| PM-007 | Runtime evidence | Storage portability, retention portability, restore schema-v2, Payment Review, assignment and process-map governance regressions exist but current runner has not executed them | Source correctness may hide runtime/governance regressions | `RUNTIME_PENDING`; must pass ordered release gates on the new candidate SHA |
+| PM-007 | Runtime evidence | Storage portability, retention portability, restore schema-v2, Payment Review, assignment, M2 compatibility-status and process-map governance regressions exist but current runner has not executed them | Source correctness may hide runtime/governance regressions | `RUNTIME_PENDING`; must pass ordered release gates on the current candidate SHA |
 
 # Change impact rule
 
@@ -593,3 +604,12 @@ Whenever code changes:
 - Added `scripts/architecture_check.py::check_legacy_assignment_imports`, which rejects any production import from `app.domain.assignment` outside that historical package and directs new code to `app.domain.cases.assignment_service.CaseAssignmentService`.
 - PM-004 is now source-contained rather than merely documented: re-introducing the old assignment path becomes an architecture-gate failure. Physical removal remains deferred until historical/external consumer risk is closed and required regression/runtime gates can execute.
 - This architecture change supersedes the immediately previous candidate for release evidence; ordered verification must restart from full CI on the resulting branch head once #116 is restored.
+
+## 2026-08-28 — PM-003 M2 legacy bootstrap made compatibility-read-only
+
+- Confirmed the canonical current M2 intake creates Cases at `M2_DESCRIPTION_PENDING`; `M2_CONSULTATION_ROUTE` is only consumed as a one-way upgrade source for historical rows.
+- Preserved the legacy enum/value because `cases.status` is string-backed and historical database rows may still contain it; no destructive migration is claimed without real DB evidence.
+- Added `READ_ONLY_COMPATIBILITY_STATUSES` and `validate_initial_status` to the Case transition policy. Normal and `force=True` transitions into `M2_CONSULTATION_ROUTE` now fail closed, while a legacy row can still advance to `M2_DESCRIPTION_PENDING`.
+- Added an ORM status-write backstop in `app/models/case.py` so direct creation/re-entry outside `CaseService` cannot recreate the retired bootstrap state.
+- Added `tests/test_case_compatibility_status_contract.py` covering forward compatibility upgrade, initial-status rejection, normal/forced re-entry rejection and ORM write protection.
+- PM-003 is source-fixed but remains runtime pending. This source/test batch supersedes the previous candidate; ordered release verification must restart from full CI on the resulting head after #116 is restored.
