@@ -2,23 +2,33 @@
 
 Status: **living authoritative implementation inventory** for the existing Digital Legal Concierge M1/M2 product.
 
-This file is the single maintained map of what is implemented, what owns each business fact, what is still source-only, what requires runtime evidence, and what inconsistencies/debt are known. It does not expand product scope and does not override `PRODUCT_SCOPE_CURRENT.md`, `SYSTEM_CONTRACT_CURRENT.md`, `ACCEPTANCE_CURRENT.md`, `RUNBOOK_CURRENT.md`, `LIVE_REQUIRED_RUNBOOK.md`, or `POST_LIVE_RELEASE_EVIDENCE.md`.
+This file is the maintained map of what is implemented, what owns each business fact, what is source-only, what still requires runtime evidence, what inconsistencies/debt are known, and what must happen next. It does **not** expand product scope and does not override `PRODUCT_SCOPE_CURRENT.md`, `SYSTEM_CONTRACT_CURRENT.md`, `ACCEPTANCE_CURRENT.md`, `RUNBOOK_CURRENT.md`, `LIVE_REQUIRED_RUNBOOK.md`, or `POST_LIVE_RELEASE_EVIDENCE.md`.
 
-## Mandatory maintenance rule
+## Repository entrypoints and mandatory maintenance
 
-Every repository change that alters product behavior, data, migrations, API/UI, Telegram, scheduler, security, storage, deployment, tests, workflows, evidence tooling, or release procedure **must update this file in the same PR**.
+Read before changing the repository:
 
-The CI process-map contract exists to make that rule executable rather than advisory. A PR that changes the repository without changing `docs/PROCESS_MAP_CURRENT.md` is incomplete.
+1. root `AGENTS.md` — pre-change contract for agents/developers;
+2. `docs/PRODUCT_SCOPE_CURRENT.md`;
+3. `docs/SYSTEM_CONTRACT_CURRENT.md`;
+4. `docs/ACCEPTANCE_CURRENT.md`;
+5. `docs/RUNBOOK_CURRENT.md`;
+6. `docs/LIVE_REQUIRED_RUNBOOK.md`;
+7. `docs/POST_LIVE_RELEASE_EVIDENCE.md`;
+8. this file.
 
-For each change, update at least one of:
+Every repository change that alters product behavior, data, migrations, API/UI, Telegram, scheduler, security, storage, deployment, tests, workflows, evidence tooling, documentation contract, or release procedure **must update this file in the same change batch/PR**.
 
-- process inventory/status;
-- data/source-of-truth ownership;
-- runtime/evidence gate;
-- known inconsistency/debt register;
-- change log at the end of this file.
+Before finishing a change:
 
-Do not mark a process `LIVE_PASS` from source inspection. Runtime/test evidence states are defined by `ACCEPTANCE_CURRENT.md`.
+- identify every affected `P-*` process;
+- update source-of-truth ownership/status/evidence state where behavior changed;
+- create or update a stable `PM-*` item for every discovered inconsistency, duplication, legacy residue, blocker or design risk;
+- never delete a `PM-*` item merely because code moved — close it only with an explicit corrective action and the evidence required by the contract;
+- append a dated change-log entry explaining the change and release/evidence impact;
+- never promote source inspection to `LIVE_PASS`.
+
+CI enforces this on pull requests through `Process map maintenance contract`, but `AGENTS.md` makes the rule visible **before** a PR is created.
 
 ## Status vocabulary
 
@@ -30,8 +40,8 @@ Do not mark a process `LIVE_PASS` from source inspection. Runtime/test evidence 
 | `BLOCKED_INFRA` | Required runtime cannot execute because infrastructure is unavailable. |
 | `LIVE_PASS` | Required runtime/evidence actually passed for the current candidate SHA. |
 | `LIVE_FAIL` | Executed runtime contradicted the contract. |
-| `DEBT_OPEN` | Known inconsistency, duplication, legacy residue, or unclosed design risk. |
-| `FIXED_PENDING_RUNTIME` | Source inconsistency was corrected but the correction has not executed in the required runtime gate. |
+| `DEBT_OPEN` | Known inconsistency, duplication, legacy residue or unclosed design risk. |
+| `FIXED_PENDING_RUNTIME` | Source inconsistency was corrected but required runtime proof has not executed. |
 
 ## Product boundary
 
@@ -40,82 +50,56 @@ Current product routes are exactly:
 - `M1` — standard recovery / case handling;
 - `M2` — paid consultation.
 
-Telegram remains the client cabinet. Staff work through authenticated browser/admin/lawyer surfaces. M3/M4, a separate client web cabinet, AI legal decision-making, a new CRM, a second payment product, and a separate calendar product are outside the current release scope.
+Telegram remains the client cabinet. Staff work through authenticated browser/admin/lawyer surfaces. M3/M4, a separate client web cabinet, AI legal decision-making, a second CRM/payment/calendar product, or unrelated scope is out of the current release unless the authoritative product contract is explicitly changed first.
 
 ## System layers
 
 | Layer | Main implementation areas | Responsibility | Current state |
 | --- | --- | --- | --- |
-| Client / Telegram | `app/bot/*` | client identity, selected Case, calculator, M1/M2 actions, documents, messages, payment UX, stale callback protection | IMPLEMENTED / RUNTIME_PENDING |
+| Client / Telegram | `app/bot/*` | identity, selected Case, calculator, M1/M2 actions, documents, messages, payment UX, stale callback protection | IMPLEMENTED / RUNTIME_PENDING |
 | Domain | `app/domain/*` | legal/business state machines and transaction semantics | IMPLEMENTED / SOURCE_AUDITED / RUNTIME_PENDING |
-| Staff product | `app/api/*`, `app/admin/*`, `app/lawyer/*` | admin/lawyer workdesk, reviews, assignment, consultations, payment review/refunds, operations | IMPLEMENTED / RUNTIME_PENDING |
-| Persistence | `app/models/*`, Alembic migrations | durable Case/Document/Payment/Consultation/Audit facts | IMPLEMENTED / RUNTIME_PENDING |
+| Staff product | `app/api/*`, staff UI modules | admin/lawyer Workdesk, reviews, assignment, consultations, Payment Review/refunds | IMPLEMENTED / RUNTIME_PENDING |
+| Persistence | `app/models/*`, Alembic | durable Case/Document/Payment/Consultation/Audit facts | IMPLEMENTED / RUNTIME_PENDING |
 | Platform/security | `app/security/*`, `app/storage.py` | auth, grants, encryption, audit integrity, backup/restore, key rotation, storage safety | IMPLEMENTED / SOURCE_AUDITED / RUNTIME_PENDING |
-| Scheduler/notifications | `app/scheduler/*`, `app/domain/notifications/*` | reminders, slot release, SLA, retention discovery, backup, cleanup, delivery | IMPLEMENTED / RUNTIME_PENDING |
-| Release evidence | `.github/workflows/*`, `scripts/live_required_evidence.py`, `scripts/post_live_restore_evidence.py` | CI, runtime matrix, manifest, restore proof | IMPLEMENTED / BLOCKED_INFRA |
+| Scheduler/notifications | `app/scheduler/*`, `app/domain/notifications/*` | reminders, slot release, SLA, retention, backup, cleanup, delivery | IMPLEMENTED / RUNTIME_PENDING |
+| Release evidence | `.github/workflows/*`, evidence scripts | CI, runtime matrix, manifests, restore proof | IMPLEMENTED / BLOCKED_INFRA |
+| Governance | `AGENTS.md`, CURRENT docs, this map, CI contract | force process/debt/change traceability | IMPLEMENTED / RUNTIME_PENDING |
 
 # End-to-end process map
 
 ## P-00 — Client identity, activity and selected Case
 
-**Goal:** one Telegram client can safely own multiple independent Cases without a client-wide singleton.
+Flow: `Telegram update → User → activity facts → ClientCaseContext.selected_case_id → exact Case-bound screen/action`.
 
-Flow:
-
-`Telegram update → User → client activity → ClientCaseContext.selected_case_id → exact Case-bound screen/action`
-
-Primary facts:
+Source of truth:
 
 - `User.telegram_id` — Telegram identity;
 - `User.last_activity_at` — client Telegram activity;
 - `Case.last_client_action_at` — activity against a Case;
 - `ClientCaseContext.selected_case_id` — selected client Case;
-- Case ownership — `Case.client_id`.
+- `Case.client_id` — ownership.
 
-Implementation anchors:
+Anchors: `app/bot/client_activity.py`, `client_case_navigation.py`, `client_case_view.py`, `case_callback_scope.py`, `app/models/client_case_context.py`.
 
-- `app/bot/client_activity.py`;
-- `app/bot/client_case_navigation.py`;
-- `app/bot/client_case_view.py`;
-- `app/bot/case_callback_scope.py`;
-- `app/models/client_case_context.py`.
-
-Safety rules:
-
-- multiple active Cases per client are allowed;
-- stale/crafted callbacks cannot silently switch Case;
-- read-only historical views may open an owned Case without changing selected context;
-- mutations bind to exact Case/domain identifiers.
+Rules: multiple active Cases are allowed; stale/crafted callbacks cannot silently switch Case; read-only history may open another owned Case without changing selected context; mutations carry exact Case/domain provenance.
 
 State: `IMPLEMENTED / RUNTIME_PENDING`.
 
-## P-01 — New calculation and idempotent Case creation
+## P-01 — Calculation and idempotent Case creation
 
-Flow:
+Flow: `Calculate → source operation key → CaseCreationRequest → new Case → calculator draft → Calculation history → client decision`.
 
-`Calculate → source operation key → CaseCreationRequest → new Case → calculator draft → Calculation history → client decision`
+Facts:
 
-Primary facts:
-
-- `CaseCreationRequest(client_id, operation_key)` deduplicates the same source operation;
+- `(client_id, operation_key)` deduplicates the same source action;
 - distinct Calculate operations may create distinct Cases;
 - `Calculation.case_id` is one-to-many;
-- `calc_start` means new matter;
-- `calc_recover:v2:<case_id>` means resume exact existing matter.
+- `calc_start` means a new matter;
+- `calc_recover:v2:<case_id>` resumes an exact existing matter.
 
-Implementation anchors:
+Canonical path: `NEW → CALCULATOR_STARTED → CALCULATED → CLIENT_DECISION` plus explicit compatibility transitions from `case_transition_policy.py`.
 
-- `app/domain/calculator/*`;
-- `app/bot/calculator_draft.py`;
-- `app/domain/cases/case_service.py`;
-- `app/models/calculation.py`;
-- `app/models/case_creation_request.py`.
-
-State path:
-
-`NEW → CALCULATOR_STARTED → CALCULATED → CLIENT_DECISION`
-
-with approved direct compatibility transitions defined in `case_transition_policy.py`.
+Anchors: `app/domain/calculator/*`, `app/bot/calculator_draft.py`, `app/domain/cases/case_service.py`, `Calculation`, `CaseCreationRequest`.
 
 State: `IMPLEMENTED / RUNTIME_PENDING`.
 
@@ -123,392 +107,210 @@ State: `IMPLEMENTED / RUNTIME_PENDING`.
 
 Canonical business flow:
 
-`calculation → M1 decision → consent → documents → lawyer review → accept/request/reject → contract → 30k payment → POA → claim → 30-day wait → court → 70k payment when applicable → enforcement → recovered amount → success fee → closure → archive`
+`calculation → M1 decision → exact consent → documents → lawyer review → accept/request/reject → contract → 30k payment → POA → claim → 30-day wait → court → 70k payment when applicable → enforcement → recovered amount → success fee → structured closure → archive`.
 
-Canonical Case statuses:
+Canonical Case path:
 
-`M1_DOCUMENTS_PENDING`
-→ `M1_DOCUMENTS_RECEIVED`
-→ `M1_LAWYER_REVIEW`
-→ (`M1_DOCS_REQUESTED` ↔ review/received | `M1_REJECTED` | `M1_ACCEPTED`)
-→ `M1_CONTRACT_READY`
-→ `M1_WAITING_PAYMENT_30000`
-→ `M1_PAYMENT_30000_RECEIVED`
-→ `M1_POWER_OF_ATTORNEY`
-→ `M1_POA_RECEIVED`
-→ `M1_CLAIM_PREPARATION`
-→ `M1_CLAIM_SENT`
-→ `M1_WAITING_30_DAYS`
-→ `M1_COURT_STAGE` / approved early recovered-money branch
-→ `M1_WAITING_PAYMENT_70000`
-→ `M1_PAYMENT_70000_RECEIVED`
-→ `M1_ENFORCEMENT`
-→ `M1_MONEY_RECEIVED`
-→ `M1_WAITING_SUCCESS_FEE`
-→ `M1_SUCCESS_FEE_RECEIVED`
-→ `M1_CLOSED`
-→ `ARCHIVED`.
+`M1_DOCUMENTS_PENDING → M1_DOCUMENTS_RECEIVED → M1_LAWYER_REVIEW → M1_DOCS_REQUESTED/M1_ACCEPTED/M1_REJECTED → M1_CONTRACT_READY → M1_WAITING_PAYMENT_30000 → M1_PAYMENT_30000_RECEIVED → M1_POWER_OF_ATTORNEY → M1_POA_RECEIVED → M1_CLAIM_PREPARATION → M1_CLAIM_SENT → M1_WAITING_30_DAYS → M1_COURT_STAGE/approved early recovered-money branch → M1_WAITING_PAYMENT_70000 → M1_PAYMENT_70000_RECEIVED → M1_ENFORCEMENT → M1_MONEY_RECEIVED → M1_WAITING_SUCCESS_FEE → M1_SUCCESS_FEE_RECEIVED → M1_CLOSED → ARCHIVED`.
 
-Primary owners:
+Owners:
 
-- process state: `Case.status` through `CaseService`/dedicated domain services;
-- consent: `ConsentAcceptance` immutable snapshot;
-- document facts: `Document` version/review records;
-- assignment: `Case.assigned_lawyer_id`, `assigned_at`, SLA fields;
-- money: `Payment` + `PaymentEvent` + provider evidence + Case/Audit context;
-- closure: `closed_at`, `close_reason`, `archived_at`.
-
-Implementation anchors:
-
-- `app/domain/cases/*`;
-- `app/domain/documents/*`;
-- `app/domain/payments/*`;
-- `app/api/contract_center.py`;
-- M1 staff/workdesk surfaces under `app/api/*`.
+- process state — `Case.status` through `CaseService`/dedicated domain services;
+- consent — immutable `ConsentAcceptance`;
+- documents — versioned `Document`/review facts;
+- M1 lawyer — `Case.assigned_lawyer_id`, assignment audit/SLA;
+- money — `Payment` + `PaymentEvent` + provider evidence + Case/Audit context;
+- terminal facts — `closed_at`, `close_reason`, `archived_at`, separate retention deletion fact.
 
 State: `IMPLEMENTED / RUNTIME_PENDING`.
 
-## P-03 — Documents: upload, review, access, replacement, storage and deletion
+## P-03 — Documents, encrypted storage, review, access and deletion
 
-Flow:
+Flow: `required/upload → validation/scanning → quarantine when unsafe → hash → encrypt → portable storage key → Document version → review → protected grant → authorized decrypt/read → retention deletion when approved`.
 
-`required/upload → validation/scanning → quarantine when unsafe → hash → encrypt → portable storage key → Document version → review → protected grant → authorized decrypt/read → retention deletion when approved`
-
-Document statuses:
-
-`REQUIRED / UPLOADED / ON_REVIEW / APPROVED / REJECTED / NEEDS_REUPLOAD / ARCHIVED`.
-
-Storage contract:
-
-`cases/<case_id>/<32hex>.dlcenc`
+Storage contract: `cases/<case_id>/<32hex>.dlcenc`.
 
 Rules:
 
-- new DB paths are portable keys, not host absolute paths;
-- legacy absolute DB paths are reduced only to terminal canonical Case key and rebound to current `STORAGE_DIR`;
-- prefixed relative paths, traversal, wrong Case, invalid ciphertext name, and symlink components fail closed;
-- normal download passes authorized `Case.id` into storage resolution;
+- new DB paths are portable keys, never host-specific absolute paths;
+- a legacy absolute row may be reduced only to terminal canonical Case key and rebound to **current** `STORAGE_DIR`;
+- historical source prefix is never dereferenced;
+- prefixed relative paths, traversal, wrong Case, invalid ciphertext name and symlink components fail closed;
+- normal authorized download passes authorized `Case.id` into storage resolution;
 - retention uses the same `LocalStorageService` resolver/delete contract.
 
-Implementation anchors:
+Anchors: `app/storage.py`, `app/domain/documents/*`, `app/api/document_access.py`, document security modules, `app/domain/retention/case_retention_service.py`.
 
-- `app/storage.py`;
-- `app/domain/documents/document_service.py`;
-- `app/domain/documents/document_review_service.py`;
-- `app/domain/documents/staff_upload_storage.py`;
-- `app/api/document_access.py`;
-- `app/security/document_*` and upload/scanning/grant components;
-- `app/domain/retention/case_retention_service.py`.
-
-Evidence anchors:
-
-- `tests/test_document_storage_portability.py`;
-- `tests/test_document_download_storage_scope_contract.py`;
-- `tests/test_case_retention_storage_portability.py`;
-- `tests/test_post_live_restore_evidence.py`.
+Evidence: `test_document_storage_portability.py`, `test_document_download_storage_scope_contract.py`, `test_case_retention_storage_portability.py`, `test_post_live_restore_evidence.py`.
 
 State: `SOURCE_AUDITED / RUNTIME_PENDING`.
 
 ## P-04 — M1 lawyer assignment and SLA
 
-Flow:
+Flow: `eligible M1 Case after documents → auto-assignment policy → Case/candidate locking → active lawyer + active staff identity → workload/capacity → exactly one assignment → assignment audit → SLA → Workdesk responsibility`.
 
-`eligible M1 Case after documents → auto-assignment policy → lock Case/candidates → active lawyer + active staff identity → workload/capacity → exactly one assignment → assignment audit → SLA start → workdesk responsibility`
+Canonical owner: `app/domain/cases/assignment_service.py::CaseAssignmentService` plus `assignment_policy.py` and `sla_service.py`.
 
-Canonical implementation:
+Rules:
 
-- `app/domain/cases/assignment_policy.py`;
-- `app/domain/cases/assignment_service.py` (`CaseAssignmentService`);
-- `app/domain/cases/sla_service.py`;
-- `app/api/assignment_queue.py` and related staff endpoints;
-- `scripts/architecture_check.py::check_legacy_assignment_imports` prevents production code from re-introducing the historical `app.domain.assignment` path while safe removal is audited.
-
-Important rule: M2 lawyer responsibility is slot/Consultation-driven, not generic M1 `Case.assigned_lawyer_id` auto-assignment.
-
-Concurrency acceptance: two eligible M1 Cases competing for one last lawyer capacity slot must produce exactly one assignment.
+- M2 responsibility is consultation/slot-driven, not M1 `Case.assigned_lawyer_id` auto-assignment;
+- two eligible M1 Cases competing for one final capacity slot may produce exactly one assignment;
+- `architecture_check.py::check_legacy_assignment_imports` prevents production code from reintroducing historical `app.domain.assignment` semantics.
 
 State: `IMPLEMENTED / FIXED_PENDING_RUNTIME`.
 
-## P-05 — Payment lifecycle, provider evidence, Payment Review and refunds
+## P-05 — Payment lifecycle, Payment Review and refunds
 
-Flow:
+Flow: `business obligation → Payment → provider/offline path → current projection → immutable PaymentEvent → provider/webhook evidence → Case/Audit application → stale-money review/refund when required`.
 
-`business obligation → Payment creation → provider/offline path → current projection → immutable PaymentEvent → webhook/provider evidence → Case/Audit application → stale-money review/refund when required`
+Payment statuses: `PENDING / WAITING_CONFIRMATION / PAID / PAID_REVIEW / REFUND_PENDING / REFUND_DECLINED / FAILED / CANCELLED / REFUNDED / EXPIRED`.
 
-Payment statuses:
+Source split:
 
-`PENDING / WAITING_CONFIRMATION / PAID / PAID_REVIEW / REFUND_PENDING / REFUND_DECLINED / FAILED / CANCELLED / REFUNDED / EXPIRED`.
-
-Source-of-truth split:
-
-- `payments` — current financial projection and business timestamps;
-- `payment_events` — append-only normalized lifecycle ledger;
-- `payment_webhook_events` — provider-event evidence/idempotency;
+- `Payment` — current projection + business timestamps;
+- `PaymentEvent` — append-only normalized lifecycle ledger;
+- `PaymentWebhookEvent` — provider evidence/idempotency;
 - Case/Audit history — actor/business application context.
 
-Implementation anchors:
-
-- `app/domain/payments/payment_service.py`;
-- `payment_lifecycle.py`;
-- `payment_webhook_service.py`;
-- `payment_review_service.py`;
-- `refund_service.py`;
-- provider adapter in `providers.py`;
-- Payment Review/refund staff product endpoints.
-
-Safety rules:
-
-- late failure cannot overwrite received money;
-- exact retry is distinct from stale command;
-- stale Payment Review browser action returns authoritative 409 recovery and does not duplicate decision;
-- M2 payment stays bound to exact reservation/consultation context;
-- stale money enters review/refund, never resurrects obsolete legal state.
+Rules: late failure cannot overwrite received money; exact retry differs from stale command; stale Payment Review returns authoritative 409 without a duplicate resolution; M2 payment stays bound to exact reservation/consultation context; stale money never resurrects obsolete legal state.
 
 State: `IMPLEMENTED / RUNTIME_PENDING`.
 
-## P-06 — Messaging and notification delivery
+## P-06 — Messages and notifications
 
-Flow:
+Flow: `client/staff message → exact Case provenance → Message → priority/read state → notification event → dedupe → delivery → Telegram outcome`.
 
-`client/staff message → exact Case provenance → Message → priority/read state → notification event → dedupe → delivery queue/immediate delivery → Telegram delivery outcome`
+Rules: history/pagination are Case-bound; draft protection prevents silent loss; delivery failure after a committed mutation must not replay the mutation; reminders/notifications do not establish legal facts.
 
-Implementation anchors:
-
-- `app/domain/messages/message_service.py`;
-- `app/domain/messages/message_priority.py`;
-- `app/bot/client_message_provenance.py`;
-- `app/domain/notifications/*`;
-- `app/scheduler/notification_dispatcher.py`;
-- staff Message Center surfaces.
-
-Safety rules:
-
-- message/history pagination is Case-bound;
-- draft protection prevents navigation from silently losing an unsent message;
-- delivery failure after committed business mutation must not replay the mutation;
-- reminders/notifications are deduplicated and do not establish legal facts.
+Anchors: `app/domain/messages/*`, `app/bot/client_message_provenance.py`, `app/domain/notifications/*`, `app/scheduler/notification_dispatcher.py`.
 
 State: `IMPLEMENTED / RUNTIME_PENDING`.
 
 ## P-07 — M2 paid consultation
 
-Canonical flow:
+Canonical flow: `new consultation → M2 Case → description → optional documents → slot → reservation/hold → payment or approved no-payment path → booked → result/no-show → reschedule/refund/follow-up/to-M1/closure`.
 
-`new consultation action → M2 Case → description → optional documents → slot selection → reservation/hold → payment or approved no-payment path → booked → result/no-show → reschedule/refund/follow-up/to-M1/closure`
+Canonical new Case path: `M2_DESCRIPTION_PENDING → M2_DOCUMENTS_OPTIONAL → M2_SLOT_PENDING → M2_PAYMENT_PENDING when required → M2_CONSULTATION_BOOKED → M2_CONSULTATION_DONE → M2_CLOSED or M2_TO_M1 → M1_DOCUMENTS_PENDING` plus approved reschedule branches.
 
-Canonical new Case statuses:
+Historical compatibility contract:
 
-`M2_DESCRIPTION_PENDING`
-→ `M2_DOCUMENTS_OPTIONAL`
-→ `M2_SLOT_PENDING`
-→ `M2_PAYMENT_PENDING` when payment is required
-→ `M2_CONSULTATION_BOOKED`
-→ `M2_CONSULTATION_DONE`
-→ (`M2_CLOSED` | `M2_TO_M1` → `M1_DOCUMENTS_PENDING` | approved reschedule branch).
+- old string-backed rows may contain `M2_CONSULTATION_ROUTE`;
+- the only supported use is read/upgrade `M2_CONSULTATION_ROUTE → M2_DESCRIPTION_PENDING`;
+- `CaseService.create_case()` validates initial status before persistence and rejects the legacy value;
+- normal and `force=True` transitions cannot re-enter it;
+- ORM status-write backstop blocks direct recreation/re-entry;
+- regression inserts a raw historical DB row, proves ORM hydration remains readable, upgrades it forward and verifies persisted state;
+- focused service regression proves rejection occurs before DB use.
 
-Historical compatibility rule:
-
-- persisted legacy rows may contain `M2_CONSULTATION_ROUTE` because `cases.status` is string-backed;
-- the only supported use of that status is read/upgrade compatibility: `M2_CONSULTATION_ROUTE → M2_DESCRIPTION_PENDING` in consultation intake;
-- `CaseService.create_case()` validates initial status through `validate_initial_status()` before ORM/persistence, so canonical domain creation cannot start in `M2_CONSULTATION_ROUTE`;
-- no normal or forced transition may re-enter `M2_CONSULTATION_ROUTE`;
-- the ORM status-write backstop rejects direct recreation/re-entry outside `CaseService`;
-- regression coverage inserts a historical value directly through the table layer, proves ORM hydration remains readable, advances it to `M2_DESCRIPTION_PENDING`, then verifies the persisted upgraded state;
-- a focused service regression proves the domain creation boundary rejects the legacy value before touching persistence.
-
-Consultation statuses:
-
-`DESCRIPTION_PENDING / DOCUMENTS_OPTIONAL / SLOT_PENDING / SLOT_RESERVED / PAYMENT_PENDING / BOOKED / DONE / CLIENT_NO_SHOW / LAWYER_NO_SHOW / CANCELLED / RESCHEDULED / CLOSED`.
-
-Implementation anchors:
-
-- `app/domain/consultations/consultation_intake.py`;
-- `app/domain/cases/case_service.py` initial-status boundary;
-- `app/domain/cases/case_transition_policy.py` compatibility-only write guard;
-- `app/models/case.py` defensive ORM write guard;
-- `consultation_service.py`;
-- `slot_service.py`;
-- `consultation_change_service.py`;
-- `outcome_service.py`;
-- no-show resolution services;
-- consultation slot/outcome staff surfaces.
-
-Concurrency-sensitive facts:
-
-- slot ownership/reservation;
-- hold expiry vs payment success;
-- two clients competing for one slot;
-- stale reschedule/booking after Case switch.
-
-Evidence anchor: `tests/test_case_compatibility_status_contract.py`, including domain creation, historical DB-row hydration and forward-upgrade coverage.
+Anchors: consultation domain services, `case_service.py`, `case_transition_policy.py`, `app/models/case.py`.
 
 State: `IMPLEMENTED / FIXED_PENDING_RUNTIME`.
 
 ## P-08 — Staff authentication, authorization and Workdesk
 
-Flow:
+Flow: `login → MFA/session where configured → role → Workdesk/Lawyer product → role-safe domain action → audit/session revocation`.
 
-`login → MFA/session where configured → role resolution → Workdesk/Lawyer product → role-safe domain action → audit/session revocation`
+Composition ownership:
 
-Roles include admin/superadmin/lawyer boundaries enforced by access-control and product endpoints.
+- `app/api/assignment_queue.py` — `/admin/workdesk/ui` route/auth + responsibility/queue data APIs, **no direct HTML patching**;
+- `app/api/workdesk_ui.py` — base Workdesk document;
+- `app/api/workdesk_renderer.py` — single final composition boundary for base UI + responsibility/deep-link behavior + integrity overlay;
+- `app/api/workdesk_integrity.py` — integrity producer consumed through renderer.
 
-Implementation anchors:
+Rules: one `(HTTP method, path)` runtime owner; include order must not define security; route/data modules do not mutate foreign templates.
 
-- `app/api/auth.py`;
-- `app/security/access_control.py`;
-- session/MFA/revocation security modules;
-- `app/api/assignment_queue.py` — Workdesk route/data owner, no direct HTML/JS patching;
-- `app/api/workdesk_ui.py` — base staff Workdesk document;
-- `app/api/workdesk_renderer.py` — single canonical final composition boundary for base UI + responsibility/deep-link behavior + integrity overlay;
-- `app/api/workdesk_integrity.py` — integrity data/overlay producer consumed through the renderer;
-- lawyer workspace/product surfaces;
-- document review, message, consultation, Payment Review/refund products.
-
-Route ownership rule: one `(HTTP method, path)` has one runtime owner; route include order must not define security semantics. Workdesk route/data modules do not own cross-module HTML mutation; final Workdesk composition is centralized in `render_workdesk_html()`.
-
-Evidence anchors:
-
-- `tests/test_v37_api_import_inventory.py`;
-- `scripts/architecture_check.py`;
-- `tests/test_browser_staff_e2e.py`;
-- `tests/test_workdesk_renderer_contract.py`.
+Evidence: `test_v37_api_import_inventory.py`, `architecture_check.py`, `test_browser_staff_e2e.py`, `test_workdesk_renderer_contract.py`.
 
 State: `IMPLEMENTED / FIXED_PENDING_RUNTIME`.
 
 ## P-09 — Audit integrity and immutable evidence
 
-Flow:
+Flow: `business/security action → AuditLog → chained integrity metadata → verification → backup/restore proof`.
 
-`business/security action → AuditLog event → chained integrity metadata → verification → backup/restore proof`
-
-Important evidence families:
-
-- `AuditLog` + `AuditChainHead`;
-- immutable consent snapshots;
-- append-only `PaymentEvent`;
-- provider `PaymentWebhookEvent`;
-- Case history.
-
-Implementation anchors:
-
-- `app/security/audit_integrity.py`;
-- audit models;
-- audit staff/diagnostic surfaces;
-- restore evidence script validates the full chain.
+Evidence families: `AuditLog` + `AuditChainHead`, immutable consent snapshot, append-only `PaymentEvent`, provider `PaymentWebhookEvent`, Case history.
 
 State: `IMPLEMENTED / RUNTIME_PENDING`.
 
 ## P-10 — Retention, legal hold and content deletion
 
-Flow:
+Flow: `business closure/archive → retention discovery → legal/payment/consultation/approval preflight → four-eyes action → Case-bound LocalStorageService deletion → content_deleted_at/evidence`.
 
-`business closure/archive → retention discovery → legal/payment/consultation/approval preflight → four-eyes protected action → LocalStorageService Case-bound file deletion → content_deleted_at / retention evidence`
-
-Business closure, archive, and content deletion are separate facts.
-
-Implementation anchors:
-
-- `app/domain/retention/case_retention_service.py`;
-- `backup_aware_case_retention_service.py`;
-- retention records/models;
-- scheduler retention discovery.
+Business closure, archive and content deletion are separate facts. Missing-file retry remains idempotent; legal hold/unsettled obligations block destructive retention.
 
 State: `SOURCE_AUDITED / RUNTIME_PENDING`.
 
 ## P-11 — Scheduler and background operations
 
-Scheduler uses a singleton lease and includes processes for:
+Singleton scheduler covers:
 
 - encrypted backup when due;
 - unpaid payment reminders;
 - expired M2 hold release;
-- consultation reminders;
-- overdue consultation completion;
+- consultation reminders/overdue completion;
 - Case SLA escalation;
 - retention discovery;
 - claim 30-day eligibility notification;
-- security cleanup: login throttle state, revoked tokens, download grants, MFA re-encryption, document rescan/encryption migration, backup retention, quarantine cleanup;
+- login/token/grant/MFA/document/backup/quarantine cleanup/migration work;
 - pending notification delivery.
 
-Implementation anchors:
-
-- `app/scheduler/scheduler.py`;
-- `app/scheduler/jobs.py`;
-- `app/scheduler/lease.py`;
-- `app/scheduler/notification_dispatcher.py`.
+Anchors: `app/scheduler/scheduler.py`, `jobs.py`, `lease.py`, `notification_dispatcher.py`.
 
 State: `IMPLEMENTED / RUNTIME_PENDING`.
 
 ## P-12 — Security, keys and access revocation
 
-Security domains are intentionally separated:
+Cryptographic domains remain separate: session signing, security HMAC, MFA encryption, audit integrity, document encryption, backup encryption.
 
-- session signing;
-- security HMAC;
-- MFA encryption;
-- audit integrity;
-- document encryption;
-- backup encryption.
-
-Processes include login throttling, MFA/session revocation, role access, one-time/short-lived document grants, document key migration, historical decrypt support, compromised-account response, quarantine/scanning, and cleanup.
+Processes include login throttling, MFA/session revocation, role access, short-lived/one-time document grants, key migration/historical decrypt, compromised-account response, quarantine/scanning and cleanup.
 
 State: `IMPLEMENTED / RUNTIME_PENDING`.
 
 ## P-13 — Encrypted backup and restore
 
-Flow:
+Flow: `post-persona source witness → authenticated encrypted backup → archive verification → separate empty restore DB + restored storage → schema-v2 application verification → normal restored staff/document/history/payment/bot usability`.
 
-`post-persona source witness → authenticated encrypted backup → archive verification → separate empty restore DB + restored storage → schema-v2 exact application verification → normal restored staff/document/history/payment/bot usability`
-
-Important rule: archive verification alone is not restore acceptance.
-
-Implementation anchors:
-
-- `app/security/backup_cli.py`;
-- `backup_service.py`, `backup_encryption.py`, freshness/retention/restore-fence modules;
-- `scripts/post_live_restore_evidence.py`;
-- `tests/test_post_live_restore_evidence.py`.
+Archive verification alone is not restore acceptance. Normal application read/decrypt after restore is mandatory.
 
 State: `IMPLEMENTED / RUNTIME_PENDING AFTER PERSONAS`.
 
 ## P-14 — Release verification and evidence chain
 
-Current ordered release chain for one candidate SHA:
+Ordered chain for one candidate SHA:
 
-1. runner allocation restored;
-2. general pre-live gates pass: `CI`, `Deployment Readiness`, `Reproducible Dependencies`;
-3. dedicated gates pass: `PostgreSQL Concurrency`, `Telegram Runtime Contracts`, `Browser Staff E2E`;
+1. real runner allocation restored;
+2. `CI` + `Deployment Readiness` + `Reproducible Dependencies` pass;
+3. dedicated `PostgreSQL Concurrency` → `Telegram Runtime Contracts` → `Browser Staff E2E` pass;
 4. one complete manual `LIVE_REQUIRED` run passes and creates exact SHA/run/attempt manifest;
-5. real Telegram M1/M2 persona walkthroughs pass with UI ↔ PostgreSQL ↔ Audit/PaymentEvent reconciliation;
-6. encrypted backup→restore acceptance passes;
-7. safe YooKassa test-shop provider-side paid/refund evidence is expanded only then;
+5. real Telegram M1/M2 personas pass with UI ↔ PostgreSQL ↔ Audit/PaymentEvent reconciliation;
+6. encrypted backup→restore application/runtime proof passes;
+7. safe YooKassa test-shop provider-side paid/refund proof is expanded only then;
 8. release/merge decision.
 
 Any source/migration/workflow/evidence-script change after evidence collection begins creates a new candidate SHA and restarts from full CI.
 
-Current infrastructure state: `BLOCKED_INFRA` under GitHub issue #116 until Actions allocates real runners and executes steps.
+Current infrastructure state: `BLOCKED_INFRA` under issue #116 until Actions allocates real runners and executes steps.
 
 # Data/source-of-truth matrix
 
 | Business fact | Source of truth | Derived/presentation |
 | --- | --- | --- |
 | Client identity | `User` | Telegram presentation |
-| Active/selected legal matter | `Case` + `ClientCaseContext` | My Case/cards |
-| Process stage | `Case.status` | client/staff status labels |
-| Calculation history | `Calculation` | latest calculation selected by query/business logic |
-| Consent | `ConsentAcceptance` immutable snapshot | consent screen/history |
-| M1 lawyer responsibility | `Case.assigned_lawyer_id` + assignment audit/SLA | Workdesk |
-| M2 lawyer responsibility | `Consultation.lawyer_id` / selected slot | Workdesk/consultation UI |
-| Document state/version | `Document` | readiness/blocker projection |
-| Document bytes location | canonical portable `Document.file_path` key | resolved by `LocalStorageService` |
+| Active/selected matter | `Case` + `ClientCaseContext` | My Case/cards |
+| Process stage | `Case.status` | client/staff labels |
+| Calculation history | `Calculation` | latest derived by query |
+| Consent | immutable `ConsentAcceptance` | consent history/UI |
+| M1 lawyer responsibility | Case assignment + assignment audit/SLA | Workdesk |
+| M2 lawyer responsibility | `Consultation.lawyer_id` / selected slot | consultation UI/Workdesk |
+| Document state/version | `Document` | readiness/blockers |
+| Document byte location | canonical portable `Document.file_path` | `LocalStorageService` resolution |
 | Message history | `Message` | unread/priority projection |
 | Consultation booking | `Consultation` + `ConsultationSlot` | booking UI |
-| Current payment state | `Payment` | payment UI |
-| Payment lifecycle history | append-only `PaymentEvent` | audit/payment timeline |
-| Provider event evidence | `PaymentWebhookEvent` | reconciliation UI |
+| Current payment | `Payment` | payment UI |
+| Financial history | append-only `PaymentEvent` | timeline |
+| Provider evidence | `PaymentWebhookEvent` | reconciliation |
 | Case/action audit | `AuditLog`/Case history | timelines/audit center |
-| Closure/archive/deletion | separate Case lifecycle timestamps/reasons | terminal/read-only UI |
-| Client inactivity anchor | `User.last_activity_at`, `Case.last_client_action_at`, stage-entry evidence | reminder scheduling |
+| Closure/archive/delete | separate lifecycle timestamps/reasons | terminal/read-only UI |
+| Client inactivity | client/Case activity + stage-entry evidence | reminder scheduling |
 | Runtime draft/navigation | Redis FSM | never legal source of truth |
 
 # Automated verification map
@@ -517,156 +319,134 @@ Current infrastructure state: `BLOCKED_INFRA` under GitHub issue #116 until Acti
 
 ### `CI`
 
-- mandatory `Process map maintenance contract` for pull requests;
+- `Process map maintenance contract`;
 - source compile;
-- architecture check, including fail-closed legacy assignment import containment;
-- SQLite application suite, including CaseService/M2 compatibility-status historical-row and Workdesk composition regressions;
-- Alembic current/idempotency/check;
-- clean migration smoke;
+- architecture check, including legacy assignment containment;
+- SQLite suite, including CaseService/M2 compatibility and Workdesk renderer regressions;
+- Alembic current/idempotency/check + clean migration smoke;
 - PostgreSQL migration + technical encrypted backup/restore drill;
 - production container build/start/health.
 
 ### `Deployment Readiness`
 
-- Redis FSM persistence integration;
+- Redis FSM persistence;
 - Docker/Compose deployment contract.
 
 ### `Reproducible Dependencies`
 
-- locked test image;
-- dependency constraint verification and `pip check`;
-- complete test suite in locked image;
-- locked production image and package consistency.
+- locked test/production images;
+- dependency verification + `pip check`;
+- complete suite in locked test image.
 
-## Dedicated runtime/concurrency gates
+## Dedicated gates
 
 ### `PostgreSQL Concurrency`
 
-Required tests now include:
-
-- multi-Case/calculation races;
-- payment races;
-- refund retry races;
-- staff concurrency;
-- **auto-assignment final-capacity race**.
+Must cover multi-Case/calculation races, payment races, refund retries, staff concurrency and **auto-assignment final-capacity race**.
 
 ### `Telegram Runtime Contracts`
 
-- Redis-backed FSM restart and Case binding.
+Redis-backed FSM restart and exact Case binding.
 
 ### `Browser Staff E2E`
 
-- staff browser role/session paths over PostgreSQL;
-- Payment Review stale two-tab recovery;
-- canonical Workdesk rendering remains browser-visible through the same route/roles after renderer consolidation.
+Staff role/session paths, Payment Review stale two-tab recovery and current canonical Workdesk route/rendering.
 
 ## Manual `LIVE_REQUIRED`
 
-Requires exact same run attempt/SHA evidence for:
-
-- PostgreSQL;
-- Redis;
-- real Telegram delivery;
-- browser;
-- YooKassa test-shop provider baseline;
-- aggregate manifest.
+One exact SHA/run/attempt must prove PostgreSQL, Redis, real Telegram delivery, browser, YooKassa test-shop provider baseline and aggregate manifest.
 
 # Known inconsistency and debt register
 
 | ID | Area | Finding | Risk | State / action |
 | --- | --- | --- | --- | --- |
-| PM-001 | Release infra | GitHub Actions jobs end before runner allocation (`runner_id=0`, empty/null steps); issue #116 | No runtime/test PASS can be claimed | `BLOCKED_INFRA`; external billing/spending/runner fix required |
-| PM-002 | PostgreSQL dedicated gate | `tests/test_postgres_auto_assignment_concurrency.py` existed and was required by acceptance/LIVE_REQUIRED but was absent from `.github/workflows/postgres-concurrency.yml` | Dedicated gate could pass without proving assignment capacity race | `FIXED_PENDING_RUNTIME`: added to dedicated workflow; requires real PostgreSQL gate execution |
-| PM-003 | M2 state machine | `M2_CONSULTATION_ROUTE` is a historical string-backed bootstrap status; canonical current M2 creation begins at `M2_DESCRIPTION_PENDING`, while old rows may still require one-way compatibility upgrade | New or forced re-entry would revive a retired state and split analytics/state-machine semantics; deleting the value outright could break historical rows | `FIXED_PENDING_RUNTIME / COMPATIBILITY_READ_ONLY`: `CaseService.create_case()` rejects the value at the domain boundary; transition policy rejects all normal/forced entry; ORM backstop rejects direct creation/re-entry; historical raw DB rows remain readable and may move only forward to `M2_DESCRIPTION_PENDING`; regression covers service rejection plus raw-table historical-row insertion → ORM hydration → forward upgrade; physical removal deferred until historical production/staging DB audit/migration is proven safe |
-| PM-004 | Assignment architecture | Historical `app/domain/assignment/AssignmentEngine` + `WorkloadService` coexist with canonical hardened `app/domain/cases/CaseAssignmentService`; exact-ref package has no public exports and repository code search found no current consumers, but search indexing alone is not proof of safe deletion | A future/reintroduced legacy import could bypass Case/candidate locking, active staff identity, workload/capacity and SLA/audit semantics | `DEBT_OPEN / SOURCE_CONTAINED`: `architecture_check.py::check_legacy_assignment_imports` now rejects any production import of `app.domain.assignment` outside the legacy package; retain files until safe-removal/historical-consumer audit, then delete only with regression/runtime proof |
-| PM-005 | Workdesk composition | Canonical Workdesk route previously embedded a responsibility/deep-link JS patch in `assignment_queue.py` and then applied a second integrity HTML/JS injection, distributing final UI construction across route/data modules | UI ownership was harder to inspect and future route changes could accidentally omit/duplicate a cross-cutting patch | `FIXED_PENDING_RUNTIME / COMPOSITION_CENTRALIZED`: `app/api/workdesk_renderer.py` is now the single final composition boundary; `assignment_queue.py` only authenticates/serves the route and owns responsibility/queue data APIs, while renderer deterministically combines base UI, responsibility/deep-link behavior and integrity overlay. `tests/test_workdesk_renderer_contract.py` locks uniqueness and forbids route-level HTML patching |
-| PM-006 | Repository governance | Private-repo ruleset API could not be independently inspected on current GitHub plan | Formal branch-protection required-context list is not independently proven through API | `DEBT_OPEN`: CI-level process-map contract is implemented; verify GitHub branch/rules settings manually when runner/billing is restored |
-| PM-007 | Runtime evidence | Storage portability, retention portability, restore schema-v2, Payment Review, assignment, M2 compatibility-status, Workdesk renderer and process-map governance regressions exist but current runner has not executed them | Source correctness may hide runtime/governance regressions | `RUNTIME_PENDING`; must pass ordered release gates on the current candidate SHA |
+| PM-001 | Release infra | Actions jobs end before runner allocation (`runner_id=0`, empty/null steps); issue #116 | No runtime/test PASS can be claimed | `BLOCKED_INFRA`; external billing/spending/runner fix required |
+| PM-002 | PostgreSQL dedicated gate | Auto-assignment capacity race existed in tests/acceptance/LIVE_REQUIRED but was omitted from dedicated PostgreSQL workflow | Dedicated gate could pass without assignment race proof | `FIXED_PENDING_RUNTIME`; test is now included in dedicated workflow |
+| PM-003 | M2 state machine | Historical `M2_CONSULTATION_ROUTE` can exist in string-backed old rows, while canonical current M2 begins at `M2_DESCRIPTION_PENDING` | Re-entry would split semantics; immediate deletion could break historical rows | `FIXED_PENDING_RUNTIME / COMPATIBILITY_READ_ONLY`; CaseService initial validation + no-reentry transition rule + ORM backstop + historical-row hydration/forward-upgrade regression; physical removal deferred until real DB audit |
+| PM-004 | Assignment architecture | Historical `AssignmentEngine`/`WorkloadService` coexist with hardened `CaseAssignmentService` | Reintroduced legacy import could bypass locking/capacity/audit semantics | `DEBT_OPEN / SOURCE_CONTAINED`; architecture gate forbids production imports; delete only after historical/external-consumer audit + executable regressions |
+| PM-005 | Workdesk composition | Final UI was assembled by route-level responsibility JS patch plus separate integrity injection | Distributed UI ownership could omit/duplicate behavior | `FIXED_PENDING_RUNTIME / COMPOSITION_CENTRALIZED`; single `workdesk_renderer.py`, route module no longer patches HTML, regression locks boundary |
+| PM-006 | Repository governance | Private-repo ruleset required contexts cannot be independently enumerated through current GitHub API/plan | Formal branch protection contract is not API-proven | `DEBT_OPEN`; CI governance + root `AGENTS.md` implemented; manually verify repository rules after billing/runner recovery |
+| PM-007 | Runtime evidence | Current storage/restore/retention/Payment Review/assignment/M2/Workdesk/governance regressions have not run on an Actions runner | Source correctness may hide runtime regressions | `RUNTIME_PENDING`; ordered gates required on current candidate |
 
 # Development priority plan
 
-## P0 — release-truth and runtime recovery
+## P0 — release truth and runtime recovery
 
-1. Resolve #116 externally and prove real runner allocation (`runner_id != 0` with executed steps).
-2. Freeze the then-current head and run full general gates: CI + Deployment Readiness + Reproducible Dependencies.
-3. Treat any real failure as application evidence; fix it, record the affected P-/PM-item here, create a new candidate and restart full CI.
-4. Validate all current source fixes in runtime, especially PM-002, PM-003, PM-005, storage/retention portability and Payment Review recovery.
-5. Run dedicated PostgreSQL/Redis/browser gates, then one complete LIVE_REQUIRED attempt only after the general gates are green.
+1. Resolve #116 externally and prove real runner allocation (`runner_id != 0` + executed steps).
+2. Freeze the then-current head and run `CI` + `Deployment Readiness` + `Reproducible Dependencies`.
+3. Treat a real failure as application evidence; fix it, update affected P-/PM-items/change log, create a new candidate and restart full CI.
+4. Validate PM-002, PM-003, PM-005, storage/retention portability and Payment Review recovery in executable gates.
+5. Run dedicated PostgreSQL/Redis/browser gates, then one complete LIVE_REQUIRED attempt only after general gates are green.
 
 ## P1 — controlled debt closure after executable CI exists
 
-1. PM-004: complete exact-reference/historical consumer audit for `app.domain.assignment`; physically delete legacy assignment modules only if removal is proven safe and regression gates execute.
-2. PM-006: manually verify repository branch/rules settings and exact required contexts once GitHub plan/billing permits meaningful Actions operation; align required contexts with the actual gate contract without weakening it.
-3. Re-run focused staff browser checks for the centralized Workdesk renderer and confirm no visual/action regression for M1 vs M2 responsibility semantics.
-4. Audit real staging/restore databases for any remaining `M2_CONSULTATION_ROUTE` rows before considering a future data migration/removal of the compatibility enum.
+1. PM-004: finish exact historical/external consumer audit and delete legacy assignment modules only if safe-removal proof and regressions exist.
+2. PM-006: verify actual branch/rules settings and exact required contexts; align them with the gate contract without weakening it.
+3. Browser-check centralized Workdesk renderer for M1/M2 responsibility/action semantics.
+4. Audit real staging/restore DB for remaining `M2_CONSULTATION_ROUTE` rows before considering a migration/removal of the compatibility enum.
 
 ## P2 — post-LIVE evidence and release decision
 
 1. Real Telegram M1/M2 personas and evidence reconciliation.
 2. Encrypted backup→restore application/runtime proof.
-3. Safe provider-side YooKassa test-shop paid/refund expansion.
+3. Safe YooKassa test-shop paid/refund expansion.
 4. Resolve or explicitly accept every remaining release-relevant PM-item.
 5. Release/merge decision; no automatic merge.
 
 # Change impact rule
 
-Whenever code changes:
+Whenever anything changes:
 
-1. identify the affected `P-*` process(es);
-2. update ownership/status/evidence entries if behavior or source of truth changed;
-3. add or update a `PM-*` debt item for any newly discovered inconsistency;
-4. do not delete an unresolved debt item merely because code moved; close it with evidence/action;
-5. append a change-log entry below;
-6. if release evidence had begun, declare a new candidate SHA and restart the release chain from full CI.
+1. identify affected `P-*` process(es);
+2. update ownership/status/evidence entries;
+3. add/update `PM-*` debt for every discovered inconsistency;
+4. close debt only with explicit corrective action/evidence;
+5. append the change log;
+6. if release evidence had begun, declare a new candidate and restart from full CI.
 
 # Change log
 
 ## 2026-08-28 — Living process map introduced and enforced
 
-- Created `docs/PROCESS_MAP_CURRENT.md` as the mandatory maintained implementation/process inventory.
-- Recorded M1, M2, documents, assignment/SLA, payments, messages/notifications, staff, audit, retention, scheduler, security, backup/restore and release-evidence processes.
-- Recorded current data/source-of-truth matrix and automated gate map.
-- Recorded known inconsistencies/debt PM-001..PM-007 rather than hiding them in historical chat/audit notes.
-- Fixed PM-002 in source: dedicated PostgreSQL Concurrency workflow now includes `tests/test_postgres_auto_assignment_concurrency.py`.
-- Added CI job `Process map maintenance contract`: every PR must include `docs/PROCESS_MAP_CURRENT.md` in its diff, and the file must exist/non-empty on other CI events.
-- Bound the living-map governance rule into `SYSTEM_CONTRACT_CURRENT.md`, `ACCEPTANCE_CURRENT.md` and `RUNBOOK_CURRENT.md`; the map remains subordinate to those authoritative contracts and cannot expand scope or replace runtime evidence.
-- Because this batch changes workflow/repository contracts, the previous frozen release SHA is invalidated; the new candidate must restart ordered verification from full CI once #116 is actually restored.
+- Created this mandatory maintained implementation/process inventory.
+- Recorded P-00..P-14, source-of-truth matrix, automated gate map and PM-001..PM-007.
+- Fixed PM-002 in source by adding `tests/test_postgres_auto_assignment_concurrency.py` to dedicated PostgreSQL Concurrency.
+- Added CI `Process map maintenance contract`, requiring this file in every PR diff and requiring it to exist/non-empty on other CI events.
+- Bound living-map governance into SYSTEM/ACCEPTANCE/RUNBOOK CURRENT documents.
+- Any resulting source/workflow change supersedes the prior candidate and requires restart from full CI after #116 recovery.
 
 ## 2026-08-28 — PM-004 legacy assignment path source-contained
 
-- Audited the exact current legacy assignment package and canonical `CaseAssignmentService` boundary. The historical package remains present, but no public package exports were found and repository code search did not identify current consumers; because the GitHub code index is not treated as authoritative, this is not used as proof that deletion is safe.
-- Added `scripts/architecture_check.py::check_legacy_assignment_imports`, which rejects any production import from `app.domain.assignment` outside that historical package and directs new code to `app.domain.cases.assignment_service.CaseAssignmentService`.
-- PM-004 is now source-contained rather than merely documented: re-introducing the old assignment path becomes an architecture-gate failure. Physical removal remains deferred until historical/external consumer risk is closed and required regression/runtime gates can execute.
-- This architecture change supersedes the immediately previous candidate for release evidence; ordered verification must restart from full CI on the resulting branch head once #116 is restored.
+- Audited the historical assignment package vs canonical `CaseAssignmentService`.
+- Added `architecture_check.py::check_legacy_assignment_imports`; production code cannot import `app.domain.assignment`.
+- Kept physical legacy files until exact historical/external-consumer safety can be proven with executable regressions.
 
 ## 2026-08-28 — PM-003 M2 legacy bootstrap made compatibility-read-only
 
-- Confirmed the canonical current M2 intake creates Cases at `M2_DESCRIPTION_PENDING`; `M2_CONSULTATION_ROUTE` is only consumed as a one-way upgrade source for historical rows.
-- Preserved the legacy enum/value because `cases.status` is string-backed and historical database rows may still contain it; no destructive migration is claimed without real DB evidence.
-- Added `READ_ONLY_COMPATIBILITY_STATUSES` and `validate_initial_status` to the Case transition policy. Normal and `force=True` transitions into `M2_CONSULTATION_ROUTE` now fail closed, while a legacy row can still advance to `M2_DESCRIPTION_PENDING`.
-- Added an ORM status-write backstop in `app/models/case.py` so direct creation/re-entry outside `CaseService` cannot recreate the retired bootstrap state.
-- Added `tests/test_case_compatibility_status_contract.py` covering forward compatibility upgrade, initial-status rejection, normal/forced re-entry rejection and ORM write protection.
-- PM-003 is source-fixed but remains runtime pending. This source/test batch supersedes the previous candidate; ordered release verification must restart from full CI on the resulting head after #116 is restored.
+- Confirmed current M2 intake starts at `M2_DESCRIPTION_PENDING` and legacy `M2_CONSULTATION_ROUTE` is only a one-way upgrade source.
+- Added read-only compatibility policy, normal/forced no-reentry, ORM backstop and focused regressions.
+- Kept legacy value readable because historical string-backed rows may exist; no destructive migration is claimed without real DB evidence.
 
 ## 2026-08-28 — PM-005 Workdesk composition centralized
 
-- Confirmed the Workdesk route/data module mixed API ownership with a large responsibility/deep-link JavaScript patch and then passed the result through a second integrity injection. No duplicate runtime route was found; the problem was composition ownership and maintainability.
-- Added `app/api/workdesk_renderer.py` as the one final Workdesk composition boundary. It preserves the previous deterministic order: base `WORKDESK_HTML` → responsibility/deep-link behavior → process-integrity overlay, and fails closed if expected template markers/unique composition assumptions are broken.
-- Removed `WORKDESK_HTML`, responsibility patch and integrity-injection handling from `assignment_queue.py`; that module now authenticates/serves `/admin/workdesk/ui` through `render_workdesk_html()` and keeps responsibility/queue data APIs only.
-- Added `tests/test_workdesk_renderer_contract.py` to prove the responsibility, repair, deep-link and integrity layers are each present exactly once and to prevent route-level HTML patching from returning.
-- PM-005 is source-fixed but remains browser/runtime pending. This source/test batch supersedes the previous candidate; ordered release verification must restart from full CI on the resulting head after #116 is restored.
+- Confirmed route/data module mixed API ownership with responsibility/deep-link JS patching plus separate integrity injection.
+- Added `app/api/workdesk_renderer.py` as the single final composition boundary.
+- Removed direct HTML/JS patching from `assignment_queue.py` and added `tests/test_workdesk_renderer_contract.py`.
 
 ## 2026-08-28 — PM-003 historical-row hydration regression strengthened
 
-- Extended `tests/test_case_compatibility_status_contract.py` with an in-memory database scenario that inserts `M2_CONSULTATION_ROUTE` through the table layer to model an existing historical row, loads it through the ORM, advances it to `M2_DESCRIPTION_PENDING`, commits and verifies the upgraded persisted status.
-- This specifically guards the defensive ORM status listener from accidentally blocking database hydration of historical compatibility data while still preventing new/re-entry writes.
-- Added the P0/P1/P2 development priority plan above so the living map is also the maintained execution roadmap, not only an inventory/debt register.
-- This test/documentation batch supersedes the previous candidate for release evidence; ordered verification must restart from full CI on the resulting head after #116 is restored.
+- Added in-memory DB regression inserting legacy M2 status through the table layer, loading through ORM, upgrading forward and verifying persistence.
+- Added the P0/P1/P2 roadmap so this file is both inventory and execution plan.
 
 ## 2026-08-28 — PM-003 CaseService creation boundary aligned
 
-- Detected that `validate_initial_status()` existed but `CaseService.create_case()` still called the generic `normalize_status()`, leaving the ORM listener as the first effective guard against creation in `M2_CONSULTATION_ROUTE`.
-- Changed the canonical domain creation boundary to call `validate_initial_status()` before constructing/persisting the Case. The ORM listener remains the defensive second layer for direct/bypassing writes.
-- Extended `tests/test_case_compatibility_status_contract.py` to prove `CaseService` rejects the legacy initial status before any database operation is possible.
-- PM-003 now has aligned defense-in-depth: CaseService creation validation → transition-policy no-reentry rule → ORM write backstop → historical-row hydration/forward-upgrade regression.
-- This source/test/documentation batch supersedes the previous candidate; ordered release verification must restart from full CI on the resulting head after #116 is restored.
+- Found `validate_initial_status()` existed but canonical `CaseService.create_case()` still used generic normalization.
+- Moved legacy-status rejection to the domain creation boundary before ORM/persistence; ORM listener remains defensive second layer.
+- Added focused service regression proving rejection occurs before database use.
+
+## 2026-08-28 — Root agent/developer governance added
+
+- Added root `AGENTS.md` as a pre-change repository contract for Cursor/Claude/Codex/other agents and developers.
+- `AGENTS.md` points to the authoritative CURRENT documents and this map, repeats the mandatory same-batch map-update rule, records source-of-truth boundaries, current release truth and no-auto-merge rule.
+- This closes the discoverability gap where the process-map rule previously became obvious only after reading CI/docs; CI remains the enforcement backstop.
+- This documentation/governance change creates a new candidate SHA and therefore supersedes the immediately prior release candidate; runtime evidence must start from full CI once #116 is restored.
