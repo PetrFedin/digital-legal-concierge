@@ -353,19 +353,23 @@ Implementation anchors:
 - `app/api/auth.py`;
 - `app/security/access_control.py`;
 - session/MFA/revocation security modules;
-- `app/api/assignment_queue.py` / Workdesk product;
+- `app/api/assignment_queue.py` — Workdesk route/data owner, no direct HTML/JS patching;
+- `app/api/workdesk_ui.py` — base staff Workdesk document;
+- `app/api/workdesk_renderer.py` — single canonical final composition boundary for base UI + responsibility/deep-link behavior + integrity overlay;
+- `app/api/workdesk_integrity.py` — integrity data/overlay producer consumed through the renderer;
 - lawyer workspace/product surfaces;
 - document review, message, consultation, Payment Review/refund products.
 
-Route ownership rule: one `(HTTP method, path)` has one runtime owner; route include order must not define security semantics.
+Route ownership rule: one `(HTTP method, path)` has one runtime owner; route include order must not define security semantics. Workdesk route/data modules do not own cross-module HTML mutation; final Workdesk composition is centralized in `render_workdesk_html()`.
 
 Evidence anchors:
 
 - `tests/test_v37_api_import_inventory.py`;
 - `scripts/architecture_check.py`;
-- `tests/test_browser_staff_e2e.py`.
+- `tests/test_browser_staff_e2e.py`;
+- `tests/test_workdesk_renderer_contract.py`.
 
-State: `IMPLEMENTED / RUNTIME_PENDING`.
+State: `IMPLEMENTED / FIXED_PENDING_RUNTIME`.
 
 ## P-09 — Audit integrity and immutable evidence
 
@@ -512,7 +516,7 @@ Current infrastructure state: `BLOCKED_INFRA` under GitHub issue #116 until Acti
 - mandatory `Process map maintenance contract` for pull requests;
 - source compile;
 - architecture check, including fail-closed legacy assignment import containment;
-- SQLite application suite, including M2 compatibility-status write-lock regression;
+- SQLite application suite, including M2 compatibility-status and Workdesk composition regressions;
 - Alembic current/idempotency/check;
 - clean migration smoke;
 - PostgreSQL migration + technical encrypted backup/restore drill;
@@ -549,7 +553,8 @@ Required tests now include:
 ### `Browser Staff E2E`
 
 - staff browser role/session paths over PostgreSQL;
-- Payment Review stale two-tab recovery.
+- Payment Review stale two-tab recovery;
+- canonical Workdesk rendering remains browser-visible through the same route/roles after renderer consolidation.
 
 ## Manual `LIVE_REQUIRED`
 
@@ -570,9 +575,9 @@ Requires exact same run attempt/SHA evidence for:
 | PM-002 | PostgreSQL dedicated gate | `tests/test_postgres_auto_assignment_concurrency.py` existed and was required by acceptance/LIVE_REQUIRED but was absent from `.github/workflows/postgres-concurrency.yml` | Dedicated gate could pass without proving assignment capacity race | `FIXED_PENDING_RUNTIME`: added to dedicated workflow; requires real PostgreSQL gate execution |
 | PM-003 | M2 state machine | `M2_CONSULTATION_ROUTE` is a historical string-backed bootstrap status; canonical current M2 creation begins at `M2_DESCRIPTION_PENDING`, while old rows may still require one-way compatibility upgrade | New or forced re-entry would revive a retired state and split analytics/state-machine semantics; deleting the value outright could break historical rows | `FIXED_PENDING_RUNTIME / COMPATIBILITY_READ_ONLY`: existing legacy rows remain readable and may move only forward to `M2_DESCRIPTION_PENDING`; transition policy rejects all new/forced entry and ORM backstop rejects direct creation/re-entry; focused regression added; physical removal deferred until historical DB audit/migration is proven safe |
 | PM-004 | Assignment architecture | Historical `app/domain/assignment/AssignmentEngine` + `WorkloadService` coexist with canonical hardened `app/domain/cases/CaseAssignmentService`; exact-ref package has no public exports and repository code search found no current consumers, but search indexing alone is not proof of safe deletion | A future/reintroduced legacy import could bypass Case/candidate locking, active staff identity, workload/capacity and SLA/audit semantics | `DEBT_OPEN / SOURCE_CONTAINED`: `architecture_check.py::check_legacy_assignment_imports` now rejects any production import of `app.domain.assignment` outside the legacy package; retain files until safe-removal/historical-consumer audit, then delete only with regression/runtime proof |
-| PM-005 | Workdesk composition | `app/api/assignment_queue.py` still composes canonical Workdesk by injecting a responsibility/deep-link JS patch into `WORKDESK_HTML` at render time | UI behavior is distributed across modules and harder to reason about than a single canonical component | `DEBT_OPEN`: not a current route-ownership violation, but candidate for later source consolidation after release evidence is restored |
+| PM-005 | Workdesk composition | Canonical Workdesk route previously embedded a responsibility/deep-link JS patch in `assignment_queue.py` and then applied a second integrity HTML/JS injection, distributing final UI construction across route/data modules | UI ownership was harder to inspect and future route changes could accidentally omit/duplicate a cross-cutting patch | `FIXED_PENDING_RUNTIME / COMPOSITION_CENTRALIZED`: `app/api/workdesk_renderer.py` is now the single final composition boundary; `assignment_queue.py` only authenticates/serves the route and owns responsibility/queue data APIs, while renderer deterministically combines base UI, responsibility/deep-link behavior and integrity overlay. `tests/test_workdesk_renderer_contract.py` locks uniqueness and forbids route-level HTML patching |
 | PM-006 | Repository governance | Private-repo ruleset API could not be independently inspected on current GitHub plan | Formal branch-protection required-context list is not independently proven through API | `DEBT_OPEN`: CI-level process-map contract is implemented; verify GitHub branch/rules settings manually when runner/billing is restored |
-| PM-007 | Runtime evidence | Storage portability, retention portability, restore schema-v2, Payment Review, assignment, M2 compatibility-status and process-map governance regressions exist but current runner has not executed them | Source correctness may hide runtime/governance regressions | `RUNTIME_PENDING`; must pass ordered release gates on the current candidate SHA |
+| PM-007 | Runtime evidence | Storage portability, retention portability, restore schema-v2, Payment Review, assignment, M2 compatibility-status, Workdesk renderer and process-map governance regressions exist but current runner has not executed them | Source correctness may hide runtime/governance regressions | `RUNTIME_PENDING`; must pass ordered release gates on the current candidate SHA |
 
 # Change impact rule
 
@@ -613,3 +618,11 @@ Whenever code changes:
 - Added an ORM status-write backstop in `app/models/case.py` so direct creation/re-entry outside `CaseService` cannot recreate the retired bootstrap state.
 - Added `tests/test_case_compatibility_status_contract.py` covering forward compatibility upgrade, initial-status rejection, normal/forced re-entry rejection and ORM write protection.
 - PM-003 is source-fixed but remains runtime pending. This source/test batch supersedes the previous candidate; ordered release verification must restart from full CI on the resulting head after #116 is restored.
+
+## 2026-08-28 — PM-005 Workdesk composition centralized
+
+- Confirmed the Workdesk route/data module mixed API ownership with a large responsibility/deep-link JavaScript patch and then passed the result through a second integrity injection. No duplicate runtime route was found; the problem was composition ownership and maintainability.
+- Added `app/api/workdesk_renderer.py` as the one final Workdesk composition boundary. It preserves the previous deterministic order: base `WORKDESK_HTML` → responsibility/deep-link behavior → process-integrity overlay, and fails closed if expected template markers/unique composition assumptions are broken.
+- Removed `WORKDESK_HTML`, responsibility patch and integrity-injection handling from `assignment_queue.py`; that module now authenticates/serves `/admin/workdesk/ui` through `render_workdesk_html()` and keeps responsibility/queue data APIs only.
+- Added `tests/test_workdesk_renderer_contract.py` to prove the responsibility, repair, deep-link and integrity layers are each present exactly once and to prevent route-level HTML patching from returning.
+- PM-005 is source-fixed but remains browser/runtime pending. This source/test batch supersedes the previous candidate; ordered release verification must restart from full CI on the resulting head after #116 is restored.
