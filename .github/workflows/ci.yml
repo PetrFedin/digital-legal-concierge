@@ -18,6 +18,33 @@ env:
   PIP_NO_INPUT: "1"
 
 jobs:
+  process-map-contract:
+    name: Process map maintenance contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout full history for change inventory
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Verify living process map exists
+        run: test -s docs/PROCESS_MAP_CURRENT.md
+
+      - name: Require process map update in every pull request
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          printf '%s\n' "$changed"
+          if ! printf '%s\n' "$changed" | grep -Fxq 'docs/PROCESS_MAP_CURRENT.md'; then
+            echo "::error::Every pull request must update docs/PROCESS_MAP_CURRENT.md so the living process/debt/change map stays current."
+            exit 1
+          fi
+
   sqlite-tests:
     name: SQLite application tests
     runs-on: ubuntu-24.04
