@@ -10,6 +10,7 @@ from app.domain.cases.case_transition_policy import (
     CaseTransitionError,
     TERMINAL_STATUSES,
     normalize_status,
+    validate_initial_status,
     validate_transition,
 )
 from app.domain.cases.sla_service import CaseSLAService
@@ -312,10 +313,10 @@ class CaseService:
         *,
         client: User,
         route: str | None = None,
-        status: str = CaseStatus.NEW,
+        status: str | CaseStatus = CaseStatus.NEW,
         title: str | None = None,
     ):
-        normalized_status = normalize_status(status)
+        normalized_status = validate_initial_status(status)
         case = Case(
             case_number="TEMP",
             client_id=client.id,
