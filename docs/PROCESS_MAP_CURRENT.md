@@ -26,9 +26,10 @@ Before finishing a change:
 - create or update a stable `PM-*` item for every discovered inconsistency, duplication, legacy residue, blocker or design risk;
 - never delete a `PM-*` item merely because code moved — close it only with an explicit corrective action and the evidence required by the contract;
 - append a dated change-log entry explaining the change and release/evidence impact;
-- never promote source inspection to `LIVE_PASS`.
+- never promote source inspection to `LIVE_PASS`;
+- make this map the **last governed commit in the batch**, or commit the governed change and map together.
 
-CI enforces this on pull requests through `Process map maintenance contract`, but `AGENTS.md` makes the rule visible **before** a PR is created.
+CI enforces this through `Process map maintenance contract`. The gate now checks both that the map changed somewhere in the PR and that no later governed repository commit exists after the latest map update. A code/test/workflow/docs-contract commit after the map makes the map stale and must be followed by another map update. `AGENTS.md` exposes the same rule before a PR is created.
 
 ## Status vocabulary
 
@@ -63,7 +64,7 @@ Telegram remains the client cabinet. Staff work through authenticated browser/ad
 | Platform/security | `app/security/*`, `app/storage.py` | auth, grants, encryption, audit integrity, backup/restore, key rotation, storage safety | IMPLEMENTED / SOURCE_AUDITED / RUNTIME_PENDING |
 | Scheduler/notifications | `app/scheduler/*`, `app/domain/notifications/*` | reminders, slot release, SLA, retention, backup, cleanup, delivery | IMPLEMENTED / RUNTIME_PENDING |
 | Release evidence | `.github/workflows/*`, evidence scripts | CI, runtime matrix, manifests, restore proof | IMPLEMENTED / BLOCKED_INFRA |
-| Governance | `AGENTS.md`, CURRENT docs, this map, CI contract | force process/debt/change traceability | IMPLEMENTED / RUNTIME_PENDING |
+| Governance | `AGENTS.md`, CURRENT docs, this map, CI contract | force process/debt/change traceability and map freshness | IMPLEMENTED / FIXED_PENDING_RUNTIME |
 
 # End-to-end process map
 
@@ -319,7 +320,8 @@ Current infrastructure state: `BLOCKED_INFRA` under issue #116 until Actions all
 
 ### `CI`
 
-- `Process map maintenance contract`;
+- `Process map maintenance contract`: file must exist, must be changed in the PR, and its latest commit must be at least as new as the latest governed repository commit;
+- `tests/test_process_map_governance_contract.py` locks the presence/freshness source contract and root `AGENTS.md` wording;
 - source compile;
 - architecture check, including legacy assignment containment;
 - SQLite suite, including CaseService/M2 compatibility and Workdesk renderer regressions;
@@ -367,6 +369,7 @@ One exact SHA/run/attempt must prove PostgreSQL, Redis, real Telegram delivery, 
 | PM-005 | Workdesk composition | Final UI was assembled by route-level responsibility JS patch plus separate integrity injection | Distributed UI ownership could omit/duplicate behavior | `FIXED_PENDING_RUNTIME / COMPOSITION_CENTRALIZED`; single `workdesk_renderer.py`, route module no longer patches HTML, regression locks boundary |
 | PM-006 | Repository governance | Private-repo ruleset required contexts cannot be independently enumerated through current GitHub API/plan | Formal branch protection contract is not API-proven | `DEBT_OPEN`; CI governance + root `AGENTS.md` implemented; manually verify repository rules after billing/runner recovery |
 | PM-007 | Runtime evidence | Current storage/restore/retention/Payment Review/assignment/M2/Workdesk/governance regressions have not run on an Actions runner | Source correctness may hide runtime regressions | `RUNTIME_PENDING`; ordered gates required on current candidate |
+| PM-008 | Living-map governance | Initial CI rule only required `PROCESS_MAP_CURRENT.md` to appear somewhere in the total PR diff; a long PR could update the map once and then add later governed commits without another map update | The repository could satisfy the check while the living process/debt/change inventory was already stale | `FIXED_PENDING_RUNTIME / FRESHNESS_ENFORCED`: CI resolves latest map commit and latest non-map governed commit and requires the latter to be an ancestor of the former; root `AGENTS.md` documents the same invariant; focused source regression locks the gate structure |
 
 # Development priority plan
 
@@ -375,7 +378,7 @@ One exact SHA/run/attempt must prove PostgreSQL, Redis, real Telegram delivery, 
 1. Resolve #116 externally and prove real runner allocation (`runner_id != 0` + executed steps).
 2. Freeze the then-current head and run `CI` + `Deployment Readiness` + `Reproducible Dependencies`.
 3. Treat a real failure as application evidence; fix it, update affected P-/PM-items/change log, create a new candidate and restart full CI.
-4. Validate PM-002, PM-003, PM-005, storage/retention portability and Payment Review recovery in executable gates.
+4. Validate PM-002, PM-003, PM-005, PM-008, storage/retention portability and Payment Review recovery in executable gates.
 5. Run dedicated PostgreSQL/Redis/browser gates, then one complete LIVE_REQUIRED attempt only after general gates are green.
 
 ## P1 — controlled debt closure after executable CI exists
@@ -402,7 +405,8 @@ Whenever anything changes:
 3. add/update `PM-*` debt for every discovered inconsistency;
 4. close debt only with explicit corrective action/evidence;
 5. append the change log;
-6. if release evidence had begun, declare a new candidate and restart from full CI.
+6. make this map the last governed commit in the batch or include it in the same commit;
+7. if release evidence had begun, declare a new candidate and restart from full CI.
 
 # Change log
 
@@ -450,3 +454,13 @@ Whenever anything changes:
 - `AGENTS.md` points to the authoritative CURRENT documents and this map, repeats the mandatory same-batch map-update rule, records source-of-truth boundaries, current release truth and no-auto-merge rule.
 - This closes the discoverability gap where the process-map rule previously became obvious only after reading CI/docs; CI remains the enforcement backstop.
 - This documentation/governance change creates a new candidate SHA and therefore supersedes the immediately prior release candidate; runtime evidence must start from full CI once #116 is restored.
+
+## 2026-08-28 — PM-008 process-map freshness enforced
+
+- Audited the initial `Process map maintenance contract` and found it only proved that `docs/PROCESS_MAP_CURRENT.md` appeared somewhere in the total PR diff.
+- This allowed a long PR to update the map once, then add later code/test/workflow/docs-contract commits while the check still saw the historical map change.
+- Strengthened `.github/workflows/ci.yml`: the gate now resolves the latest map commit and latest non-map governed commit in `BASE_SHA..HEAD_SHA` and requires the governed commit to be an ancestor of the map commit. Same-commit changes pass; map-after-code passes; code-after-map fails closed.
+- Updated root `AGENTS.md` with the same last-governed-commit invariant.
+- Added `tests/test_process_map_governance_contract.py` to lock the presence/freshness source contract.
+- This map update is intentionally the final governed commit of the batch, satisfying the new invariant by construction.
+- PM-008 is `FIXED_PENDING_RUNTIME`: the gate and regression remain unexecuted until issue #116 is resolved.
