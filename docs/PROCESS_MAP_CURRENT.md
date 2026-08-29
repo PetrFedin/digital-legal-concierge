@@ -123,7 +123,11 @@ Owners:
 - money — `Payment` + `PaymentEvent` + provider evidence + Case/Audit context;
 - terminal facts — `closed_at`, `close_reason`, `archived_at`, separate retention deletion fact.
 
+M1 rejection client recovery is one continuous Telegram path, not a second state machine: `CLIENT_ACTIONS["M1_REJECTED"] → contact_lawyer → contact_lawyer_scope_guard.scoped_contact_lawyer → m1_rejection_recovery._show_options`. The decision center exposes the existing safe choices to move the same Case to M2, write to the team, or start the explicit close-confirmation flow. The client card must describe those choices truthfully; presentation changes do not themselves mutate `Case.status`.
+
 Static architecture enforcement for `Case.status` is model-aware: obvious direct writes, `setattr(..., "status", ...)`, aliased model classes, typed aliases and SQLAlchemy bulk update forms are rejected outside `CaseService`. This is a source guard, not a substitute for runtime/domain tests.
+
+Evidence: `tests/test_m1_rejection_client_decision_contract.py` locks the rejected-M1 card wording/callback, the scope-guard delegation and presence of M2/message/close options. Runtime execution is still pending under PM-001/PM-007.
 
 State: `IMPLEMENTED / FIXED_PENDING_RUNTIME`.
 
@@ -332,7 +336,7 @@ Current infrastructure state: `BLOCKED_INFRA` under issue #116 until Actions all
 - architecture check, including:
   - absolute/relative/literal-dynamic legacy assignment containment;
   - alias/type-aware direct/bulk `Case.status` and `Payment.status` mutation containment;
-- SQLite suite, including CaseService/M2 compatibility, Workdesk renderer, legacy-assignment import guard and status-mutation architecture regressions;
+- SQLite suite, including CaseService/M2 compatibility, Workdesk renderer, legacy-assignment import guard, status-mutation architecture regressions and rejected-M1 client decision presentation/routing;
 - Alembic current/idempotency/check + clean migration smoke;
 - PostgreSQL migration + technical encrypted backup/restore drill;
 - production container build/start/health.
@@ -379,6 +383,7 @@ One exact SHA/run/attempt must prove PostgreSQL, Redis, real Telegram delivery, 
 | PM-007 | Runtime evidence | Current storage/restore/retention/Payment Review/assignment/M2/Workdesk/governance regressions have not run on an Actions runner | Source correctness may hide runtime regressions | `RUNTIME_PENDING`; ordered gates required on current candidate |
 | PM-008 | Living-map governance | Initial CI rule only required `PROCESS_MAP_CURRENT.md` to appear somewhere in total PR diff | A long PR could pass while the map had become stale | `FIXED_PENDING_RUNTIME / FRESHNESS_ENFORCED`; latest non-map governed commit must be an ancestor of latest map commit; AGENTS + focused regression lock the rule |
 | PM-009 | Case/Payment mutation architecture | Initial `Case.status` check depended on literal variable name `case`; Payment check relied mainly on names containing `payment` and direct `Payment` class reference. Typed aliases, `setattr`, model aliases and several bulk SQLAlchemy forms could evade the static boundary | Product code could bypass `CaseService` or `PaymentLifecycleService`, splitting process/audit/SLA or financial timestamp/ledger semantics | `FIXED_PENDING_RUNTIME / ALIAS_AWARE_GUARD`: architecture check infers obvious model variables from imports/aliases/annotations/constructors/simple aliases, preserves conventional names, catches `setattr(..., "status", ...)` and model-referenced `.values/.update` bulk forms; `tests/test_status_mutation_architecture_guard.py` covers forbidden and allowed cases. This remains static containment, not a claim that arbitrary Python reflection is impossible |
+| PM-010 | M1 rejection Telegram presentation | The `M1_REJECTED` backend/client recovery already exposed M2, message/team and close choices, but `ClientCaseView` described the callback as contact-only (`Уточнить решение`) | Client could miss valid next steps and the primary Case card contradicted the actual callback/product flow | `FIXED_PENDING_RUNTIME / PRESENTATION_ALIGNED`; card now says `Выбрать, что делать дальше`, describes consultation/close/team choices, preserves `contact_lawyer` and existing state machine; `tests/test_m1_rejection_client_decision_contract.py` locks presentation, delegation and choices; runtime pending under #116 |
 
 # Development priority plan
 
@@ -387,7 +392,7 @@ One exact SHA/run/attempt must prove PostgreSQL, Redis, real Telegram delivery, 
 1. Resolve #116 externally and prove real runner allocation (`runner_id != 0` + executed steps).
 2. Freeze the then-current head and run `CI` + `Deployment Readiness` + `Reproducible Dependencies`.
 3. Treat a real failure as application evidence; fix it, update affected P-/PM-items/change log, create a new candidate and restart full CI.
-4. Validate PM-002, PM-003, PM-004, PM-005, PM-008, PM-009, storage/retention portability and Payment Review recovery in executable gates.
+4. Validate PM-002, PM-003, PM-004, PM-005, PM-008, PM-009, PM-010, storage/retention portability and Payment Review recovery in executable gates.
 5. Run dedicated PostgreSQL/Redis/browser gates, then one complete LIVE_REQUIRED attempt only after general gates are green.
 
 ## P1 — controlled debt closure after executable CI exists
@@ -486,3 +491,11 @@ Whenever anything changes:
 - `Case.status` remains owned by `CaseService`; `Payment.status` mutation remains owned by `PaymentLifecycleService`. Creation-time `Payment(status=...)` is deliberately not treated as a transition violation.
 - Added `tests/test_status_mutation_architecture_guard.py`, including negative controls proving the rule does not globally ban another model such as `Document.status`.
 - This is source-level containment only. Runtime CI must prove the stronger architecture check does not reveal additional current violations; if it does, those are to be handled as real application debt rather than weakening the check.
+
+## 2026-08-29 — PM-010 M1 rejection client decision presentation aligned
+
+- Re-audited the functional/UX rejection requirement against the exact production path and disproved the initial hypothesis that the negative M1 branch was absent: the state graph, lawyer rejection route and Telegram decision center already exist.
+- Found the actual gap in `CLIENT_ACTIONS["M1_REJECTED"]`: the primary `Моё дело` card described `contact_lawyer` as only `Уточнить решение`, while that callback already opens the safe decision center with M2, team-message and close choices.
+- Changed only the client presentation contract to `Выбрать, что делать дальше` with explicit consultation/close/team wording. Callback, Case state machine and mutation ownership were deliberately not changed.
+- Added `tests/test_m1_rejection_client_decision_contract.py` to lock the card contract, `contact_lawyer_scope_guard` delegation and all three safe choices.
+- Classified PM-010 as `FIXED_PENDING_RUNTIME / PRESENTATION_ALIGNED`; no runtime PASS is claimed because issue #116 still blocks actual Actions runner execution.
