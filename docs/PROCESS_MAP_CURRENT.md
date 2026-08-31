@@ -183,7 +183,11 @@ Source split:
 
 Rules: late failure cannot overwrite received money; exact retry differs from stale command; stale Payment Review returns authoritative 409 without a duplicate resolution; M2 payment stays bound to exact reservation/consultation context; stale money never resurrects obsolete legal state.
 
+Payment Review audit traceability is read-only and exact-payment scoped: `GET /admin/payment-reviews/{payment_id}/history` remains available after a payment leaves the active `PAID_REVIEW` queue, queries the Case audit actions, filters the exact `payment_id` before bounding the visible timeline, and returns only a normalized whitelist. Free-text reconciliation comments, raw `old_value`/`new_value`, provider/reservation payloads and audit-chain integrity metadata are deliberately not exported by this endpoint.
+
 `PaymentLifecycleService` is the canonical application mutation boundary for an existing `Payment.status`. The model listener stamps/records invariant facts but is not the product decision boundary. Static architecture enforcement now recognizes obvious aliases/annotations/constructor aliases plus `setattr` and bulk SQLAlchemy status mutations outside `PaymentLifecycleService`.
+
+Evidence: `tests/test_payment_review_history_contract.py` locks the admin-only read route, exact-payment filtering, terminal history availability, bounded matching timeline and privacy projection. Runtime execution remains pending under PM-001/PM-007/PM-011.
 
 State: `IMPLEMENTED / FIXED_PENDING_RUNTIME`.
 
@@ -239,6 +243,8 @@ State: `IMPLEMENTED / FIXED_PENDING_RUNTIME`.
 Flow: `business/security action → AuditLog → chained integrity metadata → verification → backup/restore proof`.
 
 Evidence families: `AuditLog` + `AuditChainHead`, immutable consent snapshot, append-only `PaymentEvent`, provider `PaymentWebhookEvent`, Case history.
+
+Payment Review history is a privacy-bounded projection of `AuditLog`, not a new evidence store: the underlying audit rows and chain integrity remain authoritative and internal, while the staff API exposes only the minimum decision/provenance fields needed for reconciliation.
 
 State: `IMPLEMENTED / RUNTIME_PENDING`.
 
@@ -319,7 +325,7 @@ Current infrastructure state: `BLOCKED_INFRA` under issue #116 until Actions all
 | Current payment | `Payment` | payment UI |
 | Financial history | append-only `PaymentEvent` | timeline |
 | Provider evidence | `PaymentWebhookEvent` | reconciliation |
-| Case/action audit | `AuditLog`/Case history | timelines/audit center |
+| Case/action audit | `AuditLog`/Case history | timelines/audit center + privacy-bounded Payment Review history |
 | Closure/archive/delete | separate lifecycle timestamps/reasons | terminal/read-only UI |
 | Client inactivity | client/Case activity + stage-entry evidence | reminder scheduling |
 | Runtime draft/navigation | Redis FSM | never legal source of truth |
@@ -336,7 +342,7 @@ Current infrastructure state: `BLOCKED_INFRA` under issue #116 until Actions all
 - architecture check, including:
   - absolute/relative/literal-dynamic legacy assignment containment;
   - alias/type-aware direct/bulk `Case.status` and `Payment.status` mutation containment;
-- SQLite suite, including CaseService/M2 compatibility, Workdesk renderer, legacy-assignment import guard, status-mutation architecture regressions and rejected-M1 client decision presentation/routing;
+- SQLite suite, including CaseService/M2 compatibility, Workdesk renderer, legacy-assignment import guard, status-mutation architecture regressions, rejected-M1 client decision presentation/routing and Payment Review history privacy/exact-payment contracts;
 - Alembic current/idempotency/check + clean migration smoke;
 - PostgreSQL migration + technical encrypted backup/restore drill;
 - production container build/start/health.
@@ -384,6 +390,7 @@ One exact SHA/run/attempt must prove PostgreSQL, Redis, real Telegram delivery, 
 | PM-008 | Living-map governance | Initial CI rule only required `PROCESS_MAP_CURRENT.md` to appear somewhere in total PR diff | A long PR could pass while the map had become stale | `FIXED_PENDING_RUNTIME / FRESHNESS_ENFORCED`; latest non-map governed commit must be an ancestor of latest map commit; AGENTS + focused regression lock the rule |
 | PM-009 | Case/Payment mutation architecture | Initial `Case.status` check depended on literal variable name `case`; Payment check relied mainly on names containing `payment` and direct `Payment` class reference. Typed aliases, `setattr`, model aliases and several bulk SQLAlchemy forms could evade the static boundary | Product code could bypass `CaseService` or `PaymentLifecycleService`, splitting process/audit/SLA or financial timestamp/ledger semantics | `FIXED_PENDING_RUNTIME / ALIAS_AWARE_GUARD`: architecture check infers obvious model variables from imports/aliases/annotations/constructors/simple aliases, preserves conventional names, catches `setattr(..., "status", ...)` and model-referenced `.values/.update` bulk forms; `tests/test_status_mutation_architecture_guard.py` covers forbidden and allowed cases. This remains static containment, not a claim that arbitrary Python reflection is impossible |
 | PM-010 | M1 rejection Telegram presentation | The `M1_REJECTED` backend/client recovery already exposed M2, message/team and close choices, but `ClientCaseView` described the callback as contact-only (`Уточнить решение`) | Client could miss valid next steps and the primary Case card contradicted the actual callback/product flow | `FIXED_PENDING_RUNTIME / PRESENTATION_ALIGNED`; card now says `Выбрать, что делать дальше`, describes consultation/close/team choices, preserves `contact_lawyer` and existing state machine; `tests/test_m1_rejection_client_decision_contract.py` locks presentation, delegation and choices; runtime pending under #116 |
+| PM-011 | Payment Review audit traceability | Active Payment Review and 409 recovery used durable audit evidence internally, but staff had no stable exact-payment read API once a review left the active queue | Terminal reconciliation could require raw audit inspection and risk leaking unrelated Case events, free-text comments or integrity/provider metadata | `FIXED_PENDING_RUNTIME / SAFE_HISTORY_ADDED`; admin-only `/{payment_id}/history` projects exact-payment REQUIRED/RESOLVED events through a strict whitelist, filters before the 20-event presentation bound, remains available for terminal payments and has deterministic privacy/filter/auth/route regressions; runtime pending under #116 |
 
 # Development priority plan
 
@@ -392,7 +399,7 @@ One exact SHA/run/attempt must prove PostgreSQL, Redis, real Telegram delivery, 
 1. Resolve #116 externally and prove real runner allocation (`runner_id != 0` + executed steps).
 2. Freeze the then-current head and run `CI` + `Deployment Readiness` + `Reproducible Dependencies`.
 3. Treat a real failure as application evidence; fix it, update affected P-/PM-items/change log, create a new candidate and restart full CI.
-4. Validate PM-002, PM-003, PM-004, PM-005, PM-008, PM-009, PM-010, storage/retention portability and Payment Review recovery in executable gates.
+4. Validate PM-002, PM-003, PM-004, PM-005, PM-008, PM-009, PM-010, PM-011, storage/retention portability and Payment Review recovery/history in executable gates.
 5. Run dedicated PostgreSQL/Redis/browser gates, then one complete LIVE_REQUIRED attempt only after general gates are green.
 
 ## P1 — controlled debt closure after executable CI exists
@@ -402,6 +409,7 @@ One exact SHA/run/attempt must prove PostgreSQL, Redis, real Telegram delivery, 
 3. Browser-check centralized Workdesk renderer for M1/M2 responsibility/action semantics.
 4. Audit real staging/restore DB for remaining `M2_CONSULTATION_ROUTE` rows before considering a migration/removal of the compatibility enum.
 5. Review PM-009 runtime results and decide whether a later model/session-level mutation authorization backstop is justified; do not add one speculatively before executable CI proves the static guard behavior.
+6. Exercise PM-011 with an authenticated browser/API session against both active and terminal Payment Review records before promoting any history UI beyond the bounded API contract.
 
 ## P2 — post-LIVE evidence and release decision
 
@@ -499,3 +507,11 @@ Whenever anything changes:
 - Changed only the client presentation contract to `Выбрать, что делать дальше` with explicit consultation/close/team wording. Callback, Case state machine and mutation ownership were deliberately not changed.
 - Added `tests/test_m1_rejection_client_decision_contract.py` to lock the card contract, `contact_lawyer_scope_guard` delegation and all three safe choices.
 - Classified PM-010 as `FIXED_PENDING_RUNTIME / PRESENTATION_ALIGNED`; no runtime PASS is claimed because issue #116 still blocks actual Actions runner execution.
+
+## 2026-08-31 — PM-011 Payment Review safe audit history added
+
+- Added `app/api/payment_review_history.py` and the admin-only `GET /admin/payment-reviews/{payment_id}/history` route owned by the existing Payment Review product router.
+- History remains readable after the payment leaves `PAID_REVIEW`, filters the exact payment after the Case/action query and only then applies the bounded 20-event presentation limit, so unrelated audit traffic cannot evict the target reconciliation evidence.
+- Added a strict response whitelist: decision/status/actor/time and exact consultation/slot identifiers are exposed when relevant; free-text comments, raw audit JSON, provider/reservation payloads and audit-chain integrity fields remain internal.
+- Added `tests/test_payment_review_history_contract.py` covering privacy projection, resolved/required normalization, exact-payment filtering before bounding, terminal payment history, 404 behavior, route ownership and missing-admin rejection.
+- Classified PM-011 as `FIXED_PENDING_RUNTIME / SAFE_HISTORY_ADDED`; this source/test improvement creates a new candidate head but does not claim CI, browser, PostgreSQL or LIVE_REQUIRED PASS while #116 remains unresolved.
