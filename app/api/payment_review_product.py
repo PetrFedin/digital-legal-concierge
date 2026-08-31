@@ -7,6 +7,7 @@ from app.api.payment_review_center import (
     list_payment_reviews,
     resolve_payment_review,
 )
+from app.api.payment_review_history import get_payment_review_history
 from app.api.staff_ui_guards import protected_payment_review_ui
 
 router = APIRouter(prefix="/admin/payment-reviews", tags=["admin", "payment-reviews"])
@@ -16,6 +17,12 @@ router.add_api_route(
     list_available_review_slots,
     methods=["GET"],
     name="list_available_review_slots",
+)
+router.add_api_route(
+    "/{payment_id}/history",
+    get_payment_review_history,
+    methods=["GET"],
+    name="get_payment_review_history",
 )
 router.add_api_route(
     "/{payment_id}/resolve",
