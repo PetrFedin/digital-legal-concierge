@@ -1,6 +1,13 @@
-"""Single runtime owner for the existing M2 payment-review staff surface."""
+"""Single runtime owner for the existing M2 payment-review staff surface.
 
-from fastapi import APIRouter
+All responses owned by this product router are staff-only operational data.  The
+route class therefore applies ``Cache-Control: no-store`` at the final response
+boundary instead of relying on every endpoint (including explicit error
+responses) to remember the header independently.
+"""
+
+from fastapi import APIRouter, Request, Response
+from fastapi.routing import APIRoute
 
 from app.api.payment_review_center import (
     list_available_review_slots,
@@ -10,7 +17,26 @@ from app.api.payment_review_center import (
 from app.api.payment_review_history import get_payment_review_history
 from app.api.staff_ui_guards import protected_payment_review_ui
 
-router = APIRouter(prefix="/admin/payment-reviews", tags=["admin", "payment-reviews"])
+
+class NoStoreAPIRoute(APIRoute):
+    """Keep every Payment Review response out of browser/proxy caches."""
+
+    def get_route_handler(self):
+        route_handler = super().get_route_handler()
+
+        async def non_cacheable_handler(request: Request) -> Response:
+            response = await route_handler(request)
+            response.headers["Cache-Control"] = "no-store"
+            return response
+
+        return non_cacheable_handler
+
+
+router = APIRouter(
+    prefix="/admin/payment-reviews",
+    tags=["admin", "payment-reviews"],
+    route_class=NoStoreAPIRoute,
+)
 router.add_api_route("", list_payment_reviews, methods=["GET"], name="list_payment_reviews")
 router.add_api_route(
     "/slots",
@@ -37,4 +63,4 @@ router.add_api_route(
     name="payment_review_center_ui",
 )
 
-__all__ = ["router"]
+__all__ = ["NoStoreAPIRoute", "router"]
