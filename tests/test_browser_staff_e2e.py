@@ -333,6 +333,14 @@ def test_payment_review_stale_tab_gets_409_server_truth_without_overwrite() -> N
         expect(winner_confirm).to_be_visible()
         expect(stale_refund).to_be_visible()
 
+        # The active deep-link already explains why this exact payment entered
+        # review, but never renders the free-text AuditLog comment.
+        winner_history = winner.locator("#paymentReviewHistory")
+        expect(winner_history).to_be_visible()
+        expect(winner_history).to_contain_text("Сверка создана")
+        expect(winner_history).to_contain_text("Browser stale Payment Review verification")
+        expect(winner_history).not_to_contain_text("Payment held for administrator review")
+
         _accept_review_dialogs(
             winner,
             comment="Подтверждена текущая оплаченная бронь",
@@ -344,6 +352,14 @@ def test_payment_review_stale_tab_gets_409_server_truth_without_overwrite() -> N
                 exact=False,
             )
         ).to_be_visible()
+        expect(winner_history).to_contain_text("Сверка завершена")
+        expect(winner_history).to_contain_text("После: PAID")
+        expect(winner_history).to_contain_text(
+            "Решение: подтвердить связь с бронью"
+        )
+        expect(winner_history).not_to_contain_text(
+            "Подтверждена текущая оплаченная бронь"
+        )
 
         # This page still has the old PAID_REVIEW card in its DOM. Its conflicting
         # refund command must not be replayed over the decision committed above.
@@ -366,6 +382,22 @@ def test_payment_review_stale_tab_gets_409_server_truth_without_overwrite() -> N
         )
         expect(conflict).to_contain_text(
             "Ваш допустимый выбор и комментарий сохранены в этой вкладке"
+        )
+
+        # Conflict recovery reloads server truth, including the terminal history,
+        # but must not expose either administrator's reconciliation comment.
+        stale_history = stale.locator("#paymentReviewHistory")
+        expect(stale_history).to_be_visible()
+        expect(stale_history).to_contain_text("Сверка завершена")
+        expect(stale_history).to_contain_text("После: PAID")
+        expect(stale_history).to_contain_text(
+            "Решение: подтвердить связь с бронью"
+        )
+        expect(stale_history).not_to_contain_text(
+            "Подтверждена текущая оплаченная бронь"
+        )
+        expect(stale_history).not_to_contain_text(
+            "Старая вкладка пытается вернуть платёж"
         )
 
         context.close()
