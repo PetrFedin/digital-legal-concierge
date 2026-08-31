@@ -181,7 +181,10 @@ async def protected_payment_review_ui(
 
     # Auth is resolved before rendering. The renderer then composes the canonical
     # hierarchy and exact-payment read-only history without changing domain state.
-    return HTMLResponse(render_payment_review_html())
+    return HTMLResponse(
+        render_payment_review_html(),
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 async def protected_sla_ui(
