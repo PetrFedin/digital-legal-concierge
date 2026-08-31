@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -116,7 +116,9 @@ async def load_payment_review_history(
             )
         ).scalars().all()
     )
-    matching = [event for event in events if _event_payment_id(event) == int(payment.id)]
+    matching = [
+        event for event in events if _event_payment_id(event) == int(payment.id)
+    ]
     visible = matching[:PAYMENT_REVIEW_HISTORY_LIMIT]
     return {
         "payment_id": int(payment.id),
@@ -131,10 +133,12 @@ async def load_payment_review_history(
 
 async def get_payment_review_history(
     payment_id: int,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
     """Return a normalized, read-only audit timeline for one reviewed payment."""
 
     require_admin(x_admin_token)
+    response.headers["Cache-Control"] = "no-store"
     return await load_payment_review_history(db, payment_id=payment_id)
