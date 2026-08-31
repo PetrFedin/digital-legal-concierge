@@ -1,13 +1,13 @@
 """Single runtime owner for the existing M2 payment-review staff surface.
 
-All responses owned by this product router are staff-only operational data.  The
-route class therefore applies ``Cache-Control: no-store`` at the final response
-boundary instead of relying on every endpoint (including explicit error
-responses) to remember the header independently.
+Payment Review contains staff-only operational data.  The route class applies
+``Cache-Control: no-store`` at the final response boundary and also carries the
+same directive through HTTP exceptions raised by handlers or dependencies.
 """
 
 from fastapi import APIRouter, Request, Response
 from fastapi.routing import APIRoute
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.payment_review_center import (
     list_available_review_slots,
@@ -19,13 +19,19 @@ from app.api.staff_ui_guards import protected_payment_review_ui
 
 
 class NoStoreAPIRoute(APIRoute):
-    """Keep every Payment Review response out of browser/proxy caches."""
+    """Keep Payment Review handler and HTTP-exception responses out of caches."""
 
     def get_route_handler(self):
         route_handler = super().get_route_handler()
 
         async def non_cacheable_handler(request: Request) -> Response:
-            response = await route_handler(request)
+            try:
+                response = await route_handler(request)
+            except StarletteHTTPException as exc:
+                headers = dict(exc.headers or {})
+                headers["Cache-Control"] = "no-store"
+                exc.headers = headers
+                raise
             response.headers["Cache-Control"] = "no-store"
             return response
 
