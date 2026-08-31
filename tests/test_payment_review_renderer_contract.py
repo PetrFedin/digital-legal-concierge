@@ -59,7 +59,8 @@ def test_payment_review_renderer_is_the_single_final_ui_composition_owner() -> N
     renderer_source = Path("app/api/payment_review_renderer.py").read_text(encoding="utf-8")
 
     assert "from app.api.payment_review_renderer import render_payment_review_html" in guard_source
-    assert "return HTMLResponse(render_payment_review_html())" in guard_source
+    assert "render_payment_review_html()," in guard_source
+    assert 'headers={"Cache-Control": "no-store"}' in guard_source
     assert "PAYMENT_REVIEW_CENTER_HTML" not in guard_source
     assert "_inject_payment_review_guided_copy" not in guard_source
     assert "_PAYMENT_REVIEW_REASON" not in guard_source
@@ -68,6 +69,14 @@ def test_payment_review_renderer_is_the_single_final_ui_composition_owner() -> N
     assert "def render_payment_review_html()" in renderer_source
     assert "_inject_guided_copy(PAYMENT_REVIEW_CENTER_HTML)" in renderer_source
     assert "_inject_history_ui(html)" in renderer_source
+
+
+def test_payment_review_history_api_and_ui_are_explicitly_non_cacheable() -> None:
+    history_source = Path("app/api/payment_review_history.py").read_text(encoding="utf-8")
+    guard_source = Path("app/api/staff_ui_guards.py").read_text(encoding="utf-8")
+
+    assert 'response.headers["Cache-Control"] = "no-store"' in history_source
+    assert 'headers={"Cache-Control": "no-store"}' in guard_source
 
 
 def test_payment_review_renderer_is_deterministic_and_does_not_mutate_base_template() -> None:
