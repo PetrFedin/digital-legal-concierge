@@ -116,7 +116,6 @@ async def payment_review_conflict_snapshot(
             "orphan_consultation_id": new_value.get("orphan_consultation_id"),
             "orphan_slot_id": new_value.get("orphan_slot_id"),
             "actor_id": int(event.actor_id) if event.actor_id is not None else None,
-            "comment": event.comment,
             "resolved_at": (
                 event.created_at.isoformat() if event.created_at else None
             ),
