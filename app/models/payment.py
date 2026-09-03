@@ -3,15 +3,37 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, String, event, inspect
+from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, event, inspect, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
 from app.models.payment_event import PaymentEvent
 
 
+_ACTIVE_PAYMENT_PREDICATE = "status IN ('PENDING', 'WAITING_CONFIRMATION')"
+_PROVIDER_PAYMENT_PREDICATE = "provider_payment_id IS NOT NULL"
+
+
 class Payment(Base, TimestampMixin):
     __tablename__ = "payments"
+    __table_args__ = (
+        Index(
+            "uq_payments_one_active_attempt_per_case_code",
+            "case_id",
+            "payment_code",
+            unique=True,
+            sqlite_where=text(_ACTIVE_PAYMENT_PREDICATE),
+            postgresql_where=text(_ACTIVE_PAYMENT_PREDICATE),
+        ),
+        Index(
+            "uq_payments_provider_operation",
+            "provider",
+            "provider_payment_id",
+            unique=True,
+            sqlite_where=text(_PROVIDER_PAYMENT_PREDICATE),
+            postgresql_where=text(_PROVIDER_PAYMENT_PREDICATE),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     case_id: Mapped[int] = mapped_column(ForeignKey("cases.id"), index=True)
