@@ -483,7 +483,6 @@ async def manual_status(
             next_status=next_status,
             actor_type="admin",
             actor_id=actor_id_from_token(actor),
-            force=True,
             comment=comment,
         )
         await db.commit()
