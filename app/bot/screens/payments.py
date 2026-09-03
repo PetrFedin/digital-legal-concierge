@@ -10,6 +10,11 @@ from aiogram.types import CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select
 
+from app.bot.case_callback_scope import (
+    bound_case_callback,
+    callback_matches_action,
+    resolve_case_callback_scope,
+)
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.config import settings
@@ -32,6 +37,7 @@ from app.domain.statuses.case_statuses import CaseStatus, RouteCode
 from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models.case import Case
 from app.models.payment import Payment
+from app.presentation_time import format_business_datetime
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -175,8 +181,11 @@ async def _present_committed_callback(
 
 
 def fake_payments_enabled() -> bool:
-    return settings.payment_provider == "fake" and (
-        settings.app_env in {"local", "test"} or settings.demo_mode
+    """DEV payment confirmation is available only in an explicit local/test fake provider."""
+
+    return bool(
+        str(settings.payment_provider or "").strip().lower() == "fake"
+        and str(settings.app_env or "").strip().lower() in {"local", "test"}
     )
 
 
@@ -240,6 +249,19 @@ async def payments(callback: CallbackQuery, db):
         user_id=user.id,
     )
     if not case:
+        active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
+        if len(active_cases) > 1:
+            await callback.message.edit_text(
+                "💳 ОПЛАТЫ\n\n"
+                "У вас несколько активных обращений, а текущее дело не выбрано. "
+                "Платёжная история и новые финансовые действия не открываются без точного контекста дела.\n\n"
+                "Выберите обращение — после этого раздел «Оплаты» покажет только его платежи.",
+                reply_markup=one(
+                    ("📁 Выбрать обращение", "my_cases_open"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+            )
+            return
         await callback.message.edit_text(
             "💳 Оплаты\n\nАктивного или завершённого дела нет. Платёжная история появится после создания обращения.",
             reply_markup=one(
@@ -251,7 +273,7 @@ async def payments(callback: CallbackQuery, db):
 
     payments_list = await PaymentService(db).list_case_payments(case.id)
     heading = "💳 Оплаты завершённого дела" if completed else "💳 Оплаты"
-    text = heading + "\n\n" + (
+    text = heading + f"\nОбращение № {case.case_number}\n\n" + (
         "По этому делу платежей нет."
         if not payments_list
         else "\n\n".join(payment_summary_line(payment) for payment in payments_list)
@@ -283,20 +305,36 @@ async def payments(callback: CallbackQuery, db):
     await callback.message.edit_text(text, reply_markup=one(*items))
 
 
-@router.callback_query(lambda c: c.data == "pay_start_30000")
+@router.callback_query(lambda c: callback_matches_action(c.data, "pay_start_30000"))
 async def pay_30000(callback: CallbackQuery, db):
-    await start_payment(callback, db, PaymentCode.M1_INITIAL_PAYMENT)
+    await start_payment(
+        callback,
+        db,
+        PaymentCode.M1_INITIAL_PAYMENT,
+        action="pay_start_30000",
+    )
 
 
-@router.callback_query(lambda c: c.data == "consult_pay")
+@router.callback_query(lambda c: callback_matches_action(c.data, "consult_pay"))
 async def consult_pay(callback: CallbackQuery, db):
-    if not payments_disabled():
-        await start_payment(callback, db, PaymentCode.M2_CONSULTATION_PAYMENT)
+    scope = await resolve_case_callback_scope(
+        callback,
+        db,
+        action="consult_pay",
+    )
+    if scope is None:
         return
 
-    ctx = BotContextService(db)
-    user = await ctx.get_user_from_callback(callback)
-    case = await ctx.case_service.get_active_case_for_user(user.id)
+    if not payments_disabled():
+        await start_payment(
+            callback,
+            db,
+            PaymentCode.M2_CONSULTATION_PAYMENT,
+            scope=scope,
+        )
+        return
+
+    ctx, user, case = scope.ctx, scope.user, scope.case
     if not case:
         await callback.message.edit_text(
             "Активная консультация не найдена. Новая запись не создавалась.",
@@ -343,6 +381,17 @@ async def consult_pay(callback: CallbackQuery, db):
         consultation = await ConsultationNoPaymentBookingService(db).confirm(
             case=case,
             client_id=user.id,
+        )
+        # Everything needed by Telegram after the transaction is copied before
+        # commit. The presentation must not depend on a live ORM instance after
+        # a transaction boundary even though the normal session uses
+        # expire_on_commit=False.
+        case_number = str(case.case_number)
+        scheduled_at = consultation.scheduled_at
+        date_text = (
+            format_business_datetime(scheduled_at)
+            if scheduled_at
+            else "время уточняется"
         )
         await db.commit()
     except ConsultationDescriptionRequired as error:
@@ -395,14 +444,10 @@ async def consult_pay(callback: CallbackQuery, db):
         )
         return
 
-    date_text = (
-        consultation.scheduled_at.strftime("%d.%m.%Y %H:%M")
-        if consultation.scheduled_at
-        else "время уточняется"
-    )
     await _present_committed_callback(
         callback,
-        "✅ Консультация подтверждена без онлайн-оплаты.\n\n"
+        "✅ Консультация подтверждена без онлайн-оплаты.\n"
+        f"Обращение № {case_number}\n\n"
         f"Дата и время: {date_text}\n\n"
         "Дополнительный платёж не создавался. Вопрос и документы сохранены; "
         "откройте запись, чтобы проверить подготовку и при необходимости перенести или отменить встречу.",
@@ -440,10 +485,26 @@ async def _show_missing_m1_payment_case(callback: CallbackQuery, db, ctx, user) 
     )
 
 
-async def start_payment(callback: CallbackQuery, db, code):
-    ctx = BotContextService(db)
-    user = await ctx.get_user_from_callback(callback)
-    case = await ctx.case_service.get_active_case_for_user(user.id)
+async def start_payment(
+    callback: CallbackQuery,
+    db,
+    code,
+    *,
+    action: str | None = None,
+    scope=None,
+):
+    if scope is None and action:
+        scope = await resolve_case_callback_scope(callback, db, action=action)
+        if scope is None:
+            return
+
+    if scope is None:
+        ctx = BotContextService(db)
+        user = await ctx.get_user_from_callback(callback)
+        case = await ctx.case_service.get_active_case_for_user(user.id)
+    else:
+        ctx, user, case = scope.ctx, scope.user, scope.case
+
     is_m1_payment = code in M1_PAYMENT_EXPECTED_STATUSES
     if not case:
         if is_m1_payment:
@@ -478,6 +539,11 @@ async def start_payment(callback: CallbackQuery, db, code):
         )
         return
 
+    # Snapshot identity before any transaction boundary. In particular the
+    # provider RuntimeError path rolls the session back, which can expire ORM
+    # state independently of the global expire_on_commit setting.
+    case_id = int(case.id)
+    case_number = str(case.case_number)
     service = PaymentService(db)
     try:
         payment = await service.get_or_create_payment(
@@ -485,11 +551,14 @@ async def start_payment(callback: CallbackQuery, db, code):
             payment_code=code,
         )
         if is_m1_payment and payments_disabled():
+            payment_title = str(payment.title)
+            payment_amount = payment.amount
             await db.commit()
             await _present_committed_callback(
                 callback,
-                f"💳 {payment.title}\n\n"
-                f"Сумма: {money(payment.amount)}\n\n"
+                f"💳 {payment_title}\n"
+                f"Обращение № {case_number}\n\n"
+                f"Сумма: {money(payment_amount)}\n\n"
                 "Онлайн-оплата сейчас отключена. Платёж уже зафиксирован в системе как ожидающий; "
                 "команда изменит этап только после проверки фактического поступления денег.",
                 reply_markup=one(
@@ -500,6 +569,12 @@ async def start_payment(callback: CallbackQuery, db, code):
             )
             return
         payment = await service.create_payment_link(payment)
+        # The payment projection is now final for this transaction. Build all UI
+        # data before commit so presentation cannot trigger implicit database I/O
+        # after the durable financial write.
+        payment_title = str(payment.title)
+        payment_amount = payment.amount
+        payment_markup = payment_keyboard(payment)
         await db.commit()
     except ConsultationDescriptionRequired as error:
         await db.rollback()
@@ -552,7 +627,10 @@ async def start_payment(callback: CallbackQuery, db, code):
             "Платёжный сервис временно недоступен. Данные текущего этапа сохранены.",
             reply_markup=(
                 one(
-                    ("🔄 Повторить оплату", "consult_pay"),
+                    (
+                        "🔄 Повторить оплату",
+                        bound_case_callback("consult_pay", case_id),
+                    ),
                     ("📁 Моё дело", "my_case_open"),
                     ("🏠 Главная", "nav_home"),
                 )
@@ -568,24 +646,30 @@ async def start_payment(callback: CallbackQuery, db, code):
 
     if code == PaymentCode.M2_CONSULTATION_PAYMENT:
         text = (
-            f"💳 {payment.title}\n\nСумма: {money(payment.amount)}\n\n"
+            f"💳 {payment_title}\n"
+            f"Обращение № {case_number}\n\n"
+            f"Сумма: {money(payment_amount)}\n\n"
             "Вопрос и документы сохранены. После подтверждения оплаты выбранный "
             "слот станет окончательно вашим. Не используйте эту ссылку после выбора другого времени."
         )
     elif code == PaymentCode.M1_INITIAL_PAYMENT:
         text = (
-            f"💳 {payment.title}\n\nСумма: {money(payment.amount)}\n\n"
+            f"💳 {payment_title}\n"
+            f"Обращение № {case_number}\n\n"
+            f"Сумма: {money(payment_amount)}\n\n"
             "После подтверждения оплаты система откроет следующий этап — оформление доверенности."
         )
     else:
         text = (
-            f"💳 {payment.title}\n\nСумма: {money(payment.amount)}\n\n"
+            f"💳 {payment_title}\n"
+            f"Обращение № {case_number}\n\n"
+            f"Сумма: {money(payment_amount)}\n\n"
             "После подтверждения оплаты система откроет исполнительный этап."
         )
     await _present_committed_callback(
         callback,
         text,
-        reply_markup=payment_keyboard(payment),
+        reply_markup=payment_markup,
     )
 
 
@@ -623,6 +707,7 @@ async def open_payment(callback: CallbackQuery, db):
         )
         await callback.message.edit_text(
             f"💳 {payment.title}\n"
+            f"Обращение № {case.case_number}\n"
             f"Сумма: {money(payment.amount)}\n"
             f"Статус: {payment_status_label(payment.status)}"
             "\n\n⚠️ Деньги поступили, но автоматическое применение платежа остановлено для безопасной сверки."
@@ -634,6 +719,7 @@ async def open_payment(callback: CallbackQuery, db):
     if payment.status == PaymentStatus.REFUND_PENDING and is_booked_m2:
         await callback.message.edit_text(
             f"💳 {payment.title}\n"
+            f"Обращение № {case.case_number}\n"
             f"Сумма: {money(payment.amount)}\n"
             f"Статус: {payment_status_label(payment.status)}\n\n"
             "Возврат этого платежа обрабатывается отдельно от записи на консультацию. "
@@ -645,6 +731,7 @@ async def open_payment(callback: CallbackQuery, db):
     status_note = client_payment_status_note(payment)
     await callback.message.edit_text(
         f"💳 {payment.title}\n"
+        f"Обращение № {case.case_number}\n"
         f"Сумма: {money(payment.amount)}\n"
         f"Статус: {client_payment_status_label(payment)}"
         + (f"\n\n{status_note}" if status_note else ""),
@@ -679,6 +766,16 @@ async def fake(callback: CallbackQuery, db):
             case=case,
             provider_payload={"dev": True},
         )
+        # Snapshot the webhook result before commit. This deliberately makes the
+        # presentation layer independent of ORM expiration and preserves correct
+        # behaviour if the session policy changes later.
+        payment_status = payment.status
+        payment_code = payment.payment_code
+        is_booked_m2 = bool(
+            str(case.route or "") == RouteCode.M2.value
+            and str(case.status) == CaseStatus.M2_CONSULTATION_BOOKED.value
+        )
+        review_markup = payment_review_keyboard(case)
         await db.commit()
     except Exception:
         await db.rollback()
@@ -686,7 +783,7 @@ async def fake(callback: CallbackQuery, db):
         await callback.message.edit_text(
             "Оплата пока не подтверждена. Данные дела сохранены.",
             reply_markup=one(
-                ("🔄 Проверить оплату", f"pay_open:{payment.id}"),
+                ("🔄 Проверить оплату", f"pay_open:{payment_id}"),
                 ("💳 Все оплаты", "payments_open"),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
@@ -694,11 +791,7 @@ async def fake(callback: CallbackQuery, db):
         )
         return
 
-    if payment.status == PaymentStatus.PAID_REVIEW:
-        is_booked_m2 = bool(
-            str(case.route or "") == RouteCode.M2.value
-            and str(case.status) == CaseStatus.M2_CONSULTATION_BOOKED.value
-        )
+    if payment_status == PaymentStatus.PAID_REVIEW:
         await _present_committed_callback(
             callback,
             (
@@ -710,11 +803,11 @@ async def fake(callback: CallbackQuery, db):
                     else "\n\nКоманда проверит деньги и сообщит следующий безопасный шаг."
                 )
             ),
-            reply_markup=payment_review_keyboard(case),
+            reply_markup=review_markup,
         )
         return
 
-    if payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT:
+    if payment_code == PaymentCode.M2_CONSULTATION_PAYMENT:
         await _present_committed_callback(
             callback,
             "✅ Оплата подтверждена, консультация забронирована.\n\n"
@@ -729,7 +822,7 @@ async def fake(callback: CallbackQuery, db):
         )
         return
 
-    if payment.payment_code == PaymentCode.M1_SUCCESS_FEE:
+    if payment_code == PaymentCode.M1_SUCCESS_FEE:
         await _present_committed_callback(
             callback,
             "✅ Финальный платёж подтверждён. Дело закрыто.\n\n"

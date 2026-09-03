@@ -1,0 +1,98 @@
+name: Browser Staff E2E
+
+on:
+  pull_request: {}
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: browser-staff-e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  staff-browser:
+    name: Staff browser role/session contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: concierge_browser_e2e
+          POSTGRES_USER: concierge
+          POSTGRES_PASSWORD: concierge-browser-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U concierge -d concierge_browser_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgresql+asyncpg://concierge:concierge-browser-password@127.0.0.1:5432/concierge_browser_e2e
+      BOT_TOKEN: CHANGE_ME
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+      BOOTSTRAP_ADMIN: "false"
+      BOOTSTRAP_DEMO_DATA: "false"
+      STARTUP_BACKUP_ENABLED: "false"
+      PAYMENT_PROVIDER: disabled
+      PUBLIC_BASE_URL: http://127.0.0.1:8000
+      ALLOW_TOKEN_QUERY: "false"
+      ADMIN_API_TOKEN: browser-e2e-admin-token-not-for-production
+      SESSION_SIGNING_KEY: browser-e2e-session-signing-key-2026-00000001
+      SECURITY_HMAC_KEY: browser-e2e-security-hmac-key-2026-0000000002
+      MFA_ENCRYPTION_KEY: browser-e2e-mfa-encryption-key-2026-000000003
+      AUDIT_INTEGRITY_KEY: browser-e2e-audit-integrity-key-2026-00000004
+      DOCUMENT_ENCRYPTION_KEY: browser-e2e-document-encryption-key-2026-000005
+      BACKUP_ENCRYPTION_KEY: browser-e2e-backup-encryption-key-2026-0000006
+      STORAGE_DIR: /tmp/dlc-browser-storage
+      BACKUP_DIR: /tmp/dlc-browser-backups
+      BROWSER_E2E: "1"
+      BROWSER_E2E_BASE_URL: http://127.0.0.1:8000
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install application and test dependencies
+        run: pip install -e ".[test]"
+
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Apply production schema
+        run: alembic upgrade head
+
+      - name: Prepare runtime directories
+        run: mkdir -p "$STORAGE_DIR" "$BACKUP_DIR"
+
+      - name: Start application
+        run: |
+          uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/dlc-browser-e2e.log 2>&1 &
+          echo $! > /tmp/dlc-browser-e2e.pid
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:8000/health >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/dlc-browser-e2e.log
+          exit 1
+
+      - name: Run staff browser E2E
+        run: pytest -q tests/test_browser_staff_e2e.py
+
+      - name: Application log
+        if: always()
+        run: cat /tmp/dlc-browser-e2e.log || true

@@ -1,0 +1,474 @@
+name: LIVE_REQUIRED Release Matrix
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-required-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PIP_NO_INPUT: "1"
+
+jobs:
+  postgres:
+    name: PostgreSQL migration and race contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: concierge_live_required
+          POSTGRES_USER: concierge
+          POSTGRES_PASSWORD: concierge-live-required
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U concierge -d concierge_live_required"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgresql+asyncpg://concierge:concierge-live-required@127.0.0.1:5432/concierge_live_required
+      BOT_TOKEN: CHANGE_ME
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: admin-change-me
+      ADMIN_API_TOKEN: live-required-admin-token-not-for-production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[test]"
+
+      - name: Apply production schema
+        run: |
+          alembic upgrade head
+          alembic check
+
+      - name: Verify PostgreSQL multi-case, money, staff and assignment races
+        run: >-
+          pytest -q
+          tests/test_postgres_multi_case_concurrency.py
+          tests/test_postgres_payment_concurrency.py
+          tests/test_postgres_refund_retry_race.py
+          tests/test_postgres_staff_concurrency.py
+          tests/test_postgres_auto_assignment_concurrency.py
+
+      - name: Record PostgreSQL evidence
+        run: >-
+          python scripts/live_required_evidence.py write
+          --component postgres
+          --sha "$GITHUB_SHA"
+          --output .live-required/postgres.json
+          --detail "PostgreSQL 16 migrations plus multi-case, payment/refund, staff and auto-assignment capacity concurrency contracts passed"
+
+      - name: Upload PostgreSQL evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-required-evidence-postgres-${{ github.run_attempt }}
+          path: .live-required/postgres.json
+          if-no-files-found: error
+          retention-days: 30
+
+  redis:
+    name: Redis FSM restart with PostgreSQL source of truth
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: concierge_live_redis
+          POSTGRES_USER: concierge
+          POSTGRES_PASSWORD: concierge-live-redis
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U concierge -d concierge_live_redis"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgresql+asyncpg://concierge:concierge-live-redis@127.0.0.1:5432/concierge_live_redis
+      BOT_TOKEN: CHANGE_ME
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+      FSM_STORAGE_BACKEND: redis
+      REDIS_URL: redis://127.0.0.1:6379/15
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: admin-change-me
+      ADMIN_API_TOKEN: live-required-admin-token-not-for-production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[test]"
+
+      - name: Apply production schema
+        run: |
+          alembic upgrade head
+          alembic check
+
+      - name: Verify Redis-backed Telegram restart contract
+        run: pytest -q tests/test_telegram_redis_runtime.py
+
+      - name: Record Redis evidence
+        run: >-
+          python scripts/live_required_evidence.py write
+          --component redis
+          --sha "$GITHUB_SHA"
+          --output .live-required/redis.json
+          --detail "Redis FSM restart/loss recovery passed with PostgreSQL as persistent case source of truth"
+
+      - name: Upload Redis evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-required-evidence-redis-${{ github.run_attempt }}
+          path: .live-required/redis.json
+          if-no-files-found: error
+          retention-days: 30
+
+  telegram:
+    name: Real Telegram Bot API delivery smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      APP_ENV: test
+      BOT_TOKEN: ${{ secrets.LIVE_TELEGRAM_BOT_TOKEN }}
+      LIVE_TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.LIVE_TELEGRAM_ADMIN_CHAT_ID }}
+      LIVE_TELEGRAM_CLIENT_CHAT_ID: ${{ secrets.LIVE_TELEGRAM_CLIENT_CHAT_ID }}
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Fail closed when Telegram live secrets are absent
+        shell: bash
+        run: |
+          missing=0
+          if [ -z "${BOT_TOKEN:-}" ]; then
+            echo "::error::LIVE_TELEGRAM_BOT_TOKEN is required for LIVE_REQUIRED"
+            missing=1
+          fi
+          for name in LIVE_TELEGRAM_ADMIN_CHAT_ID LIVE_TELEGRAM_CLIENT_CHAT_ID; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::${name} is required for LIVE_REQUIRED"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e .
+
+      - name: Call Telegram and deliver to dedicated test chats
+        run: python scripts/live_required_smoke.py telegram
+
+      - name: Record Telegram evidence
+        run: >-
+          python scripts/live_required_evidence.py write
+          --component telegram
+          --sha "$GITHUB_SHA"
+          --output .live-required/telegram.json
+          --detail "Real Telegram Bot API identity, delivery to distinct admin/client acceptance chats and cleanup passed"
+
+      - name: Upload Telegram evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-required-evidence-telegram-${{ github.run_attempt }}
+          path: .live-required/telegram.json
+          if-no-files-found: error
+          retention-days: 30
+
+  browser:
+    name: Staff browser E2E against PostgreSQL
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: concierge_live_browser
+          POSTGRES_USER: concierge
+          POSTGRES_PASSWORD: concierge-live-browser
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U concierge -d concierge_live_browser"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgresql+asyncpg://concierge:concierge-live-browser@127.0.0.1:5432/concierge_live_browser
+      BOT_TOKEN: CHANGE_ME
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+      BOOTSTRAP_ADMIN: "false"
+      BOOTSTRAP_DEMO_DATA: "false"
+      STARTUP_BACKUP_ENABLED: "false"
+      PAYMENT_PROVIDER: disabled
+      PUBLIC_BASE_URL: http://127.0.0.1:8000
+      ALLOW_TOKEN_QUERY: "false"
+      ADMIN_API_TOKEN: browser-e2e-admin-token-not-for-production
+      SESSION_SIGNING_KEY: browser-e2e-session-signing-key-2026-00000001
+      SECURITY_HMAC_KEY: browser-e2e-security-hmac-key-2026-0000000002
+      MFA_ENCRYPTION_KEY: browser-e2e-mfa-encryption-key-2026-000000003
+      AUDIT_INTEGRITY_KEY: browser-e2e-audit-integrity-key-2026-00000004
+      DOCUMENT_ENCRYPTION_KEY: browser-e2e-document-encryption-key-2026-000005
+      BACKUP_ENCRYPTION_KEY: browser-e2e-backup-encryption-key-2026-0000006
+      STORAGE_DIR: /tmp/dlc-live-browser-storage
+      BACKUP_DIR: /tmp/dlc-live-browser-backups
+      BROWSER_E2E: "1"
+      BROWSER_E2E_BASE_URL: http://127.0.0.1:8000
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install application and test dependencies
+        run: pip install -e ".[test]"
+
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Apply production schema
+        run: alembic upgrade head
+
+      - name: Prepare runtime directories
+        run: mkdir -p "$STORAGE_DIR" "$BACKUP_DIR"
+
+      - name: Start application
+        run: |
+          uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/dlc-live-browser.log 2>&1 &
+          echo $! > /tmp/dlc-live-browser.pid
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:8000/health >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/dlc-live-browser.log
+          exit 1
+
+      - name: Run staff browser E2E
+        run: pytest -q tests/test_browser_staff_e2e.py
+
+      - name: Record browser evidence
+        run: >-
+          python scripts/live_required_evidence.py write
+          --component browser
+          --sha "$GITHUB_SHA"
+          --output .live-required/browser.json
+          --detail "Authenticated staff Playwright E2E passed against the application with PostgreSQL"
+
+      - name: Upload browser evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-required-evidence-browser-${{ github.run_attempt }}
+          path: .live-required/browser.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Application log
+        if: always()
+        run: cat /tmp/dlc-live-browser.log || true
+
+  provider-sandbox:
+    name: YooKassa test-shop create/retry/retrieve smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      APP_ENV: test
+      BOT_TOKEN: CHANGE_ME
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+      PAYMENT_PROVIDER: yookassa
+      YOOKASSA_SHOP_ID: ${{ secrets.LIVE_YOOKASSA_SHOP_ID }}
+      YOOKASSA_SECRET_KEY: ${{ secrets.LIVE_YOOKASSA_SECRET_KEY }}
+      LIVE_YOOKASSA_TEST_PAYMENT_ID: ${{ secrets.LIVE_YOOKASSA_TEST_PAYMENT_ID }}
+      PUBLIC_BASE_URL: ${{ secrets.LIVE_PUBLIC_BASE_URL }}
+      LIVE_PROVIDER_AMOUNT_MINOR: "100"
+      LIVE_PROVIDER_CURRENCY: RUB
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Fail closed when provider sandbox secrets are absent
+        shell: bash
+        run: |
+          missing=0
+          for name in \
+            YOOKASSA_SHOP_ID \
+            YOOKASSA_SECRET_KEY \
+            LIVE_YOOKASSA_TEST_PAYMENT_ID \
+            PUBLIC_BASE_URL; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::${name} is required for LIVE_REQUIRED provider sandbox"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e .
+
+      - name: Prove test shop then create, retry and retrieve an unconfirmed payment
+        run: python scripts/live_required_smoke.py provider
+
+      - name: Record provider evidence
+        run: >-
+          python scripts/live_required_evidence.py write
+          --component provider-sandbox
+          --sha "$GITHUB_SHA"
+          --output .live-required/provider-sandbox.json
+          --detail "YooKassa test-shop preflight, create, exact idempotent retry and retrieve passed while payment stayed test/unpaid/pending"
+
+      - name: Upload provider evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-required-evidence-provider-sandbox-${{ github.run_attempt }}
+          path: .live-required/provider-sandbox.json
+          if-no-files-found: error
+          retention-days: 30
+
+  live-required:
+    name: LIVE_REQUIRED aggregate gate
+    if: ${{ always() }}
+    needs:
+      - postgres
+      - redis
+      - telegram
+      - browser
+      - provider-sandbox
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Fail unless every required live component succeeded
+        env:
+          POSTGRES_RESULT: ${{ needs.postgres.result }}
+          REDIS_RESULT: ${{ needs.redis.result }}
+          TELEGRAM_RESULT: ${{ needs.telegram.result }}
+          BROWSER_RESULT: ${{ needs.browser.result }}
+          PROVIDER_RESULT: ${{ needs.provider-sandbox.result }}
+        shell: bash
+        run: |
+          failed=0
+          for pair in \
+            "postgres=${POSTGRES_RESULT}" \
+            "redis=${REDIS_RESULT}" \
+            "telegram=${TELEGRAM_RESULT}" \
+            "browser=${BROWSER_RESULT}" \
+            "provider-sandbox=${PROVIDER_RESULT}"; do
+            name="${pair%%=*}"
+            result="${pair#*=}"
+            echo "${name}: ${result}"
+            if [ "$result" != "success" ]; then
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::LIVE_REQUIRED is not satisfied; every component must be success"
+            exit 1
+          fi
+          echo "LIVE_REQUIRED component conclusions are all success"
+
+      - name: Checkout exact release candidate
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Download component evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: live-required-evidence-*-${{ github.run_attempt }}
+          path: .live-required/components
+          merge-multiple: true
+
+      - name: Verify one-run one-attempt one-SHA evidence and build manifest
+        run: >-
+          python scripts/live_required_evidence.py aggregate
+          --input-dir .live-required/components
+          --sha "$GITHUB_SHA"
+          --output .live-required/LIVE_REQUIRED_MANIFEST.json
+          --require postgres redis telegram browser provider-sandbox
+
+      - name: Upload release evidence manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-required-release-evidence-${{ github.sha }}-attempt-${{ github.run_attempt }}
+          path: .live-required/LIVE_REQUIRED_MANIFEST.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: LIVE_REQUIRED passed
+        run: echo "LIVE_REQUIRED matrix and release evidence manifest completed successfully"

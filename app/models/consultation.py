@@ -1,13 +1,30 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
 
 
+_ACTIVE_CONSULTATION_PREDICATE = (
+    "status NOT IN ("
+    "'DONE', 'CLIENT_NO_SHOW', 'LAWYER_NO_SHOW', "
+    "'CANCELLED', 'RESCHEDULED', 'CLOSED'"
+    ")"
+)
+
+
 class Consultation(Base, TimestampMixin):
     __tablename__ = "consultations"
+    __table_args__ = (
+        Index(
+            "uq_consultations_one_active_per_case",
+            "case_id",
+            unique=True,
+            sqlite_where=text(_ACTIVE_CONSULTATION_PREDICATE),
+            postgresql_where=text(_ACTIVE_CONSULTATION_PREDICATE),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     case_id: Mapped[int] = mapped_column(ForeignKey("cases.id"), index=True)

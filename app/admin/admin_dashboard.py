@@ -2,6 +2,7 @@ from datetime import datetime, time, timedelta, timezone
 
 from sqlalchemy import func, or_, select
 
+from app.domain.cases.assignment_policy import AUTO_ASSIGNMENT_REQUIRED_STATUS_VALUES
 from app.domain.documents.document_workflow import (
     ACTIONABLE_REVIEW_STATUSES,
     CLIENT_DRAFT_STATUSES,
@@ -51,7 +52,7 @@ class AdminDashboardService:
         unassigned_cases = await self._count(
             select(func.count(Case.id))
             .where(Case.assigned_lawyer_id.is_(None))
-            .where(Case.status.notin_(CLOSED_CASE_STATUSES))
+            .where(Case.status.in_(AUTO_ASSIGNMENT_REQUIRED_STATUS_VALUES))
         )
         overdue_cases = await self._count(
             select(func.count(Case.id)).where(

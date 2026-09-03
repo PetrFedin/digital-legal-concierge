@@ -144,7 +144,13 @@ async def seed_closed_case(db, tmp_path, *, suffix: int = 1, payment_status: str
     db.add_all([payment, consultation, message, notification, calculation])
     await db.flush()
 
-    storage_path = tmp_path / "storage" / "cases" / str(case.id) / f"doc-{suffix}.dlcenc"
+    storage_path = (
+        tmp_path
+        / "storage"
+        / "cases"
+        / str(case.id)
+        / f"{suffix:032x}.dlcenc"
+    )
     storage_path.parent.mkdir(parents=True, exist_ok=True)
     storage_path.write_bytes(b"encrypted-content")
     document = Document(
@@ -415,7 +421,7 @@ async def test_unsafe_path_fails_before_any_file_is_deleted(tmp_path, monkeypatc
             comment="Тестовый запрос одобрен вторым администратором",
         )
         await db.commit()
-        with pytest.raises(CaseRetentionError, match="вне настроенного хранилища"):
+        with pytest.raises(CaseRetentionError, match="Небезопасный путь документа"):
             await service.execute_deletion(
                 record_id=record.id,
                 actor_id=context["approver"].id,

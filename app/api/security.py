@@ -1,26 +1,43 @@
-from fastapi import APIRouter
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.config import settings
+from app.db.session import get_db
+from app.domain.payments.mode import payment_mode_valid
+from app.security.access_control import ROLE_ADMIN, ROLE_SUPERADMIN
+from app.security.document_access import resolve_document_actor
+from app.security.keyring import security_key_status
 
 router = APIRouter(tags=["security"])
 
 
 def build_security_checks() -> dict:
+    """Return non-secret live checks; never enumerate which credential is set."""
+
+    key_state = security_key_status()
     checks = {
-        "admin_api_token_changed": settings.admin_api_token not in {"", "dev-admin-token", "CHANGE_ME"},
-        "payment_webhook_secret_changed": settings.payment_webhook_secret not in {"", "dev-payment-secret", "CHANGE_ME"},
-        "admin_password_set": bool(settings.admin_password),
-        "bot_token_configured": bool(settings.bot_token and settings.bot_token != "CHANGE_ME") or not settings.run_bot,
-        "production_payment_provider_ready": settings.payment_provider == "fake" or bool(settings.yookassa_shop_id and settings.yookassa_secret_key),
-        "public_base_url_configured": bool(settings.public_base_url and settings.public_base_url.startswith("http")),
+        "security_keyring": bool(key_state.get("ok")),
+        "payment_mode": bool(payment_mode_valid()),
     }
-    warnings = []
-    if settings.allow_token_query:
-        warnings.append("ALLOW_TOKEN_QUERY=true удобно для локального экспорта, но в production лучше выключить.")
-    if settings.payment_provider == "fake" and settings.app_env == "production":
-        warnings.append("В production включен fake-провайдер оплат. Для реальных денег подключите YooKassa.")
-    return {"ok": all(checks.values()), "checks": checks, "warnings": warnings, "version": "1.0.0-v19"}
+    return {
+        "ok": all(checks.values()),
+        "checks": checks,
+        "security_events": "/security-events/ui",
+        "audit": "/audit-center/ui",
+        "diagnostics": "/diagnostic-center/ui",
+    }
 
 
 @router.get("/security-check")
-async def security_check():
+async def security_check(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    token = x_admin_token or request.cookies.get(settings.admin_session_cookie)
+    actor = await resolve_document_actor(db, token)
+    if actor.role not in {ROLE_ADMIN, ROLE_SUPERADMIN}:
+        raise HTTPException(status_code=403, detail="Доступ только для администратора")
     return build_security_checks()

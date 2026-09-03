@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "digital-legal-concierge-bot"
 version = "1.0.0"
-description = "Telegram bot MVP for DDU 214-FZ legal concierge"
+description = "Production legal concierge for the approved M1/M2 Telegram workflows"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.111",
@@ -31,6 +31,7 @@ dependencies = [
 test = [
   "pytest>=8.2",
   "pytest-asyncio>=0.23",
+  "playwright>=1.47",
 ]
 
 [tool.setuptools.packages.find]

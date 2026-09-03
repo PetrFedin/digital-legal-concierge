@@ -12,6 +12,7 @@ from app.api.case_action_ui import CASE_ACTION_HTML
 from app.api.workdesk_ui import WORKDESK_HTML
 from app.config import settings
 from app.db.session import get_db
+from app.domain.cases.assignment_policy import automatic_assignment_required
 from app.domain.cases.case_timeline import get_client_visible_status
 from app.domain.documents.document_workflow import (
     DocumentAttentionState,
@@ -147,7 +148,7 @@ def _attention_reasons(
         codes.append("overdue")
     if unread_client_messages > 0:
         codes.append("messages")
-    if case.assigned_lawyer_id is None:
+    if case.assigned_lawyer_id is None and automatic_assignment_required(case.status):
         codes.append("unassigned")
     if document_workflow.state != DocumentAttentionState.NONE:
         codes.append(document_workflow.code)
@@ -198,7 +199,35 @@ def _primary_action(
             "label": "Обработать возврат",
             "href": f"/admin/refunds/ui?payment_id={payment_id}&case_id={case.id}",
         }
-    # An unassigned case must get an owner before responsibility can be tracked.
+    # An overdue case without a lawyer cannot be acknowledged on the SLA screen:
+    # the case-scoped SLA projection intentionally requires an assignee. Keep the
+    # card ranked by the overdue reason, but make the visible CTA satisfy the
+    # prerequisite first so the operator never lands on an empty action screen.
+    if "overdue" in reason_codes and "unassigned" in reason_codes:
+        return {
+            "kind": "auto_assign",
+            "label": "Назначить юриста для устранения SLA",
+            "endpoint": f"/admin/cases/{case.id}/auto-assign",
+            "payload": {
+                "expected_lawyer_id": None,
+                "expected_status": str(case.status),
+            },
+        }
+    # The visible primary action must follow the same ordering as the queue.
+    # Otherwise a lower-priority assignment button can hide an SLA breach or a
+    # client message even though the card itself is sorted above by that reason.
+    if "overdue" in reason_codes:
+        return {
+            "kind": "link",
+            "label": "Устранить просрочку",
+            "href": f"/admin/workdesk/cases/{case.id}/action/sla",
+        }
+    if "messages" in reason_codes:
+        return {
+            "kind": "link",
+            "label": "Прочитать сообщение клиента",
+            "href": f"/message-center/ui?case_id={case.id}",
+        }
     if "unassigned" in reason_codes:
         return {
             "kind": "auto_assign",
@@ -208,18 +237,6 @@ def _primary_action(
                 "expected_lawyer_id": None,
                 "expected_status": str(case.status),
             },
-        }
-    if "messages" in reason_codes:
-        return {
-            "kind": "link",
-            "label": "Прочитать сообщение клиента",
-            "href": f"/message-center/ui?case_id={case.id}",
-        }
-    if "overdue" in reason_codes:
-        return {
-            "kind": "link",
-            "label": "Устранить просрочку",
-            "href": f"/admin/workdesk/cases/{case.id}/action/sla",
         }
     if "documents" in reason_codes:
         return {

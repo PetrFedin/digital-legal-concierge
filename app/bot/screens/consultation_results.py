@@ -11,6 +11,11 @@ from aiogram.exceptions import (
 from aiogram.filters import Filter
 from aiogram.types import CallbackQuery
 
+from app.bot.case_callback_scope import (
+    bound_case_callback,
+    callback_matches_action,
+    resolve_case_callback_scope,
+)
 from app.bot.consultation_result import (
     clip_client_result,
     consultation_result_view,
@@ -22,6 +27,7 @@ from app.bot.consultation_result import (
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.domain.statuses.case_statuses import CaseStatus
+from app.presentation_time import format_business_datetime
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -139,7 +145,13 @@ class TerminalBookedOpenFilter(Filter):
 
 
 class TerminalContactLawyerFilter(Filter):
-    """Replace stale consultation continuation with messaging after an outcome."""
+    """Replace stale consultation continuation with messaging after an outcome.
+
+    A historical M2 result can remain on the same case after it moves into M1.
+    If that later M1 review is rejected, ``contact_lawyer`` is the intentional
+    decision entry for choosing M2 or closing the case. Do not let the old M2
+    result steal that callback before the dedicated rejection recovery router.
+    """
 
     async def __call__(self, callback: CallbackQuery, db) -> bool | dict[str, object]:
         if callback.data != "contact_lawyer":
@@ -148,6 +160,8 @@ class TerminalContactLawyerFilter(Filter):
         if not active:
             return False
         case, consultation = active
+        if _case_status(case) == CaseStatus.M1_REJECTED:
+            return False
         return {
             "result_case": case,
             "result_consultation": consultation,
@@ -158,17 +172,32 @@ def _format_scheduled_at(consultation) -> str | None:
     if not consultation.scheduled_at:
         return None
     try:
-        return consultation.scheduled_at.strftime("%d.%m.%Y %H:%M")
+        return format_business_datetime(consultation.scheduled_at)
     except (AttributeError, ValueError):
         return None
 
 
 def _result_buttons(view, *, case) -> list[tuple[str, str]]:
     if _case_is_closed(case):
-        return [("🏠 На главную", "nav_home")]
+        # A closed consultation is read-only, not a dead end. Keep the exact
+        # archive surfaces reachable without offering stale booking/messaging
+        # mutations on the old case.
+        return [
+            ("📁 Архив обращения", "my_case_open"),
+            ("📄 Документы", "documents_open"),
+            ("💳 Оплаты", "payments_open"),
+            ("🕘 История", "case_history_open"),
+            ("🏠 Главная", "nav_home"),
+        ]
 
+    primary_callback = str(view.primary_callback)
+    if primary_callback == "consult_follow_up_start":
+        primary_callback = bound_case_callback(
+            "consult_follow_up_start",
+            int(case.id),
+        )
     buttons: list[tuple[str, str]] = [
-        (view.primary_label, view.primary_callback),
+        (view.primary_label, primary_callback),
     ]
     if view.primary_callback != "my_case_open":
         buttons.append(("📁 Моё дело", "my_case_open"))
@@ -194,40 +223,44 @@ async def _render_result(callback: CallbackQuery, *, case, consultation) -> None
         )
         return
 
+    closed = _case_is_closed(case)
     lines = [
         "👨‍⚖ ИТОГ КОНСУЛЬТАЦИИ",
+        f"№ {case.case_number}",
         _progress_line(case, consultation),
         "",
+        "СЕЙЧАС",
         view.title,
-        f"Дело: {case.case_number}",
+        view.status_text,
     ]
     scheduled_at = _format_scheduled_at(consultation)
     if scheduled_at:
-        lines.append(f"Время встречи: {scheduled_at}")
-    lines.extend(["", "РЕЗУЛЬТАТ", view.status_text])
+        lines.extend(["", f"🗓 Встреча: {scheduled_at}"])
 
     if view.show_lawyer_result:
         result = clip_client_result(consultation.lawyer_result)
+        lines.extend(["", "РЕЗУЛЬТАТ ЮРИСТА"])
         if result:
-            lines.extend(["", "Заключение юриста:", result])
+            lines.append(result)
         else:
-            lines.extend(
-                [
-                    "",
-                    "Заключение юриста сохранено без отдельного текста для клиента. Уточнить детали можно у команды.",
-                ]
+            lines.append(
+                "Отдельный текст для клиента не сохранён. Детали результата остаются в материалах обращения."
             )
 
-    if _case_is_closed(case) and view.primary_callback != "nav_home":
+    if closed:
         lines.extend(
             [
                 "",
-                "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ",
-                "Это дело уже закрыто. Итог сохранён для просмотра; новых действий по старому делу нет.",
+                "ЧТО ДАЛЬШЕ",
+                "Действий по закрытому обращению больше не требуется. Итог сохранён только для просмотра.",
+                "",
+                "АРХИВ ОБРАЩЕНИЯ",
+                "Документы, платежи и история остаются доступны ниже. Новое обращение создаётся отдельно и не меняет этот архив.",
             ]
         )
     else:
         lines.extend(["", "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ", view.next_step])
+
     await _safe_edit(
         callback,
         "\n".join(lines),
@@ -277,17 +310,36 @@ async def consultation_result_open(callback: CallbackQuery, db):
     user = await ctx.get_user_from_callback(callback)
     active_case = await ctx.case_service.get_active_case_for_user(user.id)
 
-    latest = None
-    if active_case:
+    if active_case is not None:
+        case_id = int(active_case.id)
+        case_number = str(active_case.case_number)
         latest = await latest_terminal_client_consultation(
             db,
             client_id=user.id,
-            case_id=active_case.id,
+            case_id=case_id,
         )
-    if latest is None:
+        if latest is None:
+            await db.rollback()
+            await _safe_edit(
+                callback,
+                "👨‍⚖ ИТОГ КОНСУЛЬТАЦИИ\n"
+                f"Обращение № {case_number}\n\n"
+                "Для выбранного обращения завершённый итог консультации пока не найден. "
+                "Результат другого дела здесь не показывается, чтобы не смешивать контексты.\n\n"
+                "Откройте текущий шаг или явно выберите другое обращение.",
+                reply_markup=one(
+                    ("📁 Текущее дело", "my_case_open"),
+                    ("📁 Выбрать обращение", "my_cases_open"),
+                    ("✉️ Написать команде", "message_create"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+            )
+            return
+    else:
         latest = await latest_terminal_client_consultation(db, client_id=user.id)
 
     if latest is None:
+        await db.rollback()
         await _safe_edit(
             callback,
             "👨‍⚖ ИТОГ КОНСУЛЬТАЦИИ\n\n"
@@ -304,11 +356,18 @@ async def consultation_result_open(callback: CallbackQuery, db):
     await _render_result(callback, case=case, consultation=consultation)
 
 
-@router.callback_query(lambda c: c.data == "consult_follow_up_start")
+@router.callback_query(lambda c: callback_matches_action(c.data, "consult_follow_up_start"))
 async def consult_follow_up_start(callback: CallbackQuery, db):
-    ctx = BotContextService(db)
-    user = await ctx.get_user_from_callback(callback)
-    case = await ctx.case_service.get_active_case_for_user(user.id)
+    scope = await resolve_case_callback_scope(
+        callback,
+        db,
+        action="consult_follow_up_start",
+        allow_legacy_message_case_context=True,
+    )
+    if scope is None:
+        return
+    user = scope.user
+    case = scope.case
     if not case:
         await _safe_edit(
             callback,
@@ -320,15 +379,18 @@ async def consult_follow_up_start(callback: CallbackQuery, db):
         )
         return
 
+    case_id = int(case.id)
+    case_number = str(case.case_number)
     latest = await latest_terminal_client_consultation(
         db,
         client_id=user.id,
-        case_id=case.id,
+        case_id=case_id,
     )
     if latest is None:
         await _safe_edit(
             callback,
-            "Рекомендация на повторную консультацию больше не актуальна.",
+            "Рекомендация на повторную консультацию больше не актуальна.\n\n"
+            f"Обращение № {case_number}",
             reply_markup=one(
                 ("📁 Моё дело", "my_case_open"),
                 ("✉️ Написать команде", "message_create"),
@@ -345,12 +407,14 @@ async def consult_follow_up_start(callback: CallbackQuery, db):
             outcome=outcome,
             client_id=user.id,
         )
+        description = clip_client_result(follow_up.client_description, limit=900)
         await db.commit()
     except ValueError as error:
         await db.rollback()
         await _safe_edit(
             callback,
-            f"Повторную консультацию не удалось подготовить.\n\n{error}",
+            f"Повторную консультацию не удалось подготовить.\n\n{error}\n\n"
+            f"Обращение № {case_number}",
             reply_markup=one(
                 ("📁 Открыть актуальное дело", "my_case_open"),
                 ("✉️ Написать команде", "message_create"),
@@ -363,9 +427,13 @@ async def consult_follow_up_start(callback: CallbackQuery, db):
         logger.exception("Не удалось подготовить повторную консультацию")
         await _safe_edit(
             callback,
-            "Повторная консультация временно не подготовлена. Данные предыдущей встречи не изменены.",
+            "Повторная консультация временно не подготовлена. Данные предыдущей встречи не изменены.\n\n"
+            f"Обращение № {case_number}",
             reply_markup=one(
-                ("🔄 Повторить", "consult_follow_up_start"),
+                (
+                    "🔄 Повторить",
+                    bound_case_callback("consult_follow_up_start", case_id),
+                ),
                 ("✉️ Написать команде", "message_create"),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
@@ -378,15 +446,18 @@ async def consult_follow_up_start(callback: CallbackQuery, db):
         if created
         else "✅ Повторная консультация уже подготовлена."
     )
-    description = clip_client_result(follow_up.client_description, limit=900)
     await _safe_edit(
         callback,
-        f"{notice}\n\n"
+        f"{notice}\n"
+        f"Обращение № {case_number}\n\n"
         "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
         "Выберите новую дату и время. Предыдущий вопрос сохранён как основа новой встречи; перед записью его можно обновить.\n\n"
         f"Текущий вопрос:\n{description}",
         reply_markup=one(
-            ("📅 Выбрать дату и время", "consult_booking_start"),
+            (
+                "📅 Выбрать дату и время",
+                bound_case_callback("consult_booking_start", case_id),
+            ),
             ("📝 Обновить вопрос", "consult_subject_start"),
             ("📄 Документы", "documents_open"),
             ("📁 Моё дело", "my_case_open"),

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 from dataclasses import dataclass
 from decimal import Decimal
-from uuid import uuid4
 
 import httpx
 
@@ -16,6 +16,13 @@ class PaymentProviderResult:
     provider_payment_id: str
     payment_url: str
     raw: dict | None = None
+
+
+def payment_idempotence_key(payment_id: int) -> str:
+    """Stable 64-char provider key for one internal Payment across retries."""
+
+    raw = f"digital-legal-concierge:{settings.app_env}:payment:{int(payment_id)}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 class BasePaymentProvider:
@@ -62,7 +69,7 @@ class FakePaymentProvider(BasePaymentProvider):
         title: str,
         metadata: dict,
     ) -> PaymentProviderResult:
-        provider_payment_id = str(uuid4())
+        provider_payment_id = f"fake-{payment_idempotence_key(payment_id)[:32]}"
         return PaymentProviderResult(
             provider="fake",
             provider_payment_id=provider_payment_id,
@@ -119,7 +126,7 @@ class YooKassaPaymentProvider(BasePaymentProvider):
         }
         headers = {
             "Authorization": self._authorization_header(),
-            "Idempotence-Key": str(uuid4()),
+            "Idempotence-Key": payment_idempotence_key(payment_id),
             "Content-Type": "application/json",
         }
         async with httpx.AsyncClient(timeout=20) as client:
@@ -130,11 +137,21 @@ class YooKassaPaymentProvider(BasePaymentProvider):
             )
             response.raise_for_status()
             data = response.json()
+
+        provider_payment_id = str(data.get("id") or "").strip()
         confirmation = data.get("confirmation") or {}
+        payment_url = str(confirmation.get("confirmation_url") or "").strip()
+        if not provider_payment_id or not payment_url:
+            raise RuntimeError(
+                "Платёжный провайдер вернул неполный ответ: отсутствует идентификатор "
+                "операции или ссылка подтверждения. Внутренний платёж не будет переведён "
+                "в ожидание оплаты; повтор с тем же idempotency key безопасно восстановит операцию."
+            )
+
         return PaymentProviderResult(
             provider="yookassa",
-            provider_payment_id=data.get("id", ""),
-            payment_url=confirmation.get("confirmation_url", ""),
+            provider_payment_id=provider_payment_id,
+            payment_url=payment_url,
             raw=data,
         )
 
@@ -155,9 +172,19 @@ class YooKassaPaymentProvider(BasePaymentProvider):
 
 
 def get_payment_provider() -> BasePaymentProvider:
-    provider = settings.payment_provider.strip().lower()
+    provider = str(settings.payment_provider or "").strip().lower()
     if provider == "disabled":
         return DisabledPaymentProvider()
     if provider == "yookassa":
         return YooKassaPaymentProvider()
-    return FakePaymentProvider()
+    if provider == "fake":
+        if settings.app_env not in {"local", "test"}:
+            raise RuntimeError(
+                "Fake-провайдер запрещён вне local/test. "
+                "Настройте YooKassa или явно отключите онлайн-оплату."
+            )
+        return FakePaymentProvider()
+    raise RuntimeError(
+        f"Неизвестный платёжный провайдер: {provider or '<empty>'}. "
+        "Поддерживаются disabled, fake (только local/test) и yookassa."
+    )

@@ -7,17 +7,20 @@ from fastapi.responses import RedirectResponse
 from app.api.acceptance_center import router as acceptance_center_router
 from app.api.access_management import router as access_management_router
 from app.api.admin import router as admin_router
+from app.api.admin_queue_guard import router as admin_queue_guard_router
+from app.api.assignment_queue_product import router as assignment_queue_product_router
 from app.api.audit_center import router as audit_center_router
 from app.api.auth import router as auth_router
 from app.api.backup_center import router as backup_center_router
 from app.api.backup_manager import router as backup_manager_router
 from app.api.calculator_builder import router as calculator_builder_router
 from app.api.case_assignment import router as case_assignment_router
-from app.api.consultation_outcomes import router as consultation_outcomes_router
+from app.api.consultation_outcomes_product import router as consultation_outcomes_product_router
 from app.api.consultation_slots import router as consultation_slots_router
+from app.api.contract_center import router as contract_center_router
 from app.api.diagnostic_center import router as diagnostic_center_router
-from app.api.document_access import router as document_access_router
 from app.api.document_access_portal import router as document_access_portal_router
+from app.api.document_access_product import router as document_access_product_router
 from app.api.exports import router as exports_router
 from app.api.final_handover_center import router as final_handover_center_router
 from app.api.final_qa_center import router as final_qa_center_router
@@ -29,22 +32,24 @@ from app.api.install_wizard import router as install_wizard_router
 from app.api.integration_center import router as integration_center_router
 from app.api.launch_assistant import router as launch_assistant_router
 from app.api.lawyer import router as lawyer_router
-from app.api.lawyer_consultation_desk import router as lawyer_consultation_desk_router
 from app.api.lawyer_m1_claim import router as lawyer_m1_claim_router
-from app.api.lawyer_workspace import router as lawyer_workspace_router
+from app.api.lawyer_m1_enforcement import router as lawyer_m1_enforcement_router
+from app.api.lawyer_product import router as lawyer_product_router
 from app.api.maintenance_center import router as maintenance_center_router
-from app.api.message_center import router as message_center_router
+from app.api.message_center_product import router as message_center_product_router
+from app.api.message_center_role_ui import router as message_center_role_ui_router
 from app.api.mfa import router as mfa_router
 from app.api.monitoring_center import router as monitoring_center_router
 from app.api.notification_center import router as notification_center_router
 from app.api.operations_center import router as operations_center_router
 from app.api.operator import router as operator_router
 from app.api.ops_guide import router as ops_guide_router
-from app.api.payment_review_center import router as payment_review_center_router
+from app.api.payment_review_product import router as payment_review_product_router
+from app.api.payment_safety_guard import router as payment_safety_guard_router
 from app.api.payment_webhooks import router as payment_router
 from app.api.production_center import router as production_center_router
 from app.api.recovery_center import router as recovery_center_router
-from app.api.refund_center import router as refund_center_router
+from app.api.refund_product import router as refund_product_router
 from app.api.release_manager import router as release_manager_router
 from app.api.retention_center import router as retention_center_router
 from app.api.runtime import router as runtime_router
@@ -53,10 +58,14 @@ from app.api.search_center import router as search_center_router
 from app.api.security import router as security_router
 from app.api.security_event_center import router as security_event_center_router
 from app.api.settings_ui import router as settings_ui_router
-from app.api.sla_center import router as sla_center_router
+from app.api.sla_product import router as sla_product_router
 from app.api.task_center import router as task_center_router
+from app.api.technical_cases_compat import router as technical_cases_compat_router
 from app.api.template_builder import router as template_builder_router
 from app.api.web_admin import router as web_admin_router
+from app.api.workdesk_integrity_product import router as workdesk_integrity_product_router
+from app.api.workdesk_product import router as workdesk_product_router
+from app.api.workdesk_timeline import router as workdesk_timeline_router
 from app.config import settings
 from app.domain.payments.mode import (
     payment_mode_valid,
@@ -126,7 +135,8 @@ def create_app():
         ("release_manager", release_manager_router),
         ("acceptance_center", acceptance_center_router),
         ("search_center", search_center_router),
-        ("message_center", message_center_router),
+        ("message_center_role_ui", message_center_role_ui_router),
+        ("message_center_product", message_center_product_router),
         ("audit_center", audit_center_router),
         ("security_event_center", security_event_center_router),
         ("notification_center", notification_center_router),
@@ -136,11 +146,11 @@ def create_app():
         ("access_management", access_management_router),
         ("consultation_slots", consultation_slots_router),
         ("case_assignment", case_assignment_router),
-        ("refund_center", refund_center_router),
+        ("refund_product", refund_product_router),
         ("retention_center", retention_center_router),
-        ("payment_review_center", payment_review_center_router),
-        ("consultation_outcomes", consultation_outcomes_router),
-        ("sla_center", sla_center_router),
+        ("payment_review_product", payment_review_product_router),
+        ("consultation_outcomes_product", consultation_outcomes_product_router),
+        ("sla_product", sla_product_router),
         ("security", security_router),
         ("launch_assistant", launch_assistant_router),
         ("health_center", health_center_router),
@@ -149,15 +159,23 @@ def create_app():
         ("install_wizard", install_wizard_router),
         ("task_center", task_center_router),
         ("settings_ui", settings_ui_router),
+        ("technical_cases_compat", technical_cases_compat_router),
+        ("admin_queue_guard", admin_queue_guard_router),
         ("admin", admin_router),
+        ("payment_safety_guard", payment_safety_guard_router),
         ("payment_webhooks", payment_router),
+        ("contract_center", contract_center_router),
+        ("lawyer_product", lawyer_product_router),
         ("lawyer", lawyer_router),
         ("lawyer_m1_claim", lawyer_m1_claim_router),
-        ("lawyer_workspace", lawyer_workspace_router),
-        ("lawyer_consultation_desk", lawyer_consultation_desk_router),
-        ("document_access", document_access_router),
+        ("lawyer_m1_enforcement", lawyer_m1_enforcement_router),
+        ("document_access_product", document_access_product_router),
         ("document_access_portal", document_access_portal_router),
         ("runtime", runtime_router),
+        ("assignment_queue_product", assignment_queue_product_router),
+        ("workdesk_integrity_product", workdesk_integrity_product_router),
+        ("workdesk_timeline", workdesk_timeline_router),
+        ("workdesk_product", workdesk_product_router),
         ("web_admin", web_admin_router),
         ("operator", operator_router),
         ("exports", exports_router),
@@ -262,7 +280,6 @@ def create_app():
             ),
             "payment_webhook_secret_ready": payment_webhook_secret_ready,
             "payment_mode_valid": payment_mode_valid(),
-            # Kept for compatibility with deployment scripts and dashboards.
             "payment_provider_configured": payment_mode_valid(),
             "trusted_proxy_config_valid": trusted_proxy_config_valid,
             "trusted_proxy_hop_limit_valid": (
@@ -368,86 +385,6 @@ def create_app():
                 "tamper_evident_storage": True,
             },
             "version": VERSION,
-        }
-
-    @app.get("/launch-check")
-    async def launch_check():
-        return {
-            "version": VERSION,
-            "handover": "/handover",
-            "security_check": "/security-check",
-            "launch_assistant": "/launch-assistant",
-            "operator_workspace": "/operator",
-            "admin_ui": "/admin-ui",
-            "lawyer_ui": "/lawyer/ui",
-            "access_management": "/access/ui",
-            "mfa_management": "/mfa/manage",
-            "consultation_slots_api": "/consultation-slots",
-            "consultation_slots_ui": "/consultation-slots/ui",
-            "consultation_outcomes_api": "/admin/consultation-outcomes",
-            "consultation_outcomes_ui": "/admin/consultation-outcomes/ui",
-            "case_sla_api": "/admin/sla",
-            "case_sla_ui": "/admin/sla/ui",
-            "case_assignment_api": "/admin/case-assignment/lawyers",
-            "refund_center_api": "/admin/refunds",
-            "refund_center_ui": "/admin/refunds/ui",
-            "payment_review_center_api": "/admin/payment-reviews",
-            "payment_review_center_ui": "/admin/payment-reviews/ui",
-            "audit_integrity_api": "/audit-center/integrity",
-            "audit_center_ui": "/audit-center/ui",
-            "security_event_center_api": "/security-events/status",
-            "security_event_center_ui": "/security-events/ui",
-            "document_access_api": "/document-access/cases/{case_id}/documents",
-            "document_access_ui": "/document-access/ui",
-            "backup_center_ui": "/backup-center/ui",
-            "backup_center_status": "/backup-center/status",
-            "retention_center_ui": "/retention/ui",
-            "retention_center_status": "/retention/status",
-            "health": "/health",
-            "ready": "/ready",
-            "bot_enabled": settings.run_bot,
-            "scheduler_enabled": settings.run_scheduler,
-            "payment_provider": payment_provider_name(),
-            "payments_enabled": payments_enabled(),
-            "payments_disabled": payments_disabled(),
-            "pilot_flows_continue_without_payment": payments_disabled(),
-            "storage_dir": settings.storage_dir,
-            "trusted_proxy_client_resolution": True,
-            "trusted_proxy_allowlist_required": True,
-            "untrusted_forwarded_headers_ignored": True,
-            "forwarded_proto_trusted_only": True,
-            "http_origin_guard": True,
-            "security_headers": True,
-            "security_keyring": True,
-            "mfa_key_rotation_job": True,
-            "document_content_inspection": True,
-            "document_quarantine": settings.quarantine_rejected_uploads,
-            "legacy_document_rescan_job": True,
-            "document_encryption_at_rest": True,
-            "document_encryption_rotation_job": True,
-            "secure_document_delivery": True,
-            "one_time_document_grants": True,
-            "session_bound_document_grants": True,
-            "document_grant_cleanup_job": True,
-            "encrypted_backup_format": True,
-            "backup_manifest_integrity": True,
-            "backup_secrets_excluded": True,
-            "verified_staging_restore": True,
-            "encrypted_backup_retention_job": True,
-            "closed_case_retention_discovery": True,
-            "case_legal_hold": True,
-            "case_retention_two_person_approval": True,
-            "case_content_deletion_resumable": True,
-            "bounded_payment_webhook_body": True,
-            "idempotent_payment_webhook_ledger": True,
-            "payment_webhook_replay_protection": True,
-            "payment_webhook_dead_letter_state": True,
-            "sanitized_payment_provider_payloads": True,
-            "tamper_evident_audit_chain": True,
-            "immutable_audit_events": True,
-            "tamper_evident_security_events": True,
-            "cross_site_security_event_logging": True,
-            "privacy_preserving_security_identifiers": True,
         }
 
     return app

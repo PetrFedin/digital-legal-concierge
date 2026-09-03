@@ -1,22 +1,31 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery
+from sqlalchemy import select
 
+from app.bot.case_callback_scope import bound_case_callback
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.domain.cases.case_activity import CaseActivityService
 from app.domain.cases.client_case_scope import (
-    active_or_latest_completed_m1_case_for_user,
+    CLIENT_COMPLETED_CASE_STATUSES,
+    latest_completed_case_for_user,
 )
+from app.models.case import Case
+from app.presentation_time import format_business_datetime
 
 router = Router()
 
 HISTORY_PAGE_SIZE = 7
 HISTORY_CALLBACK_PREFIX = "case_history_before:"
+HISTORY_OPEN_PREFIX = "case_history_open:v2:"
+_COMPLETED_STATUS_VALUES = {str(value) for value in CLIENT_COMPLETED_CASE_STATUSES}
+_CASE_NUMBER_PATTERN = re.compile(r"\bDLC-\d{4}-\d{6}\b")
 CATEGORY_ICONS = {
     "case": "📁",
     "calculation": "🧮",
@@ -30,15 +39,80 @@ CATEGORY_ICONS = {
 }
 
 
-def _history_cursor(callback_data: str | None) -> int | None:
+def _history_target(callback_data: str | None) -> tuple[int | None, int | None, bool]:
+    """Return (case_id, cursor, legacy_unbound)."""
+
     value = str(callback_data or "")
-    if not value.startswith(HISTORY_CALLBACK_PREFIX):
-        return None
-    try:
+    if value == "case_history_open":
+        return None, None, True
+    if value.startswith(HISTORY_OPEN_PREFIX):
+        raw_case_id = value[len(HISTORY_OPEN_PREFIX) :]
+        if not raw_case_id or ":" in raw_case_id:
+            raise ValueError("invalid history open callback")
+        case_id = int(raw_case_id)
+        if case_id <= 0:
+            raise ValueError("invalid case id")
+        return case_id, None, False
+    if value.startswith("case_history_before:v2:"):
+        parts = value.split(":")
+        if len(parts) != 4:
+            raise ValueError("invalid history page callback")
+        case_id = int(parts[2])
+        cursor = int(parts[3])
+        if case_id <= 0 or cursor <= 0:
+            raise ValueError("invalid history page target")
+        return case_id, cursor, False
+    if value.startswith(HISTORY_CALLBACK_PREFIX):
         cursor = int(value.split(":", 1)[1])
-    except (TypeError, ValueError):
+        if cursor <= 0:
+            raise ValueError("invalid history cursor")
+        return None, cursor, True
+    raise ValueError("unknown history callback")
+
+
+def _message_text(callback: CallbackQuery) -> str:
+    message = getattr(callback, "message", None)
+    return str(
+        getattr(message, "text", "") or getattr(message, "caption", "") or ""
+    )
+
+
+def _message_mentions_case(callback: CallbackQuery, case_number: str) -> bool:
+    return bool(case_number and case_number in _message_text(callback))
+
+
+def _legacy_visible_case_number(callback: CallbackQuery) -> str | None:
+    """Return one canonical Case number explicitly visible on a legacy screen."""
+
+    numbers = list(dict.fromkeys(_CASE_NUMBER_PATTERN.findall(_message_text(callback))))
+    return numbers[0] if len(numbers) == 1 else None
+
+
+async def _visible_completed_case(callback: CallbackQuery, db, *, user_id: int):
+    """Recover the exact archived Case named by a trusted old bot message.
+
+    Historical `case_history_open` callbacks carried no Case id. If the old
+    screen itself visibly identifies one canonical completed Case, prefer that
+    read-only archive over a generic "latest completed" fallback. This prevents
+    an old Case A history button from unexpectedly showing newer Case B.
+    """
+
+    case_number = _legacy_visible_case_number(callback)
+    if not case_number:
         return None
-    return cursor if cursor > 0 else None
+    case = (
+        await db.execute(
+            select(Case)
+            .where(
+                Case.client_id == int(user_id),
+                Case.case_number == case_number,
+            )
+            .limit(1)
+        )
+    ).scalars().first()
+    if case is None or str(case.status) not in _COMPLETED_STATUS_VALUES:
+        return None
+    return case
 
 
 def _format_datetime(value: str | None) -> str:
@@ -48,21 +122,32 @@ def _format_datetime(value: str | None) -> str:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except (TypeError, ValueError):
         return "Дата не указана"
-    return parsed.strftime("%d.%m.%Y · %H:%M")
+    return format_business_datetime(
+        parsed,
+        pattern="%d.%m.%Y · %H:%M",
+        empty="Дата не указана",
+    )
 
 
-def _format_timeline(page: dict[str, object], *, completed: bool = False) -> str:
+def _format_timeline(
+    page: dict[str, object],
+    *,
+    case_number: str,
+    completed: bool = False,
+) -> str:
     items = list(page.get("items") or [])
     heading = "🕘 История завершённого дела" if completed else "🕘 История дела"
     if not items:
         return (
-            f"{heading}\n\n"
+            f"{heading}\n"
+            f"Обращение № {case_number}\n\n"
             "Пока нет клиентских событий. Технические операции и внутренние "
             "проверки здесь не показываются."
         )
 
     blocks = [
         heading,
+        f"Обращение № {case_number}",
         "",
         (
             "Дело завершено. Ниже сохранены значимые события в режиме просмотра:"
@@ -89,8 +174,10 @@ def _format_timeline(page: dict[str, object], *, completed: bool = False) -> str
 def _history_buttons(
     page: dict[str, object],
     *,
+    case_id: int,
     cursor: int | None,
     completed: bool = False,
+    selected_same_case: bool = True,
 ):
     buttons: list[tuple[str, str]] = []
     next_before_id = page.get("next_before_id")
@@ -98,24 +185,41 @@ def _history_buttons(
         buttons.append(
             (
                 "⬇️ Более ранние события",
-                f"{HISTORY_CALLBACK_PREFIX}{int(next_before_id)}",
+                f"case_history_before:v2:{case_id}:{int(next_before_id)}",
             )
         )
     if cursor is not None:
-        buttons.append(("⬆️ К последним событиям", "case_history_open"))
+        buttons.append(
+            ("⬆️ К последним событиям", f"case_history_open:v2:{case_id}")
+        )
     if completed:
+        # The archive may be inspected while another active Case is selected.
+        # Returning through a raw my_case_open would silently jump contexts.
         buttons.extend(
             [
-                ("💳 Оплаты по делу", "payments_open"),
-                ("📁 Итог дела", "my_case_open"),
+                ("🗄 Архив обращения", f"my_case_archive:v2:{case_id}"),
+                ("📁 Активное дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ]
+        )
+    elif selected_same_case:
+        buttons.extend(
+            [
+                (
+                    "✉️ Задать вопрос по делу",
+                    bound_case_callback("message_create", case_id),
+                ),
+                ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ]
         )
     else:
         buttons.extend(
             [
-                ("✉️ Задать вопрос по делу", "message_create"),
-                ("📁 Моё дело", "my_case_open"),
+                (
+                    "📁 Переключиться на это обращение",
+                    f"my_case_select:v2:{case_id}",
+                ),
                 ("🏠 Главная", "nav_home"),
             ]
         )
@@ -140,15 +244,66 @@ async def _render_history(
     callback: CallbackQuery,
     db,
     *,
+    expected_case_id: int | None,
     cursor: int | None,
+    legacy_unbound: bool,
 ) -> None:
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
-    case, completed = await active_or_latest_completed_m1_case_for_user(
-        db,
-        case_service=ctx.case_service,
-        user_id=user.id,
-    )
+    active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
+    selected_case = await ctx.case_service.get_active_case_for_user(int(user.id))
+
+    case = None
+    completed = False
+    if expected_case_id is not None:
+        case = await ctx.case_service.get_case_for_user(
+            user_id=int(user.id),
+            case_id=expected_case_id,
+        )
+        if case is not None:
+            completed = str(case.status) in _COMPLETED_STATUS_VALUES
+    else:
+        case = selected_case
+        if case is None:
+            if legacy_unbound:
+                case = await _visible_completed_case(
+                    callback,
+                    db,
+                    user_id=int(user.id),
+                )
+            if case is None:
+                case = await latest_completed_case_for_user(db, user_id=user.id)
+            completed = case is not None
+        elif legacy_unbound:
+            selected_number = str(case.case_number)
+            visible_number = _legacy_visible_case_number(callback)
+            if visible_number and visible_number != selected_number:
+                await _safe_edit(
+                    callback,
+                    "Эта старая кнопка истории относится к другому обращению, чем выбрано сейчас. "
+                    "Чтобы не показать события другого дела, откройте нужное обращение явно.",
+                    reply_markup=one(
+                        ("📁 Выбрать обращение", "my_cases_open"),
+                        ("📁 Моё дело", "my_case_open"),
+                        ("🏠 Главная", "nav_home"),
+                    ),
+                )
+                return
+            if len(active_cases) > 1 and not _message_mentions_case(
+                callback,
+                selected_number,
+            ):
+                await _safe_edit(
+                    callback,
+                    "Эта старая кнопка истории не содержит подтверждённый номер обращения, а у вас несколько активных дел. "
+                    "История не открыта автоматически — выберите дело явно.",
+                    reply_markup=one(
+                        ("📁 Выбрать обращение", "my_cases_open"),
+                        ("🏠 Главная", "nav_home"),
+                    ),
+                )
+                return
+
     if not case:
         await _safe_edit(
             callback,
@@ -161,9 +316,13 @@ async def _render_history(
         )
         return
 
+    case_id = int(case.id)
+    case_number = str(case.case_number)
+    selected_case_id = int(selected_case.id) if selected_case is not None else None
+    selected_same_case = selected_case_id == case_id
     try:
         page = await CaseActivityService(db).page(
-            case_id=case.id,
+            case_id=case_id,
             audience="client",
             before_id=cursor,
             limit=HISTORY_PAGE_SIZE,
@@ -171,9 +330,9 @@ async def _render_history(
     except Exception:
         await db.rollback()
         retry_callback = (
-            f"{HISTORY_CALLBACK_PREFIX}{cursor}"
+            f"case_history_before:v2:{case_id}:{cursor}"
             if cursor is not None
-            else "case_history_open"
+            else f"case_history_open:v2:{case_id}"
         )
         error_buttons: list[tuple[str, str]] = [
             ("🔄 Повторить", retry_callback),
@@ -181,15 +340,29 @@ async def _render_history(
         if completed:
             error_buttons.extend(
                 [
-                    ("📁 Итог дела", "my_case_open"),
+                    ("🗄 Архив обращения", f"my_case_archive:v2:{case_id}"),
+                    ("📁 Активное дело", "my_case_open"),
+                    ("🏠 Главная", "nav_home"),
+                ]
+            )
+        elif selected_same_case:
+            error_buttons.extend(
+                [
+                    (
+                        "✉️ Задать вопрос по делу",
+                        bound_case_callback("message_create", case_id),
+                    ),
+                    ("📁 Моё дело", "my_case_open"),
                     ("🏠 Главная", "nav_home"),
                 ]
             )
         else:
             error_buttons.extend(
                 [
-                    ("✉️ Задать вопрос по делу", "message_create"),
-                    ("📁 Моё дело", "my_case_open"),
+                    (
+                        "📁 Переключиться на это обращение",
+                        f"my_case_select:v2:{case_id}",
+                    ),
                     ("🏠 Главная", "nav_home"),
                 ]
             )
@@ -203,27 +376,69 @@ async def _render_history(
 
     await _safe_edit(
         callback,
-        _format_timeline(page, completed=completed),
+        _format_timeline(
+            page,
+            case_number=case_number,
+            completed=completed,
+        ),
         reply_markup=_history_buttons(
             page,
+            case_id=case_id,
             cursor=cursor,
             completed=completed,
+            selected_same_case=selected_same_case,
         ),
     )
 
 
-@router.callback_query(lambda c: c.data == "case_history_open")
+@router.callback_query(
+    lambda c: c.data == "case_history_open"
+    or str(c.data or "").startswith(HISTORY_OPEN_PREFIX)
+)
 async def case_history(callback: CallbackQuery, db):
+    try:
+        expected_case_id, cursor, legacy_unbound = _history_target(callback.data)
+    except (TypeError, ValueError):
+        await callback.answer("Ссылка на историю устарела.", show_alert=True)
+        await _safe_edit(
+            callback,
+            "Эта ссылка на историю больше не актуальна. Данные дела не изменены.",
+            reply_markup=one(
+                ("📁 Выбрать обращение", "my_cases_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
     await callback.answer("Загружаем последние события…")
-    await _render_history(callback, db, cursor=None)
+    await _render_history(
+        callback,
+        db,
+        expected_case_id=expected_case_id,
+        cursor=cursor,
+        legacy_unbound=legacy_unbound,
+    )
 
 
 @router.callback_query(lambda c: str(c.data or "").startswith(HISTORY_CALLBACK_PREFIX))
 async def case_history_before(callback: CallbackQuery, db):
-    cursor = _history_cursor(callback.data)
-    if cursor is None:
+    try:
+        expected_case_id, cursor, legacy_unbound = _history_target(callback.data)
+    except (TypeError, ValueError):
         await callback.answer("Ссылка на страницу устарела.", show_alert=True)
-        await _render_history(callback, db, cursor=None)
+        await _safe_edit(
+            callback,
+            "Эта ссылка на страницу истории больше не актуальна. Данные дела не изменены.",
+            reply_markup=one(
+                ("📁 Выбрать обращение", "my_cases_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
         return
     await callback.answer("Загружаем более ранние события…")
-    await _render_history(callback, db, cursor=cursor)
+    await _render_history(
+        callback,
+        db,
+        expected_case_id=expected_case_id,
+        cursor=cursor,
+        legacy_unbound=legacy_unbound,
+    )

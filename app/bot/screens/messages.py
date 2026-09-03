@@ -9,6 +9,11 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 
+from app.bot.case_callback_scope import (
+    bound_case_callback,
+    callback_matches_action,
+    resolve_case_callback_scope,
+)
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.domain.cases.client_case_scope import (
@@ -20,6 +25,7 @@ from app.domain.notifications.immediate_delivery import deliver_selected_notific
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.payments.mode import payments_disabled
 from app.models.case import Case
+from app.presentation_time import format_business_datetime
 
 router = Router()
 
@@ -85,26 +91,32 @@ def _category_buttons() -> list[tuple[str, str]]:
     ]
 
 
-def _category_prompt(data: dict[str, object]) -> str:
+def _draft_case_context(data: dict[str, object]) -> str:
     case_number = str(data.get("case_number") or "").strip()
-    case_note = (
-        f"Вопрос будет добавлен к делу {case_number}."
-        if case_number
-        else "После подтверждения вопроса будет создано новое обращение."
-    )
+    return f"Обращение № {case_number}" if case_number else "Новое обращение"
+
+
+def _category_prompt(data: dict[str, object]) -> str:
     return (
-        "✉️ Новый вопрос юридической команде\n\n"
-        f"{case_note}\n\n"
-        "Выберите тему обращения:"
+        "✉️ НОВЫЙ ВОПРОС\n"
+        f"{_draft_case_context(data)}\n\n"
+        "СЕЙЧАС\n"
+        "Черновик открыт, но ничего ещё не отправлено.\n\n"
+        "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+        "Выберите тему вопроса:"
     )
 
 
 def _urgency_prompt(data: dict[str, object]) -> str:
     category = str(data.get("category") or "Не выбрана")
     return (
-        "⏱ Срочность вопроса\n\n"
+        "⏱ СРОЧНОСТЬ ВОПРОСА\n"
+        f"{_draft_case_context(data)}\n"
         f"Тема: {category}\n\n"
-        "Насколько срочно нужен ответ?"
+        "СЕЙЧАС\n"
+        "Черновик сохранён локально в текущем диалоге и не отправлен.\n\n"
+        "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+        "Укажите, когда нужен ответ."
     )
 
 
@@ -112,15 +124,18 @@ def _message_prompt(data: dict[str, object], *, editing: bool = False) -> str:
     category = str(data.get("category") or "Другой вопрос")
     urgency = str(data.get("urgency") or "Обычный")
     edit_note = (
-        "Текущий черновик сохранён до тех пор, пока вы не отправите новый текст.\n\n"
+        "Текущий текст сохранён до тех пор, пока вы не отправите новую редакцию.\n"
         if editing and data.get("draft_text")
         else ""
     )
     return (
-        "📝 Текст вопроса\n\n"
+        "📝 ТЕКСТ ВОПРОСА\n"
+        f"{_draft_case_context(data)}\n"
         f"Тема: {category}\n"
         f"Срочность: {urgency}\n\n"
-        f"{edit_note}"
+        "СЕЙЧАС\n"
+        f"{edit_note}Ничего не отправлено.\n\n"
+        "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
         "Опишите, что произошло, какой результат вы ожидаете, важные даты и документы. "
         "Не отправляйте пароли, коды из SMS и банковские данные."
     )
@@ -132,17 +147,21 @@ def _draft_review_text(data: dict[str, object]) -> str:
     draft = str(data.get("draft_text") or "").strip()
     preview = _truncate(draft, DRAFT_PREVIEW_LIMIT)
     shortened_note = (
-        "\n\nПредпросмотр сокращён для экрана Telegram. При подтверждении будет отправлен весь сохранённый текст."
+        "\n\nПредпросмотр сокращён. При подтверждении будет отправлен весь сохранённый текст."
         if preview != draft
         else ""
     )
     return (
-        "✅ Проверьте вопрос перед отправкой\n\n"
+        "✅ ПРОВЕРКА ПЕРЕД ОТПРАВКОЙ\n"
+        f"{_draft_case_context(data)}\n"
         f"Тема: {category}\n"
         f"Срочность: {urgency}\n\n"
+        "СЕЙЧАС\n"
+        "Черновик сохранён и ещё не отправлен.\n\n"
         f"Текст:\n{preview}"
         f"{shortened_note}\n\n"
-        "Ничего не будет отправлено, пока вы не нажмёте «Отправить вопрос»."
+        "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+        "Проверьте контекст и нажмите «Отправить вопрос». До этого команда ничего не получит."
     )
 
 
@@ -180,29 +199,34 @@ def _format_dialog(
     requested_page: int = 0,
     *,
     read_only: bool = False,
+    case_number: str | None = None,
 ) -> tuple[str, int, int]:
     page_messages, page, total_pages = _history_slice(messages, requested_page)
-    heading = "💬 Переписка завершённого дела" if read_only else "💬 Переписка по делу"
+    heading = "💬 ПЕРЕПИСКА · АРХИВ" if read_only else "💬 ПЕРЕПИСКА ПО ДЕЛУ"
+    context = f"Обращение № {case_number}" if case_number else "Обращение"
     if not page_messages:
         detail = (
             "Сообщений в архиве нет."
             if read_only
-            else "Сообщений пока нет. Вы можете отправить первый вопрос команде."
+            else "Сообщений пока нет. Если нужен ответ команды, создайте новый вопрос."
         )
         return (
-            f"{heading}\n\n{detail}",
+            f"{heading}\n{context}\n\nСЕЙЧАС\n{detail}",
             page,
             total_pages,
         )
 
     lines = [
         heading,
+        context,
+        "",
+        "СЕЙЧАС",
         f"Страница {page + 1} из {total_pages}. Первая страница — самые новые сообщения.",
     ]
     for item in page_messages:
         author = "Вы" if item.sender_type == "client" else "Команда"
         created_at = (
-            item.created_at.strftime("%d.%m.%Y %H:%M")
+            format_business_datetime(item.created_at)
             if item.created_at
             else "время не указано"
         )
@@ -211,14 +235,25 @@ def _format_dialog(
     return _truncate("\n\n".join(lines), HISTORY_TEXT_LIMIT), page, total_pages
 
 
-def _history_keyboard(page: int, total_pages: int, *, read_only: bool = False):
+def _history_keyboard(
+    page: int,
+    total_pages: int,
+    *,
+    read_only: bool = False,
+    case_id: int | None = None,
+):
     buttons: list[tuple[str, str]] = []
     if page < total_pages - 1:
         buttons.append(("⬅️ Более ранние", f"message_history:{page + 1}"))
     if page > 0:
         buttons.append(("Более новые ➡️", f"message_history:{page - 1}"))
     if not read_only:
-        buttons.append(("✉️ Написать сообщение", "message_create"))
+        create_callback = (
+            bound_case_callback("message_create", case_id)
+            if case_id is not None
+            else "message_create"
+        )
+        buttons.append(("✉️ Написать сообщение", create_callback))
     buttons.append(("🔄 Обновить", f"message_history:{page}"))
     if read_only:
         buttons.append(("🕘 История дела", "case_history_open"))
@@ -383,13 +418,16 @@ async def message_history(callback: CallbackQuery, db, state: FSMContext):
         )
         return
 
+    case_id = int(case.id)
+    case_number = str(case.case_number)
     service = MessageService(db)
     try:
-        messages = await service.list_case_messages(case.id, limit=100)
+        messages = await service.list_case_messages(case_id, limit=100)
         text, page, total_pages = _format_dialog(
             messages,
             requested_page,
             read_only=read_only,
+            case_number=case_number,
         )
         page_messages, _, _ = _history_slice(messages, page)
         visible_team_ids = tuple(
@@ -411,7 +449,12 @@ async def message_history(callback: CallbackQuery, db, state: FSMContext):
         )
         return
 
-    markup = _history_keyboard(page, total_pages, read_only=read_only)
+    markup = _history_keyboard(
+        page,
+        total_pages,
+        read_only=read_only,
+        case_id=None if read_only else case_id,
+    )
     try:
         changed = await _safe_edit(callback, text, reply_markup=markup)
         if changed:
@@ -423,7 +466,7 @@ async def message_history(callback: CallbackQuery, db, state: FSMContext):
     if visible_team_ids and not read_only:
         try:
             await service.mark_lawyer_messages_read(
-                case.id,
+                case_id,
                 message_ids=visible_team_ids,
             )
             await db.commit()
@@ -431,7 +474,7 @@ async def message_history(callback: CallbackQuery, db, state: FSMContext):
             await db.rollback()
 
 
-@router.callback_query(lambda c: c.data == "message_create")
+@router.callback_query(lambda c: callback_matches_action(c.data, "message_create"))
 async def message_create(
     callback: CallbackQuery,
     state: FSMContext,
@@ -486,7 +529,10 @@ async def message_new_request(callback: CallbackQuery, state: FSMContext, db):
             "📁 Пока вы открывали новый запрос, появилось активное дело. "
             "Новое обращение не создано. Выберите, хотите ли написать по текущему делу.",
             reply_markup=one(
-                ("✉️ Написать по текущему делу", "message_create"),
+                (
+                    "✉️ Написать по текущему делу",
+                    bound_case_callback("message_create", int(active.id)),
+                ),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
@@ -703,6 +749,56 @@ async def message_discard(callback: CallbackQuery, state: FSMContext):
     await callback.answer("Черновик удалён.")
 
 
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("message_retarget_current:v2:")
+)
+async def message_retarget_current(callback: CallbackQuery, state: FSMContext, db):
+    """Retarget a preserved draft only after an explicit exact-Case choice."""
+
+    data = await state.get_data()
+    if not str(data.get("draft_text") or "").strip():
+        await state.clear()
+        await callback.message.edit_text(
+            "Черновик уже отсутствует. Ничего не перенесено и не отправлено.",
+            reply_markup=one(
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    scope = await resolve_case_callback_scope(
+        callback,
+        db,
+        action="message_retarget_current",
+    )
+    if scope is None or scope.case is None:
+        return
+    case = scope.case
+    case_id = int(case.id)
+    case_number = str(case.case_number)
+    await state.update_data(
+        case_id=case_id,
+        case_number=case_number,
+        new_request_confirmed=False,
+        client_message_case_id=case_id,
+        client_message_recovery_case_id=None,
+    )
+    await state.set_state(MessageStates.confirming_message)
+    data = await state.get_data()
+    await callback.message.edit_text(
+        "✅ КОНТЕКСТ ЧЕРНОВИКА ИЗМЕНЁН\n"
+        f"Обращение № {case_number}\n\n"
+        "СЕЙЧАС\n"
+        "Черновик перенесён только в выбранный контекст, но ещё не отправлен.\n\n"
+        "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+        "Ещё раз проверьте тему, срочность и текст, затем подтвердите отправку.\n\n"
+        + _draft_review_text(data),
+        reply_markup=_review_markup(),
+    )
+    await callback.answer("Контекст изменён. Черновик не отправлен.")
+
+
 @router.callback_query(lambda c: c.data == "message_retarget_new_confirm")
 async def message_retarget_new_confirm(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
@@ -750,6 +846,10 @@ async def message_retarget_new(callback: CallbackQuery, state: FSMContext, db):
             "📁 Уже появилось активное дело. Новый кейс не создан, а черновик не прикреплён к нему. "
             "Вернитесь к черновику или откройте текущее дело и решите контекст явно.",
             reply_markup=one(
+                (
+                    f"➡️ Перенести в {active.case_number}",
+                    f"message_retarget_current:v2:{int(active.id)}",
+                ),
                 ("↩️ Вернуться к черновику", "message_review_return"),
                 ("📁 Моё дело", "my_case_open"),
                 ("✖️ Отменить черновик", "message_discard_confirm"),
@@ -761,6 +861,8 @@ async def message_retarget_new(callback: CallbackQuery, state: FSMContext, db):
         case_id=None,
         case_number=None,
         new_request_confirmed=True,
+        client_message_case_id=None,
+        client_message_recovery_case_id=None,
     )
     await state.set_state(MessageStates.confirming_message)
     data = await state.get_data()
@@ -837,23 +939,49 @@ async def message_submit(callback: CallbackQuery, state: FSMContext, db):
             int(item.id) for item in notifications if item.id is not None
         )
         message_id = int(created.id)
+        case_id = int(case.id)
         case_number = str(case.case_number)
         lawyer_assigned = bool(case.assigned_lawyer_id)
         await db.commit()
     except MessageTargetChanged as error:
         await db.rollback()
         await state.set_state(MessageStates.confirming_message)
-        await _replace_or_send(
-            callback,
-            "⚠️ Вопрос не отправлен: контекст дела изменился.\n\n"
-            f"{error}\n\n"
-            "Черновик сохранён. Он не будет автоматически перенесён в другое или новое дело.",
-            reply_markup=one(
+        recovery_ctx = BotContextService(db)
+        recovery_user = await recovery_ctx.get_user_from_callback(callback)
+        current_case = await recovery_ctx.case_service.get_active_case_for_user(
+            recovery_user.id
+        )
+        active_cases = await recovery_ctx.case_service.get_active_cases_for_user(
+            recovery_user.id
+        )
+        buttons: list[tuple[str, str]] = []
+        if current_case is not None:
+            buttons.append(
+                (
+                    f"➡️ Перенести в {current_case.case_number}",
+                    f"message_retarget_current:v2:{int(current_case.id)}",
+                )
+            )
+        elif not active_cases:
+            buttons.append(("🆕 Перенести в новое обращение", "message_retarget_new_confirm"))
+        if len(active_cases) > 1:
+            buttons.append(("📁 Выбрать обращение", "my_cases_open"))
+        buttons.extend(
+            [
                 ("↩️ Вернуться к черновику", "message_review_return"),
-                ("🆕 Перенести в новое обращение", "message_retarget_new_confirm"),
                 ("📁 Моё дело", "my_case_open"),
                 ("✖️ Отменить черновик", "message_discard_confirm"),
-            ),
+            ]
+        )
+        await _replace_or_send(
+            callback,
+            "⚠️ ВОПРОС НЕ ОТПРАВЛЕН\n\n"
+            f"{error}\n\n"
+            "СЕЙЧАС\n"
+            "Черновик сохранён и не перенесён в другое дело автоматически.\n\n"
+            "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+            "Выберите точный контекст отдельной кнопкой или вернитесь к черновику.",
+            reply_markup=one(*buttons),
         )
         await callback.answer("Отправка остановлена: дело изменилось.")
         return
@@ -885,9 +1013,10 @@ async def message_submit(callback: CallbackQuery, state: FSMContext, db):
         else {"status": "not_required"}
     )
     confirmation = (
-        "✅ Вопрос зарегистрирован.\n\n"
-        f"Номер сообщения: #{message_id}\n"
-        f"Дело: {case_number}\n"
+        "✅ ВОПРОС ЗАРЕГИСТРИРОВАН\n"
+        f"Обращение № {case_number}\n\n"
+        "СЕЙЧАС\n"
+        f"Сообщение #{message_id} сохранено.\n"
         f"Тема: {category}\n"
         f"Срочность: {urgency}\n"
         f"{_delivery_status_text(delivery, created=is_new)}\n\n"
@@ -900,7 +1029,8 @@ async def message_submit(callback: CallbackQuery, state: FSMContext, db):
             "очередь на распределение."
         )
     confirmation += (
-        "\n\nОтвет появится в переписке по делу и будет продублирован в Telegram."
+        "\n\nГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+        "Следите за ответом в переписке по делу; уведомление также придёт в Telegram."
     )
     if urgency == "Критично: срок менее 24 часов":
         confirmation += (
@@ -914,7 +1044,10 @@ async def message_submit(callback: CallbackQuery, state: FSMContext, db):
         confirmation,
         reply_markup=one(
             ("🗂 Открыть переписку", "message_history"),
-            ("✉️ Написать ещё", "message_create"),
+            (
+                "✉️ Написать ещё",
+                bound_case_callback("message_create", case_id),
+            ),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         ),

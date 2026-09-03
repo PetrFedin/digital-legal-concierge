@@ -3,8 +3,8 @@ name: CI
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  pull_request: {}
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -18,6 +18,56 @@ env:
   PIP_NO_INPUT: "1"
 
 jobs:
+  process-map-contract:
+    name: Process map maintenance contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout full history for change inventory
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Verify living process map exists
+        run: test -s docs/PROCESS_MAP_CURRENT.md
+
+      - name: Require process map update in every pull request
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          printf '%s\n' "$changed"
+          if ! printf '%s\n' "$changed" | grep -Fxq 'docs/PROCESS_MAP_CURRENT.md'; then
+            echo "::error::Every pull request must update docs/PROCESS_MAP_CURRENT.md so the living process/debt/change map stays current."
+            exit 1
+          fi
+
+          latest_map_commit=$(
+            git rev-list -1 "$BASE_SHA..$HEAD_SHA" -- docs/PROCESS_MAP_CURRENT.md
+          )
+          latest_governed_commit=$(
+            git rev-list -1 "$BASE_SHA..$HEAD_SHA" -- . ':(exclude)docs/PROCESS_MAP_CURRENT.md'
+          )
+
+          if [ -z "$latest_map_commit" ]; then
+            echo "::error::Unable to resolve a process-map update in the pull-request range."
+            exit 1
+          fi
+
+          if [ -n "$latest_governed_commit" ] && ! git merge-base --is-ancestor "$latest_governed_commit" "$latest_map_commit"; then
+            echo "::error::docs/PROCESS_MAP_CURRENT.md is stale: repository changes were committed after its latest update. Update the living map after the latest governed change."
+            echo "latest governed commit: $latest_governed_commit"
+            echo "latest process-map commit: $latest_map_commit"
+            exit 1
+          fi
+
+          echo "Process map freshness contract satisfied."
+          echo "latest governed commit: ${latest_governed_commit:-none}"
+          echo "latest process-map commit: $latest_map_commit"
+
   sqlite-tests:
     name: SQLite application tests
     runs-on: ubuntu-24.04

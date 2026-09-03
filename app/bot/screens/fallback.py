@@ -59,12 +59,16 @@ async def stale_callback(callback: CallbackQuery, db, state: FSMContext):
         )
         return
 
-    text, case_exists, primary_action = await _home_text(db, callback)
+    text, case_exists, completed_case, primary_action = await _home_text(db, callback)
     await db.commit()
     recovery_text = (
         "Эта кнопка больше не актуальна. Показано текущее состояние.\n\n" + text
     )
-    markup = main_menu(case_exists, primary_action=primary_action)
+    markup = main_menu(
+        case_exists,
+        completed_case=completed_case,
+        primary_action=primary_action,
+    )
     try:
         await callback.message.edit_text(recovery_text, reply_markup=markup)
     except TelegramBadRequest as error:
@@ -107,13 +111,20 @@ async def unknown_message(message: Message, db, state: FSMContext):
         )
         return
 
-    text, case_exists, primary_action = await _home_text(db, message)
+    text, case_exists, completed_case, primary_action = await _home_text(db, message)
     await db.commit()
     await message.answer(
         "Не удалось распознать действие. Нижнее меню обновлено по текущему состоянию.",
-        reply_markup=reply_main_menu(case_exists),
+        reply_markup=reply_main_menu(
+            case_exists,
+            completed_case=completed_case,
+        ),
     )
     await message.answer(
         text,
-        reply_markup=main_menu(case_exists, primary_action=primary_action),
+        reply_markup=main_menu(
+            case_exists,
+            completed_case=completed_case,
+            primary_action=primary_action,
+        ),
     )

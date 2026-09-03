@@ -11,6 +11,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.domain.cases.case_responsibility import lawyer_can_access_case
 from app.models.admin_user import AdminUser
 from app.models.case import Case
 from app.models.document import Document
@@ -128,11 +129,15 @@ async def load_authorized_document(
     case = await db.get(Case, document.case_id)
     if not case:
         raise DocumentAccessError(404, "Дело документа не найдено", "case_not_found")
-    if actor.role == ROLE_LAWYER and case.assigned_lawyer_id != actor.lawyer_id:
+    if actor.role == ROLE_LAWYER and not await lawyer_can_access_case(
+        db,
+        case=case,
+        lawyer_id=actor.lawyer_id,
+    ):
         raise DocumentAccessError(
             403,
-            "Документ относится к делу, не назначенному текущему юристу",
-            "lawyer_not_assigned",
+            "Документ относится к делу, за которое текущий юрист не отвечает",
+            "lawyer_not_responsible",
         )
     if document.security_status != "VERIFIED":
         raise DocumentAccessError(409, "Документ не прошёл проверку безопасности", "not_verified")

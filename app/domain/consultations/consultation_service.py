@@ -46,16 +46,88 @@ class ConsultationService:
         )
         return result.scalars().first()
 
+    async def _latest_terminal_context_for_case(
+        self,
+        case_id: int,
+    ) -> Consultation | None:
+        """Return the latest historical consultation only as a client-context source.
+
+        A terminal appointment must never be resurrected. This helper exists so an
+        active M2 legal request can recover from cancellation/refund/no-show without
+        forcing the client to type the same question again. Slot, lawyer, schedule,
+        payment reservation and terminal status are deliberately not copied.
+        """
+
+        result = await self.db.execute(
+            select(Consultation)
+            .where(Consultation.case_id == int(case_id))
+            .where(
+                Consultation.status.in_(
+                    [status.value for status in TERMINAL_CONSULTATION_STATUSES]
+                )
+            )
+            .order_by(Consultation.created_at.desc(), Consultation.id.desc())
+            .limit(1)
+        )
+        return result.scalars().first()
+
     async def get_or_create_for_case(self, case):
         consultation = await self.get_current_for_case(case.id)
         if consultation:
             return consultation
+
+        previous = await self._latest_terminal_context_for_case(case.id)
+        description = str(
+            getattr(previous, "client_description", None) or ""
+        ).strip()
         consultation = Consultation(
             case_id=case.id,
-            status=ConsultationStatus.DESCRIPTION_PENDING,
+            client_description=(description or None),
+            subject_type=(
+                str(getattr(previous, "subject_type", None) or "new_or_other")
+                if previous is not None
+                else "new_or_other"
+            ),
+            related_case_id=(
+                getattr(previous, "related_case_id", None)
+                if previous is not None
+                else None
+            ),
+            status=(
+                ConsultationStatus.DOCUMENTS_OPTIONAL
+                if len(description) >= 20
+                else ConsultationStatus.DESCRIPTION_PENDING
+            ),
         )
         self.db.add(consultation)
         await self.db.flush()
+
+        if previous is not None:
+            await add_case_history_event(
+                self.db,
+                actor_type="system",
+                actor_id=None,
+                case_id=case.id,
+                action="CONSULTATION_CONTEXT_RESTORED",
+                old_value={
+                    "consultation_id": int(previous.id),
+                    "consultation_status": str(previous.status),
+                },
+                new_value={
+                    "consultation_id": int(consultation.id),
+                    "consultation_status": str(consultation.status),
+                    "description_preserved": bool(description),
+                    "subject_type": consultation.subject_type,
+                    "related_case_id": consultation.related_case_id,
+                    "slot_id": None,
+                    "lawyer_id": None,
+                    "scheduled_at": None,
+                },
+                comment=(
+                    "Создан новый активный контекст M2 без восстановления старой брони; "
+                    "сохранены только вопрос клиента и связь с исходным делом."
+                ),
+            )
         return consultation
 
     async def _validate_related_case(

@@ -9,11 +9,13 @@ from aiogram.exceptions import (
 )
 
 from app.bot.keyboards import one
+from app.bot.states import DocumentUploadStates
 
 logger = logging.getLogger(__name__)
 
 MESSAGE_DRAFT = "message"
 CONSULTATION_DRAFT = "consultation"
+DOCUMENT_UPLOAD_DRAFT = "document_upload"
 
 _MESSAGE_DRAFT_CALLBACKS = {
     "message_submit",
@@ -42,6 +44,25 @@ _CONSULTATION_DRAFT_CALLBACK_PREFIXES = (
     "consult_subject_case:",
 )
 
+_DOCUMENT_UPLOAD_DRAFT_CALLBACKS = {
+    "documents_upload_open",
+    "document_upload_resume_draft",
+    "document_upload_discard_confirm",
+    "document_upload_discard",
+}
+_DOCUMENT_UPLOAD_DRAFT_CALLBACK_PREFIXES = (
+    "doc_type:",
+    "doc_skip_m2:v2:",
+    "document_reupload:",
+    "document_upload_resume:v2:",
+)
+_DOCUMENT_UPLOAD_STATES = frozenset(
+    {
+        DocumentUploadStates.choosing_type.state,
+        DocumentUploadStates.waiting_file.state,
+    }
+)
+
 _PROTECTED_NAVIGATION_MESSAGES = frozenset(
     {
         "/start",
@@ -60,12 +81,21 @@ _PROTECTED_NAVIGATION_MESSAGES = frozenset(
 )
 
 
-def protected_draft_kind(state_data: dict | None) -> str | None:
+def protected_draft_kind(
+    state_data: dict | None,
+    current_state: str | None = None,
+) -> str | None:
     data = state_data or {}
     if str(data.get("draft_text") or "").strip():
         return MESSAGE_DRAFT
     if str(data.get("description_draft") or "").strip():
         return CONSULTATION_DRAFT
+    if str(current_state or "") in _DOCUMENT_UPLOAD_STATES and (
+        data.get("document_case_id")
+        or data.get("replacement_document_id")
+        or str(current_state) == DocumentUploadStates.choosing_type.state
+    ):
+        return DOCUMENT_UPLOAD_DRAFT
     return None
 
 
@@ -77,6 +107,10 @@ def is_draft_flow_callback(
     if draft_kind == CONSULTATION_DRAFT:
         return value in _CONSULTATION_DRAFT_CALLBACKS or value.startswith(
             _CONSULTATION_DRAFT_CALLBACK_PREFIXES
+        )
+    if draft_kind == DOCUMENT_UPLOAD_DRAFT:
+        return value in _DOCUMENT_UPLOAD_DRAFT_CALLBACKS or value.startswith(
+            _DOCUMENT_UPLOAD_DRAFT_CALLBACK_PREFIXES
         )
     return value in _MESSAGE_DRAFT_CALLBACKS or value.startswith(
         _MESSAGE_DRAFT_CALLBACK_PREFIXES
@@ -95,6 +129,12 @@ def draft_guard_text(draft_kind: str = MESSAGE_DRAFT) -> str:
             "Вернитесь к проверке вопроса или удалите черновик явно — удаление "
             "потребует отдельного подтверждения."
         )
+    if draft_kind == DOCUMENT_UPLOAD_DRAFT:
+        return (
+            "📎 У вас есть незавершённая загрузка документа.\n\n"
+            "Выбранное обращение, тип документа и запрос на замену не удаляются автоматически при навигации. "
+            "Продолжите загрузку либо отмените её явно; до этого другой файл или действие не будут случайно привязаны к чужому делу."
+        )
     return (
         "📝 У вас есть неотправленный черновик вопроса.\n\n"
         "Я не закрываю его автоматически, чтобы введённый текст не потерялся. "
@@ -107,6 +147,11 @@ def draft_guard_markup(draft_kind: str = MESSAGE_DRAFT):
         return one(
             ("↩️ Вернуться к вопросу", "consult_description_review"),
             ("✖️ Удалить черновик", "consult_description_discard_confirm"),
+        )
+    if draft_kind == DOCUMENT_UPLOAD_DRAFT:
+        return one(
+            ("↩️ Продолжить загрузку", "document_upload_resume_draft"),
+            ("✖️ Отменить загрузку", "document_upload_discard_confirm"),
         )
     return one(
         ("↩️ Вернуться к черновику", "message_review_return"),
@@ -128,7 +173,7 @@ async def _show_callback_guard(event, draft_kind: str) -> None:
     if message is None:
         await _acknowledge(
             event,
-            "Сначала сохраните или явно удалите текущий черновик.",
+            "Сначала продолжите или явно отмените текущее действие.",
             show_alert=True,
         )
         return
@@ -152,7 +197,12 @@ async def _show_callback_guard(event, draft_kind: str) -> None:
     except (TelegramNetworkError, TelegramServerError):
         logger.warning("Не удалось показать экран защиты черновика.")
 
-    await _acknowledge(event, "Черновик сохранён.")
+    notice = (
+        "Загрузка сохранена."
+        if draft_kind == DOCUMENT_UPLOAD_DRAFT
+        else "Черновик сохранён."
+    )
+    await _acknowledge(event, notice)
 
 
 async def _show_message_guard(event, draft_kind: str) -> None:
@@ -166,7 +216,7 @@ async def _show_message_guard(event, draft_kind: str) -> None:
 
 
 class DraftProtectionMiddleware:
-    """Block stale inline navigation from silently deleting an unsaved client draft."""
+    """Block inline navigation from silently deleting an unsaved client draft."""
 
     async def __call__(self, handler, event, data):
         state = data.get("state")
@@ -174,6 +224,7 @@ class DraftProtectionMiddleware:
             return await handler(event, data)
 
         try:
+            current_state = await state.get_state()
             state_data = await state.get_data()
         except Exception:
             logger.exception("Не удалось проверить FSM перед callback-навигацией.")
@@ -184,7 +235,7 @@ class DraftProtectionMiddleware:
             )
             return None
 
-        draft_kind = protected_draft_kind(state_data)
+        draft_kind = protected_draft_kind(state_data, current_state)
         if draft_kind is None:
             return await handler(event, data)
 
@@ -207,6 +258,7 @@ class DraftMessageNavigationProtectionMiddleware:
             return await handler(event, data)
 
         try:
+            current_state = await state.get_state()
             state_data = await state.get_data()
         except Exception:
             logger.exception("Не удалось проверить FSM перед reply-навигацией.")
@@ -218,7 +270,7 @@ class DraftMessageNavigationProtectionMiddleware:
                 logger.warning("Не удалось показать ошибку проверки FSM.")
             return None
 
-        draft_kind = protected_draft_kind(state_data)
+        draft_kind = protected_draft_kind(state_data, current_state)
         if draft_kind is None:
             return await handler(event, data)
 

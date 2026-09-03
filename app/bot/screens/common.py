@@ -43,6 +43,10 @@ COMPLETED_CASE_ACTION = (
     "📁 Открыть архив обращения",
     "my_case_open",
 )
+CASE_SELECTION_ACTION = (
+    "📁 Выбрать обращение",
+    "my_cases_open",
+)
 
 
 def _route_label(route: str | None) -> str:
@@ -75,6 +79,19 @@ def _primary_action(view) -> tuple[str, str]:
             f"next_action:v2:{view.case_id}:{view.action_key}",
         )
     return ("📁 Открыть текущее дело", "my_case_open")
+
+
+def _selection_required_text(active_count: int) -> str:
+    return (
+        "🏠 Главная\n\n"
+        "📁 Выберите обращение\n"
+        "У вас несколько активных обращений, а текущее дело не выбрано. "
+        "Чтобы документы, оплаты, переписка и действия не смешались между делами, "
+        "бот ничего не выбирает автоматически.\n\n"
+        f"Активных обращений: {active_count}\n\n"
+        "📌 Ваш следующий шаг\n"
+        "Откройте список обращений и выберите нужное. Новый расчёт при этом остаётся доступен отдельно."
+    )
 
 
 async def _result_view_for_case(db, case):
@@ -142,12 +159,21 @@ async def _guard_callback_draft(callback: CallbackQuery, state: FSMContext) -> b
 
 
 async def _client_case_menu_state(db, message: Message) -> tuple[bool, bool]:
-    """Return (active_case, completed_archive) for the persistent reply menu."""
+    """Return (active_case, completed_archive) for the persistent reply menu.
+
+    Several active matters still count as an active client context even if none
+    is currently selected. The menu must not visually downgrade such a client to
+    a completed archive merely because ambiguity is being handled fail-closed.
+    """
 
     ctx = BotContextService(db)
     user = await ctx.get_user_from_message(message)
     case = await ctx.case_service.get_active_case_for_user(user.id)
     if case is not None:
+        await db.commit()
+        return True, False
+    active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
+    if active_cases:
         await db.commit()
         return True, False
     completed = await latest_completed_case_for_user(db, user_id=user.id)
@@ -235,6 +261,18 @@ async def _home_text(
             ]
         )
         return "\n".join(lines), True, False, primary_action
+
+    # The selected Case can legitimately disappear from the active scope after
+    # it closes while other matters remain. Fail closed, but make that state
+    # visible and actionable instead of showing an unrelated completed archive.
+    active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
+    if active_cases:
+        return (
+            _selection_required_text(len(active_cases)),
+            True,
+            False,
+            CASE_SELECTION_ACTION,
+        )
 
     completed_case = await latest_completed_case_for_user(db, user_id=user.id)
     if completed_case:
@@ -342,39 +380,38 @@ async def start(message: Message, db, state: FSMContext):
 
 @router.message(lambda m: m.text == "🧮 Рассчитать неустойку")
 async def menu_calc(message: Message, state: FSMContext, db):
+    """Compatibility handler: calculator remains available with active Cases.
+
+    reply_menu_direct owns the canonical persistent-menu path and is registered
+    before this router. Keeping this historical handler behavior-identical makes
+    correctness independent from router order while old deployments/messages are
+    still being retired.
+    """
+
     if await _guard_message_draft(message, state):
         return
     await state.clear()
     ctx = BotContextService(db)
     user = await ctx.get_user_from_message(message)
-    case = await ctx.case_service.get_active_case_for_user(user.id)
-    if case:
-        view = await load_client_case_view(db, case)
-        result_view = await _result_view_for_case(db, case)
-        primary_action = (
-            CONSULTATION_RESULT_ACTION if result_view else _primary_action(view)
-        )
-        await db.commit()
+    active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
+    await db.commit()
+    if active_cases:
         await message.answer(
-            "📁 У вас уже есть активное дело.\n\n"
-            "Чтобы не смешивать расчёты, документы и статусы разных обращений, "
-            "сначала продолжите текущее дело. Новый расчёт станет доступен после "
-            "его завершения. Нижнее меню уже обновлено.",
-            reply_markup=reply_main_menu(True),
-        )
-        await message.answer(
-            "Продолжите текущее дело:",
-            reply_markup=main_menu(
-                True,
-                primary_action=primary_action,
+            "🧮 НОВЫЙ РАСЧЁТ\n\n"
+            "Расчёт доступен независимо от уже открытых дел. Если вы продолжите, будет создано отдельное обращение; существующие M1/M2 дела, документы и статусы не изменятся.\n\n"
+            f"Сейчас активных обращений: {len(active_cases)}.",
+            reply_markup=one(
+                ("▶️ Начать новый расчёт", "calc_start"),
+                ("📁 Выбрать текущее дело", "my_cases_open"),
+                ("🏠 Главная", "nav_home"),
             ),
         )
         return
-    await db.commit()
     await message.answer(
-        "Начните предварительный расчёт или вернитесь на главную.",
+        "🧮 ПРЕДВАРИТЕЛЬНЫЙ РАСЧЁТ\n\n"
+        "Ответьте на несколько вопросов о ДДУ. Расчёт предварительный и не является юридическим заключением.",
         reply_markup=one(
-            ("Начать расчёт", "calc_start"),
+            ("▶️ Начать расчёт", "calc_start"),
             ("🏠 Главная", "nav_home"),
         ),
     )
@@ -462,11 +499,11 @@ async def help_command(message: Message, db):
     await message.answer(
         "ℹ️ Помощь\n\n"
         "Основные разделы:\n"
-        "🧮 Рассчитать неустойку — предварительный расчёт, когда активного дела нет.\n"
-        "📁 Моё дело — текущий этап или read-only архив завершённого обращения.\n"
-        "📄 Документы — актуальные версии, замечания и история.\n"
-        "💬 Переписка — сообщения по активному делу.\n"
-        "✉️ Новый вопрос — новый вопрос команде по делу.\n\n"
+        "🏠 Главная — выбранное обращение и главный следующий шаг.\n"
+        "🧮 Рассчитать неустойку — новый предварительный расчёт; доступен всегда и создаёт отдельное обращение, не изменяя уже открытые дела.\n"
+        "📁 Моё дело — выбранное активное обращение; если их несколько, бот предлагает выбрать нужное.\n"
+        "📄 Документы — актуальные версии, замечания и история именно выбранного обращения.\n"
+        "💬 Связаться с юристом — переписка по выбранному M1/M2 или продолжение сохранённой консультации.\n\n"
         f"{payment_line}\n\n"
         "Команды: /start, /menu, /status, /help, /cancel",
         reply_markup=reply_main_menu(
@@ -482,6 +519,23 @@ async def status_command(message: Message, db):
     user = await ctx.get_user_from_message(message)
     case = await ctx.case_service.get_active_case_for_user(user.id)
     if not case:
+        active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
+        if active_cases:
+            await db.commit()
+            await message.answer(
+                "📁 Статус какого обращения показать?\n\n"
+                f"У вас {len(active_cases)} активных обращений. Текущее дело не выбрано, поэтому бот не смешивает статусы разных дел.",
+                reply_markup=reply_main_menu(True),
+            )
+            await message.answer(
+                "Выберите обращение:",
+                reply_markup=one(
+                    CASE_SELECTION_ACTION,
+                    ("🏠 Главная", "nav_home"),
+                ),
+            )
+            return
+
         completed_case = await latest_completed_case_for_user(db, user_id=user.id)
         if completed_case:
             view = await load_client_case_view(db, completed_case)

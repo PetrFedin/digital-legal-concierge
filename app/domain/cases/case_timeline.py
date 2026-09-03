@@ -11,7 +11,7 @@ CLIENT_VISIBLE_STATUS_TITLES = {
     CaseStatus.M1_LAWYER_REVIEW: "Документы проверяет юрист",
     CaseStatus.M1_DOCS_REQUESTED: "Нужна новая версия документа",
     CaseStatus.M1_ACCEPTED: "Дело принято юристом",
-    CaseStatus.M1_REJECTED: "Ведение дела не принято",
+    CaseStatus.M1_REJECTED: "Ведение дела не принято — выберите следующий шаг",
     CaseStatus.M1_CONTRACT_READY: "Договор готов",
     CaseStatus.M1_WAITING_PAYMENT_30000: "Ожидается первый платёж",
     CaseStatus.M1_PAYMENT_30000_RECEIVED: "Первый платёж получен",
@@ -25,8 +25,8 @@ CLIENT_VISIBLE_STATUS_TITLES = {
     CaseStatus.M1_PAYMENT_70000_RECEIVED: "Платёж за судебный этап получен",
     CaseStatus.M1_ENFORCEMENT: "Исполнительное производство",
     CaseStatus.M1_MONEY_RECEIVED: "Деньги по делу получены",
-    CaseStatus.M1_WAITING_SUCCESS_FEE: "Ожидается оплата success fee",
-    CaseStatus.M1_SUCCESS_FEE_RECEIVED: "Success fee оплачен",
+    CaseStatus.M1_WAITING_SUCCESS_FEE: "Ожидается финальный платёж",
+    CaseStatus.M1_SUCCESS_FEE_RECEIVED: "Финальный платёж получен",
     CaseStatus.M1_CLOSED: "Дело закрыто",
     CaseStatus.M2_CONSULTATION_ROUTE: "Выбран формат консультации",
     CaseStatus.M2_DESCRIPTION_PENDING: "Опишите ситуацию для консультации",
@@ -52,7 +52,10 @@ CASE_PROGRESS_PERCENT = {
     CaseStatus.M1_LAWYER_REVIEW: 30,
     CaseStatus.M1_DOCS_REQUESTED: 25,
     CaseStatus.M1_ACCEPTED: 35,
-    CaseStatus.M1_REJECTED: 100,
+    # Rejection ends the automatic M1 branch but not the client's request: the
+    # client must still choose M2 or explicitly close. Do not visually present
+    # an active decision state as 100% complete.
+    CaseStatus.M1_REJECTED: 35,
     CaseStatus.M1_CONTRACT_READY: 40,
     CaseStatus.M1_WAITING_PAYMENT_30000: 45,
     CaseStatus.M1_PAYMENT_30000_RECEIVED: 50,

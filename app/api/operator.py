@@ -1,9 +1,13 @@
 from html import escape
 
-from fastapi import APIRouter
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.db.session import get_db
+from app.security.access_control import ROLE_ADMIN, ROLE_LAWYER, ROLE_SUPERADMIN
+from app.security.document_access import DocumentAccessError, resolve_document_actor
 
 router = APIRouter(tags=["operator"])
 
@@ -33,8 +37,49 @@ def _payment_state() -> tuple[str, str, str]:
     )
 
 
+def _effective_token(request: Request, header_token: str | None) -> str | None:
+    return header_token or request.cookies.get(settings.admin_session_cookie)
+
+
+async def _staff_actor(
+    request: Request,
+    db: AsyncSession,
+    header_token: str | None,
+):
+    try:
+        actor = await resolve_document_actor(
+            db,
+            _effective_token(request, header_token),
+        )
+    except DocumentAccessError as error:
+        if error.status_code == 401:
+            return None
+        if error.status_code in {403, 409}:
+            return "staff_landing"
+        raise
+    except HTTPException as error:
+        if error.status_code in {403, 409}:
+            return "staff_landing"
+        raise
+    if actor.role not in {ROLE_LAWYER, ROLE_ADMIN, ROLE_SUPERADMIN}:
+        return "staff_landing"
+    return actor
+
+
 @router.get("/operator", response_class=HTMLResponse)
-async def operator_page():
+async def operator_page(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    """Canonical authenticated staff hub; no precedence-based shadow route."""
+
+    actor = await _staff_actor(request, db, x_admin_token)
+    if actor is None:
+        return RedirectResponse(url="/login", status_code=303)
+    if actor == "staff_landing":
+        return RedirectResponse(url="/admin-ui", status_code=303)
+
     bot_label, bot_class = _state(settings.run_bot)
     scheduler_label, scheduler_class = _state(settings.run_scheduler)
     payment_label, payment_class, payment_note = _payment_state()
@@ -135,7 +180,7 @@ function renderRoles(roles){
   roleName.textContent=roleLabel(roles);
   const groups=[];
   if(isLawyer){groups.push(group('Работа юриста','Мои дела, документы, сроки и консультации без перехода в административные очереди',[
-    link('/lawyer/workspace/ui','Мои дела','Приоритеты, ближайшее действие, документы и SLA','primary'),
+    link('/lawyer/workspace/ui','Мои дела','Приоритеты, M1/M2, SLA и следующий шаг','primary'),
     link('/lawyer/consultation-desk/ui','Консультации','Подготовка, встреча, результат и неявки','green'),
     link('/document-access/review/ui','Проверка документов','Скачать файл и зафиксировать решение'),
     link('/message-center/ui','Переписка','Диалоги клиентов по конкретным делам')
@@ -157,92 +202,23 @@ function renderRoles(roles){
       link('/monitoring-center/ui','Мониторинг','Работоспособность приложения'),
       link('/security-events/ui','Безопасность','События и подозрительные действия')
     ])+group('Настройка','Редкие административные операции вынесены из ежедневной очереди',[
-      link('/admin-ui','Расширенная админ-панель','Справочники и корректирующие операции'),
-      link('/access/ui','Пользователи и права','Роли, доступ и MFA'),
-      link('/settings-ui','Настройки','Рабочие параметры приложения'),
-      link('/audit-center/ui','Аудит','Журнал и целостность действий')
+      link('/admin-ui','Рабочая зона администратора','Перейти к единому Workdesk'),
+      link('/settings-ui','Настройки','Суммы, сроки и параметры продукта'),
+      link('/admin/sla/ui','Контроль сроков','SLA и эскалации'),
+      link('/admin/notification-delivery/ui','Очередь уведомлений','Повторы и ошибки доставки')
     ]);
   }else{systemSection.hidden=true;systemLinks.innerHTML=''}
-  if(isLawyer&&isAdmin)notice.textContent='У вас совмещённые права: доступны кабинет юриста и административная очередь.';
-  else if(isLawyer)notice.textContent='Открыт контур юриста. Административные разделы скрыты, чтобы не создавать лишних и недоступных переходов.';
-  else if(isAdmin)notice.textContent='Открыт административный контур. Для работы юриста нужна отдельная роль lawyer.';
-  else{notice.textContent='Для этой учётной записи нет рабочего контура.';notice.classList.add('error')}
+  notice.textContent='Доступ определён вашей персональной сессией. Клиентские данные не передаются в этот экран до открытия профильного раздела.';
 }
-async function boot(){
-  try{
-    const response=await fetch('/auth/session',{credentials:'same-origin',cache:'no-store'});
-    if(!response.ok){location.href='/login';return}
-    const session=await response.json();
-    const roles=[...new Set((session.roles||[session.role]).filter(Boolean).map(String))];
-    renderRoles(roles);
-  }catch(error){
-    notice.textContent='Не удалось определить роль: '+(error.message||error);
-    notice.classList.add('error');
-    workspaces.innerHTML='<div class="empty">Обновите страницу. Если ошибка повторяется, откройте страницу входа и авторизуйтесь заново.</div>';
-  }
-}
+async function boot(){try{const r=await fetch('/auth/session',{credentials:'same-origin',cache:'no-store'});if(!r.ok){location.href='/login';return}const s=await r.json();renderRoles((s.roles||[s.role]).filter(Boolean))}catch(e){notice.classList.add('error');notice.textContent='Не удалось проверить доступ. Повторите вход.';workspaces.innerHTML='<div class="empty">Рабочие разделы не загружены.</div>'}}
 boot();
 </script>
 </body>
 </html>
 """
-    replacements = {
-        "__ENV__": escape(settings.app_env or "unknown"),
-        "__BOT_CLASS__": bot_class,
-        "__BOT_LABEL__": escape(bot_label),
-        "__SCHED_CLASS__": scheduler_class,
-        "__SCHED_LABEL__": escape(scheduler_label),
-        "__PAY_CLASS__": payment_class,
-        "__PAY_LABEL__": escape(payment_label),
-        "__PAY_NOTE__": escape(payment_note),
-    }
-    for marker, value in replacements.items():
-        html = html.replace(marker, value)
+    html = html.replace("__ENV__", escape(settings.app_env))
+    html = html.replace("__BOT_CLASS__", bot_class).replace("__BOT_LABEL__", bot_label)
+    html = html.replace("__SCHED_CLASS__", scheduler_class).replace("__SCHED_LABEL__", scheduler_label)
+    html = html.replace("__PAY_CLASS__", payment_class).replace("__PAY_LABEL__", payment_label)
+    html = html.replace("__PAY_NOTE__", escape(payment_note))
     return HTMLResponse(html)
-
-
-@router.get("/operator/status")
-async def operator_status():
-    return {
-        "version": "1.0.0-v46",
-        "bot_enabled": settings.run_bot,
-        "scheduler_enabled": settings.run_scheduler,
-        "payment_provider": settings.payment_provider,
-        "storage_dir": settings.storage_dir,
-        "public_base_url": settings.public_base_url,
-        "recommended_next_step": "Откройте /operator: рабочие разделы будут показаны по вашей роли",
-        "workspaces": {
-            "admin": "/admin/workdesk/ui",
-            "lawyer": "/lawyer/workspace/ui",
-            "lawyer_consultations": "/lawyer/consultation-desk/ui",
-            "document_review": "/document-access/review/ui",
-            "messages": "/message-center/ui",
-            "payment_reviews": "/admin/payment-reviews/ui",
-            "refunds": "/admin/refunds/ui",
-            "sla": "/admin/sla/ui",
-            "consultation_outcomes": "/admin/consultation-outcomes/ui",
-            "telegram_delivery": "/admin/notification-delivery/ui",
-            "admin_legacy": "/admin-ui",
-            "lawyer_legacy": "/lawyer/ui",
-        },
-    }
-
-
-# Mounted here because /operator is the role-workspace hub. Keep the complete
-# staff router composition together: the UI links and their supporting exact-case
-# endpoints must enter the application route table as one E2E surface.
-from app.api.case_timeline import router as case_timeline_router  # noqa: E402
-from app.api.lawyer_consultation_desk import (  # noqa: E402
-    router as lawyer_consultation_desk_router,
-)
-from app.api.lawyer_workspace import router as lawyer_workspace_router  # noqa: E402
-from app.api.notification_delivery import (  # noqa: E402
-    router as notification_delivery_router,
-)
-from app.api.workdesk import router as workdesk_router  # noqa: E402
-
-router.include_router(case_timeline_router)
-router.include_router(lawyer_consultation_desk_router)
-router.include_router(lawyer_workspace_router)
-router.include_router(notification_delivery_router)
-router.include_router(workdesk_router)

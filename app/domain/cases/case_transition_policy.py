@@ -17,6 +17,38 @@ TERMINAL_STATUSES = frozenset(
     }
 )
 
+# ERROR recovery is intentionally narrower than the normal status graph. Only
+# stages whose truth lives primarily on the Case may be restored. Payment and
+# booked-consultation states have separate authoritative records and must be
+# repaired through their own domain services instead of by changing Case.status.
+ERROR_RECOVERY_TARGETS = frozenset(
+    {
+        CaseStatus.M1_DOCUMENTS_PENDING,
+        CaseStatus.M1_DOCUMENTS_RECEIVED,
+        CaseStatus.M1_LAWYER_REVIEW,
+        CaseStatus.M1_DOCS_REQUESTED,
+        CaseStatus.M1_ACCEPTED,
+        CaseStatus.M1_REJECTED,
+        CaseStatus.M1_CONTRACT_READY,
+        CaseStatus.M1_POWER_OF_ATTORNEY,
+        CaseStatus.M1_POA_RECEIVED,
+        CaseStatus.M1_CLAIM_PREPARATION,
+        CaseStatus.M1_CLAIM_SENT,
+        CaseStatus.M1_WAITING_30_DAYS,
+        CaseStatus.M1_COURT_STAGE,
+        CaseStatus.M1_ENFORCEMENT,
+        CaseStatus.M2_DESCRIPTION_PENDING,
+        CaseStatus.M2_DOCUMENTS_OPTIONAL,
+        CaseStatus.M2_SLOT_PENDING,
+    }
+)
+
+# Historical values can remain readable so an old row can be upgraded through
+# its explicit outgoing compatibility edge, but current product code must never
+# create/re-enter them. This keeps backwards compatibility without allowing the
+# canonical M2 state machine to regress into the retired bootstrap state.
+READ_ONLY_COMPATIBILITY_STATUSES = frozenset({CaseStatus.M2_CONSULTATION_ROUTE})
+
 # Every normal transition is explicit. Administrative corrections remain possible
 # through CaseService(force=True), where the actor and explanation are audited.
 _TRANSITIONS: dict[CaseStatus, frozenset[CaseStatus]] = {
@@ -176,6 +208,22 @@ def normalize_status(value: str | CaseStatus) -> CaseStatus:
         raise CaseTransitionError(f"Неизвестный статус дела: {value}") from error
 
 
+def validate_initial_status(value: str | CaseStatus) -> CaseStatus:
+    """Validate a status used for a newly created Case.
+
+    Historical compatibility statuses remain parseable because persisted legacy
+    rows may still contain them, but no new Case may be born in such a state.
+    """
+
+    status = normalize_status(value)
+    if status in READ_ONLY_COMPATIBILITY_STATUSES:
+        raise CaseTransitionError(
+            f"Статус {status.value} доступен только для чтения исторических данных; "
+            "новое дело должно начинаться с канонического статуса"
+        )
+    return status
+
+
 def allowed_next_statuses(value: str | CaseStatus) -> frozenset[CaseStatus]:
     return _TRANSITIONS.get(normalize_status(value), frozenset())
 
@@ -186,7 +234,11 @@ def transition_allowed(
 ) -> bool:
     source = normalize_status(current)
     destination = normalize_status(target)
-    return source == destination or destination in allowed_next_statuses(source)
+    if source == destination:
+        return True
+    if destination in READ_ONLY_COMPATIBILITY_STATUSES:
+        return False
+    return destination in allowed_next_statuses(source)
 
 
 def validate_transition(
@@ -200,6 +252,30 @@ def validate_transition(
     source = normalize_status(current)
     destination = normalize_status(target)
     if source == destination:
+        return source, destination
+    if destination in READ_ONLY_COMPATIBILITY_STATUSES:
+        raise CaseTransitionError(
+            f"Статус {destination.value} является историческим compatibility-only "
+            "состоянием и не может быть назначен заново"
+        )
+    # ERROR is not a generic administrative jump point. A recovery must remain
+    # inside the non-financial/non-booking target set even when a caller asks for
+    # a forced transition. The ErrorRecoveryService additionally proves the
+    # exact target from the audited transition that put the Case into ERROR.
+    if source == CaseStatus.ERROR:
+        if actor_type != "admin":
+            raise CaseTransitionError(
+                "Восстановление дела из ERROR доступно только администратору"
+            )
+        if destination not in ERROR_RECOVERY_TARGETS:
+            raise CaseTransitionError(
+                f"Небезопасное восстановление ERROR -> {destination.value} запрещено; "
+                "финансовые и консультационные факты восстанавливаются их domain-сервисами"
+            )
+        if len(str(comment or "").strip()) < 10:
+            raise CaseTransitionError(
+                "Для восстановления из ERROR нужен содержательный комментарий минимум 10 символов"
+            )
         return source, destination
     if force:
         if actor_type not in {"admin", "system"}:

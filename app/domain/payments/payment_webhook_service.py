@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from sqlalchemy import select
 
 from app.domain.cases.case_history import add_case_history_event
@@ -5,12 +7,14 @@ from app.domain.cases.case_service import CaseService
 from app.domain.consultations.consultation_service import ConsultationService
 from app.domain.consultations.slot_service import SlotUnavailableError
 from app.domain.notifications.notification_engine import NotificationEngine
+from app.domain.payments.payment_lifecycle import PaymentLifecycleService
 from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models.payment import Payment
+from app.presentation_time import format_business_datetime
 
 
 PROTECTED_RECEIVED_PAYMENT_STATUSES = {
@@ -23,6 +27,11 @@ INACTIVE_M2_PAYMENT_STATUSES = {
     PaymentStatus.EXPIRED,
     PaymentStatus.CANCELLED,
     PaymentStatus.FAILED,
+}
+M1_EXPECTED_PAYMENT_CASE_STATUSES = {
+    PaymentCode.M1_INITIAL_PAYMENT: CaseStatus.M1_WAITING_PAYMENT_30000,
+    PaymentCode.M1_COURT_PAYMENT: CaseStatus.M1_WAITING_PAYMENT_70000,
+    PaymentCode.M1_SUCCESS_FEE: CaseStatus.M1_WAITING_SUCCESS_FEE,
 }
 
 
@@ -52,20 +61,27 @@ class PaymentWebhookService:
         provider_payload: dict | None,
         actor_type: str = "payment_provider",
         actor_id: int | None = None,
+        occurred_at: datetime | None = None,
     ) -> Payment:
-        old_status = payment.status
-        payment.status = PaymentStatus.PAID_REVIEW
+        transition = PaymentLifecycleService.transition(
+            payment,
+            to_status=PaymentStatus.PAID_REVIEW,
+            occurred_at=occurred_at,
+        )
         await add_case_history_event(
             self.db,
             actor_type=actor_type,
             actor_id=actor_id,
             case_id=case.id,
             action="CONSULTATION_PAYMENT_REVIEW_REQUIRED",
-            old_value={"status": old_status},
+            old_value={"status": transition.old_status.value},
             new_value={
                 "payment_id": payment.id,
                 "payment_code": payment.payment_code,
-                "status": payment.status,
+                "status": transition.new_status.value,
+                "money_received_at": (
+                    payment.paid_at.isoformat() if payment.paid_at else None
+                ),
                 "reason": reason,
                 "payload": provider_payload or {},
             },
@@ -86,6 +102,92 @@ class PaymentWebhookService:
         await self.db.flush()
         return payment
 
+    async def _mark_stale_m1_payment_refund(
+        self,
+        *,
+        payment: Payment,
+        case,
+        expected_status: CaseStatus,
+        provider_payload: dict | None,
+        actor_type: str,
+        actor_id: int | None,
+        occurred_at: datetime | None = None,
+    ) -> Payment:
+        """Preserve money truth without resurrecting an obsolete M1 stage."""
+
+        transition = PaymentLifecycleService.transition(
+            payment,
+            to_status=PaymentStatus.REFUND_PENDING,
+            occurred_at=occurred_at,
+        )
+        await add_case_history_event(
+            self.db,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            case_id=case.id,
+            action="M1_STALE_PAYMENT_REFUND_REQUIRED",
+            old_value={
+                "payment_id": payment.id,
+                "payment_status": transition.old_status.value,
+                "case_status": str(case.status),
+                "case_route": case.route,
+            },
+            new_value={
+                "payment_id": payment.id,
+                "payment_code": payment.payment_code,
+                "payment_status": transition.new_status.value,
+                "money_received_at": (
+                    payment.paid_at.isoformat() if payment.paid_at else None
+                ),
+                "expected_case_status": expected_status.value,
+                "case_status_preserved": str(case.status),
+                "case_route_preserved": case.route,
+                "payload": provider_payload or {},
+            },
+            comment=(
+                "Деньги поступили по M1-ссылке, которая больше не соответствует текущему "
+                "этапу дела. Дело не изменено; платёж направлен на ручной фактический возврат."
+            ),
+        )
+        await self.notifications.emit(
+            event_code="M1_STALE_PAYMENT_REFUND_PENDING",
+            case_id=case.id,
+            payload={
+                "case_number": case.case_number,
+                "payment_id": payment.id,
+                "amount": str(payment.amount),
+                "payment_title": payment.title,
+            },
+            dedupe_key=f"payment:{payment.id}:m1-stale-refund-pending",
+        )
+        await self.db.flush()
+        return payment
+
+    async def _emit_m1_paid_next_step(self, *, payment: Payment, case) -> None:
+        if (
+            payment.payment_code == PaymentCode.M1_INITIAL_PAYMENT
+            and str(case.status) == CaseStatus.M1_POWER_OF_ATTORNEY.value
+        ):
+            await self.notifications.emit(
+                event_code="M1_INITIAL_PAYMENT_CONFIRMED",
+                case_id=case.id,
+                user_id=case.client_id,
+                payload={"case_number": case.case_number},
+                dedupe_key=f"payment:{payment.id}:m1-initial-confirmed",
+            )
+            return
+        if (
+            payment.payment_code == PaymentCode.M1_COURT_PAYMENT
+            and str(case.status) == CaseStatus.M1_ENFORCEMENT.value
+        ):
+            await self.notifications.emit(
+                event_code="M1_COURT_PAYMENT_CONFIRMED",
+                case_id=case.id,
+                user_id=case.client_id,
+                payload={"case_number": case.case_number},
+                dedupe_key=f"payment:{payment.id}:m1-court-confirmed",
+            )
+
     async def process_successful_payment(
         self,
         *,
@@ -95,9 +197,13 @@ class PaymentWebhookService:
         actor_type: str = "payment_provider",
         actor_id: int | None = None,
         processed_action: str = "PAYMENT_WEBHOOK_PROCESSED",
+        occurred_at: datetime | None = None,
     ):
         """Apply a verified successful payment through the canonical state machine.
 
+        ``occurred_at`` is the provider business timestamp when the provider can
+        prove it (for YooKassa this is ``captured_at``). If unavailable, the
+        lifecycle service deliberately falls back to our UTC processing time.
         Provider webhooks use the defaults. A controlled offline confirmation may
         provide an admin actor and a distinct audit action while still using the
         exact same payment/case transition logic.
@@ -120,6 +226,7 @@ class PaymentWebhookService:
                     provider_payload=provider_payload,
                     actor_type=actor_type,
                     actor_id=actor_id,
+                    occurred_at=occurred_at,
                 )
 
             consultation_service = ConsultationService(self.db)
@@ -133,6 +240,7 @@ class PaymentWebhookService:
                     provider_payload=provider_payload,
                     actor_type=actor_type,
                     actor_id=actor_id,
+                    occurred_at=occurred_at,
                 )
 
             if payment.status == PaymentStatus.PAID:
@@ -156,6 +264,7 @@ class PaymentWebhookService:
                     provider_payload=provider_payload,
                     actor_type=actor_type,
                     actor_id=actor_id,
+                    occurred_at=occurred_at,
                 )
 
             expected_reservation_key = PaymentService.consultation_reservation_key(
@@ -173,6 +282,7 @@ class PaymentWebhookService:
                     provider_payload=provider_payload,
                     actor_type=actor_type,
                     actor_id=actor_id,
+                    occurred_at=occurred_at,
                 )
 
             try:
@@ -188,6 +298,7 @@ class PaymentWebhookService:
                     provider_payload=provider_payload,
                     actor_type=actor_type,
                     actor_id=actor_id,
+                    occurred_at=occurred_at,
                 )
 
             await self.payments.mark_paid(
@@ -195,6 +306,7 @@ class PaymentWebhookService:
                 case=case,
                 actor_type=actor_type,
                 actor_id=actor_id,
+                occurred_at=occurred_at,
             )
             if case.status != CaseStatus.M2_CONSULTATION_BOOKED:
                 await self.cases.change_status(
@@ -210,10 +322,9 @@ class PaymentWebhookService:
                 user_id=case.client_id,
                 payload={
                     "case_number": case.case_number,
-                    "date": (
-                        consultation.scheduled_at.strftime("%d.%m.%Y %H:%M")
-                        if consultation.scheduled_at
-                        else "уточняется"
+                    "date": format_business_datetime(
+                        consultation.scheduled_at,
+                        empty="уточняется",
                     ),
                 },
                 dedupe_key=f"{expected_reservation_key}:booked",
@@ -221,11 +332,28 @@ class PaymentWebhookService:
         else:
             if payment.status == PaymentStatus.PAID:
                 return payment
+
+            expected_status = M1_EXPECTED_PAYMENT_CASE_STATUSES.get(payment.payment_code)
+            if expected_status is not None and (
+                str(case.route or "") != "M1"
+                or str(case.status) != expected_status.value
+            ):
+                return await self._mark_stale_m1_payment_refund(
+                    payment=payment,
+                    case=case,
+                    expected_status=expected_status,
+                    provider_payload=provider_payload,
+                    actor_type=actor_type,
+                    actor_id=actor_id,
+                    occurred_at=occurred_at,
+                )
+
             await self.payments.mark_paid(
                 payment=payment,
                 case=case,
                 actor_type=actor_type,
                 actor_id=actor_id,
+                occurred_at=occurred_at,
             )
             mapping = {
                 PaymentCode.M1_INITIAL_PAYMENT: [
@@ -241,6 +369,8 @@ class PaymentWebhookService:
                     CaseStatus.M1_CLOSED,
                 ],
             }
+            if payment.payment_code == PaymentCode.M1_SUCCESS_FEE:
+                case.close_reason = "M1_SUCCESS_FEE_PAID"
             for status in mapping.get(payment.payment_code, []):
                 await self.cases.change_status(
                     case=case,
@@ -249,6 +379,7 @@ class PaymentWebhookService:
                     actor_id=None,
                     comment=f"Автопереход после оплаты {payment.payment_code}",
                 )
+            await self._emit_m1_paid_next_step(payment=payment, case=case)
             if (
                 payment.payment_code == PaymentCode.M1_SUCCESS_FEE
                 and case.status == CaseStatus.M1_CLOSED
@@ -269,6 +400,9 @@ class PaymentWebhookService:
             new_value={
                 "payment_id": payment.id,
                 "payment_code": payment.payment_code,
+                "money_received_at": (
+                    payment.paid_at.isoformat() if payment.paid_at else None
+                ),
                 "payload": provider_payload or {},
             },
         )
@@ -310,20 +444,32 @@ class PaymentWebhookService:
         }:
             return payment
 
-        old = payment.status
-        payment.status = PaymentStatus.FAILED
+        transition = PaymentLifecycleService.transition(
+            payment,
+            to_status=PaymentStatus.FAILED,
+        )
         await add_case_history_event(
             self.db,
             actor_type="payment_provider",
             actor_id=None,
             case_id=case.id,
             action="PAYMENT_FAILED",
-            old_value={"status": old},
+            old_value={"status": transition.old_status.value},
             new_value={
                 "payment_id": payment.id,
                 "payment_code": payment.payment_code,
                 "payload": provider_payload or {},
             },
+        )
+        await self.notifications.emit(
+            event_code="PAYMENT_FAILED_CLIENT",
+            case_id=case.id,
+            user_id=case.client_id,
+            payload={
+                "case_number": case.case_number,
+                "payment_title": payment.title,
+            },
+            dedupe_key=f"payment:{payment.id}:failed-client",
         )
         await self.db.flush()
         return payment

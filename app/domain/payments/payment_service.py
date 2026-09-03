@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from sqlalchemy import or_, select
@@ -13,6 +14,7 @@ from app.domain.consultations.consultation_intake import (
 )
 from app.domain.consultations.consultation_service import ConsultationService
 from app.domain.consultations.slot_service import SlotUnavailableError
+from app.domain.payments.payment_lifecycle import PaymentLifecycleService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.payments.providers import get_payment_provider
 from app.domain.statuses.case_statuses import CaseStatus, RouteCode
@@ -72,6 +74,60 @@ class PaymentService:
     @staticmethod
     def _money(value: object) -> Decimal:
         return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    async def _received_payment_conflict(
+        self,
+        *,
+        case: Case,
+        payment_code: str,
+        reservation_key: str | None,
+    ) -> Payment | None:
+        """Find money states that must be resolved before asking for more money.
+
+        M1 stage payments are one-off, so any already received/protected money for
+        the same code blocks a new automatic attempt. M2 may have later paid
+        follow-up consultations in the same Case; an old normal PAID reservation
+        therefore blocks only the same/legacy-ambiguous reservation. Received
+        money still under review/refund resolution blocks every new M2 charge
+        until the administrator resolves it.
+        """
+
+        protected_statuses = {
+            PaymentStatus.PAID,
+            PaymentStatus.PAID_REVIEW,
+            PaymentStatus.REFUND_PENDING,
+            PaymentStatus.REFUND_DECLINED,
+        }
+        rows = list(
+            (
+                await self.db.execute(
+                    select(Payment)
+                    .where(
+                        Payment.case_id == case.id,
+                        Payment.payment_code == payment_code,
+                        Payment.status.in_(tuple(protected_statuses)),
+                    )
+                    .order_by(Payment.created_at.desc(), Payment.id.desc())
+                )
+            ).scalars().all()
+        )
+        for existing in rows:
+            if payment_code != PaymentCode.M2_CONSULTATION_PAYMENT:
+                return existing
+            status = PaymentStatus(str(existing.status))
+            if status in {
+                PaymentStatus.PAID_REVIEW,
+                PaymentStatus.REFUND_PENDING,
+                PaymentStatus.REFUND_DECLINED,
+            }:
+                return existing
+            if status == PaymentStatus.PAID and (
+                not reservation_key
+                or not existing.reservation_key
+                or existing.reservation_key == reservation_key
+            ):
+                return existing
+        return None
 
     async def _restore_m2_slot_selection_after_hold_loss(
         self,
@@ -136,8 +192,10 @@ class PaymentService:
             )
         )
         for payment in result.scalars().all():
-            old_status = payment.status
-            payment.status = PaymentStatus.EXPIRED
+            transition = PaymentLifecycleService.transition(
+                payment,
+                to_status=PaymentStatus.EXPIRED,
+            )
             await add_case_history_event(
                 self.db,
                 actor_type="system",
@@ -146,11 +204,11 @@ class PaymentService:
                 action="CONSULTATION_PAYMENT_LINK_EXPIRED",
                 old_value={
                     "payment_id": payment.id,
-                    "status": old_status,
+                    "status": transition.old_status.value,
                     "reservation_key": payment.reservation_key,
                 },
                 new_value={
-                    "status": payment.status,
+                    "status": transition.new_status.value,
                     "reservation_key": reservation_key,
                 },
                 comment="Ссылка устарела после изменения или повторного выбора слота",
@@ -163,12 +221,40 @@ class PaymentService:
         payment_code: str,
         amount: Decimal | None = None,
     ):
+        """Return one active payment attempt for a case stage under concurrency."""
+
+        case_id = int(case.id)
+        locked_case = (
+            await self.db.execute(
+                select(Case)
+                .where(Case.id == case_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if locked_case is None:
+            raise LookupError("Дело не найдено")
+        case = locked_case
+
         reservation_key = None
         if payment_code == PaymentCode.M2_CONSULTATION_PAYMENT:
             reservation_key = await self._prepare_consultation_payment_context(case)
             await self._expire_stale_consultation_payments(
                 case=case,
                 reservation_key=reservation_key,
+            )
+            await self.db.flush()
+
+        received_conflict = await self._received_payment_conflict(
+            case=case,
+            payment_code=payment_code,
+            reservation_key=reservation_key,
+        )
+        if received_conflict is not None:
+            raise ValueError(
+                "Повторная оплата заблокирована: по этому этапу уже есть полученные деньги "
+                f"или незавершённая финансовая сверка (платёж #{received_conflict.id}, "
+                f"статус {received_conflict.status}). Сначала завершите сверку/возврат; "
+                "клиент не должен платить повторно, пока предыдущие деньги не разобраны."
             )
 
         query = select(Payment).where(
@@ -281,7 +367,10 @@ class PaymentService:
             payment.provider = result.provider
             payment.provider_payment_id = result.provider_payment_id
             payment.payment_url = result.payment_url
-            payment.status = PaymentStatus.WAITING_CONFIRMATION
+            PaymentLifecycleService.transition(
+                payment,
+                to_status=PaymentStatus.WAITING_CONFIRMATION,
+            )
             await self.db.flush()
         return payment
 
@@ -292,23 +381,28 @@ class PaymentService:
         case: Case,
         actor_type="system",
         actor_id: int | None = None,
+        occurred_at: datetime | None = None,
     ):
-        if payment.status == PaymentStatus.PAID:
+        transition = PaymentLifecycleService.transition(
+            payment,
+            to_status=PaymentStatus.PAID,
+            occurred_at=occurred_at,
+        )
+        if not transition.changed:
             return payment
-        old = payment.status
-        payment.status = PaymentStatus.PAID
         await add_case_history_event(
             self.db,
             actor_type=actor_type,
             actor_id=actor_id,
             case_id=case.id,
             action="PAYMENT_PAID",
-            old_value={"status": old},
+            old_value={"status": transition.old_status.value},
             new_value={
                 "payment_id": payment.id,
                 "code": payment.payment_code,
                 "amount": str(payment.amount),
                 "reservation_key": payment.reservation_key,
+                "occurred_at": transition.occurred_at.isoformat(),
             },
         )
         await self.db.flush()
