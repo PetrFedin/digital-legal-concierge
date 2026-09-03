@@ -3,6 +3,8 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
+import pytest
+
 from app.api.technical_case_recovery import (
     guided_workdesk_ui,
     recover_technical_case,
@@ -11,6 +13,10 @@ from app.api.technical_case_recovery import (
     technical_cases,
 )
 from app.domain.cases.admin_manual_status_policy import manual_status_change_allowed
+from app.domain.cases.case_transition_policy import (
+    CaseTransitionError,
+    validate_transition,
+)
 from app.domain.cases.error_recovery_service import (
     CaseErrorRecoveryService,
     SAFE_ERROR_RECOVERY_TARGETS,
@@ -65,6 +71,39 @@ def test_error_recovery_targets_exclude_payment_booking_and_terminal_truth():
     assert CaseStatus.M1_CLOSED not in SAFE_ERROR_RECOVERY_TARGETS
     assert CaseStatus.M2_CLOSED not in SAFE_ERROR_RECOVERY_TARGETS
     assert CaseStatus.ARCHIVED not in SAFE_ERROR_RECOVERY_TARGETS
+
+
+def test_error_recovery_transition_policy_allows_only_admin_safe_targets():
+    assert validate_transition(
+        CaseStatus.ERROR,
+        CaseStatus.M1_DOCUMENTS_PENDING,
+        force=False,
+        actor_type="admin",
+        comment="Восстановление по подтверждённому аудиту",
+    ) == (CaseStatus.ERROR, CaseStatus.M1_DOCUMENTS_PENDING)
+
+    with pytest.raises(CaseTransitionError):
+        validate_transition(
+            CaseStatus.ERROR,
+            CaseStatus.M1_DOCUMENTS_PENDING,
+            force=False,
+            actor_type="system",
+            comment="Восстановление по подтверждённому аудиту",
+        )
+
+    with pytest.raises(CaseTransitionError):
+        validate_transition(
+            CaseStatus.ERROR,
+            CaseStatus.M1_MONEY_RECEIVED,
+            force=True,
+            actor_type="admin",
+            comment="Нельзя восстанавливать финансовую истину сменой статуса",
+        )
+
+
+def test_error_recovery_service_does_not_use_generic_force_bypass():
+    source = inspect.getsource(CaseErrorRecoveryService.recover_last_safe_status)
+    assert "force=True" not in source
 
 
 def test_error_recovery_target_is_derived_from_audited_error_transition():
