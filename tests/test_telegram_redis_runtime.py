@@ -156,7 +156,7 @@ async def test_redis_fsm_survives_connection_restart_and_db_recovers_after_state
             ),
         )
 
-        before_restart = await dispatcher.fsm.get_context(
+        before_restart = dispatcher.fsm.get_context(
             bot=bot,
             chat_id=telegram_id,
             user_id=telegram_id,
@@ -174,7 +174,7 @@ async def test_redis_fsm_survives_connection_restart_and_db_recovers_after_state
         await previous_storage.close()
         dispatcher.fsm.storage = RedisStorage.from_url(_REDIS_URL)
 
-        after_restart = await dispatcher.fsm.get_context(
+        after_restart = dispatcher.fsm.get_context(
             bot=bot,
             chat_id=telegram_id,
             user_id=telegram_id,
@@ -193,7 +193,7 @@ async def test_redis_fsm_survives_connection_restart_and_db_recovers_after_state
                 text="01.01.2025",
             ),
         )
-        continued = await dispatcher.fsm.get_context(
+        continued = dispatcher.fsm.get_context(
             bot=bot,
             chat_id=telegram_id,
             user_id=telegram_id,
@@ -213,7 +213,7 @@ async def test_redis_fsm_survives_connection_restart_and_db_recovers_after_state
         await redis.flushdb()
         await redis.aclose()
 
-        missing = await dispatcher.fsm.get_context(
+        missing = dispatcher.fsm.get_context(
             bot=bot,
             chat_id=telegram_id,
             user_id=telegram_id,
@@ -232,7 +232,7 @@ async def test_redis_fsm_survives_connection_restart_and_db_recovers_after_state
             ),
         )
 
-        recovered = await dispatcher.fsm.get_context(
+        recovered = dispatcher.fsm.get_context(
             bot=bot,
             chat_id=telegram_id,
             user_id=telegram_id,
