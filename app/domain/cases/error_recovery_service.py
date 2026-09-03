@@ -8,36 +8,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
+from app.domain.cases.case_transition_policy import ERROR_RECOVERY_TARGETS
 from app.domain.statuses.case_statuses import CaseStatus
 from app.models.audit_log import AuditLog
 from app.models.case import Case
 
 
-# Recovery is intentionally narrower than the normal status graph. We only
-# restore stages whose truth lives primarily on the case itself. Payment and
-# booked-consultation states have separate ledgers/records and must be repaired
-# through their own domain tools rather than by flipping a case status.
-SAFE_ERROR_RECOVERY_TARGETS = frozenset(
-    {
-        CaseStatus.M1_DOCUMENTS_PENDING,
-        CaseStatus.M1_DOCUMENTS_RECEIVED,
-        CaseStatus.M1_LAWYER_REVIEW,
-        CaseStatus.M1_DOCS_REQUESTED,
-        CaseStatus.M1_ACCEPTED,
-        CaseStatus.M1_REJECTED,
-        CaseStatus.M1_CONTRACT_READY,
-        CaseStatus.M1_POWER_OF_ATTORNEY,
-        CaseStatus.M1_POA_RECEIVED,
-        CaseStatus.M1_CLAIM_PREPARATION,
-        CaseStatus.M1_CLAIM_SENT,
-        CaseStatus.M1_WAITING_30_DAYS,
-        CaseStatus.M1_COURT_STAGE,
-        CaseStatus.M1_ENFORCEMENT,
-        CaseStatus.M2_DESCRIPTION_PENDING,
-        CaseStatus.M2_DOCUMENTS_OPTIONAL,
-        CaseStatus.M2_SLOT_PENDING,
-    }
-)
+# Compatibility alias for existing tests/importers. The transition policy is the
+# single owner of the allowed ERROR recovery target set.
+SAFE_ERROR_RECOVERY_TARGETS = ERROR_RECOVERY_TARGETS
 
 
 @dataclass(frozen=True)
@@ -92,7 +71,7 @@ class CaseErrorRecoveryService:
         # exact previous case state instead of guessing from route or UI text.
         for row in rows:
             candidate = self._candidate_from_event(row)
-            if candidate in SAFE_ERROR_RECOVERY_TARGETS:
+            if candidate in ERROR_RECOVERY_TARGETS:
                 route = "M1" if candidate.value.startswith("M1_") else "M2"
                 return ErrorRecoverySuggestion(
                     status=candidate,
@@ -156,7 +135,6 @@ class CaseErrorRecoveryService:
             next_status=suggestion.status,
             actor_type="admin",
             actor_id=actor_id,
-            force=True,
             comment=(
                 f"Восстановление из ERROR по аудиту #{suggestion.audit_event_id}. "
                 f"{clean_comment}"
