@@ -163,7 +163,7 @@ async def test_redis_fsm_survives_connection_restart_and_db_recovers_after_state
         )
         before_data = await before_restart.get_data()
         assert await before_restart.get_state() == CalculatorStates.waiting_planned_transfer_date.state
-        assert before_data["contract_price"] == "8500000"
+        assert before_data["contract_price"] == "8500000.00"
         case_id = int(before_data[CALCULATOR_CASE_ID])
 
         # A bot process restart creates a new Redis connection. Replacing the
@@ -181,7 +181,7 @@ async def test_redis_fsm_survives_connection_restart_and_db_recovers_after_state
         )
         after_data = await after_restart.get_data()
         assert await after_restart.get_state() == CalculatorStates.waiting_planned_transfer_date.state
-        assert after_data["contract_price"] == "8500000"
+        assert after_data["contract_price"] == "8500000.00"
         assert int(after_data[CALCULATOR_CASE_ID]) == case_id
 
         await dispatcher.feed_update(
