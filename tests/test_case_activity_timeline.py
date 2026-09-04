@@ -4,10 +4,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from app.bot.screens.history import (
     HISTORY_PAGE_SIZE,
     _format_timeline,
-    _history_cursor,
+    _history_target,
 )
 from app.domain.cases.case_activity import present_case_activity
 
@@ -127,11 +129,15 @@ def test_document_decision_keeps_bounded_client_comment_only():
     assert "document_id" not in item.detail
 
 
-def test_telegram_timeline_has_stable_cursor_and_readable_output():
+def test_telegram_timeline_has_bound_target_and_readable_business_time_output():
     assert HISTORY_PAGE_SIZE == 7
-    assert _history_cursor("case_history_before:42") == 42
-    assert _history_cursor("case_history_before:0") is None
-    assert _history_cursor("case_history_before:broken") is None
+    assert _history_target("case_history_before:42") == (None, 42, True)
+    assert _history_target("case_history_open:v2:7") == (7, None, False)
+    assert _history_target("case_history_before:v2:7:42") == (7, 42, False)
+    with pytest.raises(ValueError):
+        _history_target("case_history_before:0")
+    with pytest.raises(ValueError):
+        _history_target("case_history_before:broken")
 
     text = _format_timeline(
         {
@@ -144,11 +150,13 @@ def test_telegram_timeline_has_stable_cursor_and_readable_output():
                     "actor_label": "Клиент",
                 }
             ]
-        }
+        },
+        case_number="DLC-2026-000042",
     )
 
     assert "🕘 История дела" in text
-    assert "📄 06.08.2026 · 12:30" in text
+    assert "Обращение № DLC-2026-000042" in text
+    assert "📄 06.08.2026 · 15:30 МСК" in text
     assert "Документы переданы юристу" in text
     assert "Передано новых файлов: 2." in text
     assert "DOCUMENTS_SENT_TO_REVIEW" not in text
@@ -176,7 +184,7 @@ def test_telegram_history_has_local_recovery_and_no_raw_audit_fallback():
     assert "К последним событиям" in source
     assert "Не удалось загрузить историю. Данные дела сохранены" in source
     assert '("🔄 Повторить", retry_callback)' in source
-    assert '("✉️ Задать вопрос по делу", "message_create")' in source
+    assert 'bound_case_callback("message_create", case_id)' in source
     assert '("📁 Моё дело", "my_case_open")' in source
     assert '("🏠 Главная", "nav_home")' in source
     assert "select(AuditLog)" not in source
