@@ -48,6 +48,7 @@ class PaymentWebhookService:
                 select(Payment)
                 .where(Payment.id == payment_id)
                 .with_for_update()
+                .execution_options(populate_existing=True)
             )
         ).scalar_one()
         return payment
