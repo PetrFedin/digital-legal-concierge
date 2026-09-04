@@ -13,7 +13,7 @@ from app.bot.screens.client_message_recovery import (
 from app.bot.screens.consultation_booking_ui import consultation_action_center
 from app.bot.screens.message_history_guard import present_message_history
 from app.bot.screens.payment_stage_binding_guard import (
-    legacy_stage_payment_is_confirmation_only,
+    stage_payment_is_exact_confirmation_only,
 )
 from app.bot.screens.post_calculation import continue_m1_after_calculation
 from app.models import Base
@@ -112,9 +112,6 @@ def test_completed_m2_action_center_does_not_touch_orm_after_rollback() -> None:
             data="consultation_booked_open",
         )
         async with session_factory() as db:
-            # The screen intentionally calls rollback() after snapshotting the
-            # completed Case number. Any later ORM attribute access would require
-            # implicit async I/O and can surface as MissingGreenlet in production.
             await consultation_action_center(callback, db)
 
         assert callback.message.text is not None
@@ -172,8 +169,6 @@ def test_message_history_snapshots_case_before_rollback_and_binds_read_tracking(
             case_a_id = int(case_a.id)
             case_b_id = int(case_b.id)
 
-        # Exact Case A history is safe to display while Case B is selected, but
-        # read tracking is a mutation and therefore must not touch Case A yet.
         callback = _FakeCallback(
             telegram_id,
             data=f"message_history:v2:{case_a_id}:0",
@@ -189,8 +184,6 @@ def test_message_history_snapshots_case_before_rollback_and_binds_read_tracking(
         assert "BOUNDARY-M1-A" in callback.message.text
         assert "19.08.2026 15:30 МСК" in callback.message.text
 
-        # Once the client explicitly selects Case A, the same presentation path
-        # can safely mark the visible lawyer message as read after its rollback.
         async with session_factory() as db:
             context = await db.get(ClientCaseContext, user_id)
             assert context is not None
@@ -214,7 +207,7 @@ def test_message_history_snapshots_case_before_rollback_and_binds_read_tracking(
     asyncio.run(scenario())
 
 
-def test_legacy_payment_confirmation_snapshots_case_before_rollback() -> None:
+def test_exact_payment_confirmation_snapshots_case_before_rollback() -> None:
     async def scenario() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         async with engine.begin() as connection:
@@ -238,7 +231,7 @@ def test_legacy_payment_confirmation_snapshots_case_before_rollback() -> None:
 
         callback = _FakeCallback(telegram_id, data="pay_start_30000")
         async with session_factory() as db:
-            await legacy_stage_payment_is_confirmation_only(callback, db)
+            await stage_payment_is_exact_confirmation_only(callback, db)
 
         assert callback.message.text is not None
         assert "BOUNDARY-PAY-1" in callback.message.text
