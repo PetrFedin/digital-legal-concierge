@@ -37,12 +37,12 @@ CI enforces this through `Process map maintenance contract`. The gate checks bot
 | --- | --- |
 | `IMPLEMENTED` | Production path exists in source/schema. |
 | `SOURCE_AUDITED` | Path was inspected against the current contract. |
-| `RUNTIME_PENDING` | Source exists but required runtime evidence has not executed. |
+| `RUNTIME_PENDING` | Source exists but required runtime evidence has not executed for the current candidate. |
 | `BLOCKED_INFRA` | Required runtime cannot execute because infrastructure is unavailable. |
 | `LIVE_PASS` | Required runtime/evidence actually passed for the current candidate SHA. |
-| `LIVE_FAIL` | Executed runtime contradicted the contract. |
+| `LIVE_FAIL` | Required LIVE runtime contradicted the contract. |
 | `DEBT_OPEN` | Known inconsistency, duplication, legacy residue or unclosed design risk. |
-| `FIXED_PENDING_RUNTIME` | Source inconsistency was corrected but required runtime proof has not executed. |
+| `FIXED_PENDING_RUNTIME` | Source inconsistency was corrected but required runtime proof has not executed for the current candidate. |
 
 ## Product boundary
 
@@ -59,11 +59,11 @@ Telegram remains the client cabinet. Staff work through authenticated browser/ad
 | --- | --- | --- | --- |
 | Client / Telegram | `app/bot/*` | identity, selected Case, calculator, M1/M2 actions, documents, messages, payment UX, stale callback protection | IMPLEMENTED / RUNTIME_PENDING |
 | Domain | `app/domain/*` | legal/business state machines and transaction semantics | IMPLEMENTED / SOURCE_AUDITED / RUNTIME_PENDING |
-| Staff product | `app/api/*`, staff UI modules | admin/lawyer Workdesk, reviews, assignment, consultations, Payment Review/refunds | IMPLEMENTED / RUNTIME_PENDING |
+| Staff product | `app/api/*`, staff UI modules | admin/lawyer Workdesk, messages, reviews, assignment, consultations, Payment Review/refunds | IMPLEMENTED / FIXED_PENDING_RUNTIME |
 | Persistence | `app/models/*`, Alembic | durable Case/Document/Payment/Consultation/Audit facts | IMPLEMENTED / RUNTIME_PENDING |
 | Platform/security | `app/security/*`, `app/storage.py` | auth, grants, encryption, audit integrity, backup/restore, key rotation, storage safety | IMPLEMENTED / SOURCE_AUDITED / RUNTIME_PENDING |
 | Scheduler/notifications | `app/scheduler/*`, `app/domain/notifications/*` | reminders, slot release, SLA, retention, backup, cleanup, delivery | IMPLEMENTED / RUNTIME_PENDING |
-| Release evidence | `.github/workflows/*`, evidence scripts | CI, runtime matrix, manifests, restore proof | IMPLEMENTED / BLOCKED_INFRA |
+| Release evidence | `.github/workflows/*`, evidence scripts | CI, runtime matrix, manifests, restore proof | IMPLEMENTED / RUNTIME_PENDING |
 | Governance | `AGENTS.md`, CURRENT docs, this map, CI/architecture contracts | force process/debt/change traceability and boundary enforcement | IMPLEMENTED / FIXED_PENDING_RUNTIME |
 
 # End-to-end process map
@@ -127,7 +127,7 @@ M1 rejection client recovery is one continuous Telegram path, not a second state
 
 Static architecture enforcement for `Case.status` is model-aware: obvious direct writes, `setattr(..., "status", ...)`, aliased model classes, typed aliases and SQLAlchemy bulk update forms are rejected outside `CaseService`. This is a source guard, not a substitute for runtime/domain tests.
 
-Evidence: `tests/test_m1_rejection_client_decision_contract.py` locks the rejected-M1 card wording/callback, the scope-guard delegation and presence of M2/message/close options. Runtime execution is still pending under PM-001/PM-007.
+Evidence: `tests/test_m1_rejection_client_decision_contract.py` locks the rejected-M1 card wording/callback, the scope-guard delegation and presence of M2/message/close options. Runtime execution for the current candidate remains pending.
 
 State: `IMPLEMENTED / FIXED_PENDING_RUNTIME`.
 
@@ -187,11 +187,11 @@ Payment Review audit traceability is read-only and exact-payment scoped: `GET /a
 
 The stale-command 409 recovery projection follows the same minimization rule. `payment_review_conflict_snapshot()` returns only server-authoritative state needed to explain the conflict and prevent overwrite: payment/Case state, normalized resolution decision, exact consultation/slot identifiers where applicable, actor id and resolution time. The persisted free-text `AuditLog.comment`, raw provider/reservation values and unrelated audit payload are not part of the conflict response. The browser keeps its own local draft/comment separately and reloads current server truth before any retry.
 
-The protected deep-link UI is composed by `app/api/payment_review_renderer.py`: when `payment_id` is present it renders the same normalized timeline for active or terminal reviews, so a resolved payment stays explainable after disappearing from the active queue. `staff_ui_guards.py` owns authentication/redirect gating; the renderer owns final Payment Review HTML composition. `app/api/payment_review_product.py::NoStoreAPIRoute` now applies `Cache-Control: no-store` centrally to every response returned by the Payment Review product handlers and propagates the same directive through handler/dependency HTTP exceptions. The explicit history-JSON and protected-HTML headers remain as defense in depth. This history layer is presentation only and does not mutate `Payment`, `Case`, `Consultation` or slot state.
+The Payment Review composition boundary is now single-owner by responsibility. `app/api/payment_review_center.py::PAYMENT_REVIEW_CENTER_HTML` owns the guided decision hierarchy (`Сейчас`, `Главный следующий шаг`, `Вторичные действия`). `app/api/payment_review_renderer.py` no longer tries to rewrite those guided markers and adds only the read-only exact-payment history panel. This removes the stale second guided-copy layer that raised `RuntimeError` and returned HTTP 500 when the base template evolved. `staff_ui_guards.py` owns authentication/redirect gating. `app/api/payment_review_product.py::NoStoreAPIRoute` applies `Cache-Control: no-store` centrally to Payment Review handlers and propagates the same directive through handler/dependency HTTP exceptions. The history layer is presentation only and does not mutate `Payment`, `Case`, `Consultation` or slot state.
 
-`PaymentLifecycleService` is the canonical application mutation boundary for an existing `Payment.status`. The model listener stamps/records invariant facts but is not the product decision boundary. Static architecture enforcement now recognizes obvious aliases/annotations/constructor aliases plus `setattr` and bulk SQLAlchemy status mutations outside `PaymentLifecycleService`.
+`PaymentLifecycleService` is the canonical application mutation boundary for an existing `Payment.status`. The model listener stamps/records invariant facts but is not the product decision boundary. Static architecture enforcement recognizes obvious aliases/annotations/constructor aliases plus `setattr` and bulk SQLAlchemy status mutations outside `PaymentLifecycleService`.
 
-Evidence: `tests/test_payment_review_history_contract.py` locks the admin-only read route, exact-payment filtering, terminal history availability, bounded matching timeline and privacy projection. `tests/test_payment_review_renderer_contract.py` locks single-owner composition, active/terminal deep-link history wiring, normalized fields only, deterministic rendering and endpoint-level non-cacheability. `tests/test_payment_review_product_contract.py` locks the central `NoStoreAPIRoute`, the exact five-route Payment Review surface and source-level propagation of `no-store` to returned responses and HTTP exceptions. `tests/test_payment_review_conflict_privacy_contract.py` locks the stale-409 server-truth whitelist and proves free-text comments, reservation values and provider payloads do not leave the AuditLog through that projection. `tests/test_browser_staff_e2e.py` binds the existing stale two-admin conflict scenario to the history UI: it checks the active REQUIRED event, terminal RESOLVED decision after the winner commits, the same server truth after stale 409 recovery, and absence of both administrators' free-text comments. Runtime execution remains pending under PM-001/PM-007/PM-011.
+Evidence: `tests/test_payment_review_history_contract.py`, `tests/test_payment_review_renderer_contract.py`, `tests/test_payment_review_product_contract.py`, `tests/test_payment_review_conflict_privacy_contract.py`, and `tests/test_browser_staff_e2e.py`. Browser Staff E2E run `33910691169` on superseded candidate `dd8e038f554fa9364242c1c9585ffe0655f3c4d4` actually executed and failed; one proven failure was the stale Payment Review composition described in PM-012. Source fix `544f7f5daa6003aa51e0c24097f89bd0ce053781` plus renderer regression commit `8a63323f709d3e6d9e283e749078741faf8fd1df` therefore remain `FIXED_PENDING_RUNTIME` until the exact final candidate reruns the browser/runtime gates.
 
 State: `IMPLEMENTED / FIXED_PENDING_RUNTIME`.
 
@@ -201,9 +201,13 @@ Flow: `client/staff message → exact Case provenance → Message → priority/r
 
 Rules: history/pagination are Case-bound; draft protection prevents silent loss; delivery failure after a committed mutation must not replay the mutation; reminders/notifications do not establish legal facts.
 
-Anchors: `app/domain/messages/*`, `app/bot/client_message_provenance.py`, `app/domain/notifications/*`, `app/scheduler/notification_dispatcher.py`.
+Message Center document navigation must resolve through the role-aware document review surface `/document-access/review/ui?case_id=...`; it must not use M1 operator Workdesk document actions as a proxy for M2 lawyer responsibility. Current final composition normalizes every composed legacy document action after the guided patch. Duplicate source ownership in the base Message Center template and the guided patch remains explicit debt under PM-013 and must not be confused with a second authorization model.
 
-State: `IMPLEMENTED / RUNTIME_PENDING`.
+Anchors: `app/domain/messages/*`, `app/bot/client_message_provenance.py`, `app/domain/notifications/*`, `app/scheduler/notification_dispatcher.py`, `app/api/message_center_role_ui_impl.py`.
+
+Evidence: `tests/test_message_center_role_ui_contract.py` locks successful final composition, absence of the legacy admin-only document action, the canonical role-aware review route and preservation of business-time formatting.
+
+State: `IMPLEMENTED / FIXED_PENDING_RUNTIME / DEBT_OPEN`.
 
 ## P-07 — M2 paid consultation
 
@@ -221,6 +225,8 @@ Historical compatibility contract:
 - regression inserts a raw historical DB row, proves ORM hydration remains readable, upgrades it forward and verifies persisted state;
 - focused service regression proves rejection occurs before DB use.
 
+M2 lawyer responsibility is consultation/slot-driven. Role-safe Message Center document navigation therefore points to the document review surface that evaluates current M2 responsibility instead of depending on M1 `Case.assigned_lawyer_id`.
+
 Anchors: consultation domain services, `case_service.py`, `case_transition_policy.py`, `app/models/case.py`.
 
 State: `IMPLEMENTED / FIXED_PENDING_RUNTIME`.
@@ -236,12 +242,14 @@ Composition ownership:
 - `app/api/workdesk_renderer.py` — single final composition boundary for base UI + responsibility/deep-link behavior + integrity overlay;
 - `app/api/workdesk_integrity.py` — integrity producer consumed through renderer;
 - `app/api/payment_review_product.py` — single Payment Review product router plus central `NoStoreAPIRoute` response/HTTP-exception cache boundary;
-- `app/api/payment_review_renderer.py` — single final Payment Review composition boundary for guided hierarchy + exact-payment audit-history panel;
-- `app/api/staff_ui_guards.py` — protected Payment Review authentication/redirect gate and endpoint-level no-store response boundary, **no Payment Review template patching**.
+- `app/api/payment_review_center.py` — base guided Payment Review hierarchy;
+- `app/api/payment_review_renderer.py` — final read-only exact-payment history composition over the guided base, **no second guided-marker rewrite**;
+- `app/api/staff_ui_guards.py` — protected Payment Review authentication/redirect gate and endpoint-level no-store response boundary, **no Payment Review template patching**;
+- `app/api/message_center_role_ui_impl.py` — final role-safe Message Center composition; it currently normalizes all legacy admin-only document actions to `/document-access/review/ui?case_id=...` after the guided patch while PM-013 tracks the remaining duplicate source ownership.
 
-Rules: one `(HTTP method, path)` runtime owner; include order must not define security; route/data/auth modules do not mutate foreign templates.
+Rules: one `(HTTP method, path)` runtime owner; include order must not define security; route/data/auth modules do not mutate foreign templates; M2 responsibility remains consultation/slot-driven rather than M1 assignment-driven.
 
-Evidence: `test_v37_api_import_inventory.py`, `architecture_check.py`, `test_browser_staff_e2e.py`, `test_workdesk_renderer_contract.py`, `test_payment_review_renderer_contract.py`, `test_payment_review_product_contract.py`.
+Evidence: `test_v37_api_import_inventory.py`, `architecture_check.py`, `test_browser_staff_e2e.py`, `test_workdesk_renderer_contract.py`, `test_payment_review_renderer_contract.py`, `test_payment_review_product_contract.py`, `test_message_center_role_ui_contract.py`.
 
 State: `IMPLEMENTED / FIXED_PENDING_RUNTIME`.
 
@@ -301,7 +309,7 @@ State: `IMPLEMENTED / RUNTIME_PENDING AFTER PERSONAS`.
 
 Ordered chain for one candidate SHA:
 
-1. real runner allocation restored;
+1. prove runner allocation and executable steps for the exact candidate;
 2. `CI` + `Deployment Readiness` + `Reproducible Dependencies` pass;
 3. dedicated `PostgreSQL Concurrency` → `Telegram Runtime Contracts` → `Browser Staff E2E` pass;
 4. one complete manual `LIVE_REQUIRED` run passes and creates exact SHA/run/attempt manifest;
@@ -312,7 +320,7 @@ Ordered chain for one candidate SHA:
 
 Any source/migration/workflow/evidence-script change after evidence collection begins creates a new candidate SHA and restarts from full CI.
 
-Current infrastructure state: `BLOCKED_INFRA` under issue #116 until Actions allocates real runners and executes steps.
+Current runtime truth supersedes the old universal #116 blocker statement. On `dd8e038f554fa9364242c1c9585ffe0655f3c4d4`, Actions allocated runners and executed steps: PostgreSQL Concurrency, Deployment Readiness and Telegram Runtime Contracts completed successfully, while Browser Staff E2E, CI and Reproducible Dependencies executed and failed. Therefore issue #116 is historical/stale as a universal explanation; the final candidate still needs its own exact-SHA evidence chain. No `LIVE_REQUIRED` attempt has been promoted to PASS.
 
 # Data/source-of-truth matrix
 
@@ -324,7 +332,7 @@ Current infrastructure state: `BLOCKED_INFRA` under issue #116 until Actions all
 | Calculation history | `Calculation` | latest derived by query |
 | Consent | immutable `ConsentAcceptance` | consent history/UI |
 | M1 lawyer responsibility | Case assignment + assignment audit/SLA | Workdesk |
-| M2 lawyer responsibility | `Consultation.lawyer_id` / selected slot | consultation UI/Workdesk |
+| M2 lawyer responsibility | `Consultation.lawyer_id` / selected slot | consultation UI/Workdesk/document review |
 | Document state/version | `Document` | readiness/blockers |
 | Document byte location | canonical portable `Document.file_path` | `LocalStorageService` resolution |
 | Message history | `Message` | unread/priority projection |
@@ -346,18 +354,20 @@ Current infrastructure state: `BLOCKED_INFRA` under issue #116 until Actions all
 - `Process map maintenance contract`: file must exist, must be changed in the PR, and its latest commit must be at least as new as the latest governed repository commit;
 - `tests/test_process_map_governance_contract.py` locks the presence/freshness source contract and root `AGENTS.md` wording;
 - source compile;
-- architecture check, including:
-  - absolute/relative/literal-dynamic legacy assignment containment;
-  - alias/type-aware direct/bulk `Case.status` and `Payment.status` mutation containment;
-- SQLite suite, including CaseService/M2 compatibility, Workdesk renderer, legacy-assignment import guard, status-mutation architecture regressions, rejected-M1 client decision presentation/routing, Payment Review history privacy/exact-payment contracts, stale-409 conflict privacy projection, Payment Review renderer ownership/non-cacheability contracts and the central Payment Review product-router no-store boundary contract;
+- architecture check, including absolute/relative/literal-dynamic legacy assignment containment and alias/type-aware direct/bulk `Case.status` and `Payment.status` mutation containment;
+- SQLite suite, including CaseService/M2 compatibility, Workdesk renderer, legacy-assignment import guard, status-mutation architecture regressions, rejected-M1 client decision, Payment Review history/privacy/409/renderer/router contracts and role-safe Message Center composition;
 - Alembic current/idempotency/check + clean migration smoke;
 - PostgreSQL migration + technical encrypted backup/restore drill;
 - production container build/start/health.
+
+Executed evidence on superseded `dd8e038f554fa9364242c1c9585ffe0655f3c4d4`: main CI run `33910691133` did allocate a runner; the SQLite application suite executed and failed, and Process Map governance also failed. Downstream jobs cancelled through `needs` are not PASS evidence. This is useful defect evidence but is not current-candidate release proof.
 
 ### `Deployment Readiness`
 
 - Redis FSM persistence;
 - Docker/Compose deployment contract.
+
+A real run on superseded `dd8e038f554fa9364242c1c9585ffe0655f3c4d4` completed successfully. Current-candidate rerun is still required.
 
 ### `Reproducible Dependencies`
 
@@ -365,58 +375,65 @@ Current infrastructure state: `BLOCKED_INFRA` under issue #116 until Actions all
 - dependency verification + `pip check`;
 - complete suite in locked test image.
 
+Executed evidence on superseded `dd8e038f554fa9364242c1c9585ffe0655f3c4d4`: run `33910691239`, job `101146135918`, executed the locked suite and failed with **310 failed, 1465 passed, 19 skipped, 5 errors in 71.96s**. The diagnostic artifact also contained ResourceWarnings for unclosed aiosqlite/files and several runtime/source-contract mismatches. Some tracebacks referenced `/usr/local/lib/python3.11/site-packages/app/...`; this is only a possible import-path clue and is **not** yet a proven dependency root cause.
+
 ## Dedicated gates
 
 ### `PostgreSQL Concurrency`
 
-Must cover multi-Case/calculation races, payment races, refund retries, staff concurrency and **auto-assignment final-capacity race**.
+Must cover multi-Case/calculation races, payment races, refund retries, staff concurrency and **auto-assignment final-capacity race**. A real run on superseded `dd8e038f554fa9364242c1c9585ffe0655f3c4d4` completed successfully; exact final-candidate proof remains required.
 
 ### `Telegram Runtime Contracts`
 
-Redis-backed FSM restart and exact Case binding.
+Redis-backed FSM restart and exact Case binding. A real run on superseded `dd8e038f554fa9364242c1c9585ffe0655f3c4d4` completed successfully; exact final-candidate proof remains required.
 
 ### `Browser Staff E2E`
 
-Staff role/session paths, Payment Review stale two-tab recovery, active→terminal exact-payment history rendering/privacy assertions and current canonical Workdesk route/rendering. The test source is wired for PM-011, but executable browser evidence remains pending until a runner actually executes steps.
+Staff role/session paths, Payment Review stale two-tab recovery, active→terminal exact-payment history rendering/privacy assertions, role-safe Message Center/document navigation and current canonical Workdesk route/rendering.
+
+Executed evidence on superseded `dd8e038f554fa9364242c1c9585ffe0655f3c4d4`: run `33910691169` actually reached the browser job and failed. Source/log inspection localized two deterministic HTTP 500 composition defects: stale Payment Review guided-marker rewriting (PM-012) and exact-one Message Center legacy document-link rewriting after the guided patch (PM-013). Both are source-fixed and regression-locked, but remain `FIXED_PENDING_RUNTIME` until the exact final candidate executes the browser gate.
 
 ## Manual `LIVE_REQUIRED`
 
-One exact SHA/run/attempt must prove PostgreSQL, Redis, real Telegram delivery, browser, YooKassa test-shop provider baseline and aggregate manifest.
+One exact SHA/run/attempt must prove PostgreSQL, Redis, real Telegram delivery, browser, YooKassa test-shop provider baseline and aggregate manifest. `LIVE_REQUIRED` remains `PENDING`; no source audit, dedicated gate, or superseded-SHA run is equivalent to LIVE evidence.
 
 # Known inconsistency and debt register
 
 | ID | Area | Finding | Risk | State / action |
 | --- | --- | --- | --- | --- |
-| PM-001 | Release infra | Actions jobs end before runner allocation (`runner_id=0`, empty/null steps); issue #116 | No runtime/test PASS can be claimed | `BLOCKED_INFRA`; external billing/spending/runner fix required |
-| PM-002 | PostgreSQL dedicated gate | Auto-assignment capacity race existed in tests/acceptance/LIVE_REQUIRED but was omitted from dedicated PostgreSQL workflow | Dedicated gate could pass without assignment race proof | `FIXED_PENDING_RUNTIME`; test is now included in dedicated workflow |
+| PM-001 | Release infra | Historical Actions jobs ended before runner allocation (`runner_id=0`, empty/null steps), but later `dd8e...` jobs allocated runners and executed | Treating #116 as a universal blocker hides real application failures; treating one recovered SHA as permanent infra health would also overclaim | `RUNTIME_PENDING`; #116 is stale as a universal blocker. Keep/close it only after exact-head matrix confirms runner health and the issue description is reconciled |
+| PM-002 | PostgreSQL dedicated gate | Auto-assignment capacity race existed in tests/acceptance/LIVE_REQUIRED but was omitted from dedicated PostgreSQL workflow | Dedicated gate could pass without assignment race proof | `FIXED_PENDING_RUNTIME`; test is included in dedicated workflow; superseded dd8e dedicated gate passed, current-candidate rerun required |
 | PM-003 | M2 state machine | Historical `M2_CONSULTATION_ROUTE` can exist in string-backed old rows, while canonical current M2 begins at `M2_DESCRIPTION_PENDING` | Re-entry would split semantics; immediate deletion could break historical rows | `FIXED_PENDING_RUNTIME / COMPATIBILITY_READ_ONLY`; CaseService initial validation + no-reentry transition rule + ORM backstop + historical-row hydration/forward-upgrade regression; physical removal deferred until real DB audit |
-| PM-004 | Assignment architecture | Historical `AssignmentEngine`/`WorkloadService` coexist with hardened `CaseAssignmentService`; initial containment missed relative/literal-dynamic imports | Reintroduced legacy code could bypass locking/capacity/audit semantics while evading architecture check | `DEBT_OPEN / SOURCE_CONTAINED / HARDENED_PENDING_RUNTIME`; guard resolves relative `ImportFrom` and statically-resolvable literal dynamic imports; focused regression added; physical deletion still waits for historical/external-consumer audit + executable regressions |
+| PM-004 | Assignment architecture | Historical `AssignmentEngine`/`WorkloadService` coexist with hardened `CaseAssignmentService`; initial containment missed relative/literal-dynamic imports | Reintroduced legacy code could bypass locking/capacity/audit semantics while evading architecture check | `DEBT_OPEN / SOURCE_CONTAINED / HARDENED_PENDING_RUNTIME`; guard resolves relative `ImportFrom` and statically-resolvable literal dynamic imports; focused regression added; physical deletion waits for historical/external-consumer audit + executable regressions |
 | PM-005 | Workdesk composition | Final UI was assembled by route-level responsibility JS patch plus separate integrity injection | Distributed UI ownership could omit/duplicate behavior | `FIXED_PENDING_RUNTIME / COMPOSITION_CENTRALIZED`; single `workdesk_renderer.py`, route module no longer patches HTML, regression locks boundary |
-| PM-006 | Repository governance | Private-repo ruleset required contexts cannot be independently enumerated through current GitHub API/plan | Formal branch protection contract is not API-proven | `DEBT_OPEN`; CI governance + root `AGENTS.md` implemented; manually verify repository rules after billing/runner recovery |
-| PM-007 | Runtime evidence | Current storage/restore/retention/Payment Review/assignment/M2/Workdesk/governance regressions have not run on an Actions runner | Source correctness may hide runtime regressions | `RUNTIME_PENDING`; ordered gates required on current candidate |
+| PM-006 | Repository governance | Private-repo ruleset required contexts cannot be independently enumerated through current GitHub API/plan | Formal branch protection contract is not API-proven | `DEBT_OPEN`; CI governance + root `AGENTS.md` implemented; manually verify repository rules when available |
+| PM-007 | Runtime evidence | Runner execution recovered and exposed real failures; however current source fixes/regressions are newer than dd8e and have not yet completed the full exact-head chain | Superseded successes/failures cannot be promoted to current release evidence | `RUNTIME_PENDING`; dd8e evidence is diagnostic only. Exact final candidate must rerun all ordered gates |
 | PM-008 | Living-map governance | Initial CI rule only required `PROCESS_MAP_CURRENT.md` to appear somewhere in total PR diff | A long PR could pass while the map had become stale | `FIXED_PENDING_RUNTIME / FRESHNESS_ENFORCED`; latest non-map governed commit must be an ancestor of latest map commit; AGENTS + focused regression lock the rule |
-| PM-009 | Case/Payment mutation architecture | Initial `Case.status` check depended on literal variable name `case`; Payment check relied mainly on names containing `payment` and direct `Payment` class reference. Typed aliases, `setattr`, model aliases and several bulk SQLAlchemy forms could evade the static boundary | Product code could bypass `CaseService` or `PaymentLifecycleService`, splitting process/audit/SLA or financial timestamp/ledger semantics | `FIXED_PENDING_RUNTIME / ALIAS_AWARE_GUARD`: architecture check infers obvious model variables from imports/aliases/annotations/constructors/simple aliases, preserves conventional names, catches `setattr(..., "status", ...)` and model-referenced `.values/.update` bulk forms; `tests/test_status_mutation_architecture_guard.py` covers forbidden and allowed cases. This remains static containment, not a claim that arbitrary Python reflection is impossible |
-| PM-010 | M1 rejection Telegram presentation | The `M1_REJECTED` backend/client recovery already exposed M2, message/team and close choices, but `ClientCaseView` described the callback as contact-only (`Уточнить решение`) | Client could miss valid next steps and the primary Case card contradicted the actual callback/product flow | `FIXED_PENDING_RUNTIME / PRESENTATION_ALIGNED`; card now says `Выбрать, что делать дальше`, describes consultation/close/team choices, preserves `contact_lawyer` and existing state machine; `tests/test_m1_rejection_client_decision_contract.py` locks presentation, delegation and choices; runtime pending under #116 |
-| PM-011 | Payment Review audit traceability/privacy | Active Payment Review and 409 recovery depend on durable audit evidence; terminal history originally lacked a safe exact-payment read surface, and the stale-409 conflict projection still exposed persisted free-text reconciliation comments that its browser consumer did not use | Terminal/stale reconciliation could require or leak more audit context than needed, increasing privacy and operational-data exposure without improving conflict recovery | `FIXED_PENDING_RUNTIME / SAFE_HISTORY_UI_ADDED / NON_CACHEABLE_ROUTER_BOUNDARY / CONFLICT_PRIVACY_MINIMIZED`; admin-only `/{payment_id}/history` and stale-409 recovery now use strict business whitelists. `payment_review_conflict_snapshot()` keeps payment/Case status, decision, exact consultation/slot ids, actor and resolution time but no longer emits `AuditLog.comment` or raw provider/reservation/audit internals. `NoStoreAPIRoute` centrally applies `no-store`; deterministic privacy regressions plus the real-browser stale-tab scenario are wired. Runtime proof remains pending under #116 because no current browser/CI job has executed steps |
+| PM-009 | Case/Payment mutation architecture | Initial `Case.status` check depended on literal variable name `case`; Payment check relied mainly on names containing `payment` and direct `Payment` class reference. Typed aliases, `setattr`, model aliases and several bulk SQLAlchemy forms could evade the static boundary | Product code could bypass `CaseService` or `PaymentLifecycleService`, splitting process/audit/SLA or financial timestamp/ledger semantics | `FIXED_PENDING_RUNTIME / ALIAS_AWARE_GUARD`; architecture check infers obvious model variables from imports/aliases/annotations/constructors/simple aliases, preserves conventional names, catches `setattr(..., "status", ...)` and model-referenced bulk forms. This is static containment, not a claim arbitrary reflection is impossible |
+| PM-010 | M1 rejection Telegram presentation | The `M1_REJECTED` backend/client recovery already exposed M2, message/team and close choices, but `ClientCaseView` described the callback as contact-only | Client could miss valid next steps and the primary Case card contradicted the actual callback/product flow | `FIXED_PENDING_RUNTIME / PRESENTATION_ALIGNED`; card now describes the real decision center; current-candidate runtime still required |
+| PM-011 | Payment Review audit traceability/privacy | Terminal history originally lacked a safe exact-payment surface and stale-409 conflict projection exposed persisted free-text reconciliation comments | Terminal/stale reconciliation could leak more audit context than needed | `FIXED_PENDING_RUNTIME / SAFE_HISTORY_UI_ADDED / NON_CACHEABLE_ROUTER_BOUNDARY / CONFLICT_PRIVACY_MINIMIZED`; privacy contracts are source-fixed. Browser execution on dd8e exposed a separate renderer composition defect tracked as PM-012; no current-candidate PASS yet |
+| PM-012 | Payment Review renderer composition | `payment_review_renderer.py` reapplied guided-copy marker rewrites even though `PAYMENT_REVIEW_CENTER_HTML` already owned the guided hierarchy; evolved base markup broke exact-one markers | Protected Payment Review rendered HTTP 500 in real Browser Staff E2E instead of the operator decision surface | `FIXED_PENDING_RUNTIME`; commit `544f7f5daa6003aa51e0c24097f89bd0ce053781` removes the stale guided rewrite, keeps only exact-payment history injection; `8a63323f709d3e6d9e283e749078741faf8fd1df` locks single-owner/deterministic/privacy behavior; exact final-SHA browser rerun required |
+| PM-013 | Message Center document navigation/composition | Base Message Center and guided patch both contain the legacy admin Workdesk document action; final role UI previously required exactly one marker and also targeted a non-canonical `/document-access/ui` path | Multiple composed markers caused HTTP 500; M2 lawyer navigation could be coupled to the wrong staff surface | `FIXED_PENDING_RUNTIME / DEBT_OPEN`; commit `00910ea6d573875a7efe3672b0ff7c624e553a9f` normalizes every composed legacy action to canonical `/document-access/review/ui?case_id=...`, and `91bfc7248f903875d062a7d0533efc89b55d6183` adds focused regression. Duplicate source ownership remains debt until both source templates are safely collapsed; exact final-SHA browser rerun required |
 
 # Development priority plan
 
-## P0 — release truth and runtime recovery
+## P0 — current release truth and executable failures
 
-1. Resolve #116 externally and prove real runner allocation (`runner_id != 0` + executed steps).
-2. Freeze the then-current head and run `CI` + `Deployment Readiness` + `Reproducible Dependencies`.
-3. Treat a real failure as application evidence; fix it, update affected P-/PM-items/change log, create a new candidate and restart full CI.
-4. Validate PM-002, PM-003, PM-004, PM-005, PM-008, PM-009, PM-010, PM-011, storage/retention portability and Payment Review recovery/history/privacy in executable gates.
-5. Run dedicated PostgreSQL/Redis/browser gates, then one complete LIVE_REQUIRED attempt only after general gates are green.
+1. Keep this Process Map as the final governed commit for the current batch, then treat that map commit SHA as the new candidate.
+2. Execute `CI` + `Deployment Readiness` + `Reproducible Dependencies` on that exact SHA. Runners now execute, so failures are application/runtime evidence rather than automatically `BLOCKED_INFRA`.
+3. Fix the first deterministic failing contract from the executable CI/locked suite without weakening governance or source-of-truth boundaries; after any governed fix, update this map last and restart exact-SHA evidence.
+4. Execute dedicated PostgreSQL Concurrency → Telegram Runtime Contracts → Browser Staff E2E. Specifically prove PM-012 and PM-013 no longer return HTTP 500 and preserve M1/M2 role semantics.
+5. Only after all general/dedicated gates are green, run one complete `LIVE_REQUIRED` attempt for the same exact SHA.
 
-## P1 — controlled debt closure after executable CI exists
+## P1 — controlled debt closure after executable CI is green
 
-1. PM-004: finish exact historical/external consumer audit and delete legacy assignment modules only if safe-removal proof and regressions exist.
-2. PM-006: verify actual branch/rules settings and exact required contexts; align them with the gate contract without weakening it.
-3. Browser-check centralized Workdesk renderer for M1/M2 responsibility/action semantics.
-4. Audit real staging/restore DB for remaining `M2_CONSULTATION_ROUTE` rows before considering a migration/removal of the compatibility enum.
-5. Review PM-009 runtime results and decide whether a later model/session-level mutation authorization backstop is justified; do not add one speculatively before executable CI proves the static guard behavior.
-6. Exercise PM-011 with an authenticated browser/API session against both active and terminal Payment Review records, including stale 409 server-truth fields, post-409/terminal deep-link history and response cache headers, before promoting PM-011 out of `FIXED_PENDING_RUNTIME`.
+1. PM-013: collapse duplicate Message Center document-route ownership in the base/guided sources so final composition does not need compatibility normalization; preserve canonical `/document-access/review/ui` and M2 consultation/slot responsibility.
+2. PM-004: finish exact historical/external consumer audit and delete legacy assignment modules only if safe-removal proof and regressions exist.
+3. PM-006: verify actual branch/rules settings and exact required contexts; align them with the gate contract without weakening it.
+4. Browser-check centralized Workdesk renderer for M1/M2 responsibility/action semantics.
+5. Audit real staging/restore DB for remaining `M2_CONSULTATION_ROUTE` rows before considering compatibility enum removal.
+6. Review PM-009 runtime results before deciding whether a later model/session-level mutation authorization backstop is justified.
+7. Exercise PM-011 with authenticated browser/API sessions against active and terminal Payment Review records, including stale 409 server-truth fields, terminal history and cache headers.
 
 ## P2 — post-LIVE evidence and release decision
 
@@ -447,7 +464,6 @@ Whenever anything changes:
 - Fixed PM-002 in source by adding `tests/test_postgres_auto_assignment_concurrency.py` to dedicated PostgreSQL Concurrency.
 - Added CI `Process map maintenance contract`, requiring this file in every PR diff and requiring it to exist/non-empty on other CI events.
 - Bound living-map governance into SYSTEM/ACCEPTANCE/RUNBOOK CURRENT documents.
-- Any resulting source/workflow change supersedes the prior candidate and requires restart from full CI after #116 recovery.
 
 ## 2026-08-28 — PM-004 legacy assignment path source-contained
 
@@ -463,7 +479,6 @@ Whenever anything changes:
 
 ## 2026-08-28 — PM-005 Workdesk composition centralized
 
-- Confirmed route/data module mixed API ownership with responsibility/deep-link JS patching plus separate integrity injection.
 - Added `app/api/workdesk_renderer.py` as the single final composition boundary.
 - Removed direct HTML/JS patching from `assignment_queue.py` and added `tests/test_workdesk_renderer_contract.py`.
 
@@ -482,66 +497,68 @@ Whenever anything changes:
 
 - Added root `AGENTS.md` as a pre-change repository contract for Cursor/Claude/Codex/other agents and developers.
 - `AGENTS.md` points to the authoritative CURRENT documents and this map, repeats the mandatory same-batch map-update rule, records source-of-truth boundaries, current release truth and no-auto-merge rule.
-- This closes the discoverability gap where the process-map rule previously became obvious only after reading CI/docs; CI remains the enforcement backstop.
 
 ## 2026-08-28 — PM-008 process-map freshness enforced
 
-- Audited the initial `Process map maintenance contract` and found it only proved that `docs/PROCESS_MAP_CURRENT.md` appeared somewhere in total PR diff.
 - Strengthened `.github/workflows/ci.yml`: latest non-map governed commit must be an ancestor of latest process-map commit. Same-commit changes pass; map-after-code passes; code-after-map fails closed.
 - Updated root `AGENTS.md` and added `tests/test_process_map_governance_contract.py`.
-- PM-008 remains runtime pending because Actions has not allocated a runner.
 
 ## 2026-08-28 — PM-004 legacy assignment containment hardened against bypass imports
 
-- Re-audited legacy assignment guard and found relative and literal dynamic import bypasses.
 - Added relative-module resolution plus detection for `importlib.import_module`, aliased `import_module`, and `__import__` when statically resolvable.
 - Added `tests/test_legacy_assignment_import_guard.py` with forbidden bypass forms and allowed canonical assignment-service imports.
-- Business assignment semantics were not changed; physical legacy-module deletion remains deferred.
 
 ## 2026-08-28 — PM-009 Case/Payment mutation guards made alias-aware
 
-- Audited the two critical status-write architecture checks and found they could be bypassed by non-conventional variable aliases, typed aliases, `setattr`, aliased model classes or some bulk SQLAlchemy write forms.
-- Added model symbol resolution for `Case` and `Payment`, including relative model imports, class aliases, module aliases, function/variable annotations, constructors and simple alias propagation.
-- Expanded direct mutation detection to obvious subscript/conventional owners, `setattr(owner, "status", ...)`, `update(ModelAlias).values(status=...)`, model-referenced `.update({...})`, and equivalent statically-resolvable forms.
-- `Case.status` remains owned by `CaseService`; `Payment.status` mutation remains owned by `PaymentLifecycleService`. Creation-time `Payment(status=...)` is deliberately not treated as a transition violation.
-- Added `tests/test_status_mutation_architecture_guard.py`, including negative controls proving the rule does not globally ban another model such as `Document.status`.
-- This is source-level containment only. Runtime CI must prove the stronger architecture check does not reveal additional current violations; if it does, those are to be handled as real application debt rather than weakening the check.
+- Expanded model symbol resolution for `Case` and `Payment`, including imports/aliases/annotations/constructors and simple alias propagation.
+- Expanded direct mutation detection to `setattr`, model-referenced SQLAlchemy bulk forms and equivalent statically-resolvable writes.
+- Added `tests/test_status_mutation_architecture_guard.py` with negative controls.
 
 ## 2026-08-29 — PM-010 M1 rejection client decision presentation aligned
 
-- Re-audited the functional/UX rejection requirement against the exact production path and disproved the initial hypothesis that the negative M1 branch was absent: the state graph, lawyer rejection route and Telegram decision center already exist.
-- Found the actual gap in `CLIENT_ACTIONS["M1_REJECTED"]`: the primary `Моё дело` card described `contact_lawyer` as only `Уточнить решение`, while that callback already opens the safe decision center with M2, team-message and close choices.
-- Changed only the client presentation contract to `Выбрать, что делать дальше` with explicit consultation/close/team wording. Callback, Case state machine and mutation ownership were deliberately not changed.
-- Added `tests/test_m1_rejection_client_decision_contract.py` to lock the card contract, `contact_lawyer_scope_guard` delegation and all three safe choices.
-- Classified PM-010 as `FIXED_PENDING_RUNTIME / PRESENTATION_ALIGNED`; no runtime PASS is claimed because issue #116 still blocks actual Actions runner execution.
+- Re-audited the functional/UX rejection requirement against the exact production path and confirmed the decision center already existed.
+- Changed only the client presentation contract to `Выбрать, что делать дальше` with explicit consultation/close/team wording.
+- Added `tests/test_m1_rejection_client_decision_contract.py`.
 
 ## 2026-08-31 — PM-011 Payment Review safe audit history added
 
-- Added `app/api/payment_review_history.py` and the admin-only `GET /admin/payment-reviews/{payment_id}/history` route owned by the existing Payment Review product router.
-- History remains readable after the payment leaves `PAID_REVIEW`, filters the exact payment after the Case/action query and only then applies the bounded 20-event presentation limit, so unrelated audit traffic cannot evict the target reconciliation evidence.
-- Added a strict response whitelist: decision/status/actor/time and exact consultation/slot identifiers are exposed when relevant; free-text comments, raw audit JSON, provider/reservation payloads and audit-chain integrity fields remain internal.
-- Added `tests/test_payment_review_history_contract.py` covering privacy projection, resolved/required normalization, exact-payment filtering before bounding, terminal payment history, 404 behavior, route ownership and missing-admin rejection.
-- Classified PM-011 as `FIXED_PENDING_RUNTIME / SAFE_HISTORY_ADDED`; this source/test improvement creates a new candidate head but does not claim CI, browser, PostgreSQL or LIVE_REQUIRED PASS while #116 remains unresolved.
+- Added `app/api/payment_review_history.py` and admin-only `GET /admin/payment-reviews/{payment_id}/history`.
+- Added a strict response whitelist and `tests/test_payment_review_history_contract.py`.
 
 ## 2026-08-31 — PM-011 Payment Review terminal history surfaced in protected UI
 
-- Added `app/api/payment_review_renderer.py` as the single final composition owner for Payment Review guided hierarchy and the read-only exact-payment history panel; `staff_ui_guards.py` now handles only authentication/redirect policy plus the protected response boundary instead of patching the Payment Review template.
-- Deep-links with `payment_id` load the normalized history alongside the existing queue/terminal state, so a resolved payment remains understandable after it leaves `PAID_REVIEW`; the panel reuses existing business-time formatting and decision labels and adds no Case/Payment/Consultation mutation path.
-- Kept the UI projection privacy-bounded to the normalized history contract and marked both the history API response and protected Payment Review HTML `Cache-Control: no-store`.
-- Added `tests/test_payment_review_renderer_contract.py` to lock unique/deterministic composition, exact-payment history wiring, normalized-field-only rendering, renderer ownership and non-cacheability.
-- Extended `tests/test_browser_staff_e2e.py` so the existing two-admin stale-tab scenario now checks the REQUIRED history while active, the terminal RESOLVED decision after the winner commits, the same history after stale 409 recovery, and that neither the persisted winner comment nor the stale-tab draft comment appears in the history panel.
-- PM-011 remains `FIXED_PENDING_RUNTIME`: the browser regression is now wired, but Actions/browser/PostgreSQL/LIVE_REQUIRED evidence is still required and no runtime PASS is claimed while issue #116 continues to produce jobs without executed steps.
+- Added `app/api/payment_review_renderer.py` and exact-payment history panel; `staff_ui_guards.py` remained authentication/redirect boundary.
+- Added `tests/test_payment_review_renderer_contract.py` and extended `tests/test_browser_staff_e2e.py` for active→terminal/stale history/privacy behavior.
 
 ## 2026-08-31 — PM-011 Payment Review no-store boundary centralized
 
-- Added `NoStoreAPIRoute` to the single Payment Review product router so list, slot lookup, history, resolve and protected UI responses share one non-cacheable boundary rather than relying only on endpoint-by-endpoint headers.
-- The route boundary sets `Cache-Control: no-store` on returned handler responses and preserves the same directive on `StarletteHTTPException` errors raised by handlers/dependencies; explicit history/UI headers remain as defense in depth.
-- Added `tests/test_payment_review_product_contract.py` to lock the route class on the exact five-route surface and the source contract for returned-response/HTTP-exception header propagation.
-- Updated P-05/P-08/P-09 and PM-011 without promoting runtime status: executable CI/browser evidence is still blocked by #116, so this is a source-level security hardening only.
+- Added `NoStoreAPIRoute` to the Payment Review product router.
+- Added `tests/test_payment_review_product_contract.py` to lock non-cacheable response/HTTP-exception behavior.
 
 ## 2026-09-02 — PM-011 Payment Review stale-409 privacy minimized
 
-- Audited the actual stale-409 browser consumer and confirmed `resolution.comment` was not used for conflict recovery; the UI needs only authoritative payment/Case state, saved decision, relevant consultation/slot ids, actor and resolution time.
-- Removed free-text `AuditLog.comment` from `payment_review_conflict_snapshot()` while preserving all fields required to explain the winning server decision and prevent stale overwrite. Raw provider/reservation/audit internals remain outside the projection.
-- Added `tests/test_payment_review_conflict_privacy_contract.py` to lock that whitelist and prove free-text comments and unrelated sensitive audit payload cannot escape through the 409 response.
-- This is source-level privacy hardening only. No focused pytest, browser gate, CI or LIVE_REQUIRED execution is claimed while issue #116 still prevents Actions jobs from executing steps.
+- Removed free-text `AuditLog.comment` from `payment_review_conflict_snapshot()` while preserving the fields required to explain the winning server decision and prevent stale overwrite.
+- Added `tests/test_payment_review_conflict_privacy_contract.py`.
+
+## 2026-09-06 — Runtime truth corrected after runners resumed execution
+
+- Superseded the old blanket `BLOCKED_INFRA` interpretation: on `dd8e038f554fa9364242c1c9585ffe0655f3c4d4`, Actions allocated runners and actually executed steps.
+- Recorded real successes for PostgreSQL Concurrency, Deployment Readiness and Telegram Runtime Contracts on that superseded SHA.
+- Recorded real failures for Browser Staff E2E, main CI and Reproducible Dependencies instead of attributing them to empty runner jobs.
+- Recorded locked-suite evidence exactly: `310 failed, 1465 passed, 19 skipped, 5 errors in 71.96s` for run `33910691239` / job `101146135918`.
+- Kept all superseded-SHA evidence diagnostic only; it does not promote the new candidate or `LIVE_REQUIRED`.
+
+## 2026-09-06 — PM-012 Payment Review renderer stale composition removed
+
+- Real Browser Staff E2E run `33910691169` exposed HTTP 500 from a second guided-marker rewrite layered over a base template that already owned `Сейчас`, `Главный следующий шаг` and `Вторичные действия`.
+- Commit `544f7f5daa6003aa51e0c24097f89bd0ce053781` removed the obsolete guided-copy composition from `payment_review_renderer.py`; renderer now adds only exact-payment history.
+- Commit `8a63323f709d3e6d9e283e749078741faf8fd1df` updated `tests/test_payment_review_renderer_contract.py` to lock single-owner deterministic composition and privacy behavior.
+- Status remains `FIXED_PENDING_RUNTIME`; no exact-final-SHA browser PASS is claimed yet.
+
+## 2026-09-06 — PM-013 Message Center role-safe document composition hardened
+
+- Real browser failure analysis showed the guided Message Center composition can contain more than one legacy admin Workdesk document action, while `message_center_role_ui_impl.py` required exactly one marker; the role-safe replacement also pointed to non-canonical `/document-access/ui`.
+- Commit `00910ea6d573875a7efe3672b0ff7c624e553a9f` changed final composition to normalize every composed legacy action to canonical `/document-access/review/ui?case_id=...`, preserving M2 consultation/slot authorization semantics and avoiding exact-one HTTP 500 failure.
+- Commit `91bfc7248f903875d062a7d0533efc89b55d6183` added `tests/test_message_center_role_ui_contract.py` for successful composition, legacy-route absence, canonical route presence and business-time contract preservation.
+- Duplicate document-link source ownership in the base Message Center and guided patch remains `DEBT_OPEN`; collapse is P1 after executable P0 gates are green.
+- This Process Map update is intentionally the final governed commit of the batch. The resulting map commit becomes the new candidate and must rerun the ordered exact-SHA evidence chain; `LIVE_REQUIRED` remains `PENDING`.
