@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import inspect
 
+from fastapi.routing import iter_route_contexts
+
 from app.api.lawyer_m1_rejection import reject_m1_case
 from app.api.lawyer_workspace_rejection_ui import (
     _M1_REJECTION_PATCH,
@@ -16,7 +18,7 @@ from app.main import create_app
 
 
 def _first_endpoint(path: str, method: str = "GET"):
-    for route in create_app().routes:
+    for route in iter_route_contexts(create_app().routes):
         if route.path == path and method in (route.methods or set()):
             return route.endpoint
     return None
