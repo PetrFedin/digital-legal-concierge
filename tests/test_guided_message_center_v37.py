@@ -3,6 +3,8 @@ from __future__ import annotations
 import inspect
 from types import SimpleNamespace
 
+from fastapi.routing import iter_route_contexts
+
 from app.api import guided_message_center
 from app.api.guided_message_center import CaseResponsibility
 from app.api.message_center import StaffScope
@@ -13,7 +15,7 @@ from app.main import create_app
 def _first_route(path: str, method: str = "GET"):
     return next(
         route
-        for route in create_app().routes
+        for route in iter_route_contexts(create_app().routes)
         if route.path == path and method in (route.methods or set())
     )
 
