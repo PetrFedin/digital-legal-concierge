@@ -3,34 +3,6 @@ from __future__ import annotations
 from app.api.payment_review_center import PAYMENT_REVIEW_CENTER_HTML
 
 
-_PAYMENT_REVIEW_REASON = '<div class="reason"><b>Почему автоматика остановилась</b><br>'
-_PAYMENT_REVIEW_REASON_GUIDED = (
-    '<div class="reason"><b>Сейчас · почему требуется сверка</b><br>'
-)
-_PAYMENT_REVIEW_NEXT = '<div class="next"><b>Что делать</b><br>'
-_PAYMENT_REVIEW_NEXT_GUIDED = '<div class="next"><b>Главный следующий шаг</b><br>'
-_PAYMENT_REVIEW_SECONDARY = '<div style="margin-top:10px">${x.case_detail_url?'
-_PAYMENT_REVIEW_SECONDARY_GUIDED = (
-    '<div style="margin-top:10px"><div class="muted" style="margin-bottom:6px">'
-    '<b>Вторичные действия</b></div>${x.case_detail_url?'
-)
-_PAYMENT_REVIEW_SUBTITLE = (
-    '<div style="font-size:12px;color:#d0d5dd">'
-    'Деньги получены, но автоматическое действие остановлено безопасностью</div>'
-)
-_PAYMENT_REVIEW_SUBTITLE_GUIDED = (
-    '<div id="paymentReviewContext" style="font-size:12px;color:#d0d5dd">'
-    'Роль: администратор · время загружается…</div>'
-)
-_PAYMENT_REVIEW_BOOT = (
-    "businessTimeZone=s.business_timezone||businessTimeZone;"
-    "businessTimeLabel=s.business_timezone_label??businessTimeLabel;"
-)
-_PAYMENT_REVIEW_BOOT_GUIDED = (
-    "businessTimeZone=s.business_timezone||businessTimeZone;"
-    "businessTimeLabel=s.business_timezone_label??businessTimeLabel;"
-    "paymentReviewContext.textContent=`Роль: администратор · время: ${businessTimeLabel||businessTimeZone}`;"
-)
 _HISTORY_MAIN_MARKER = '<div id="message" class="muted" role="status" aria-live="polite"></div>\n</main>'
 _HISTORY_SCRIPT_MARKER = "boot();\n</script>"
 _HISTORY_STYLE_MARKER = "</style>"
@@ -101,29 +73,6 @@ load=async function(){
 """.strip()
 
 
-def _inject_guided_copy(html: str) -> str:
-    """Apply the canonical staff hierarchy at one deterministic render boundary."""
-
-    markers = (
-        _PAYMENT_REVIEW_REASON,
-        _PAYMENT_REVIEW_NEXT,
-        _PAYMENT_REVIEW_SECONDARY,
-        _PAYMENT_REVIEW_SUBTITLE,
-        _PAYMENT_REVIEW_BOOT,
-    )
-    if any(html.count(marker) != 1 for marker in markers):
-        raise RuntimeError(
-            "Payment Review template contract changed: guided UI markers not found exactly once"
-        )
-    return (
-        html.replace(_PAYMENT_REVIEW_REASON, _PAYMENT_REVIEW_REASON_GUIDED, 1)
-        .replace(_PAYMENT_REVIEW_NEXT, _PAYMENT_REVIEW_NEXT_GUIDED, 1)
-        .replace(_PAYMENT_REVIEW_SECONDARY, _PAYMENT_REVIEW_SECONDARY_GUIDED, 1)
-        .replace(_PAYMENT_REVIEW_SUBTITLE, _PAYMENT_REVIEW_SUBTITLE_GUIDED, 1)
-        .replace(_PAYMENT_REVIEW_BOOT, _PAYMENT_REVIEW_BOOT_GUIDED, 1)
-    )
-
-
 def _inject_history_ui(html: str) -> str:
     """Compose the read-only exact-payment history into active and terminal deep links."""
 
@@ -154,10 +103,14 @@ def _inject_history_ui(html: str) -> str:
 
 
 def render_payment_review_html() -> str:
-    """Build the protected Payment Review document with one inspectable owner."""
+    """Build the protected Payment Review document with one inspectable owner.
 
-    html = _inject_guided_copy(PAYMENT_REVIEW_CENTER_HTML)
-    html = _inject_history_ui(html)
+    The base Payment Review template owns the guided staff hierarchy. This final
+    renderer adds only the read-only exact-payment history so the same hierarchy
+    cannot drift through a second marker-rewrite layer.
+    """
+
+    html = _inject_history_ui(PAYMENT_REVIEW_CENTER_HTML)
     if html.count('id="paymentReviewHistory"') != 1:
         raise RuntimeError("Payment Review history composition is not unique")
     return html
