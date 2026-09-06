@@ -19,7 +19,7 @@ _BAD_DOCUMENT_LINK = (
 )
 _ROLE_SAFE_DOCUMENT_LINK = (
     "const caseId=Number(c.id),documents=localHref("
-    "'/document-access/ui?case_id='+caseId);"
+    "'/document-access/review/ui?case_id='+encodeURIComponent(caseId));"
 )
 _BASE_SCRIPT_MARKER = "<script>\nlet currentCaseId=null,currentLatestMessageId=null"
 _RAW_MESSAGE_TIME = "${esc(m.created_at||'')}"
@@ -78,19 +78,23 @@ let currentCaseId=null,currentLatestMessageId=null"""
 def role_safe_message_center_html() -> str:
     """Render the guided message center with role-safe links and one time zone.
 
-    The admin workdesk document action is intentionally admin-only. Lawyers who
-    own an M2 consultation must use the personal-session document portal, whose
-    authorization boundary resolves M1 assignment vs M2 consultation ownership.
+    The base template and guided patch still duplicate the legacy admin-only
+    document action. Normalize every composed occurrence to the canonical
+    role-aware review surface so a lawyer's M2 responsibility is resolved by
+    consultation/slot ownership rather than by an M1 case assignment. The
+    duplicate source ownership remains migration debt until both source owners
+    can be collapsed safely.
+
     All visible message timestamps are formatted in the configured business
     timezone rather than whichever timezone the browser happens to use.
     """
 
     html = _inject_message_center_patch(MESSAGE_CENTER_HTML)
-    if html.count(_BAD_DOCUMENT_LINK) != 1:
+    if _BAD_DOCUMENT_LINK not in html:
         raise RuntimeError(
             "Message center template contract changed: admin-only document link not found"
         )
-    html = html.replace(_BAD_DOCUMENT_LINK, _ROLE_SAFE_DOCUMENT_LINK, 1)
+    html = html.replace(_BAD_DOCUMENT_LINK, _ROLE_SAFE_DOCUMENT_LINK)
     return _inject_business_timezone_ui(html)
 
 
