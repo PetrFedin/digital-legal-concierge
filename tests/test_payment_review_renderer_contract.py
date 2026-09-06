@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from app.api.payment_review_center import PAYMENT_REVIEW_CENTER_HTML
 from app.api.payment_review_renderer import render_payment_review_html
 
 
@@ -67,8 +68,11 @@ def test_payment_review_renderer_is_the_single_final_ui_composition_owner() -> N
 
     assert "from app.api.payment_review_center import PAYMENT_REVIEW_CENTER_HTML" in renderer_source
     assert "def render_payment_review_html()" in renderer_source
-    assert "_inject_guided_copy(PAYMENT_REVIEW_CENTER_HTML)" in renderer_source
-    assert "_inject_history_ui(html)" in renderer_source
+    assert "html = _inject_history_ui(PAYMENT_REVIEW_CENTER_HTML)" in renderer_source
+    assert "_inject_guided_copy" not in renderer_source
+    assert "_PAYMENT_REVIEW_REASON" not in renderer_source
+    assert "_PAYMENT_REVIEW_NEXT" not in renderer_source
+    assert "_PAYMENT_REVIEW_SECONDARY" not in renderer_source
 
 
 def test_payment_review_history_api_and_ui_are_explicitly_non_cacheable() -> None:
@@ -80,9 +84,11 @@ def test_payment_review_history_api_and_ui_are_explicitly_non_cacheable() -> Non
 
 
 def test_payment_review_renderer_is_deterministic_and_does_not_mutate_base_template() -> None:
+    base_before = PAYMENT_REVIEW_CENTER_HTML
     first = render_payment_review_html()
     second = render_payment_review_html()
 
     assert first == second
+    assert PAYMENT_REVIEW_CENTER_HTML == base_before
     assert first.count("</body>") == 1
     assert first.count("boot();") == 1
