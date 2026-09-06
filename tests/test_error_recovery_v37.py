@@ -4,6 +4,7 @@ import inspect
 from pathlib import Path
 
 import pytest
+from fastapi.routing import iter_route_contexts
 
 from app.api.technical_case_recovery import (
     guided_workdesk_ui,
@@ -26,7 +27,7 @@ from app.main import create_app
 
 
 def _first_endpoint(path: str, method: str = "GET"):
-    for route in create_app().routes:
+    for route in iter_route_contexts(create_app().routes):
         if route.path == path and method in (route.methods or set()):
             return route.endpoint
     return None
