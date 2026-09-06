@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import inspect
 
+from fastapi.routing import iter_route_contexts
+
 from app.admin.admin_dashboard import AdminDashboardService
 from app.api import assignment_queue, workdesk
 from app.domain.cases.assignment_policy import (
@@ -52,7 +54,7 @@ def test_workdesk_adds_unassigned_reason_only_when_assignment_is_due():
 
 
 def test_safe_static_work_queues_precede_legacy_dynamic_route():
-    paths = [route.path for route in create_app().routes]
+    paths = [route.path for route in iter_route_contexts(create_app().routes)]
     dynamic_index = paths.index("/admin/work-queues/{queue_name}")
 
     assert paths.index("/admin/work-queues/unassigned") < dynamic_index
