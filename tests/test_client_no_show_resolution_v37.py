@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import inspect
 
+from fastapi.routing import iter_route_contexts
+
 from app.api.consultation_outcomes_product import consultation_outcomes_ui
 from app.api.guided_consultation_outcomes import (
     _CLIENT_NO_SHOW_UI_PATCH,
@@ -20,7 +22,7 @@ from app.main import create_app
 
 
 def _first_endpoint(path: str, method: str = "GET"):
-    for route in create_app().routes:
+    for route in iter_route_contexts(create_app().routes):
         if route.path == path and method in (route.methods or set()):
             return route.endpoint
     return None
