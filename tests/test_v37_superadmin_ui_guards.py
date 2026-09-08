@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from fastapi.routing import iter_route_contexts
+
 from app.main import create_app
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,9 +14,8 @@ def read(path: str) -> str:
 def _only(path: str):
     rows = [
         route
-        for route in create_app().routes
-        if getattr(route, "path", None) == path
-        and "GET" in (getattr(route, "methods", None) or set())
+        for route in iter_route_contexts(create_app().routes)
+        if route.path == path and "GET" in (route.methods or set())
     ]
     assert len(rows) == 1, (path, [row.name for row in rows])
     return rows[0]
