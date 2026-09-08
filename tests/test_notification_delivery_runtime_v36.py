@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from fastapi.routing import iter_route_contexts
+
 from app.api.notification_center import router as notification_center_router
 from app.scheduler.notification_dispatcher import (
     DEFAULT_NOTIFICATION_INTERVAL_SECONDS,
@@ -15,7 +17,10 @@ def read(path: str) -> str:
 
 
 def test_failed_delivery_recovery_routes_are_registered_through_main_router():
-    paths = {route.path for route in notification_center_router.routes}
+    paths = {
+        route.path
+        for route in iter_route_contexts(notification_center_router.routes)
+    }
 
     assert "/notification-center/ui" in paths
     assert "/notification-center/status" in paths
