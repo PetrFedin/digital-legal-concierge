@@ -4,6 +4,8 @@ import ast
 from collections import defaultdict
 from pathlib import Path
 
+from fastapi.routing import iter_route_contexts
+
 from app.api.admin_queue_guard import (
     retire_legacy_lawyer_creation,
     safe_legacy_admin_queue,
@@ -41,12 +43,15 @@ def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
+def _effective_routes():
+    return tuple(iter_route_contexts(create_app().routes))
+
+
 def _owners(method: str, path: str):
     return [
         route
-        for route in create_app().routes
-        if getattr(route, "path", None) == path
-        and method in (getattr(route, "methods", None) or set())
+        for route in _effective_routes()
+        if route.path == path and method in (route.methods or set())
     ]
 
 
@@ -81,13 +86,9 @@ def test_every_app_api_module_imported_by_main_physically_exists():
 
 def test_every_runtime_method_path_has_exactly_one_owner():
     seen: dict[tuple[str, str], list[str]] = defaultdict(list)
-    for route in create_app().routes:
-        path = getattr(route, "path", None)
-        methods = getattr(route, "methods", None) or set()
-        if not path:
-            continue
-        for method in methods - {"HEAD", "OPTIONS"}:
-            seen[(method, path)].append(str(getattr(route, "name", "<unnamed>")))
+    for route in _effective_routes():
+        for method in (route.methods or set()) - {"HEAD", "OPTIONS"}:
+            seen[(method, route.path)].append(str(route.name or "<unnamed>"))
 
     duplicates = {
         f"{method} {path}": names
