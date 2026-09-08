@@ -57,11 +57,17 @@ Do not add M3/M4, a separate client web cabinet, AI legal decision-making, a sec
 
 ## Release truth
 
-GitHub issue #116 is the current Actions runner/billing/spending release blocker. A workflow with `runner_id=0` and empty/null steps is `BLOCKED_INFRA`, not application PASS and not a substantive application-test failure.
+Do **not** assume historical GitHub issue #116 is still a universal Actions runner/billing/spending blocker. Recent PR candidates have allocated runners and executed real application steps. Before every release-relevant change, inspect the exact current candidate workflows and classify what actually happened:
+
+- `runner_id=0` with empty/null steps on the exact candidate is `BLOCKED_INFRA`;
+- allocated runner + executed failing step is an application/runtime/test failure, not infrastructure blockage;
+- a success on an older SHA is diagnostic only and cannot approve a newer candidate.
+
+`docs/PROCESS_MAP_CURRENT.md` is the maintained source for the latest exact-SHA workflow evidence and PM-001 status. Reconcile/close stale issue #116 separately; do not let its historical description override newer executable evidence.
 
 The ordered release chain for one candidate SHA is:
 
-1. restore real runner allocation;
+1. prove real runner allocation and executable steps for the exact candidate;
 2. full CI/general gates;
 3. dedicated PostgreSQL Concurrency → Telegram/Redis Runtime → Browser Staff E2E;
 4. one complete manual LIVE_REQUIRED attempt with exact SHA/run/attempt manifest;
@@ -74,7 +80,7 @@ Do not use LIVE_REQUIRED as a runner probe. Any source/migration/workflow/eviden
 
 ## Change safety
 
-- Prefer a narrow correction of a concrete inconsistency over speculative refactoring while runtime gates are unavailable.
+- Prefer a narrow correction of a concrete inconsistency over speculative refactoring while runtime gates are unavailable or failing.
 - Preserve one `(HTTP method, path)` runtime owner.
 - Do not weaken architecture/CI checks to make a failing design pass.
 - Do not rewrite financial, consent or audit history; corrections are new evidence/events.
