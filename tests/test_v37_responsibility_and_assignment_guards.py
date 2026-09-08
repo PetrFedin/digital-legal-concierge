@@ -4,6 +4,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from fastapi.routing import iter_route_contexts
 
 import app.domain.documents.document_review_service as review_module
 from app.api.admin_queue_guard import safe_legacy_admin_queue
@@ -18,7 +19,7 @@ from app.main import create_app
 def _first_route(path: str, method: str = "GET"):
     return next(
         route
-        for route in create_app().routes
+        for route in iter_route_contexts(create_app().routes)
         if route.path == path and method in (route.methods or set())
     )
 
