@@ -91,7 +91,7 @@ async def list_authorized_case_documents(
                     document_id=document.id,
                 )
             except DocumentAccessError as error:
-                if error.reason == "lawyer_not_assigned":
+                if error.reason in {"lawyer_not_assigned", "lawyer_not_responsible"}:
                     raise
                 continue
             result.append(
@@ -215,6 +215,7 @@ async def download_document_once(
         try:
             content = LocalStorageService().read_document_bytes(
                 document.file_path,
+                expected_case_id=int(case.id),
                 expected_sha256=document.sha256,
                 encryption_key_id=document.encryption_key_id,
                 encryption_envelope_id=document.encryption_envelope_id,

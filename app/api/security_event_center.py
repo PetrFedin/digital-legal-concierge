@@ -3,22 +3,20 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.db.session import get_db
 from app.models.admin_user import AdminUser
 from app.models.audit_log import AuditLog
 from app.models.login_security_state import LoginSecurityState
 from app.models.revoked_access_token import RevokedAccessToken
-from app.security.access_control import (
-    ROLE_SUPERADMIN,
-    decode_access_token,
-    normalize_roles,
-)
+from app.security.access_control import ROLE_SUPERADMIN, normalize_roles
 from app.security.audit_integrity import verify_audit_chain
+from app.security.document_access import DocumentAccessError, resolve_document_actor
 from app.security.keyring import security_key_status
 from app.security.security_events import sanitize_security_details, security_event_severity
 
@@ -26,13 +24,19 @@ router = APIRouter(prefix="/security-events", tags=["security-events"])
 SECURITY_ACTIONS = {"DOCUMENT_UPLOAD_REJECTED"}
 
 
-def require_security_superadmin(token: str | None) -> dict:
-    payload = decode_access_token(token)
-    if not payload or ROLE_SUPERADMIN not in normalize_roles(payload.get("roles")):
+def _token(request: Request, header_token: str | None) -> str | None:
+    return header_token or request.cookies.get(settings.admin_session_cookie)
+
+
+async def require_security_superadmin(
+    request: Request,
+    db: AsyncSession,
+    header_token: str | None,
+):
+    actor = await resolve_document_actor(db, _token(request, header_token))
+    if actor.role != ROLE_SUPERADMIN:
         raise HTTPException(403, "Доступ только для суперадминистратора")
-    if not payload.get("legacy") and not payload.get("mfa"):
-        raise HTTPException(403, "Требуется подтверждённая MFA-сессия")
-    return payload
+    return actor
 
 
 def _event_summary(audit: AuditLog) -> str:
@@ -63,12 +67,13 @@ def _public_details(audit: AuditLog) -> dict[str, Any]:
 
 @router.get("/status")
 async def security_event_status(
+    request: Request,
     hours: int = 24,
     limit: int = 200,
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    require_security_superadmin(x_admin_token)
+    await require_security_superadmin(request, db, x_admin_token)
     hours = min(max(int(hours), 1), 24 * 30)
     limit = min(max(int(limit), 1), 500)
     now = datetime.now(timezone.utc)
@@ -163,28 +168,58 @@ async def security_event_status(
         "hard_failures": hard_failures,
         "audit_integrity": integrity,
         "security_keys": key_status,
+        "business_timezone": settings.business_timezone,
+        "business_timezone_label": settings.business_timezone_label,
+        "generated_at": now.isoformat(),
         "items": items,
     }
 
 
 @router.get("/ui", response_class=HTMLResponse)
-async def security_event_ui():
+async def security_event_ui(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    try:
+        await require_security_superadmin(request, db, x_admin_token)
+    except DocumentAccessError as error:
+        if error.status_code == 401:
+            return RedirectResponse(url="/login", status_code=303)
+        raise
     return HTMLResponse(SECURITY_EVENT_HTML)
 
 
 SECURITY_EVENT_HTML = r"""
-<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Security Center</title>
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Security Center</title>
 <style>
-body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;background:#f3f4f6;color:#111827}header{padding:22px;background:#111827;color:white}main{max-width:1180px;margin:auto;padding:22px}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.card{background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;margin-bottom:14px}.metric{font-size:28px;font-weight:850}.muted{color:#6b7280;font-size:13px}.event{border-top:1px solid #e5e7eb;padding:12px 0}.critical{color:#991b1b}.warning{color:#92400e}.info{color:#1d4ed8}.ok{color:#166534}.button{display:inline-block;background:#2563eb;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:750}button{background:#2563eb;color:white;border:0;border-radius:10px;padding:10px 14px;font-weight:750;cursor:pointer}pre{white-space:pre-wrap;background:#0b1020;color:#dbeafe;border-radius:10px;padding:10px}@media(max-width:800px){.grid{grid-template-columns:1fr 1fr}}
-</style></head><body><header><h1>🛡 Security Center</h1><p>События входа, MFA, cross-site блокировок, документов и целостности аудита.</p></header><main>
-<section class="card"><button onclick="loadData()">Обновить</button> <a class="button" href="/audit-center/ui">Audit Center</a> <a class="button" href="/admin-ui">Админка</a></section>
-<section id="summary" class="grid"></section><section class="card"><h2>Критические проверки</h2><div id="checks">Загрузка…</div></section><section class="card"><h2>Последние события</h2><div id="events">Загрузка…</div></section>
+:root{--bg:#f4f6fa;--ink:#172033;--muted:#667085;--line:#e4e7ec;--blue:#3157d5;--green:#166534;--red:#b42318;--amber:#a15c00;--green-soft:#ecfdf3;--red-soft:#fef3f2;--amber-soft:#fff7e6;--blue-soft:#eef2ff}
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;background:var(--bg);color:var(--ink)}header{padding:20px 24px;background:#111827;color:white}header .inner{max-width:1180px;margin:auto;display:flex;justify-content:space-between;align-items:center;gap:16px}header h1{margin:0 0 4px;font-size:23px}header p{margin:0;color:#d0d5dd;font-size:13px;line-height:1.45}.links{display:flex;gap:8px;flex-wrap:wrap}main{max-width:1180px;margin:auto;padding:20px}.card{background:white;border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:14px}.section-label{font-size:11px;font-weight:850;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:7px}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.metric-card{background:white;border:1px solid var(--line);border-radius:14px;padding:13px}.metric{font-size:26px;font-weight:850}.muted{color:var(--muted);font-size:13px;line-height:1.45}.event{border-top:1px solid var(--line);padding:12px 0}.event:first-child{border-top:0}.critical{color:var(--red)}.warning{color:var(--amber)}.info{color:var(--blue)}.ok{color:var(--green)}.button,button{display:inline-block;background:var(--blue);color:white;padding:9px 12px;border-radius:10px;text-decoration:none;font-weight:750;border:0;cursor:pointer}.secondary{background:white;color:var(--ink);border:1px solid var(--line)}.next{margin-top:12px;padding:12px;border:1px solid #c7d7fe;background:#f5f8ff;border-radius:12px}.next.critical{border-color:#fecdca;background:var(--red-soft)}.next.warning{border-color:#fedf89;background:var(--amber-soft)}.checks{line-height:1.7}.status{min-height:22px;margin-top:8px}pre{white-space:pre-wrap;background:#0b1020;color:#dbeafe;border-radius:10px;padding:10px;overflow:auto}@media(max-width:800px){.grid{grid-template-columns:1fr 1fr}}@media(max-width:560px){header .inner{align-items:flex-start;flex-direction:column}.grid{grid-template-columns:1fr}main{padding:12px}.links>*{width:100%;text-align:center}}
+</style>
+</head>
+<body>
+<header><div class="inner"><div><h1>🛡 Security Center</h1><p>Роль: суперадминистратор · вход, MFA, cross-site защита, документы и целостность аудита · <span id="timeContext">время загружается…</span></p></div><div class="links"><a class="button secondary" href="/audit-center/ui">Audit Center</a><a class="button secondary" href="/admin/workdesk/ui">Рабочий стол</a></div></div></header>
+<main>
+<section class="card"><div class="section-label">Сейчас</div><div id="summary" class="grid"><div class="metric-card"><div class="muted">Статус</div><div class="metric">—</div></div></div><div id="freshness" class="muted"></div><div id="next" class="next"><b>Главный следующий шаг</b><div class="muted">Проверяем критические контуры безопасности.</div></div></section>
+<section class="card"><div class="section-label">Вторичные действия</div><div class="links"><button onclick="loadData()">Обновить проверку</button><a class="button secondary" href="/audit-center/ui">Проверить аудит</a><a class="button secondary" href="/admin/workdesk/ui">К рабочему столу</a></div><div id="status" class="status muted" role="status" aria-live="polite"></div></section>
+<section class="card"><div class="section-label">Критические проверки</div><div id="checks" class="checks">Загрузка…</div></section>
+<section class="card"><div class="section-label">Последние события</div><div id="events">Загрузка…</div></section>
 <script>
-let token='';const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-async function api(path){const r=await fetch(path,{headers:{'x-admin-token':token}});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||'Ошибка');return d}
-async function boot(){const r=await fetch('/auth/session');if(!r.ok){location.href='/login';return}const s=await r.json();if(!(s.roles||[s.role]).includes('superadmin')){document.body.innerHTML='<main><div class="card critical">Недостаточно прав</div></main>';return}token=s.api_token;loadData()}
-function metric(label,value,cls=''){return `<div class="card"><div class="muted">${esc(label)}</div><div class="metric ${cls}">${esc(value)}</div></div>`}
-async function loadData(){try{const d=await api('/security-events/status?hours=24&limit=200');summary.innerHTML=metric('Статус',d.status,d.status==='critical'?'critical':d.status==='attention'?'warning':'ok')+metric('Критические события',d.counts.critical,'critical')+metric('Предупреждения',d.counts.warning,'warning')+metric('Активные блокировки',d.active_login_locks);checks.innerHTML=`<b class="${d.audit_integrity.ok?'ok':'critical'}">Аудит: ${d.audit_integrity.ok?'целостен':'НАРУШЕН'}</b><br><b class="${d.security_keys.ok?'ok':'critical'}">Ключи: ${d.security_keys.ok?'готовы':'требуют настройки'}</b><br>Суперадминистраторы без MFA: ${esc(d.superadmins_without_mfa.length)}<br>Активные отозванные сессии: ${esc(d.active_revoked_sessions)}${d.hard_failures.length?`<pre>${esc(JSON.stringify(d.hard_failures,null,2))}</pre>`:''}`;events.innerHTML=d.items.length?d.items.map(e=>`<div class="event"><b class="${esc(e.severity)}">${esc(e.severity.toUpperCase())}</b> · <b>${esc(e.summary)}</b><br><span class="muted">#${esc(e.chain_sequence)} · ${esc(e.action)} · ${esc(e.created_at||'')}</span>${Object.keys(e.details||{}).length?`<pre>${esc(JSON.stringify(e.details,null,2))}</pre>`:''}</div>`).join(''):'Событий за выбранный период нет.'}catch(error){checks.innerHTML='<span class="critical">'+esc(error.message)+'</span>';events.textContent=''}}
+let token='',businessTimeZone='UTC',businessTimeLabel='UTC';
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function dt(value){if(!value)return '—';try{const rendered=new Intl.DateTimeFormat('ru-RU',{dateStyle:'short',timeStyle:'short',timeZone:businessTimeZone}).format(new Date(value));return businessTimeLabel?rendered+' '+businessTimeLabel:rendered}catch(_){return String(value)}}
+async function api(path){const r=await fetch(path,{credentials:'same-origin',cache:'no-store',headers:{'x-admin-token':token}});const d=await r.json().catch(()=>({}));if(r.status===401){location.href='/login';throw new Error('Сессия завершена')}if(!r.ok)throw new Error(d.detail||'Ошибка');return d}
+async function boot(){const r=await fetch('/auth/session',{credentials:'same-origin',cache:'no-store'});if(!r.ok){location.href='/login';return}const s=await r.json();if(!(s.roles||[s.role]).includes('superadmin')){document.body.innerHTML='<main><div class="card critical">Недостаточно прав. Вернитесь в доступное рабочее пространство.</div></main>';return}token=s.api_token||'';businessTimeZone=s.business_timezone||'UTC';businessTimeLabel=s.business_timezone_label||businessTimeZone;timeContext.textContent='время: '+businessTimeLabel;await loadData()}
+function metric(label,value,cls=''){return `<div class="metric-card"><div class="muted">${esc(label)}</div><div class="metric ${cls}">${esc(value)}</div></div>`}
+function nextStep(d){if(d.status==='critical'){const failure=(d.hard_failures||[])[0]||'critical_security';next.className='next critical';next.innerHTML=`<b>Главный следующий шаг</b><div>Остановите необязательные административные изменения и разберите критическую проверку «${esc(failure)}». Не исправляйте журнал вручную и не отключайте защитные контуры ради продолжения работы.</div>`;return}if(d.status==='attention'){next.className='next warning';next.innerHTML='<b>Главный следующий шаг</b><div>Разберите критические/предупреждающие события и активные блокировки, начиная с самых свежих. Если событие ожидаемое — подтвердите его по связанному аудиту.</div>';return}next.className='next';next.innerHTML='<b>Главный следующий шаг</b><div class="ok">Критических действий сейчас не требуется. Продолжайте обычный контроль и проверяйте новые события по мере появления.</div>'}
+async function loadData(){status.textContent='Обновляем…';try{const d=await api('/security-events/status?hours=24&limit=200');businessTimeZone=d.business_timezone||businessTimeZone;businessTimeLabel=d.business_timezone_label||businessTimeLabel;timeContext.textContent='время: '+businessTimeLabel;freshness.textContent='Обновлено '+dt(d.generated_at)+' · окно '+esc(d.window_hours)+' ч';summary.innerHTML=metric('Статус',d.status,d.status==='critical'?'critical':d.status==='attention'?'warning':'ok')+metric('Критические события',d.counts.critical,'critical')+metric('Предупреждения',d.counts.warning,'warning')+metric('Активные блокировки',d.active_login_locks);nextStep(d);checks.innerHTML=`<b class="${d.audit_integrity.ok?'ok':'critical'}">Аудит: ${d.audit_integrity.ok?'целостен':'НАРУШЕН'}</b><br><b class="${d.security_keys.ok?'ok':'critical'}">Ключи: ${d.security_keys.ok?'готовы':'требуют настройки'}</b><br>Суперадминистраторы без MFA: ${esc(d.superadmins_without_mfa.length)}<br>Активные отозванные сессии: ${esc(d.active_revoked_sessions)}${d.hard_failures.length?`<pre>${esc(JSON.stringify(d.hard_failures,null,2))}</pre>`:''}`;events.innerHTML=d.items.length?d.items.map(e=>`<div class="event"><b class="${esc(e.severity)}">${esc(e.severity.toUpperCase())}</b> · <b>${esc(e.summary)}</b><br><span class="muted">#${esc(e.chain_sequence)} · ${esc(e.action)} · ${esc(dt(e.created_at))}</span>${Object.keys(e.details||{}).length?`<pre>${esc(JSON.stringify(e.details,null,2))}</pre>`:''}</div>`).join(''):'Событий за выбранный период нет.';status.textContent='Проверка обновлена.'}catch(error){summary.innerHTML=metric('Статус','ошибка','critical');next.className='next critical';next.innerHTML='<b>Главный следующий шаг</b><div>Повторите проверку. Если Security Center остаётся недоступен, не выполняйте изменения доступа, MFA или ключей вслепую.</div>';checks.innerHTML='<span class="critical">'+esc(error.message)+'</span>';events.textContent='';status.textContent=error.message}}
 boot();
-</script></main></body></html>
+</script>
+</main>
+</body>
+</html>
 """

@@ -20,6 +20,7 @@ from app.security.access_control import (
     normalize_roles,
     verify_password,
 )
+from app.security.http_security import BROWSER_SESSION_SENTINEL
 from app.security.login_throttle import LoginRateLimitError, LoginThrottleService
 from app.security.security_events import record_security_event
 from app.security.token_revocation import is_token_revoked, revoke_token
@@ -228,13 +229,26 @@ async def login(
         session_version=user.session_version,
         mfa_verified=False,
     )
-    response = RedirectResponse(url="/admin-ui", status_code=303)
+    # All staff roles land on the canonical authenticated hub. Role-specific
+    # workspaces are selected there; login no longer depends on an early
+    # /admin-ui shadow route to rescue lawyer sessions.
+    response = RedirectResponse(url="/operator", status_code=303)
     _set_session_cookie(response, token)
     return response
 
 
 @router.get("/auth/session")
 async def auth_session(request: Request, db: AsyncSession = Depends(get_db)):
+    """Return browser identity and non-secret presentation metadata.
+
+    The real session remains HttpOnly. Legacy staff JavaScript receives a
+    non-secret sentinel; RequestOriginGuardMiddleware validates same-origin
+    requests and bridges the cookie credential only inside the ASGI request
+    scope. Staff surfaces also receive the configured business timezone so every
+    role renders the same legal/financial timestamps regardless of the browser's
+    local timezone. There is exactly one public GET /auth/session route.
+    """
+
     token = request.cookies.get(settings.admin_session_cookie)
     payload = decode_access_token(token)
     if not payload or await is_token_revoked(db, token):
@@ -245,7 +259,10 @@ async def auth_session(request: Request, db: AsyncSession = Depends(get_db)):
         "role": payload.get("role"),
         "roles": payload.get("roles", [payload.get("role")]),
         "mfa_verified": bool(payload.get("mfa")),
-        "api_token": token,
+        "api_token": BROWSER_SESSION_SENTINEL,
+        "session_transport": "httponly_cookie",
+        "business_timezone": settings.business_timezone,
+        "business_timezone_label": settings.business_timezone_label,
     }
 
 

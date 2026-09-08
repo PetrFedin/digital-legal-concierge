@@ -14,8 +14,19 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.types import BotCommand, BotCommandScopeDefault, CallbackQuery, Message
 
+from app.bot.calculator_draft import CalculatorDraftNavigationMiddleware
+from app.bot.client_activity import record_client_activity
+from app.bot.client_case_navigation import install_case_bound_navigation
+from app.bot.client_message_provenance import ClientMessageProvenanceMiddleware
+from app.bot.client_wording_patch import install_client_wording
+from app.bot.consultation_booking_provenance import ConsultationBookingProvenanceMiddleware
+from app.bot.consultation_change_provenance import ConsultationChangeProvenanceMiddleware
+from app.bot.consultation_description_provenance import (
+    ConsultationDescriptionProvenanceMiddleware,
+)
 from app.bot.consultation_route_guard import ConsultationRouteIsolationMiddleware
 from app.bot.document_replacement_protection import (
+    ClientDocumentUploadStageProtectionMiddleware,
     DocumentReplacementUploadProtectionMiddleware,
 )
 from app.bot.draft_protection import (
@@ -25,24 +36,46 @@ from app.bot.draft_protection import (
 from app.bot.lease import TelegramPollingLease
 from app.bot.screens import (
     calculator,
+    calculator_active_case_recovery,
+    calculator_unknown_data_guard,
+    client_archive,
+    client_archive_payment_guard,
     common,
+    consent_decision_guard,
     consent_flow,
+    consent_stale_guard,
     consultation_booking_ui,
     consultation_description,
     consultation_intake,
     consultation_results,
     consultations,
+    contact_lawyer_scope_guard,
     document_action_center,
+    document_mutation_guard,
+    document_read_scope_guard,
+    document_upload_binding_guard,
+    document_upload_entry_scope_guard,
     documents,
     fallback,
     history,
+    m1_legal_stages,
+    m1_rejection_decision_guard,
+    m1_rejection_recovery,
     m1_stages,
     messages,
     my_case,
+    navigation_history_guard,
     no_payment,
     no_payment_legal,
+    payment_archive_guard,
+    payment_list_resume_guard,
+    payment_received_money_guard,
     payments,
+    poa_handoff,
     post_calculation,
+    reply_menu_direct,
+    service_contract,
+    telegram_safety_composite,
 )
 from app.bot.security import SlidingWindowRateLimiter
 from app.config import settings
@@ -57,9 +90,16 @@ class PollingExitedError(RuntimeError):
 
 class DbMiddleware:
     async def __call__(self, handler, event, data):
-        async with AsyncSessionLocal() as db:
-            data["db"] = db
-            return await handler(event, data)
+        try:
+            async with AsyncSessionLocal() as db:
+                data["db"] = db
+                return await handler(event, data)
+        finally:
+            # Activity is deliberately written in its own short transaction after
+            # the handler DB session closes. It therefore cannot accidentally
+            # commit unfinished legal/payment state and survives read-only
+            # handler rollbacks used by presentation screens.
+            await record_client_activity(event)
 
 
 class FloodControlMiddleware:
@@ -134,32 +174,80 @@ def build_fsm_storage() -> BaseStorage:
 
 
 def build_dispatcher() -> Dispatcher:
+    install_client_wording()
+    client_archive.install_archive_button()
+    # Install after the archive/presentation wrappers so the final My Case
+    # keyboard keeps their labels/order and only upgrades callback provenance.
+    install_case_bound_navigation()
+    calculator_active_case_recovery.install_active_case_recovery_actions()
     dispatcher = Dispatcher(storage=build_fsm_storage())
     dispatcher.update.middleware(DbMiddleware())
     flood_control = FloodControlMiddleware()
+    # Home/Cancel are allowed to leave the calculator, but they must not erase
+    # answers already entered. The middleware snapshots only calculator FSM
+    # data, lets the canonical navigation render, then restores a paused draft.
+    dispatcher.message.middleware(CalculatorDraftNavigationMiddleware())
+    dispatcher.callback_query.middleware(CalculatorDraftNavigationMiddleware())
+
     dispatcher.message.middleware(DraftMessageNavigationProtectionMiddleware())
+    dispatcher.message.middleware(ConsultationDescriptionProvenanceMiddleware())
+    dispatcher.message.middleware(ClientMessageProvenanceMiddleware())
+    dispatcher.message.middleware(ClientDocumentUploadStageProtectionMiddleware())
     dispatcher.message.middleware(DocumentReplacementUploadProtectionMiddleware())
     dispatcher.message.middleware(flood_control)
+
     dispatcher.callback_query.middleware(DraftProtectionMiddleware())
     dispatcher.callback_query.middleware(ConsultationRouteIsolationMiddleware())
+    dispatcher.callback_query.middleware(ConsultationBookingProvenanceMiddleware())
+    dispatcher.callback_query.middleware(ConsultationChangeProvenanceMiddleware())
+    dispatcher.callback_query.middleware(ConsultationDescriptionProvenanceMiddleware())
+    dispatcher.callback_query.middleware(ClientMessageProvenanceMiddleware())
+    dispatcher.callback_query.middleware(ClientDocumentUploadStageProtectionMiddleware())
     dispatcher.callback_query.middleware(flood_control)
     dispatcher.callback_query.middleware(CallbackAcknowledgeMiddleware())
+
+    # Order is a business invariant. Direct Payments is intentionally before
+    # logical navigation: explicit entry may reconcile/materialize the current
+    # exact M2 obligation, while nav_back never matches that router and remains
+    # presentation-only. Other provenance guards precede legacy handlers.
     for router in [
+        payment_list_resume_guard.router,
+        navigation_history_guard.router,
+        client_archive.router,
+        client_archive_payment_guard.router,
+        reply_menu_direct.router,
         common.router,
-        calculator.router,
         post_calculation.router,
+        calculator_active_case_recovery.router,
+        calculator_unknown_data_guard.router,
+        calculator.router,
         my_case.router,
+        document_upload_entry_scope_guard.router,
+        document_upload_binding_guard.router,
+        document_mutation_guard.router,
+        document_read_scope_guard.router,
         document_action_center.router,
         documents.router,
         no_payment_legal.router,
+        contact_lawyer_scope_guard.router,
         consultation_results.router,
         consultation_booking_ui.router,
         consultation_description.router,
+        m1_rejection_decision_guard.router,
+        m1_rejection_recovery.router,
+        telegram_safety_composite.router,
         consultation_intake.router,
         no_payment.router,
+        payment_received_money_guard.router,
+        payment_archive_guard.router,
         payments.router,
         consultations.router,
+        consent_decision_guard.router,
+        consent_stale_guard.router,
         consent_flow.router,
+        service_contract.router,
+        poa_handoff.router,
+        m1_legal_stages.router,
         m1_stages.router,
         messages.router,
         history.router,

@@ -18,6 +18,7 @@ DOC_TITLES = {
     "TRANSFER_ACT": "Акт",
     "PAYMENT_PROOF": "Платежный документ",
     "CORRESPONDENCE": "Переписка",
+    "POWER_OF_ATTORNEY": "Доверенность",
     "OTHER": "Другой документ",
 }
 
@@ -123,6 +124,8 @@ class DocumentService:
         encrypted_data_key: str | None = None,
         encrypted_data_key_nonce: str | None = None,
         encrypted_at: datetime | None = None,
+        audit_actor_type: str = "client",
+        audit_actor_id: int | None = None,
     ):
         if security_status != "VERIFIED" or not sha256 or not scanned_at:
             raise ValueError("Документ не прошёл обязательную проверку безопасности")
@@ -136,6 +139,9 @@ class DocumentService:
             or not encrypted_at
         ):
             raise ValueError("Документ не прошёл обязательное envelope-шифрование")
+
+        actor_type = str(audit_actor_type or "client").strip() or "client"
+        actor_id = uploaded_by_user_id if audit_actor_id is None else int(audit_actor_id)
 
         # DB-backed production flows serialize version allocation on the case
         # row. Isolated domain tests may pass an already-authorized lightweight
@@ -221,8 +227,8 @@ class DocumentService:
         if superseded_ids:
             await add_case_history_event(
                 self.db,
-                actor_type="client",
-                actor_id=uploaded_by_user_id,
+                actor_type=actor_type,
+                actor_id=actor_id,
                 case_id=case_id,
                 action="DOCUMENT_PENDING_VERSION_SUPERSEDED",
                 old_value={"documents": superseded_old_values},
@@ -236,8 +242,8 @@ class DocumentService:
 
         await add_case_history_event(
             self.db,
-            actor_type="client",
-            actor_id=uploaded_by_user_id,
+            actor_type=actor_type,
+            actor_id=actor_id,
             case_id=case_id,
             action="DOCUMENT_UPLOADED",
             new_value={

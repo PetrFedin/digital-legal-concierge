@@ -7,6 +7,7 @@ from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
 from app.domain.consultations.consultation_intake import consultation_description_ready
 from app.domain.consultations.consultation_service import ConsultationService
+from app.domain.payments.payment_lifecycle import PaymentLifecycleService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.consultation_statuses import ConsultationStatus
@@ -100,7 +101,10 @@ class ConsultationChangeService:
             if payment.status not in ACTIVE_UNPAID_PAYMENT_STATUSES:
                 continue
             old_status = payment.status
-            payment.status = PaymentStatus.EXPIRED
+            PaymentLifecycleService.transition(
+                payment,
+                to_status=PaymentStatus.EXPIRED,
+            )
             await add_case_history_event(
                 self.db,
                 actor_type="client",

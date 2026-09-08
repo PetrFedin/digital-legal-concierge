@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -25,6 +26,9 @@ from app.security.file_uploads import (
 )
 
 
+_DOCUMENT_CIPHERTEXT_NAME = re.compile(r"^[0-9a-fA-F]{32}\.dlcenc$")
+
+
 @dataclass(frozen=True)
 class StoredFile:
     original_name: str
@@ -47,6 +51,16 @@ class StoredFile:
 class LocalStorageService:
     """Verified local storage with authenticated envelope encryption at rest.
 
+    Database rows use portable storage keys such as
+    ``cases/<case_id>/<random>.dlcenc`` rather than host-specific absolute
+    filesystem paths. Legacy absolute rows are accepted only when they end in
+    that exact case-storage shape; they are then *rebased* onto the currently
+    configured storage root and are never read from the legacy absolute root.
+
+    Relative document keys are stricter: they must be exactly the canonical
+    three-component form. A prefixed relative value such as
+    ``tmp/cases/<id>/<file>`` is never silently truncated to a valid key.
+
     Client-controlled names are never used as storage keys. Incoming bytes are
     isolated, validated, encrypted with a unique per-document data key and only
     then moved into a case directory. The wrapped data key is returned to the
@@ -54,7 +68,12 @@ class LocalStorageService:
     """
 
     def __init__(self, base_dir: str | None = None):
-        self.base_dir = Path(base_dir or settings.storage_dir).resolve()
+        requested = Path(base_dir or settings.storage_dir)
+        if requested.is_symlink():
+            raise DocumentEncryptionError(
+                "Корень защищённого хранилища не может быть символической ссылкой"
+            )
+        self.base_dir = requested.resolve()
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.incoming_dir = self.base_dir / ".incoming"
         self.incoming_dir.mkdir(parents=True, exist_ok=True)
@@ -68,19 +87,136 @@ class LocalStorageService:
     def max_upload_bytes(self) -> int:
         return max(1, int(settings.max_document_upload_mb)) * 1024 * 1024
 
-    def resolve_storage_path(self, storage_path: str | Path) -> Path:
-        candidate = Path(storage_path)
-        if not candidate.is_absolute():
-            candidate = self.base_dir / candidate
-        resolved = candidate.resolve(strict=False)
+    @staticmethod
+    def _portable_document_key(
+        storage_path: str | Path,
+        *,
+        expected_case_id: int | None = None,
+    ) -> Path | None:
+        """Return the canonical portable key for a document path when present.
+
+        Absolute legacy values are deliberately reduced to their final
+        ``cases/<id>/<ciphertext>`` suffix. Any earlier host/root components are
+        ignored rather than followed. Relative values must already be exactly
+        the canonical key and are never suffix-normalized.
+        """
+
+        raw = str(storage_path or "").strip()
+        if not raw:
+            raise DocumentEncryptionError("Путь документа не задан")
+        candidate = Path(raw)
+        if ".." in candidate.parts:
+            raise DocumentEncryptionError("Недопустимый путь документа")
+        parts = candidate.parts
+
+        if candidate.is_absolute():
+            if len(parts) < 3 or parts[-3] != "cases":
+                if expected_case_id is not None:
+                    raise DocumentEncryptionError(
+                        "Путь документа не соответствует хранилищу выбранного дела"
+                    )
+                return None
+            case_part = parts[-2]
+            file_part = parts[-1]
+        else:
+            if len(parts) != 3 or parts[0] != "cases":
+                if expected_case_id is not None:
+                    raise DocumentEncryptionError(
+                        "Путь документа не соответствует хранилищу выбранного дела"
+                    )
+                return None
+            case_part = parts[1]
+            file_part = parts[2]
+
+        if (
+            not case_part.isdigit()
+            or int(case_part) <= 0
+            or not _DOCUMENT_CIPHERTEXT_NAME.fullmatch(file_part)
+        ):
+            if expected_case_id is not None:
+                raise DocumentEncryptionError(
+                    "Путь документа не соответствует защищённому storage key"
+                )
+            return None
+        case_id = int(case_part)
+        if expected_case_id is not None and case_id != int(expected_case_id):
+            raise DocumentEncryptionError(
+                "Документ относится к другому storage scope дела"
+            )
+        return Path("cases") / str(case_id) / file_part
+
+    @staticmethod
+    def _assert_no_symlink_components(root: Path, relative: Path) -> None:
+        current = root
+        for part in relative.parts:
+            current = current / part
+            if current.is_symlink():
+                raise DocumentEncryptionError(
+                    "Символьные ссылки для документов запрещены"
+                )
+
+    def storage_key_for_case_path(self, path: str | Path, *, case_id: int) -> str:
+        """Convert a newly written ciphertext path into the canonical DB key."""
+
+        resolved = Path(path).resolve(strict=False)
+        try:
+            relative = resolved.relative_to(self.base_dir)
+        except ValueError as error:
+            raise DocumentEncryptionError(
+                "Путь документа находится вне защищённого хранилища"
+            ) from error
+        key = self._portable_document_key(relative, expected_case_id=case_id)
+        if key is None:  # pragma: no cover - expected_case_id makes this fail closed
+            raise DocumentEncryptionError("Не удалось сформировать storage key документа")
+        self._assert_no_symlink_components(self.base_dir, key)
+        return key.as_posix()
+
+    def resolve_storage_path(
+        self,
+        storage_path: str | Path,
+        *,
+        expected_case_id: int | None = None,
+    ) -> Path:
+        raw = str(storage_path or "").strip()
+        if not raw:
+            raise DocumentEncryptionError("Путь документа не задан")
+        candidate = Path(raw)
+        if ".." in candidate.parts:
+            raise DocumentEncryptionError("Недопустимый путь документа")
+
+        portable_key = self._portable_document_key(
+            candidate,
+            expected_case_id=expected_case_id,
+        )
+        if portable_key is not None:
+            # This branch is used for current canonical relative keys and for
+            # legacy absolute paths. The old absolute prefix is never
+            # dereferenced.
+            lexical = self.base_dir / portable_key
+            relative = portable_key
+        else:
+            # Backward-compatible utility behavior for non-document files/tests:
+            # arbitrary paths are allowed only when they already live beneath
+            # the current protected root. Restore rebasing is reserved for the
+            # explicit document-key shape above.
+            lexical = candidate if candidate.is_absolute() else self.base_dir / candidate
+            absolute_lexical = Path(os.path.abspath(os.fspath(lexical)))
+            try:
+                relative = absolute_lexical.relative_to(self.base_dir)
+            except ValueError as error:
+                raise DocumentEncryptionError(
+                    "Путь документа находится вне защищённого хранилища"
+                ) from error
+            lexical = absolute_lexical
+
+        self._assert_no_symlink_components(self.base_dir, relative)
+        resolved = lexical.resolve(strict=False)
         try:
             resolved.relative_to(self.base_dir)
         except ValueError as error:
             raise DocumentEncryptionError(
                 "Путь документа находится вне защищённого хранилища"
             ) from error
-        if resolved.is_symlink():
-            raise DocumentEncryptionError("Символьные ссылки для документов запрещены")
         return resolved
 
     @staticmethod
@@ -101,20 +237,34 @@ class LocalStorageService:
             pass
         return True
 
-    def discard_stored_file(self, storage_path: str | Path) -> bool:
-        return self._unlink_and_sync(self.resolve_storage_path(storage_path))
+    def discard_stored_file(
+        self,
+        storage_path: str | Path,
+        *,
+        expected_case_id: int | None = None,
+    ) -> bool:
+        return self._unlink_and_sync(
+            self.resolve_storage_path(
+                storage_path,
+                expected_case_id=expected_case_id,
+            )
+        )
 
     def read_document_bytes(
         self,
         storage_path: str | Path,
         *,
+        expected_case_id: int | None = None,
         expected_sha256: str | None = None,
         encryption_key_id: str | None = None,
         encryption_envelope_id: str | None = None,
         encrypted_data_key: str | None = None,
         encrypted_data_key_nonce: str | None = None,
     ) -> bytes:
-        resolved = self.resolve_storage_path(storage_path)
+        resolved = self.resolve_storage_path(
+            storage_path,
+            expected_case_id=expected_case_id,
+        )
         plaintext, _ = decrypt_file_bytes(
             resolved,
             expected_sha256=expected_sha256,
@@ -178,7 +328,7 @@ class LocalStorageService:
 
             return StoredFile(
                 original_name=inspection.safe_name,
-                storage_path=str(target),
+                storage_path=self.storage_key_for_case_path(target, case_id=case_id),
                 mime_type=inspection.mime_type,
                 file_size=inspection.size_bytes,
                 sha256=inspection.sha256,

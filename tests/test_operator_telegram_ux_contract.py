@@ -1,9 +1,9 @@
 from collections import Counter
+import inspect
 
-import pytest
 from fastapi.routing import iter_route_contexts
 
-from app.api.operator import operator_page, operator_status
+from app.api.operator import operator_page
 from app.bot.keyboards import main_menu, reply_main_menu
 from app.main import app
 
@@ -68,43 +68,40 @@ def test_inline_menu_shows_payments_when_provider_is_enabled():
     assert [len(row) for row in markup.inline_keyboard] == [2, 2, 1, 1]
 
 
-@pytest.mark.asyncio
-async def test_operator_page_is_role_aware_and_does_not_show_secrets():
-    response = await operator_page()
-    body = response.body.decode("utf-8")
+def test_operator_page_is_authenticated_role_aware_hub_without_secrets():
+    source = inspect.getsource(operator_page)
 
-    assert "Рабочее пространство" in body
-    assert "Ежедневная работа" in body
-    assert "Контроль и настройка" in body
-    assert "Рабочие разделы показываются в соответствии с вашей ролью" in body
-    assert "fetch('/auth/session'" in body
-    assert "const isLawyer=roles.includes('lawyer')" in body
-    assert "isAdmin=roles.includes('admin')||roles.includes('superadmin')" in body
-    assert "systemSection.hidden=true" in body
-    assert "link('/lawyer/workspace/ui'" in body
-    assert "link('/lawyer/consultation-desk/ui'" in body
-    assert "link('/admin/workdesk/ui'" in body
-    assert "link('/message-center/ui'" in body
-    assert "BOT_TOKEN" not in body
-    assert "ADMIN_PASSWORD" not in body
+    assert "Рабочее пространство" in source
+    assert "Ежедневная работа" in source
+    assert "Контроль и настройка" in source
+    assert "Рабочие разделы показываются в соответствии с вашей ролью" in source
+    assert "fetch('/auth/session'" in source
+    assert "const isLawyer=roles.includes('lawyer')" in source
+    assert "isAdmin=roles.includes('admin')||roles.includes('superadmin')" in source
+    assert "systemSection.hidden=true" in source
+    assert "link('/lawyer/workspace/ui'" in source
+    assert "link('/lawyer/consultation-desk/ui'" in source
+    assert "link('/admin/workdesk/ui'" in source
+    assert "link('/message-center/ui'" in source
+    assert "BOT_TOKEN" not in source
+    assert "ADMIN_PASSWORD" not in source
 
 
-@pytest.mark.asyncio
-async def test_operator_status_publishes_primary_and_compatibility_workspaces():
-    status = await operator_status()
-    workspaces = status["workspaces"]
+def test_operator_hub_publishes_primary_staff_workspaces():
+    source = inspect.getsource(operator_page)
 
-    assert workspaces["admin"] == "/admin/workdesk/ui"
-    assert workspaces["lawyer"] == "/lawyer/workspace/ui"
-    assert workspaces["lawyer_consultations"] == "/lawyer/consultation-desk/ui"
-    assert workspaces["document_review"] == "/document-access/review/ui"
-    assert workspaces["messages"] == "/message-center/ui"
-    assert workspaces["telegram_delivery"] == "/admin/notification-delivery/ui"
-    assert workspaces["admin_legacy"] == "/admin-ui"
-    assert workspaces["lawyer_legacy"] == "/lawyer/ui"
+    for path in (
+        "/admin/workdesk/ui",
+        "/lawyer/workspace/ui",
+        "/lawyer/consultation-desk/ui",
+        "/document-access/review/ui",
+        "/message-center/ui",
+        "/admin/notification-delivery/ui",
+    ):
+        assert path in source
 
 
-def test_primary_staff_workspace_links_are_registered_once():
+def test_primary_and_compatibility_staff_workspace_links_are_registered_once():
     counts = Counter(
         context.path
         for context in iter_route_contexts(app.routes)
@@ -120,6 +117,8 @@ def test_primary_staff_workspace_links_are_registered_once():
         "/admin/sla/ui",
         "/admin/consultation-outcomes/ui",
         "/admin/notification-delivery/ui",
+        "/admin-ui",
+        "/lawyer/ui",
     }
 
     missing = sorted(path for path in required if counts[path] == 0)

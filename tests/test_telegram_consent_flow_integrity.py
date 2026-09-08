@@ -4,17 +4,19 @@ import inspect
 from types import SimpleNamespace
 
 import pytest
-from aiogram.exceptions import TelegramBadRequest
 
 from app.bot.bot import build_dispatcher
-from app.bot.screens import consent_flow
-from app.bot.screens.consent_flow import (
-    _present_committed_accept,
-    consent_accept,
-    consent_decline,
-    consent_decline_confirm,
-    consent_open,
+from app.bot.screens import consent_decision_guard, consent_flow
+from app.bot.screens.consent_decision_guard import (
+    _bound,
+    _v3_binding,
+    guarded_consent_accept,
+    guarded_consent_decline,
+    guarded_consent_decline_prompt,
+    guarded_consent_open,
+    legacy_unbound_consent_refresh,
 )
+from app.domain.cases.consent_contract import CONSENT_CALLBACK_TOKEN, CONSENT_VERSION
 from app.domain.statuses.case_statuses import CaseStatus
 
 
@@ -33,16 +35,15 @@ class FakeDb:
 class FakeCaseService:
     def __init__(self, case):
         self.case = case
-        self.transitions = []
 
     async def get_active_case_for_user(self, _user_id):
         return self.case
 
-    async def change_status(self, **kwargs):
-        self.transitions.append(kwargs)
-        self.case.status = kwargs["next_status"]
-        if str(kwargs["next_status"]).startswith("M1_"):
-            self.case.route = "M1"
+    async def get_case_for_user(self, *, user_id, case_id):
+        if self.case is None:
+            return None
+        if int(self.case.id) != int(case_id):
+            return None
         return self.case
 
 
@@ -55,24 +56,17 @@ class FakeContext:
 
 
 class FakeMessage:
-    def __init__(self, edit_error: Exception | None = None):
-        self.edit_error = edit_error
+    def __init__(self):
         self.edits = []
-        self.answers = []
 
     async def edit_text(self, text, reply_markup=None):
-        if self.edit_error is not None:
-            raise self.edit_error
         self.edits.append((text, reply_markup))
-
-    async def answer(self, text, reply_markup=None):
-        self.answers.append((text, reply_markup))
 
 
 class FakeCallback:
-    def __init__(self, edit_error: Exception | None = None):
-        self.data = None
-        self.message = FakeMessage(edit_error=edit_error)
+    def __init__(self, *, data=None):
+        self.data = data
+        self.message = FakeMessage()
         self.callback_answers = []
 
     async def answer(self, text=None, show_alert=False):
@@ -89,178 +83,116 @@ def _callbacks(markup) -> list[str]:
 
 def _patch_context(monkeypatch, case):
     fake = FakeContext(case)
-    monkeypatch.setattr(consent_flow, "BotContextService", lambda _db: fake)
+    monkeypatch.setattr(consent_decision_guard, "BotContextService", lambda _db: fake)
     return fake
 
 
 @pytest.mark.asyncio
-async def test_calculated_case_does_not_skip_route_choice_when_old_consent_button_opens(
-    monkeypatch,
-):
-    case = SimpleNamespace(status=CaseStatus.CALCULATED, route=None)
-    ctx = _patch_context(monkeypatch, case)
-    callback = FakeCallback()
+async def test_calculated_case_old_unbound_consent_is_navigation_only(monkeypatch):
+    case = SimpleNamespace(id=88, status=CaseStatus.CALCULATED, route=None)
+    _patch_context(monkeypatch, case)
+    callback = FakeCallback(data="consent_accept")
+    db = FakeDb()
 
-    await consent_open(callback, FakeDb())
+    await legacy_unbound_consent_refresh(callback, db)
 
     text, markup = callback.message.edits[-1]
     assert "Сначала выберите дальнейший путь" in text
     assert _callbacks(markup)[0] == "calc_decision_open"
-    assert ctx.case_service.transitions == []
+    assert db.commits == 0
+    assert callback.callback_answers[-1][0] == "Открываем актуальный текст согласия."
 
 
 @pytest.mark.asyncio
-async def test_client_decision_opens_explicit_consent_and_safe_back_path(monkeypatch):
-    case = SimpleNamespace(status=CaseStatus.CLIENT_DECISION, route=None)
+async def test_client_decision_opens_exact_version_bound_consent(monkeypatch):
+    case = SimpleNamespace(id=89, status=CaseStatus.CLIENT_DECISION, route=None)
     _patch_context(monkeypatch, case)
-    callback = FakeCallback()
+    callback = FakeCallback(data="consent_open")
 
-    await consent_open(callback, FakeDb())
+    await guarded_consent_open(callback, FakeDb())
 
     text, markup = callback.message.edits[-1]
+    callbacks = _callbacks(markup)
     assert "Согласие на обработку персональных данных" in text
-    assert _callbacks(markup) == [
-        "consent_accept",
-        "consent_decline",
-        "calc_decision_open",
-        "my_case_open",
-        "nav_home",
-    ]
+    assert f"Версия текста: {CONSENT_VERSION}" in text
+    assert callbacks[0] == _bound("consent_accept", case.id)
+    assert callbacks[1] == _bound("consent_decline", case.id)
+    assert callbacks[-2:] == ["my_case_open", "nav_home"]
+    assert CONSENT_CALLBACK_TOKEN in callbacks[0]
+
+
+def test_v3_binding_rejects_unbound_or_malformed_legal_decision():
+    exact = _bound("consent_accept", 91)
+    assert _v3_binding(SimpleNamespace(data=exact), "consent_accept") == (
+        91,
+        CONSENT_CALLBACK_TOKEN,
+    )
+    assert _v3_binding(SimpleNamespace(data="consent_accept"), "consent_accept") is None
+    assert _v3_binding(SimpleNamespace(data="consent_accept:v3:0:bad"), "consent_accept") is None
+    assert _v3_binding(SimpleNamespace(data="consent_accept:v3:91:"), "consent_accept") is None
 
 
 @pytest.mark.asyncio
-async def test_accept_without_active_case_never_creates_case(monkeypatch):
-    ctx = _patch_context(monkeypatch, None)
+async def test_decline_first_bound_click_is_confirmation_only(monkeypatch):
+    case = SimpleNamespace(id=92, status=CaseStatus.CLIENT_DECISION, route=None)
+    _patch_context(monkeypatch, case)
+    callback = FakeCallback(data=_bound("consent_decline", case.id))
     db = FakeDb()
-    callback = FakeCallback()
 
-    await consent_accept(callback, db)
-
-    assert ctx.case_service.transitions == []
-    assert db.commits == 0
-    assert "не создаётся" in callback.message.edits[-1][0]
-    source = inspect.getsource(consent_accept)
-    assert "get_or_create_active_case_for_user" not in source
-
-
-@pytest.mark.asyncio
-async def test_accept_commits_m1_documents_transition_before_result(monkeypatch):
-    case = SimpleNamespace(status=CaseStatus.CLIENT_DECISION, route=None)
-    ctx = _patch_context(monkeypatch, case)
-    db = FakeDb()
-    callback = FakeCallback()
-
-    await consent_accept(callback, db)
-
-    assert len(ctx.case_service.transitions) == 1
-    transition = ctx.case_service.transitions[0]
-    assert transition["next_status"] == CaseStatus.M1_DOCUMENTS_PENDING
-    assert transition["actor_type"] == "client"
-    assert db.commits == 1
-    assert db.rollbacks == 0
-    assert "✅ Согласие сохранено" in callback.message.edits[-1][0]
-    assert _callbacks(callback.message.edits[-1][1])[0] == "documents_open"
-
-
-@pytest.mark.asyncio
-async def test_old_calculated_accept_is_explicit_legacy_m1_consent_and_still_safe(
-    monkeypatch,
-):
-    case = SimpleNamespace(status=CaseStatus.CALCULATED, route=None)
-    ctx = _patch_context(monkeypatch, case)
-    db = FakeDb()
-    callback = FakeCallback()
-
-    await consent_accept(callback, db)
-
-    assert ctx.case_service.transitions[0]["next_status"] == CaseStatus.M1_DOCUMENTS_PENDING
-    assert db.commits == 1
-    assert case.route == "M1"
-
-
-@pytest.mark.asyncio
-async def test_decline_first_click_is_confirmation_only(monkeypatch):
-    case = SimpleNamespace(status=CaseStatus.CLIENT_DECISION, route=None)
-    ctx = _patch_context(monkeypatch, case)
-    db = FakeDb()
-    callback = FakeCallback()
-
-    await consent_decline(callback, db)
+    await guarded_consent_decline_prompt(callback, db)
 
     text, markup = callback.message.edits[-1]
     assert "Подтвердите отказ" in text
-    assert _callbacks(markup)[0] == "consent_decline_confirm"
-    assert ctx.case_service.transitions == []
+    assert _callbacks(markup)[0] == _bound("consent_decline_confirm", case.id)
     assert db.commits == 0
 
 
 @pytest.mark.asyncio
-async def test_confirmed_decline_returns_to_saved_calculation(monkeypatch):
-    case = SimpleNamespace(status=CaseStatus.CLIENT_DECISION, route=None)
-    ctx = _patch_context(monkeypatch, case)
+async def test_stale_decline_prompt_cannot_roll_back_started_m1_case(monkeypatch):
+    case = SimpleNamespace(id=93, status=CaseStatus.M1_DOCUMENTS_PENDING, route="M1")
+    _patch_context(monkeypatch, case)
+    callback = FakeCallback(data=_bound("consent_decline", case.id))
     db = FakeDb()
-    callback = FakeCallback()
 
-    await consent_decline_confirm(callback, db)
+    await guarded_consent_decline_prompt(callback, db)
 
-    assert ctx.case_service.transitions[0]["next_status"] == CaseStatus.CALCULATED
-    assert db.commits == 1
-    text, markup = callback.message.edits[-1]
-    assert "Согласие не предоставлено" in text
-    assert _callbacks(markup)[:2] == ["calc_decision_open", "calc_to_m2"]
-
-
-@pytest.mark.asyncio
-async def test_stale_decline_cannot_roll_back_started_m1_case(monkeypatch):
-    case = SimpleNamespace(status=CaseStatus.M1_DOCUMENTS_PENDING, route="M1")
-    ctx = _patch_context(monkeypatch, case)
-    db = FakeDb()
-    callback = FakeCallback()
-
-    await consent_decline_confirm(callback, db)
-
-    assert ctx.case_service.transitions == []
     assert db.commits == 0
+    assert db.rollbacks == 1
     text, markup = callback.message.edits[-1]
-    assert "Автоматический откат не выполнен" in text
-    assert _callbacks(markup)[0] == "message_create"
+    assert "Старая кнопка ничего не изменила" in text
+    assert "message_create" in _callbacks(markup)
 
 
-@pytest.mark.asyncio
-async def test_committed_accept_falls_back_to_new_message_when_old_one_is_stale():
-    callback = FakeCallback(
-        edit_error=TelegramBadRequest(
-            method=None,
-            message="Bad Request: message can't be edited",
-        )
-    )
+def test_mutating_consent_handlers_use_domain_service_and_commit_before_success_view():
+    accept_source = inspect.getsource(guarded_consent_accept)
+    decline_source = inspect.getsource(guarded_consent_decline)
 
-    await _present_committed_accept(callback)
+    for source in (accept_source, decline_source):
+        assert "ConsentDecisionService(db).apply" in source
+        assert "await db.commit()" in source
+        assert "await db.rollback()" in source
 
-    assert callback.message.answers
-    assert "✅ Согласие сохранено" in callback.message.answers[-1][0]
-    assert callback.callback_answers[-1][0] == (
-        "Согласие сохранено. Результат открыт новым сообщением."
-    )
+    accept_success = accept_source.split("await db.commit()", 1)[1]
+    decline_success = decline_source.split("await db.commit()", 1)[1]
+    assert "✅ Согласие сохранено" in accept_success
+    assert "Согласие не предоставлено" in decline_success
 
 
-def test_mutating_consent_handlers_commit_before_result_presentation():
-    accept_source = inspect.getsource(consent_accept)
-    decline_source = inspect.getsource(consent_decline_confirm)
+def test_retired_compatibility_module_cannot_mutate_legal_consent():
+    source = inspect.getsource(consent_flow)
 
-    assert accept_source.index("await db.commit()") < accept_source.index(
-        "await _present_committed_accept(callback)"
-    )
-    # The decline handler has an earlier idempotent CALCULATED branch that presents
-    # without a write. The actual CLIENT_DECISION mutation must still commit before
-    # its final success presentation.
-    assert decline_source.index("await db.commit()") < decline_source.rindex(
-        "await _present_committed_decline(callback)"
-    )
-    assert "await db.rollback()" in accept_source
-    assert "await db.rollback()" in decline_source
+    assert "Retired compatibility module" in source
+    assert "ConsentDecisionService" not in source
+    assert "change_status" not in source
+    assert "commit()" not in source
+    assert '__all__ = ["router"]' in source
 
 
-def test_guarded_consent_router_runs_before_legacy_m1_handlers():
+def test_guarded_consent_router_runs_before_compatibility_handlers():
     source = inspect.getsource(build_dispatcher)
-    assert source.index("consent_flow.router") < source.index("m1_stages.router")
+    assert source.index("consent_decision_guard.router") < source.index(
+        "consent_stale_guard.router"
+    )
+    assert source.index("consent_decision_guard.router") < source.index(
+        "consent_flow.router"
+    )

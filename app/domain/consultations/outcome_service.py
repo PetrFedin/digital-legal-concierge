@@ -11,9 +11,11 @@ from app.domain.consultations.slot_service import SlotService, SlotUnavailableEr
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.consultation_statuses import ConsultationStatus
+from app.models.audit_log import AuditLog
 from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
+from app.presentation_time import format_business_datetime
 
 
 class ConsultationOutcomeError(ValueError):
@@ -75,6 +77,44 @@ class ConsultationOutcomeService:
             )
         return slot
 
+    async def _latest_consultation_history_event(
+        self,
+        *,
+        case_id: int,
+        consultation_id: int,
+        action: str,
+    ) -> AuditLog | None:
+        """Find durable provenance for one exact consultation without aging it out.
+
+        Case history may contain many later events. Idempotency of an old legal
+        fact must not depend on an arbitrary ``LIMIT`` window, so the query is
+        narrowed by Case/action and the exact consultation id is matched in the
+        immutable event payload.
+        """
+
+        events = list(
+            (
+                await self.db.execute(
+                    select(AuditLog)
+                    .where(
+                        AuditLog.entity_type == "case",
+                        AuditLog.entity_id == int(case_id),
+                        AuditLog.action == action,
+                    )
+                    .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+                )
+            ).scalars().all()
+        )
+        for event in events:
+            new_value = event.new_value or {}
+            try:
+                event_consultation_id = int(new_value.get("consultation_id") or 0)
+            except (TypeError, ValueError):
+                event_consultation_id = 0
+            if event_consultation_id == int(consultation_id):
+                return event
+        return None
+
     @staticmethod
     def _require_assigned_lawyer(
         consultation: Consultation,
@@ -122,6 +162,15 @@ class ConsultationOutcomeService:
         consultation = await self._lock_consultation(consultation_id)
         self._require_assigned_lawyer(consultation, lawyer_id)
         if consultation.status == ConsultationStatus.DONE:
+            stored_result = str(consultation.lawyer_result or "").strip()
+            stored_decision = str(consultation.decision or "").strip().lower()
+            if (
+                stored_result != normalized_result
+                or stored_decision != normalized_decision
+            ):
+                raise ConsultationOutcomeError(
+                    "Консультация уже завершена другим итогом. Старое действие не применено; обновите карточку."
+                )
             return consultation
         if consultation.status != ConsultationStatus.BOOKED:
             raise ConsultationOutcomeError(
@@ -151,12 +200,13 @@ class ConsultationOutcomeService:
                 comment="Перевод в маршрут М1 по результату консультации",
             )
         elif normalized_decision == "close":
+            case.close_reason = "M2_CONSULTATION_COMPLETED"
             await self.cases.change_status(
                 case=case,
                 next_status=CaseStatus.M2_CLOSED,
                 actor_type="lawyer",
                 actor_id=lawyer_id,
-                    comment="Консультация завершена, обращение закрыто",
+                comment="Консультация завершена, обращение закрыто",
             )
         else:
             await self.cases.change_status(
@@ -164,7 +214,7 @@ class ConsultationOutcomeService:
                 next_status=CaseStatus.M2_CONSULTATION_DONE,
                 actor_type="lawyer",
                 actor_id=lawyer_id,
-                    comment="Результат консультации зафиксирован",
+                comment="Результат консультации зафиксирован",
             )
             case.next_action = (
                 "Назначить следующую консультацию"
@@ -186,6 +236,7 @@ class ConsultationOutcomeService:
                 "decision": normalized_decision,
                 "result": normalized_result,
                 "case_status": case.status,
+                "close_reason": case.close_reason,
                 "next_action": case.next_action,
             },
         )
@@ -217,6 +268,12 @@ class ConsultationOutcomeService:
         consultation = await self._lock_consultation(consultation_id)
         self._require_assigned_lawyer(consultation, lawyer_id)
         if consultation.status == ConsultationStatus.CLIENT_NO_SHOW:
+            stored_comment = str(consultation.lawyer_result or "").strip()
+            stored_decision = str(consultation.decision or "").strip().lower()
+            if stored_decision != "client_no_show" or stored_comment != normalized_comment:
+                raise ConsultationOutcomeError(
+                    "Неявка клиента уже зафиксирована с другим комментарием. Старое действие не применено; обновите карточку."
+                )
             return consultation
         if consultation.status != ConsultationStatus.BOOKED:
             raise ConsultationOutcomeError(
@@ -278,6 +335,7 @@ class ConsultationOutcomeService:
         consultation_id: int,
         admin_id: int | None,
         comment: str,
+        expected_slot_id: int | None = None,
     ) -> Consultation:
         normalized_comment = str(comment or "").strip()
         if len(normalized_comment) < 5:
@@ -287,10 +345,45 @@ class ConsultationOutcomeService:
 
         consultation = await self._lock_consultation(consultation_id)
         if consultation.status == ConsultationStatus.LAWYER_NO_SHOW:
+            stored_comment = str(consultation.lawyer_result or "").strip()
+            stored_decision = str(consultation.decision or "").strip().lower()
+            if stored_decision != "lawyer_no_show" or stored_comment != normalized_comment:
+                raise ConsultationOutcomeError(
+                    "Неявка юриста уже зафиксирована с другим комментарием. Старое действие не применено; обновите карточку."
+                )
+            if (
+                expected_slot_id is not None
+                and int(consultation.slot_id or 0) != int(expected_slot_id)
+            ):
+                raise ConsultationOutcomeError(
+                    "Время консультации изменилось после загрузки экрана. Старое действие не применено; обновите карточку."
+                )
+            event = await self._latest_consultation_history_event(
+                case_id=int(consultation.case_id),
+                consultation_id=int(consultation.id),
+                action="CONSULTATION_LAWYER_NO_SHOW",
+            )
+            event_value = event.new_value or {} if event is not None else {}
+            event_comment = str(event_value.get("comment") or "").strip()
+            if (
+                event is None
+                or event.actor_id != admin_id
+                or event_comment != normalized_comment
+            ):
+                raise ConsultationOutcomeError(
+                    "Неявка юриста уже зафиксирована другим администратором или другим действием. Старое действие не применено; обновите карточку."
+                )
             return consultation
         if consultation.status != ConsultationStatus.BOOKED:
             raise ConsultationOutcomeError(
                 "Неявку можно отметить только по подтверждённой консультации"
+            )
+        if (
+            expected_slot_id is not None
+            and int(consultation.slot_id or 0) != int(expected_slot_id)
+        ):
+            raise ConsultationOutcomeError(
+                "Время консультации изменилось после загрузки экрана. Старое действие не применено; обновите карточку."
             )
 
         case = await self._lock_case(consultation.case_id)
@@ -322,6 +415,7 @@ class ConsultationOutcomeService:
             new_value={
                 "consultation_id": consultation.id,
                 "consultation_status": consultation.status,
+                "slot_id": slot.id,
                 "slot_status": slot.status,
                 "comment": normalized_comment,
                 "next_action": case.next_action,
@@ -349,8 +443,37 @@ class ConsultationOutcomeService:
             raise ConsultationOutcomeError(
                 "Укажите комментарий к бесплатному переносу"
             )
+        try:
+            normalized_slot_id = int(new_slot_id)
+        except (TypeError, ValueError) as error:
+            raise ConsultationOutcomeError("Выберите корректное новое время") from error
+        if normalized_slot_id <= 0:
+            raise ConsultationOutcomeError("Выберите корректное новое время")
 
         consultation = await self._lock_consultation(consultation_id)
+        if consultation.status == ConsultationStatus.BOOKED:
+            event = await self._latest_consultation_history_event(
+                case_id=int(consultation.case_id),
+                consultation_id=int(consultation.id),
+                action="CONSULTATION_REBOOKED_AFTER_LAWYER_NO_SHOW",
+            )
+            event_value = event.new_value or {} if event is not None else {}
+            try:
+                event_slot_id = int(event_value.get("slot_id") or 0)
+            except (TypeError, ValueError):
+                event_slot_id = 0
+            if (
+                event is None
+                or event.actor_id != admin_id
+                or str(event.comment or "").strip() != normalized_comment
+                or event_slot_id != normalized_slot_id
+                or int(consultation.slot_id or 0) != normalized_slot_id
+            ):
+                raise ConsultationOutcomeError(
+                    "Консультация уже перенесена другим администратором, в другое время или с другими данными. "
+                    "Старое действие не применено; обновите карточку."
+                )
+            return consultation
         if consultation.status != ConsultationStatus.LAWYER_NO_SHOW:
             raise ConsultationOutcomeError(
                 "Бесплатный перенос доступен только после неявки юриста"
@@ -377,7 +500,7 @@ class ConsultationOutcomeService:
 
         try:
             new_slot = await self.slots.book_available_slot(
-                slot_id=new_slot_id,
+                slot_id=normalized_slot_id,
                 user_id=case.client_id,
                 consultation_id=consultation.id,
             )
@@ -419,7 +542,7 @@ class ConsultationOutcomeService:
             case_id=case.id,
             payload={
                 "case_number": case.case_number,
-                "date": new_slot.starts_at.strftime("%d.%m.%Y %H:%M"),
+                "date": format_business_datetime(new_slot.starts_at),
             },
             dedupe_key=(
                 f"consultation:{consultation.id}:lawyer-no-show-rebook:{new_slot.id}"

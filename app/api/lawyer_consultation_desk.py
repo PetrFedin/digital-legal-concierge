@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.db.session import get_db
 from app.domain.consultations.consultation_intake import consultation_description_ready
 from app.domain.statuses.consultation_statuses import ConsultationStatus
@@ -17,6 +18,7 @@ from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
 from app.models.document import Document
 from app.models.user import User
+from app.presentation_time import to_business_timezone
 from app.security.lawyer_access import require_lawyer_actor
 
 router = APIRouter(prefix="/lawyer/consultation-desk", tags=["lawyer-consultation-desk"])
@@ -70,6 +72,10 @@ def _as_utc(value: datetime | None) -> datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _business_date(value: datetime) -> object:
+    return to_business_timezone(value).date()
 
 
 def _consultation_status(value: object) -> ConsultationStatus | None:
@@ -138,6 +144,7 @@ def _timing_payload(
     display_end = _as_utc(slot.ends_at if slot else None)
     if display_start and not display_end:
         display_end = display_start + timedelta(hours=1)
+    business_today = _business_date(now)
 
     if status in PREBOOKING_STATES:
         state, label, detail = PREBOOKING_STATES[status]
@@ -162,7 +169,9 @@ def _timing_payload(
             "ends_at": display_end.isoformat() if display_end else None,
             "can_complete": False,
             "can_mark_no_show": False,
-            "is_today": bool(display_start and display_start.date() == now.date()),
+            "is_today": bool(
+                display_start and _business_date(display_start) == business_today
+            ),
             "requires_outcome": False,
         }
 
@@ -175,7 +184,9 @@ def _timing_payload(
             "ends_at": display_end.isoformat() if display_end else None,
             "can_complete": False,
             "can_mark_no_show": False,
-            "is_today": bool(display_start and display_start.date() == now.date()),
+            "is_today": bool(
+                display_start and _business_date(display_start) == business_today
+            ),
             "requires_outcome": False,
         }
 
@@ -188,7 +199,9 @@ def _timing_payload(
             "ends_at": display_end.isoformat() if display_end else None,
             "can_complete": False,
             "can_mark_no_show": False,
-            "is_today": bool(display_start and display_start.date() == now.date()),
+            "is_today": bool(
+                display_start and _business_date(display_start) == business_today
+            ),
             "requires_outcome": False,
         }
 
@@ -205,7 +218,7 @@ def _timing_payload(
             "requires_outcome": False,
         }
 
-    is_today = scheduled_at.date() == now.date()
+    is_today = _business_date(scheduled_at) == business_today
     no_show_available_at = scheduled_at + timedelta(minutes=15)
     if now < scheduled_at:
         return {
@@ -402,6 +415,8 @@ async def consultation_desk_data(
     )
     return {
         "generated_at": now.isoformat(),
+        "business_timezone": settings.business_timezone,
+        "business_timezone_label": settings.business_timezone_label,
         "lawyer": {"id": actor.lawyer.id, "name": actor.lawyer.full_name},
         "summary": {
             "active": len(items),
@@ -440,16 +455,16 @@ CONSULTATION_DESK_HTML = r"""
 <div id="content" class="grid"><div class="loading">Загрузка консультаций…</div></div>
 </main>
 <script>
-let token='',data=null,currentTab='attention';const pending=new Set();const content=document.getElementById('content'),metrics=document.getElementById('metrics'),message=document.getElementById('message'),freshness=document.getElementById('freshness'),lawyerName=document.getElementById('lawyerName'),filter=document.getElementById('filter'),match=document.getElementById('match');
+let token='',data=null,currentTab='attention',businessTimeZone='Europe/Moscow',businessTimeLabel='МСК';const pending=new Set();const content=document.getElementById('content'),metrics=document.getElementById('metrics'),message=document.getElementById('message'),freshness=document.getElementById('freshness'),lawyerName=document.getElementById('lawyerName'),filter=document.getElementById('filter'),match=document.getElementById('match');
 function esc(v){return String(v??'').replace(/[&<>\x22\x27]/g,c=>c==='&'?'&amp;':c==='<'?'&lt;':c==='>'?'&gt;':c.charCodeAt(0)===34?'&quot;':'&#39;')}
 function localHref(v,fallback='/lawyer/workspace/ui'){const value=String(v||'');return value.startsWith('/')&&!value.startsWith('//')?value:fallback}
-function dt(v){return v?new Intl.DateTimeFormat('ru-RU',{dateStyle:'medium',timeStyle:'short'}).format(new Date(v)):'ещё не выбраны'}
+function dt(v){if(!v)return'ещё не выбраны';try{const rendered=new Intl.DateTimeFormat('ru-RU',{dateStyle:'medium',timeStyle:'short',timeZone:businessTimeZone}).format(new Date(v));return businessTimeLabel?rendered+' '+businessTimeLabel:rendered}catch{return String(v)}}
 function feedback(text,state=''){message.textContent=text;message.className='message '+state}
 async function api(path,opts={}){const response=await fetch(path,{...opts,credentials:'same-origin',cache:'no-store',headers:{'x-admin-token':token,'Content-Type':'application/json',...(opts.headers||{})}});if(response.status===401||response.status===403){location.href='/login';throw new Error('Сессия истекла или недостаточно прав')}const body=await response.json().catch(()=>({}));if(!response.ok)throw new Error(body.detail||'Ошибка запроса');return body}
 async function boot(){try{const response=await fetch('/auth/session',{credentials:'same-origin',cache:'no-store'});if(!response.ok){location.href='/login';return}const session=await response.json();if(!(session.roles||[session.role]).includes('lawyer'))throw new Error('Требуется роль юриста');token=session.api_token||'';await load(null,false)}catch(error){showError(error)}}
 function showError(error){content.innerHTML=`<div class="error"><b>Не удалось загрузить консультации</b><p>${esc(error.message||error)}</p><div class="actions"><button onclick="load(null,false)">Повторить</button><a class="button secondary" href="/lawyer/workspace/ui">Ко всем делам</a></div></div>`;feedback(error.message||String(error),'bad')}
-async function load(button=null,silent=false){if(button){button.disabled=true;button.setAttribute('aria-busy','true')}if(!silent)content.innerHTML='<div class="loading">Загрузка консультаций…</div>';try{data=await api('/lawyer/consultation-desk/data');lawyerName.textContent=data.lawyer?.name||'Консультации';freshness.textContent='Обновлено '+dt(data.generated_at);renderMetrics();render()}catch(error){if(silent){feedback('Автообновление не выполнено: '+error.message,'warn-text')}else{showError(error)}throw error}finally{if(button){button.disabled=false;button.removeAttribute('aria-busy')}}}
-function renderMetrics(){const summary=data?.summary||{};metrics.innerHTML=`<div class="metric"><b>${summary.active||0}</b><span>активных записей</span></div><div class="metric"><b>${summary.today||0}</b><span>сегодня</span></div><div class="metric ${summary.requires_outcome?'warn':''}"><b>${summary.requires_outcome||0}</b><span>нужно завершить</span></div><div class="metric ${summary.documents_on_review?'warn':''}"><b>${summary.documents_on_review||0}</b><span>материалов на проверке</span></div>`}
+async function load(button=null,silent=false){if(button){button.disabled=true;button.setAttribute('aria-busy','true')}if(!silent)content.innerHTML='<div class="loading">Загрузка консультаций…</div>';try{data=await api('/lawyer/consultation-desk/data');businessTimeZone=data.business_timezone||businessTimeZone;businessTimeLabel=data.business_timezone_label??businessTimeLabel;lawyerName.textContent=data.lawyer?.name||'Консультации';freshness.textContent='Обновлено '+dt(data.generated_at);renderMetrics();render()}catch(error){if(silent){feedback('Автообновление не выполнено: '+error.message,'warn-text')}else{showError(error)}throw error}finally{if(button){button.disabled=false;button.removeAttribute('aria-busy')}}}
+function renderMetrics(){const summary=data?.summary||{};metrics.innerHTML=`<div class="metric"><b>${summary.active||0}</b><span>активных записей</span></div><div class="metric"><b>${summary.today||0}</b><span>сегодня (${esc(businessTimeLabel||businessTimeZone)})</span></div><div class="metric ${summary.requires_outcome?'warn':''}"><b>${summary.requires_outcome||0}</b><span>нужно завершить</span></div><div class="metric ${summary.documents_on_review?'warn':''}"><b>${summary.documents_on_review||0}</b><span>материалов на проверке</span></div>`}
 function showTab(tab,button){currentTab=tab;document.querySelectorAll('.tabs button').forEach(item=>item.classList.toggle('active',item===button));render()}
 function tabItems(){const items=data?.consultations||[];if(currentTab==='today')return items.filter(item=>item.is_today);if(currentTab==='attention')return items.filter(item=>item.documents_on_review>0||['outcome_due','in_progress','lawyer_no_show','schedule_missing','status_review'].includes(item.state));return items}
 function filtered(){const items=tabItems(),query=(filter.value||'').trim().toLowerCase();if(!query)return items;return items.filter(item=>[item.case_number,item.client_name,item.question,item.label].some(value=>String(value||'').toLowerCase().includes(query)))}

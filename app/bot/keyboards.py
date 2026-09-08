@@ -2,25 +2,20 @@ from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
-NEW_CASE_REPLY_MENU_BUTTONS = [
-    [KeyboardButton(text="🧮 Рассчитать неустойку")],
-    [KeyboardButton(text="💬 Связаться с юристом")],
-    [KeyboardButton(text="🏠 Главная")],
-]
-
-ACTIVE_CASE_REPLY_MENU_BUTTONS = [
+# Canonical persistent information architecture. Availability is explained by
+# the destination screen instead of hiding stable navigation items as a Case
+# moves through M1/M2. This keeps Telegram muscle memory predictable.
+CANONICAL_REPLY_MENU_BUTTONS = [
+    [KeyboardButton(text="🏠 Главная"), KeyboardButton(text="🧮 Рассчитать неустойку")],
     [KeyboardButton(text="📁 Моё дело"), KeyboardButton(text="📄 Документы")],
-    [KeyboardButton(text="💬 Переписка"), KeyboardButton(text="✉️ Новый вопрос")],
-    [KeyboardButton(text="🏠 Главная")],
+    [KeyboardButton(text="💬 Связаться с юристом")],
 ]
 
-COMPLETED_CASE_REPLY_MENU_BUTTONS = [
-    [KeyboardButton(text="📁 Моё дело"), KeyboardButton(text="🧮 Новое обращение")],
-    [KeyboardButton(text="🏠 Главная")],
-]
-
-# Compatibility alias for integrations importing the historical constant.
-MAIN_MENU_BUTTONS = NEW_CASE_REPLY_MENU_BUTTONS
+# Compatibility aliases for code/tests that still import historical names.
+NEW_CASE_REPLY_MENU_BUTTONS = CANONICAL_REPLY_MENU_BUTTONS
+ACTIVE_CASE_REPLY_MENU_BUTTONS = CANONICAL_REPLY_MENU_BUTTONS
+COMPLETED_CASE_REPLY_MENU_BUTTONS = CANONICAL_REPLY_MENU_BUTTONS
+MAIN_MENU_BUTTONS = CANONICAL_REPLY_MENU_BUTTONS
 
 
 def reply_main_menu(
@@ -28,20 +23,14 @@ def reply_main_menu(
     *,
     completed_case: bool = False,
 ) -> ReplyKeyboardMarkup:
-    if case_exists:
-        keyboard = ACTIVE_CASE_REPLY_MENU_BUTTONS
-        placeholder = "Дело · документы · переписка"
-    elif completed_case:
-        keyboard = COMPLETED_CASE_REPLY_MENU_BUTTONS
-        placeholder = "Архив дела · новое обращение"
-    else:
-        keyboard = NEW_CASE_REPLY_MENU_BUTTONS
-        placeholder = "Выберите: расчёт или помощь юриста"
+    # case_exists/completed_case remain in the public function signature because
+    # older callers supply them. The persistent IA itself is deliberately stable.
+    _ = (case_exists, completed_case)
     return ReplyKeyboardMarkup(
-        keyboard=keyboard,
+        keyboard=CANONICAL_REPLY_MENU_BUTTONS,
         resize_keyboard=True,
         is_persistent=True,
-        input_field_placeholder=placeholder,
+        input_field_placeholder="Главная · расчёт · дело · документы · юрист",
     )
 
 
@@ -53,52 +42,65 @@ def main_menu(
     primary_action: tuple[str, str] | None = None,
 ):
     kb = InlineKeyboardBuilder()
+    primary_callback = primary_action[1] if primary_action else None
+
+    def secondary(text: str, callback_data: str) -> None:
+        # One screen = one primary action. If the primary button already opens
+        # a section, do not render the same callback again under another label.
+        if callback_data != primary_callback:
+            kb.button(text=text, callback_data=callback_data)
 
     if completed_case and not case_exists:
         if primary_action:
             text, callback_data = primary_action
             kb.button(text=text, callback_data=callback_data)
-        if not primary_action or primary_action[1] != "my_case_open":
-            kb.button(text="📁 Моё дело", callback_data="my_case_open")
-        kb.button(text="💳 Оплаты", callback_data="payments_open")
-        kb.button(text="🧮 Новое обращение", callback_data="calc_start")
-        kb.adjust(*([1, 1, 1, 1] if primary_action and primary_action[1] != "my_case_open" else [1, 1, 1]))
+        secondary("📁 Моё дело", "my_case_open")
+        secondary("💳 Оплаты", "payments_open")
+        secondary("🧮 Новое обращение", "calc_start")
+        count = 3 - int(primary_callback in {"my_case_open", "payments_open", "calc_start"})
+        kb.adjust(*([1] * (count + int(bool(primary_action)))))
         return kb.as_markup()
 
     if not case_exists:
         if primary_action:
             text, callback_data = primary_action
             kb.button(text=text, callback_data=callback_data)
-        kb.button(text="🧮 Рассчитать неустойку", callback_data="calc_start")
-        kb.button(text="💬 Связаться с юристом", callback_data="contact_lawyer")
-        kb.adjust(*([1, 1, 1] if primary_action else [1, 1]))
+        secondary("🧮 Рассчитать неустойку", "calc_start")
+        secondary("💬 Связаться с юристом", "contact_lawyer")
+        count = 2 - int(primary_callback in {"calc_start", "contact_lawyer"})
+        kb.adjust(*([1] * (count + int(bool(primary_action)))))
         return kb.as_markup()
 
     if primary_action:
         text, callback_data = primary_action
         kb.button(text=text, callback_data=callback_data)
 
-    kb.button(text="📁 Моё дело", callback_data="my_case_open")
-    kb.button(text="📄 Документы", callback_data="documents_open")
-    kb.button(text="💬 Переписка", callback_data="message_history")
-    kb.button(text="✉️ Задать вопрос по делу", callback_data="message_create")
+    # Inline actions are contextual; the persistent reply keyboard above is the
+    # stable five-item navigation. These shortcuts focus on the selected Case.
+    secondary("📁 Моё дело", "my_case_open")
+    secondary("📄 Документы", "documents_open")
+    secondary("💬 Связаться с юристом", "contact_lawyer")
 
-    # Payment provider mode controls whether a new online payment link can be
-    # created; it must never hide persisted payment status/history from a client.
-    # Explicit callers may still suppress the shortcut for a specialized screen.
     show_payments = True if payments_enabled is None else bool(payments_enabled)
     if show_payments:
-        kb.button(text="💳 Оплаты", callback_data="payments_open")
+        secondary("💳 Оплаты", "payments_open")
 
-    kb.button(text="⚖️ Связь и помощь", callback_data="contact_lawyer")
+    secondary("🧮 Новый расчёт", "calc_start")
 
-    row_sizes: list[int] = []
-    if primary_action:
-        row_sizes.append(1)
-    row_sizes.extend([2, 2])
-    if show_payments:
-        row_sizes.append(1)
-    row_sizes.append(1)
+    secondary_count = 4 + int(show_payments)
+    if primary_callback in {
+        "my_case_open",
+        "documents_open",
+        "contact_lawyer",
+        "payments_open" if show_payments else "",
+        "calc_start",
+    }:
+        secondary_count -= 1
+    row_sizes: list[int] = [1] if primary_action else []
+    while secondary_count > 0:
+        row = min(2, secondary_count)
+        row_sizes.append(row)
+        secondary_count -= row
     kb.adjust(*row_sizes)
     return kb.as_markup()
 

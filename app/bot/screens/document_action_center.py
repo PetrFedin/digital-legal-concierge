@@ -139,14 +139,29 @@ async def _safe_present(callback: CallbackQuery, text: str, *, reply_markup) -> 
 
 
 async def _active_case(callback: CallbackQuery, db):
+    """Resolve document context without guessing between active matters.
+
+    Historical inline callbacks do not carry a Case id. They may safely reuse an
+    explicitly selected active Case, or the only active Case. When several active
+    matters remain and the selection is missing/stale, fail closed and ask the
+    client to choose; never fall back to the newest Case for an upload action.
+    """
+
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
-    case = await ctx.case_service.get_active_case_for_user(user.id)
-    return user, case
+    case = await ctx.case_service.get_selected_case_for_user(
+        user.id,
+        include_terminal=False,
+    )
+    if case is not None:
+        return user, case
+    active_cases = await ctx.case_service.get_active_cases_for_user(user.id)
+    return user, active_cases[0] if len(active_cases) == 1 else None
 
 
 def _no_case_markup():
     return one(
+        ("📁 Выбрать дело", "my_case_open"),
         ("🧮 Рассчитать неустойку", "calc_start"),
         ("💬 Связаться с юристом", "contact_lawyer"),
         ("🏠 Главная", "nav_home"),
@@ -194,7 +209,12 @@ def _next_action(case, documents: list[Document]):
         suffix = "файл" if counts["new"] == 1 else "новых файла"
         return (
             f"Передать юристу {counts['new']} {suffix}. До передачи файлы не входят в очередь проверки.",
-            [("✅ Передать новые файлы юристу", "doc_finish_upload")],
+            [
+                (
+                    "✅ Передать новые файлы юристу",
+                    f"doc_finish_upload:v2:{int(case.id)}",
+                )
+            ],
         )
 
     if not documents and case.route == "M2":
@@ -202,7 +222,12 @@ def _next_action(case, documents: list[Document]):
         if status in _M2_CAN_SKIP_STATUSES:
             return (
                 "Документы для консультации необязательны. Можно перейти к следующему шагу дела или добавить материал для подготовки юриста.",
-                [("➡️ Продолжить без документов", "doc_skip_m2")],
+                [
+                    (
+                        "➡️ Продолжить без документов",
+                        f"doc_skip_m2:v2:{int(case.id)}",
+                    )
+                ],
             )
         return (
             "Документы для консультации можно добавить при необходимости. Основной шаг сейчас находится в разделе «Моё дело».",
@@ -246,9 +271,9 @@ async def _render_home(callback: CallbackQuery, state: FSMContext, db) -> None:
         await _safe_present(
             callback,
             "📄 ДОКУМЕНТЫ\n\n"
-            "СЕЙЧАС\nАктивного дела пока нет.\n\n"
+            "СЕЙЧАС\nАктивное дело не выбрано или больше недоступно.\n\n"
             "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
-            "Создайте обращение через расчёт или свяжитесь с юридической командой.",
+            "Если у вас несколько обращений, выберите нужное в «Моё дело». Если активных дел нет, создайте новое через расчёт.",
             reply_markup=_no_case_markup(),
         )
         return
@@ -293,7 +318,8 @@ async def _render_home(callback: CallbackQuery, state: FSMContext, db) -> None:
 
     await _safe_present(
         callback,
-        "📄 ДОКУМЕНТЫ\n\n"
+        "📄 ДОКУМЕНТЫ\n"
+        f"Обращение № {case.case_number}\n\n"
         "СЕЙЧАС\n"
         f"{summary}\n\n"
         "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
@@ -311,6 +337,63 @@ async def documents_action_center(
     db,
 ):
     await _render_home(callback, state, db)
+
+
+@router.callback_query(lambda c: c.data == "documents_list_open")
+async def exact_replacement_document_list(
+    callback: CallbackQuery,
+    state: FSMContext,
+    db,
+):
+    await _clear_document_upload_state(state)
+    _, case = await _active_case(callback, db)
+    if not case:
+        await _safe_present(
+            callback,
+            "Нельзя однозначно определить активное дело. Старая кнопка списка не создаёт и не выбирает обращение автоматически.",
+            reply_markup=_no_case_markup(),
+        )
+        return
+
+    all_documents = await DocumentService(db).list_case_documents(case.id)
+    documents = _active(all_documents)
+    replacements = [
+        item for item in documents if _status(item) in _REPLACEMENT_STATUSES
+    ]
+    if not replacements:
+        from app.bot.screens.documents import _render_current_documents
+
+        await _render_current_documents(callback, db, 0)
+        return
+
+    preview = "\n\n".join(_document_line(item) for item in documents[:8])
+    if len(documents) > 8:
+        preview += f"\n\n• Ещё актуальных документов: {len(documents) - 8}."
+    buttons = [
+        (
+            f"🔁 Заменить «{item.title}» · v{item.version}",
+            _reupload_callback(item),
+        )
+        for item in replacements[:6]
+    ]
+    buttons.extend(
+        [
+            ("🕘 История версий", "documents_history_open"),
+            ("✉️ Вопрос по документам", "message_create"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ]
+    )
+    await _safe_present(
+        callback,
+        "📋 АКТУАЛЬНЫЕ ДОКУМЕНТЫ\n"
+        f"Обращение № {case.case_number}\n\n"
+        "СЕЙЧАС\nЮрист запросил исправление одного или нескольких файлов.\n\n"
+        "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+        "Выберите конкретный документ ниже. Каждая кнопка привязана к точному document_id и версии; устаревший запрос будет заблокирован перед загрузкой файла.\n\n"
+        f"{preview}",
+        reply_markup=one(*buttons),
+    )
 
 
 async def _stale_reupload(
@@ -367,7 +450,7 @@ async def direct_document_reupload(
         await _clear_document_upload_state(state)
         await _safe_present(
             callback,
-            "Активное дело больше не найдено. Новая версия не загружалась.",
+            "Нельзя однозначно определить активное дело. Новая версия не загружалась. Выберите нужное обращение в «Моё дело» и откройте документы заново.",
             reply_markup=_no_case_markup(),
         )
         return
@@ -414,6 +497,7 @@ async def direct_document_reupload(
 
     await state.clear()
     await state.update_data(
+        document_case_id=int(case.id),
         document_type=document.document_type,
         replacement_document_id=document.id,
         replacement_expected_version=expected_version,
@@ -423,12 +507,14 @@ async def direct_document_reupload(
     comment = _short(document.lawyer_comment or "Загрузите исправленную версию файла.")
     await _safe_present(
         callback,
-        "🔁 НОВАЯ ВЕРСИЯ ДОКУМЕНТА\n\n"
+        "🔁 НОВАЯ ВЕРСИЯ ДОКУМЕНТА\n"
+        f"Обращение № {case.case_number}\n\n"
         "СЕЙЧАС\n"
         f"Юрист попросил заменить «{document.title}», версия {document.version}.\n"
         f"Что исправить: {comment}\n\n"
         "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
-        "Прикрепите PDF, DOCX, JPG или PNG. Тип документа уже выбран — повторно выбирать его не нужно.\n\n"
+        "Прикрепите PDF, DOCX, JPG или PNG. Тип документа уже выбран — повторно выбирать его не нужно. "
+        "Если вы случайно переключитесь на другое дело, бот не перепутает файл: черновик замены сохранится и предложит вернуться сюда.\n\n"
         f"После безопасной проверки файл будет сохранён как следующая версия «{document.title}». Старый запрос останется в истории.",
         reply_markup=one(
             ("✖️ Отменить замену", "documents_open"),

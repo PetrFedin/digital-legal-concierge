@@ -27,6 +27,11 @@ class Document(Base, TimestampMixin):
     document_type: Mapped[str] = mapped_column(String(100), index=True)
     title: Mapped[str] = mapped_column(String(255))
     file_name: Mapped[str] = mapped_column(String(255))
+    # Canonical value is a portable storage key:
+    # ``cases/<case_id>/<random>.dlcenc``. Historical rows may still contain
+    # host-specific absolute paths; LocalStorageService treats only their final
+    # case/key suffix as authoritative and rebases it onto the current
+    # STORAGE_DIR. New writes must never persist a host-specific absolute path.
     file_path: Mapped[str] = mapped_column(String(500))
     mime_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
     file_size: Mapped[int | None] = mapped_column(Integer, nullable=True)

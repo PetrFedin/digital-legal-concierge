@@ -1,13 +1,12 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from app.api.lawyer_workspace import (
-    _consultations_today_count,
-    _document_readiness,
-    _latest_documents,
-)
+import pytest
+
+from app.api.lawyer_product import _business_today
 from app.domain.statuses.document_statuses import DocumentStatus
+from app.lawyer.lawyer_decisions import LawyerDecisionService
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,70 +26,89 @@ def document(*, document_type: str, version: int, status: str, title: str):
     )
 
 
-def test_latest_document_version_controls_acceptance_readiness():
+class _ScalarsResult:
+    def __init__(self, documents):
+        self._documents = list(documents)
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return list(self._documents)
+
+
+class _DocumentDb:
+    def __init__(self, documents):
+        self.documents = list(documents)
+
+    async def execute(self, _statement):
+        return _ScalarsResult(self.documents)
+
+
+@pytest.mark.asyncio
+async def test_latest_document_version_controls_acceptance_readiness():
     documents = [
-        document(
-            document_type="DDU",
-            version=1,
-            status=DocumentStatus.APPROVED,
-            title="ДДУ",
-        ),
         document(
             document_type="DDU",
             version=2,
             status=DocumentStatus.ON_REVIEW,
             title="ДДУ",
         ),
-    ]
-
-    latest = _latest_documents(documents)
-    ready, reason = _document_readiness(documents)
-
-    assert latest["DDU"].version == 2
-    assert ready is False
-    assert "ещё не принята" in str(reason)
-
-
-def test_all_latest_documents_must_be_approved():
-    approved = [
         document(
             document_type="DDU",
-            version=2,
+            version=1,
             status=DocumentStatus.APPROVED,
             title="ДДУ",
         ),
+    ]
+    service = LawyerDecisionService(_DocumentDb(documents))
+
+    with pytest.raises(ValueError, match="ещё не принята"):
+        await service.assert_documents_ready_for_acceptance(
+            case=SimpleNamespace(id=101)
+        )
+
+
+@pytest.mark.asyncio
+async def test_all_latest_documents_must_be_approved():
+    approved = [
         document(
             document_type="APPENDIX",
             version=1,
             status=DocumentStatus.APPROVED,
             title="Приложение",
         ),
+        document(
+            document_type="DDU",
+            version=2,
+            status=DocumentStatus.APPROVED,
+            title="ДДУ",
+        ),
     ]
-    unresolved = approved + [
+    await LawyerDecisionService(_DocumentDb(approved)).assert_documents_ready_for_acceptance(
+        case=SimpleNamespace(id=102)
+    )
+
+    unresolved = [
+        *approved,
         document(
             document_type="PAYMENT_PROOF",
             version=1,
             status=DocumentStatus.NEEDS_REUPLOAD,
             title="Платёжный документ",
-        )
+        ),
     ]
+    with pytest.raises(ValueError, match="Платёжный документ"):
+        await LawyerDecisionService(
+            _DocumentDb(unresolved)
+        ).assert_documents_ready_for_acceptance(case=SimpleNamespace(id=102))
 
-    assert _document_readiness(approved) == (True, None)
-    ready, reason = _document_readiness(unresolved)
-    assert ready is False
-    assert "Платёжный документ" in str(reason)
 
+def test_consultation_today_uses_configured_business_date():
+    now = datetime(2026, 8, 24, 21, 30, tzinfo=timezone.utc)
+    scheduled = datetime(2026, 8, 24, 21, 45, tzinfo=timezone.utc)
 
-def test_consultation_today_metric_counts_only_same_utc_date():
-    now = datetime(2026, 8, 7, 12, 0, tzinfo=timezone.utc)
-    values = [
-        now - timedelta(hours=1),
-        now + timedelta(hours=3),
-        now - timedelta(days=1),
-        None,
-    ]
-
-    assert _consultations_today_count(values, now=now) == 2
+    assert _business_today(scheduled, now=now) is True
 
 
 def test_lawyer_acceptance_has_domain_document_gate():
@@ -185,10 +203,14 @@ def test_workspace_has_complete_loading_empty_error_and_recovery_states():
     assert 'href="/operator"' in source
 
 
-def test_operator_exposes_new_workspace_and_keeps_legacy_route():
-    source = read("app/api/operator.py")
+def test_operator_and_product_router_expose_current_and_compatibility_workspaces():
+    operator = read("app/api/operator.py")
+    product = read("app/api/lawyer_product.py")
+    main = read("app/main.py")
 
-    assert 'href="/lawyer/workspace/ui"' in source
-    assert '"lawyer": "/lawyer/workspace/ui"' in source
-    assert '"lawyer_legacy": "/lawyer/ui"' in source
-    assert "router.include_router(lawyer_workspace_router)" in source
+    assert 'href="/lawyer/workspace/ui"' in operator
+    assert "link('/lawyer/workspace/ui'" in operator
+    assert '"/lawyer/ui"' in product
+    assert '"/lawyer/workspace/data"' in product
+    assert '"/lawyer/workspace/ui"' in product
+    assert '("lawyer_product", lawyer_product_router)' in main

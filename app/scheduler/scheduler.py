@@ -8,6 +8,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.db.session import AsyncSessionLocal
+from app.domain.notifications.client_inactivity_service import (
+    ClientInactivityReminderService,
+)
 from app.domain.notifications.notification_sender import NotificationSender
 from app.scheduler.jobs import SchedulerJobs
 from app.scheduler.lease import SchedulerCycleLease
@@ -22,6 +25,7 @@ SCHEDULER_JOB_TIMEOUT_SECONDS = 30 * 60
 JOB_SPECS = (
     ("encrypted_backup", "scheduler", "create_encrypted_backup_if_due"),
     ("payment_reminders", "scheduler", "check_unpaid_payments"),
+    ("client_inactivity", "client_inactivity", "run"),
     ("released_slots", "scheduler", "release_unpaid_consultation_slots"),
     ("consultation_reminders", "scheduler", "check_consultation_reminders"),
     (
@@ -120,11 +124,14 @@ class AppScheduler:
     ) -> SchedulerJobOutcome:
         started = time.monotonic()
         async with AsyncSessionLocal() as db:
-            service = (
-                SchedulerJobs(db)
-                if service_type == "scheduler"
-                else NotificationSender(db)
-            )
+            if service_type == "scheduler":
+                service = SchedulerJobs(db)
+            elif service_type == "sender":
+                service = NotificationSender(db)
+            elif service_type == "client_inactivity":
+                service = ClientInactivityReminderService(db)
+            else:
+                raise RuntimeError(f"Unknown scheduler service type: {service_type}")
             try:
                 result = await asyncio.wait_for(
                     getattr(service, method_name)(),

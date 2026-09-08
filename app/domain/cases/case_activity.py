@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_timeline import get_client_visible_status
 from app.models.audit_log import AuditLog
+from app.presentation_time import format_business_datetime
 
 ActivityAudience = Literal["client", "staff"]
 
@@ -228,7 +229,10 @@ def _format_datetime(value: object) -> str | None:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except (TypeError, ValueError):
         return None
-    return parsed.strftime("%d.%m.%Y в %H:%M")
+    return format_business_datetime(
+        parsed,
+        pattern="%d.%m.%Y в %H:%M",
+    )
 
 
 def _document_label(payload: dict[str, object]) -> str:

@@ -17,6 +17,7 @@ from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
 from app.models.payment import Payment
+from app.presentation_time import format_business_datetime
 from app.security.backup_freshness import backup_freshness_status
 from app.security.backup_restore_fence import (
     backup_maintenance_lock,
@@ -150,7 +151,7 @@ class SchedulerJobs:
                 "case_number": (
                     case.case_number if case else consultation.case_id
                 ),
-                "date": scheduled_at.strftime("%d.%m.%Y %H:%M UTC"),
+                "date": format_business_datetime(scheduled_at),
             }
             if remaining <= timedelta(hours=2):
                 event_code = "CONSULTATION_REMINDER_2H"
@@ -202,9 +203,7 @@ class SchedulerJobs:
                     "case_number": (
                         case.case_number if case else consultation.case_id
                     ),
-                    "date": as_utc(slot.starts_at).strftime(
-                        "%d.%m.%Y %H:%M UTC"
-                    ),
+                    "date": format_business_datetime(as_utc(slot.starts_at)),
                 },
                 dedupe_key=(
                     f"consultation:{consultation.id}:completion-overdue"

@@ -1,115 +1,72 @@
 from __future__ import annotations
 
-from pathlib import Path
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import RedirectResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi import APIRouter
-from fastapi.responses import HTMLResponse
-
+from app.api.legacy_center_guards import router as legacy_center_guards_router
 from app.config import settings
+from app.db.session import get_db
+from app.security.access_control import ROLE_ADMIN, ROLE_SUPERADMIN
+from app.security.document_access import DocumentAccessError, resolve_document_actor
 
-router = APIRouter(prefix="/maintenance-center", tags=["maintenance-center"])
-
-CRITICAL_LINKS = [
-    ("Запуск / Go-live", "/go-live/ui", "Финальная проверка перед запуском"),
-    ("Production Center", "/production-center/ui", "Сводная готовность production"),
-    ("Final QA", "/final-qa/ui", "Ручная проверка клиент/админ/юрист"),
-    ("Final Handover", "/final-handover/ui", "Передача проекта оператору"),
-    ("Health Center", "/health-center/ui", "Здоровье сервиса"),
-    ("Diagnostic Center", "/diagnostic-center/ui", "Диагностика окружения"),
-    ("Recovery Center", "/recovery-center/ui", "Восстановление типовых сбоев"),
-    ("Install Wizard", "/install-wizard/ui", "Проверка установки"),
-    ("Initial Setup", "/initial-setup-wizard/ui", "Первичная настройка компании"),
-    ("Settings", "/settings-ui", "Суммы, проценты, сроки"),
-    ("Operations Center", "/operations-center/ui", "Операционные очереди"),
-    ("Task Center", "/task-center/ui", "Задачи"),
-    ("Message Center", "/message-center/ui", "Сообщения клиентов"),
-    ("Notification Center", "/notification-center/ui", "Уведомления"),
-    ("Audit Center", "/audit-center/ui", "Журнал действий"),
-    ("Backup Manager", "/backup-manager/ui", "Резервные копии"),
-    ("Retention Center", "/retention/ui", "Legal hold и хранение закрытых дел"),
-    ("Search Center", "/search-center/ui", "Поиск"),
-    ("Admin UI", "/admin-ui", "Админка"),
-    ("Scenario Map", "/scenario-map-ui", "Карта экранов B-001—B-028"),
-]
+# Keep this router unprefixed so compatibility guards can own the exact legacy
+# URLs before the older center routers are mounted in app.main.
+router = APIRouter(tags=["maintenance-center"])
 
 
-def _check_file(path: str) -> bool:
-    return Path(path).exists()
+def _token(request: Request, header_token: str | None) -> str | None:
+    return header_token or request.cookies.get(settings.admin_session_cookie)
 
 
-@router.get("/status")
-async def maintenance_status():
-    storage_dir = Path(settings.storage_dir)
-    docs = Path("docs")
-    checks = {
-        "env_exists": _check_file(".env"),
-        "env_example_exists": _check_file(".env.example"),
-        "db_configured": bool(settings.database_url),
-        "bot_configured_or_disabled": bool(
-            settings.bot_token and settings.bot_token != "CHANGE_ME"
-        )
-        or not settings.run_bot,
-        "admin_password_changed": bool(
-            settings.admin_password and settings.admin_password != "admin"
-        ),
-        "storage_dir_exists": storage_dir.exists(),
-        "docs_exist": docs.exists(),
-        "run_script_exists": _check_file("run.sh"),
-        "control_script_exists": _check_file("bot-control.sh"),
-        "acceptance_script_exists": _check_file("acceptance.sh"),
-        "production_compose_exists": _check_file("docker-compose.production.yml"),
-    }
+async def _require_admin(request: Request, db: AsyncSession, header_token: str | None):
+    actor = await resolve_document_actor(db, _token(request, header_token))
+    if actor.role not in {ROLE_ADMIN, ROLE_SUPERADMIN}:
+        raise HTTPException(status_code=403, detail="Доступ только для администратора")
+    return actor
+
+
+@router.get("/maintenance-center/status")
+async def maintenance_status(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    await _require_admin(request, db, x_admin_token)
     return {
-        "ok": all(checks.values()),
-        "version": "1.0.0-v45",
-        "checks": checks,
-        "links": [
-            {"title": title, "url": url, "description": description}
-            for title, url, description in CRITICAL_LINKS
-        ],
-        "operator_commands": [
-            "./run.sh",
-            "./bot-control.sh",
-            "./acceptance.sh",
-            "./backup.sh",
-            "./status.sh",
-            "./logs.sh",
-        ],
+        "ok": True,
+        "workdesk": "/admin/workdesk/ui",
+        "process_integrity": "/admin/workdesk/integrity",
+        "health": "/health-center/ui",
+        "diagnostics": "/diagnostic-center/ui",
+        "notifications": "/admin/notification-delivery/ui",
+        "audit": "/audit-center/ui",
+        "security": "/security-events/ui",
+        "recovery": "/recovery-center/ui",
     }
 
 
-@router.get("/ui", response_class=HTMLResponse)
-async def maintenance_ui():
-    status = await maintenance_status()
-    rows = "".join(
-        f"<tr><td>{name}</td><td>{'✅' if value else '⚠️'}</td></tr>"
-        for name, value in status["checks"].items()
-    )
-    links = "".join(
-        f"<a class='card' href='{url}'><b>{title}</b><span>{desc}</span></a>"
-        for title, url, desc in CRITICAL_LINKS
-    )
-    commands = "".join(
-        f"<code>{command}</code>" for command in status["operator_commands"]
-    )
-    return f"""
-    <html><head><meta charset='utf-8'><title>Maintenance Center v45</title>
-    <style>
-    body{{font-family:Arial,sans-serif;background:#f6f6f6;margin:32px;color:#111}}
-    h1{{margin-bottom:6px}} .ok{{font-size:20px;margin:14px 0 24px}}
-    .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;margin:20px 0}}
-    .card{{display:block;background:white;border:1px solid #ddd;border-radius:12px;padding:14px;text-decoration:none;color:#111}}
-    .card span{{display:block;color:#666;margin-top:6px;font-size:13px}}
-    table{{border-collapse:collapse;background:white;width:100%;max-width:760px}}
-    td{{border:1px solid #ddd;padding:10px}}
-    code{{display:inline-block;background:#111;color:white;padding:8px 10px;border-radius:8px;margin:4px}}
-    .note{{background:#fff8d8;border:1px solid #e7d27a;padding:14px;border-radius:12px;max-width:900px}}
-    </style></head><body>
-    <h1>🛠 Maintenance Center v45</h1>
-    <div class='ok'>Общий статус: {'✅ готов к операторской проверке' if status['ok'] else '⚠️ требуется настройка'}</div>
-    <div class='note'>Это единая страница обслуживания: запуск, диагностика, настройки, операции, backup, поиск, аудит и финальная приемка. Если оператор потерялся — открывать сюда. Бот не должен превращаться в квест с факелом.</div>
-    <h2>Быстрые команды</h2><div>{commands}</div>
-    <h2>Проверки</h2><table>{rows}</table>
-    <h2>Центры управления</h2><div class='grid'>{links}</div>
-    </body></html>
-    """
+@router.get("/maintenance-center/ui")
+async def maintenance_ui(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    try:
+        await _require_admin(request, db, x_admin_token)
+    except DocumentAccessError as error:
+        if error.status_code == 401:
+            return RedirectResponse(url="/login", status_code=303)
+        if error.status_code in {403, 409}:
+            return RedirectResponse(url="/admin-ui", status_code=303)
+        raise
+    except HTTPException as error:
+        if error.status_code in {403, 409}:
+            return RedirectResponse(url="/admin-ui", status_code=303)
+        raise
+    return RedirectResponse(url="/admin/workdesk/ui", status_code=303)
+
+
+# These routes are deliberately registered after the maintained maintenance
+# endpoints but before final_qa_center/retention_center are included by main.py.
+router.include_router(legacy_center_guards_router)

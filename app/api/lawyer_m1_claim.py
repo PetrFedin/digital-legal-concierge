@@ -4,15 +4,14 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.lawyer import assigned_case, assert_case_snapshot
-from app.api.lawyer_m1_enforcement import router as enforcement_router
 from app.db.session import get_db
 from app.domain.cases.m1_claim_service import M1ClaimService
 from app.domain.cases.sla_service import CaseSLAError, CaseSLAService
 from app.domain.notifications.notification_engine import NotificationEngine
+from app.presentation_time import format_business_datetime
 from app.security.lawyer_access import require_lawyer_actor
 
 router = APIRouter(prefix="/lawyer", tags=["lawyer-m1-claim"])
-router.include_router(enforcement_router)
 
 
 def _snapshot(payload: dict | None) -> tuple[str | None, object | None, object | None]:
@@ -139,7 +138,7 @@ async def mark_claim_sent(
             payload={
                 "case_number": case.case_number,
                 "due_at": (
-                    due_at.strftime("%d.%m.%Y %H:%M UTC")
+                    format_business_datetime(due_at)
                     if due_at
                     else "уточняется"
                 ),
@@ -237,7 +236,7 @@ async def open_court_payment(
     if not comment or len(comment) < 5:
         raise HTTPException(
             status_code=400,
-            detail="Укажите судебное событие или основание открытия второго платежа",
+            detail="Опишите судебный результат или основание открытия второго платежа",
         )
     try:
         case = await _assigned_snapshot_case(
@@ -252,6 +251,8 @@ async def open_court_payment(
             case=case,
             lawyer_id=actor.lawyer.id,
             comment=comment,
+            decision_reference=payload.get("decision_reference"),
+            decision_date=payload.get("decision_date"),
         )
         await CaseSLAService(db).record_lawyer_activity(
             case=case,
@@ -281,5 +282,7 @@ async def open_court_payment(
         "case_id": case.id,
         "status": case.status,
         "next_action": case.next_action,
+        "decision_reference": str(payload.get("decision_reference") or "").strip(),
+        "decision_date": str(payload.get("decision_date") or "").strip(),
         "updated_at": case.updated_at.isoformat(),
     }

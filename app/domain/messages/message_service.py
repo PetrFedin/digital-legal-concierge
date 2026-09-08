@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_history import add_case_history_event
+from app.domain.cases.sla_service import CaseSLAService
 from app.models.case import Case
 from app.models.message import Message
 
@@ -177,6 +178,20 @@ class MessageService:
             action="LAWYER_MESSAGE_CREATED",
             new_value={"message_id": msg.id, "text": text[:500]},
         )
+
+        # A reply in the shared message center is the primary corrective action
+        # shown to an assigned lawyer for unread messages and SLA breaches. Keep
+        # the SLA clock in the same transaction as the legal correspondence so
+        # the UI cannot say "reply to the client" while the case remains
+        # indefinitely overdue after that reply. Broad staff replies only count
+        # when they are already attributed to the case's assigned lawyer.
+        if lawyer_id is not None and case.assigned_lawyer_id == lawyer_id:
+            await CaseSLAService(self.db).record_lawyer_activity(
+                case=case,
+                lawyer_id=lawyer_id,
+                action="CLIENT_MESSAGE_REPLIED",
+                comment=text[:500],
+            )
         return msg
 
     async def list_case_messages(

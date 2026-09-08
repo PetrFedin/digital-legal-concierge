@@ -15,6 +15,8 @@ from app.security.security_events import (
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}
 WEBHOOK_PREFIXES = ("/webhooks/",)
+BROWSER_SESSION_SENTINEL = "httponly-cookie-session"
+ADMIN_TOKEN_HEADER = b"x-admin-token"
 SENSITIVE_PREFIXES = (
     "/admin",
     "/access",
@@ -28,6 +30,37 @@ SENSITIVE_PREFIXES = (
     "/maintenance",
     "/production",
     "/security",
+    "/audit",
+    "/retention",
+    "/recovery",
+    "/document-access",
+    "/contracts",
+    "/message-center",
+    "/consultation-slots",
+    "/search-center",
+    "/settings-ui",
+    "/health-center",
+    "/diagnostic-center",
+    "/initial-setup-wizard",
+    "/launch-check",
+    "/final-handover",
+    "/final-qa",
+    "/go-live",
+    "/launch-assistant",
+    "/install-wizard",
+    "/operations",
+    "/monitoring",
+    "/notification",
+    "/acceptance",
+    "/release-manager",
+    "/task-center",
+    "/template-builder",
+    "/calculator-builder",
+    "/integration-center",
+    "/scenario-map",
+    "/ops-guide",
+    "/handover",
+    "/exports",
 )
 
 
@@ -61,6 +94,37 @@ def allowed_origins(request: Request) -> set[str]:
         normalize_origin(settings.public_base_url),
     }
     return {value for value in values if value}
+
+
+def _explicit_bearer_token(value: str | None) -> str | None:
+    """Return only a real bearer credential, never the browser sentinel."""
+
+    token = str(value or "").strip()
+    if not token or token == BROWSER_SESSION_SENTINEL:
+        return None
+    return token if decode_access_token(token) else None
+
+
+def _inject_cookie_admin_header(request: Request, session_cookie: str | None) -> None:
+    """Bridge a validated ambient session to legacy Header dependencies.
+
+    Browser staff screens historically copied the bearer token out of
+    `/auth/session` and then sent it as `X-Admin-Token`. That defeats most of the
+    value of an HttpOnly cookie. The origin guard is the correct compatibility
+    boundary: unsafe cookie requests are validated first, then the secret is
+    injected only inside the ASGI request scope where application dependencies
+    can keep using their existing header contract.
+    """
+
+    if not session_cookie:
+        return
+    headers = [
+        (name, value)
+        for name, value in request.scope.get("headers", [])
+        if name.lower() != ADMIN_TOKEN_HEADER
+    ]
+    headers.append((ADMIN_TOKEN_HEADER, str(session_cookie).encode("latin-1")))
+    request.scope["headers"] = headers
 
 
 class RequestOriginGuardMiddleware(BaseHTTPMiddleware):
@@ -113,15 +177,25 @@ class RequestOriginGuardMiddleware(BaseHTTPMiddleware):
         return JSONResponse(status_code=403, content={"detail": detail})
 
     async def dispatch(self, request: Request, call_next):
-        if request.method.upper() in SAFE_METHODS:
+        method = request.method.upper()
+        session_cookie = request.cookies.get(settings.admin_session_cookie)
+        challenge_cookie = request.cookies.get("dlc_mfa_challenge")
+        explicit_bearer = _explicit_bearer_token(
+            request.headers.get("x-admin-token")
+        )
+
+        # Real API bearer credentials preserve the existing non-browser API
+        # contract. Browser compatibility sentinels and invalid/stale header
+        # values are not allowed to bypass the ambient-cookie origin checks.
+        if explicit_bearer:
+            return await call_next(request)
+
+        if method in SAFE_METHODS:
+            _inject_cookie_admin_header(request, session_cookie)
             return await call_next(request)
         if request.url.path.startswith(WEBHOOK_PREFIXES):
             return await call_next(request)
-        if request.headers.get("x-admin-token"):
-            return await call_next(request)
 
-        session_cookie = request.cookies.get(settings.admin_session_cookie)
-        challenge_cookie = request.cookies.get("dlc_mfa_challenge")
         has_ambient_credentials = bool(session_cookie or challenge_cookie)
         fetch_site = str(request.headers.get("sec-fetch-site") or "").lower()
         supplied_origin = normalize_origin(request.headers.get("origin"))
@@ -162,6 +236,8 @@ class RequestOriginGuardMiddleware(BaseHTTPMiddleware):
                 session_cookie=session_cookie,
                 challenge_cookie=challenge_cookie,
             )
+
+        _inject_cookie_admin_header(request, session_cookie)
         return await call_next(request)
 
 

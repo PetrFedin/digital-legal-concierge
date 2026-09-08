@@ -13,7 +13,10 @@ class Calculation(Base, TimestampMixin):
     __tablename__ = "calculations"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    case_id: Mapped[int] = mapped_column(ForeignKey("cases.id"), unique=True)
+    case_id: Mapped[int] = mapped_column(
+        ForeignKey("cases.id"),
+        index=True,
+    )
     contract_price: Mapped[Decimal | None] = mapped_column(
         Numeric(14, 2), nullable=True
     )
@@ -34,4 +37,4 @@ class Calculation(Base, TimestampMixin):
     )
     is_preliminary: Mapped[bool] = mapped_column(Boolean, default=True)
 
-    case = relationship("Case", back_populates="calculation")
+    case = relationship("Case", back_populates="calculations")

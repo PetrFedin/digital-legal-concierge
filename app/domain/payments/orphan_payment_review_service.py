@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.notifications.notification_engine import NotificationEngine
+from app.domain.payments.payment_lifecycle import PaymentLifecycleService
 from app.domain.payments.payment_review_service import PaymentReviewService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.payment_statuses import PaymentStatus
@@ -39,6 +40,56 @@ class OrphanPaymentReviewService:
             )
         return normalized
 
+    async def _require_exact_retry_or_conflict(
+        self,
+        *,
+        payment: Payment,
+        case: Case,
+        actor_id: int | None,
+        comment: str,
+        linked_consultation_id: int,
+        linked_slot_id: int | None,
+    ) -> None:
+        """Accept only the exact orphan-refund command that already committed."""
+
+        event = await PaymentReviewService(self.db)._latest_resolution_event(
+            payment=payment,
+            case_id=int(case.id),
+        )
+        if event is None:
+            raise OrphanPaymentReviewResolutionError(
+                "Платёж уже вышел из очереди сверки другим процессом. Обновите карточку."
+            )
+
+        new_value = event.new_value or {}
+        actual_decision = str(new_value.get("decision") or "").strip().lower()
+        try:
+            actual_orphan_consultation_id = int(
+                new_value.get("orphan_consultation_id") or 0
+            )
+        except (TypeError, ValueError):
+            actual_orphan_consultation_id = 0
+        try:
+            actual_orphan_slot_id = int(new_value.get("orphan_slot_id") or 0)
+        except (TypeError, ValueError):
+            actual_orphan_slot_id = 0
+        actual_comment = str(event.comment or "").strip()
+        actual_actor_id = int(event.actor_id) if event.actor_id is not None else None
+        expected_actor_id = int(actor_id) if actor_id is not None else None
+
+        if (
+            actual_decision == "refund_orphan"
+            and actual_orphan_consultation_id == int(linked_consultation_id)
+            and actual_orphan_slot_id == int(linked_slot_id or 0)
+            and actual_comment == str(comment).strip()
+            and actual_actor_id == expected_actor_id
+        ):
+            return
+
+        raise OrphanPaymentReviewResolutionError(
+            "Платёж уже обработан другим или отличающимся решением. Обновите очередь перед повтором."
+        )
+
     async def route_to_refund(
         self,
         *,
@@ -60,12 +111,6 @@ class OrphanPaymentReviewService:
             raise OrphanPaymentReviewResolutionError(
                 "Refund-only сверка доступна только для платежа консультации"
             )
-        if payment.status == PaymentStatus.REFUND_PENDING:
-            return payment
-        if payment.status != PaymentStatus.PAID_REVIEW:
-            raise OrphanPaymentReviewResolutionError(
-                "Платёж не находится в статусе проверки"
-            )
 
         linked_consultation_id, linked_slot_id = PaymentReviewService.reservation_context(
             payment
@@ -85,6 +130,21 @@ class OrphanPaymentReviewService:
         if not case:
             raise LookupError("Дело не найдено")
 
+        if payment.status == PaymentStatus.REFUND_PENDING:
+            await self._require_exact_retry_or_conflict(
+                payment=payment,
+                case=case,
+                actor_id=actor_id,
+                comment=comment,
+                linked_consultation_id=linked_consultation_id,
+                linked_slot_id=linked_slot_id,
+            )
+            return payment
+        if payment.status != PaymentStatus.PAID_REVIEW:
+            raise OrphanPaymentReviewResolutionError(
+                "Платёж не находится в статусе проверки"
+            )
+
         existing = (
             await self.db.execute(
                 select(Consultation.id).where(
@@ -99,8 +159,10 @@ class OrphanPaymentReviewService:
                 "чтобы не обойти проверку брони."
             )
 
-        old_status = payment.status
-        payment.status = PaymentStatus.REFUND_PENDING
+        transition = PaymentLifecycleService.transition(
+            payment,
+            to_status=PaymentStatus.REFUND_PENDING,
+        )
         await add_case_history_event(
             self.db,
             actor_type="admin",
@@ -109,14 +171,14 @@ class OrphanPaymentReviewService:
             action="CONSULTATION_PAYMENT_REVIEW_RESOLVED",
             old_value={
                 "payment_id": payment.id,
-                "payment_status": old_status,
+                "payment_status": transition.old_status.value,
                 "reservation_key": payment.reservation_key,
                 "case_status": case.status,
                 "case_next_action": case.next_action,
             },
             new_value={
                 "payment_id": payment.id,
-                "payment_status": payment.status,
+                "payment_status": transition.new_status.value,
                 "consultation_id": None,
                 "orphan_consultation_id": linked_consultation_id,
                 "orphan_slot_id": linked_slot_id,

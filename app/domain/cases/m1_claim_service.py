@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_service import CaseService
+from app.domain.cases.m1_court_decision import record_court_decision_evidence
 from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
@@ -212,8 +213,10 @@ class M1ClaimService:
         case: Case,
         lawyer_id: int,
         comment: str,
+        decision_reference: object,
+        decision_date: object,
     ) -> Case:
-        """Record the court-stage decision and create the second payment due."""
+        """Record a concrete court decision and create the second payment due."""
 
         self._assert_assigned(case, lawyer_id)
         if self._status(case) != CaseStatus.M1_COURT_STAGE:
@@ -223,8 +226,20 @@ class M1ClaimService:
         clean_comment = str(comment or "").strip()
         if len(clean_comment) < 5:
             raise ValueError(
-                "Укажите судебное событие или основание открытия второго платежа"
+                "Опишите судебный результат или основание открытия второго платежа"
             )
+
+        # A case status by itself does not prove that the contractual court
+        # milestone happened. Persist structured evidence first so the payment
+        # can always be traced back to the concrete judicial act.
+        await record_court_decision_evidence(
+            self.db,
+            case=case,
+            lawyer_id=lawyer_id,
+            decision_reference=decision_reference,
+            decision_date=decision_date,
+            comment=clean_comment,
+        )
         await self.cases.change_status(
             case=case,
             next_status=CaseStatus.M1_WAITING_PAYMENT_70000,
