@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import inspect
 
+from fastapi.routing import iter_route_contexts
+
 from app.api.lawyer_poa import confirm_poa_received
 from app.api.lawyer_workspace_rejection_ui import enhanced_lawyer_workspace_html
 from app.bot import bot as bot_module
@@ -13,7 +15,7 @@ from app.main import create_app
 def _first_route(path: str, method: str = "GET"):
     return next(
         route
-        for route in create_app().routes
+        for route in iter_route_contexts(create_app().routes)
         if route.path == path and method in (route.methods or set())
     )
 
