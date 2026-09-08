@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from fastapi.routing import iter_route_contexts
+
 from app.api.backup_manager import (
     backup_status_override,
     backup_ui_override,
@@ -17,9 +19,8 @@ def read(path: str) -> str:
 def _only(method: str, path: str):
     rows = [
         route
-        for route in create_app().routes
-        if getattr(route, "path", None) == path
-        and method in (getattr(route, "methods", None) or set())
+        for route in iter_route_contexts(create_app().routes)
+        if route.path == path and method in (route.methods or set())
     ]
     assert len(rows) == 1, (method, path, [row.name for row in rows])
     return rows[0]
