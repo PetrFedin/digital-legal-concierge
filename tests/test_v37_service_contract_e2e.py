@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import inspect
 
+from fastapi.routing import iter_route_contexts
+
 from app.api.contract_center import contract_center_ui, contract_context, upload_service_contract
 from app.api.contract_workspace_ui import (
     contract_aware_lawyer_workspace_ui,
@@ -21,7 +23,7 @@ from app.main import create_app
 def _first_route(path: str, method: str = "GET"):
     return next(
         route
-        for route in create_app().routes
+        for route in iter_route_contexts(create_app().routes)
         if route.path == path and method in (route.methods or set())
     )
 
