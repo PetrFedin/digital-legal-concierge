@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections import Counter
 
+from fastapi.routing import iter_route_contexts
+
 from app.api.assignment_queue import (
     actionable_unassigned_queue,
     consultation_queue_with_slot_lawyer,
@@ -26,12 +28,11 @@ from app.main import create_app
 
 
 def _routes():
-    app = create_app()
     return [
         route
-        for route in app.routes
-        if getattr(route, "path", "").startswith("/admin/workdesk")
-        or getattr(route, "path", "").startswith("/admin/work-queues")
+        for route in iter_route_contexts(create_app().routes)
+        if route.path.startswith("/admin/workdesk")
+        or route.path.startswith("/admin/work-queues")
     ]
 
 
