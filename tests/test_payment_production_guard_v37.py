@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 from fastapi import HTTPException
+from fastapi.routing import iter_route_contexts
 
 from app.api.payment_safety_guard import (
     guarded_fake_payment_page,
@@ -16,7 +17,7 @@ from app.main import create_app
 
 
 def _first_endpoint(path: str, method: str):
-    for route in create_app().routes:
+    for route in iter_route_contexts(create_app().routes):
         if route.path == path and method in (route.methods or set()):
             return route.endpoint
     return None
