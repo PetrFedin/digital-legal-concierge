@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import inspect
 
+from fastapi.routing import iter_route_contexts
+
 from app.api.guided_refund_center import guided_refund_ui, refund_context
 from app.domain.payments.payment_webhook_service import (
     M1_EXPECTED_PAYMENT_CASE_STATUSES,
@@ -16,7 +18,7 @@ from app.main import create_app
 def _first_route(path: str, method: str = "GET"):
     return next(
         route
-        for route in create_app().routes
+        for route in iter_route_contexts(create_app().routes)
         if route.path == path and method in (route.methods or set())
     )
 
