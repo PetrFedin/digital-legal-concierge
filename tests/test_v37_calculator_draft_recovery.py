@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from datetime import date
 
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
@@ -46,6 +47,29 @@ def test_calculator_draft_resumes_from_first_incomplete_step():
             "planned_transfer_date": "2025-01-01",
         }
     ) == "статус передачи объекта"
+
+
+def test_future_contractual_date_remains_at_information_boundary_until_due():
+    data = {
+        "contract_price": "8500000",
+        "planned_transfer_date": "2026-10-01",
+    }
+
+    assert draft_step(data, today=date(2026, 9, 9)) == "future_date"
+    assert (
+        draft_step_label(data, today=date(2026, 9, 9))
+        == "наступление срока передачи по ДДУ"
+    )
+    assert draft_step(data, today=date(2026, 10, 1)) == "transfer_status"
+    assert draft_step(data, today=date(2026, 10, 2)) == "transfer_status"
+
+
+def test_corrupt_saved_contractual_date_returns_to_safe_date_input():
+    data = {
+        "contract_price": "8500000",
+        "planned_transfer_date": "not-a-date",
+    }
+    assert draft_step(data, today=date(2026, 9, 9)) == "planned_date"
 
 
 def test_only_meaningful_marked_calculator_data_is_offered_as_saved_draft():
