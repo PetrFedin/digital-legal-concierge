@@ -58,6 +58,30 @@ def test_zero_delay_is_zero_and_routes_to_manual_review():
     assert result.warning
 
 
+def test_early_transfer_is_valid_zero_delay_outcome():
+    result = calculate(
+        object_transferred=True,
+        actual_transfer_date=date(2025, 12, 31),
+    )
+
+    assert result.delay_days == 0
+    assert result.penalty_amount == Decimal("0.00")
+    assert result.recommended_route == "M2"
+    assert result.warning
+
+
+def test_on_time_transfer_is_valid_zero_delay_outcome():
+    result = calculate(
+        object_transferred=True,
+        actual_transfer_date=date(2026, 1, 1),
+    )
+
+    assert result.delay_days == 0
+    assert result.penalty_amount == Decimal("0.00")
+    assert result.recommended_route == "M2"
+    assert result.warning
+
+
 @pytest.mark.parametrize(
     "overrides,error_text",
     [
@@ -76,13 +100,6 @@ def test_zero_delay_is_zero_and_routes_to_manual_review():
                 "actual_transfer_date": date(2026, 1, 6),
             },
             "не передаётся",
-        ),
-        (
-            {
-                "object_transferred": True,
-                "actual_transfer_date": date(2025, 12, 31),
-            },
-            "раньше договорной",
         ),
         (
             {
