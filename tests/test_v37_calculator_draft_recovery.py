@@ -111,12 +111,14 @@ def test_delayed_start_replay_cannot_steal_selected_case_or_flat_draft():
     assert "state.clear" not in replay_guard
 
 
-def test_restart_confirmation_returns_to_same_draft_not_global_new_case():
+def test_restart_confirmation_returns_to_same_case_bound_draft_not_global_new_case():
     confirm_source = inspect.getsource(calculator.confirm_restart_calculation)
 
     assert "calc_restart" in confirm_source
     assert "удалены" in confirm_source
-    assert '("↩️ Вернуться к черновику", "calc_resume")' in confirm_source
+    assert 'bound_case_callback("calc_resume", case_id)' in confirm_source
+    assert 'bound_case_callback("calc_restart", case_id)' in confirm_source
+    assert '("↩️ Вернуться к черновику", "calc_resume")' not in confirm_source
     assert '("↩️ Вернуться к черновику", "calc_start")' not in confirm_source
 
 
