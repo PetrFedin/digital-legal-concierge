@@ -1,3 +1,16 @@
+"""Retired compatibility helpers for historical center guards.
+
+This module is deliberately route-free. Final QA and Retention have canonical
+runtime owners in ``final_qa_center`` and ``retention_center`` respectively;
+registering guard endpoints here as well makes route selection depend on router
+assembly order and can bypass the intended canonical response/security path.
+
+The helper callables remain import-compatible for legacy Python callers, but
+application security is enforced by the global personal staff session guard and
+by the canonical center-specific authorization checks. Do not mount public
+routes from this module.
+"""
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -10,6 +23,8 @@ from app.db.session import get_db
 from app.security.access_control import ROLE_ADMIN, ROLE_SUPERADMIN
 from app.security.document_access import DocumentAccessError, resolve_document_actor
 
+# Compatibility-only router. Keeping it empty is a release invariant: the
+# canonical centers must own each public (method, path) exactly once.
 router = APIRouter(tags=["legacy-center-guards"])
 
 
@@ -25,12 +40,13 @@ def _role_recovery() -> RedirectResponse:
     return RedirectResponse(url="/admin-ui", status_code=303)
 
 
-@router.get("/final-qa/status")
 async def final_qa_status_guard(
     request: Request,
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
+    """Legacy callable only; never register this as an HTTP route."""
+
     actor = await _actor(request, db, x_admin_token)
     if actor.role not in {ROLE_ADMIN, ROLE_SUPERADMIN}:
         raise HTTPException(status_code=403, detail="Доступ только для администратора")
@@ -45,12 +61,13 @@ async def final_qa_status_guard(
     }
 
 
-@router.get("/final-qa/ui")
 async def final_qa_ui_guard(
     request: Request,
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
+    """Legacy callable only; canonical ``/final-qa/ui`` is middleware-guarded."""
+
     try:
         actor = await _actor(request, db, x_admin_token)
     except DocumentAccessError as error:
@@ -68,12 +85,13 @@ async def final_qa_ui_guard(
     return RedirectResponse(url="/admin/workdesk/ui", status_code=303)
 
 
-@router.get("/retention/ui", response_class=HTMLResponse)
 async def retention_ui_guard(
     request: Request,
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
+    """Legacy callable only; canonical Retention remains SUPERADMIN-only."""
+
     try:
         actor = await _actor(request, db, x_admin_token)
     except DocumentAccessError as error:
@@ -89,3 +107,11 @@ async def retention_ui_guard(
     if actor.role != ROLE_SUPERADMIN:
         return _role_recovery()
     return HTMLResponse(RETENTION_HTML)
+
+
+__all__ = [
+    "final_qa_status_guard",
+    "final_qa_ui_guard",
+    "retention_ui_guard",
+    "router",
+]
