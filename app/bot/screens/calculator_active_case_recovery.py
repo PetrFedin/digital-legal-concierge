@@ -11,6 +11,7 @@ from app.bot.calculator_draft import (
     has_saved_calculator_draft,
 )
 from app.bot.case_callback_scope import (
+    bound_case_callback,
     callback_matches_action,
     resolve_case_callback_scope,
 )
@@ -70,8 +71,14 @@ async def _show_recoverable_calculation(
             f"Следующий шаг: {draft_step_label(data)}.\n"
             "Продолжите с сохранённого места. Начать заново можно только после отдельного подтверждения.",
             reply_markup=one(
-                ("▶️ Продолжить расчёт", "calc_resume"),
-                ("Начать заново", "calc_restart_confirm"),
+                (
+                    "▶️ Продолжить расчёт",
+                    bound_case_callback("calc_resume", int(case_id)),
+                ),
+                (
+                    "Начать заново",
+                    bound_case_callback("calc_restart_confirm", int(case_id)),
+                ),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
