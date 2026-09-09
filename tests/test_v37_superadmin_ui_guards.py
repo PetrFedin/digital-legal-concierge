@@ -2,6 +2,7 @@ from pathlib import Path
 
 from fastapi.routing import iter_route_contexts
 
+from app.api.legacy_center_guards import router as retired_legacy_center_guard_router
 from app.main import create_app
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +37,24 @@ def test_superadmin_compatibility_guard_is_route_free_and_not_runtime_mounted():
     assert "superadmin_ui_guards_router" not in setup
     assert "superadmin_ui_guards_router" not in acceptance
     assert "superadmin_ui_guards" not in main
+
+
+def test_legacy_final_qa_and_retention_guard_is_route_free():
+    source = read("app/api/legacy_center_guards.py")
+
+    assert retired_legacy_center_guard_router.routes == []
+    assert "@router." not in source
+    assert "router.add_api_route" not in source
+
+
+def test_final_qa_is_single_owned_and_keeps_personal_admin_session_gate():
+    session_guard = read("app/security/session_guard.py")
+
+    assert '"/final-qa/status": frozenset({ROLE_ADMIN, ROLE_SUPERADMIN})' in session_guard
+    assert '"/final-qa/ui": frozenset({ROLE_ADMIN, ROLE_SUPERADMIN})' in session_guard
+    assert "protected_ui_roles = _PROTECTED_UI_ROLES.get(path)" in session_guard
+    _only("/final-qa/status")
+    _only("/final-qa/ui")
 
 
 def test_access_management_ui_has_its_own_superadmin_gate():
