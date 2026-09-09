@@ -7,24 +7,26 @@ def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_unknown_price_and_date_require_exact_live_fsm_and_case_binding():
+def test_legacy_unknown_price_and_date_callbacks_are_navigation_only():
     source = read("app/bot/screens/calculator_unknown_data_guard.py")
 
     assert '"calc_unknown_price": CalculatorStates.waiting_contract_price.state' in source
     assert '"calc_unknown_date": CalculatorStates.waiting_planned_transfer_date.state' in source
-    assert "current_state != expected_state or case_id <= 0" in source
+    assert "async def legacy_unbound_unknown_data" in source
     assert "CALCULATOR_CASE_ID" in source
+    assert "await db.rollback()" in source
+    assert "Переход к консультации не выполнен" in source
 
-    stale = source.split("if current_state != expected_state or case_id <= 0:", 1)[1].split(
-        "ctx = BotContextService", 1
-    )[0]
-    assert "await db.rollback()" in stale
-    assert "transfer_to_m2" not in stale
-    assert "create_case" not in stale
-    assert "_stale_step_buttons(case_id)" in stale
+    # A raw historical callback has no Case provenance and may never derive a
+    # business mutation from whichever Case happens to be present in ambient FSM.
+    assert "transfer_to_m2" not in source
+    assert "ConsultationIntakeService" not in source
+    assert "select_case_for_user" not in source
+    assert "create_case" not in source
+    assert "await db.commit()" not in source
 
 
-def test_stale_unknown_data_recovery_never_reuses_global_new_calculation_token():
+def test_legacy_unknown_data_recovery_offers_exact_case_resume_without_mutation():
     source = read("app/bot/screens/calculator_unknown_data_guard.py")
 
     buttons = source.split("def _stale_step_buttons", 1)[1].split(
@@ -35,33 +37,34 @@ def test_stale_unknown_data_recovery_never_reuses_global_new_calculation_token()
     assert '"▶️ Продолжить расчёт этого обращения"' in buttons
 
 
-def test_unknown_data_transition_uses_exact_existing_case_and_never_bootstraps_another():
-    source = read("app/bot/screens/calculator_unknown_data_guard.py")
+def test_current_unknown_data_actions_are_exact_case_bound_in_canonical_calculator():
+    calculator = read("app/bot/screens/calculator.py")
 
-    live = source.split("ctx = BotContextService", 1)[1]
-    assert "ctx.case_service.get_case_for_user(" in live
-    assert "user_id=int(user.id)" in live
-    assert "case_id=case_id" in live
-    assert "current_status not in _ALLOWED_SOURCE_STATUSES" in live
-    assert "ctx.case_service.select_case_for_user(" in live
-    assert "ctx.case_service.create_case(" not in live
-    assert "get_or_create_active_case_for_user" not in live
-
-
-def test_unknown_data_m2_transition_and_consultation_context_commit_together():
-    source = read("app/bot/screens/calculator_unknown_data_guard.py")
-
-    assert "await ctx.case_service.transfer_to_m2(" in source
-    assert "ConsultationIntakeService(db).get_or_create_context(" in source
-    assert "case_id=int(case.id)" in source
-    assert "int(context_case.id) != int(case.id)" in source
-    assert source.index("transfer_to_m2(") < source.index("get_or_create_context(")
-    assert source.index("get_or_create_context(") < source.index("await db.commit()")
-    assert "await db.rollback()" in source
-    assert source.index("await db.commit()") < source.index("await state.clear()")
+    assert 'bound_case_callback("calc_unknown_price", case_id)' in calculator
+    assert 'bound_case_callback("calc_unknown_date", case_id)' in calculator
+    assert 'startswith("calc_unknown_price:v2:")' in calculator
+    assert 'startswith("calc_unknown_date:v2:")' in calculator
+    assert "_require_current_case_callback(" in calculator
+    assert "await ctx.case_service.transfer_to_m2(" in calculator
+    assert "await db.commit()" in calculator
+    assert "await finish_calculator_case(state, case_id=case_id)" in calculator
 
 
-def test_guard_shadows_only_unknown_data_callbacks_not_global_calculator_start():
+def test_exact_unknown_data_transition_commits_before_draft_retirement_and_presentation():
+    calculator = read("app/bot/screens/calculator.py")
+    handler = calculator.split("async def unknown_calc_data", 1)[1].split(
+        "async def to_m1", 1
+    )[0]
+
+    commit = handler.index("await db.commit()")
+    finish = handler.index("await finish_calculator_case(state, case_id=case_id)")
+    present = handler.index("await _present_committed_callback(")
+    assert commit < finish < present
+    assert "await db.rollback()" in handler
+    assert "await state.clear()" not in handler
+
+
+def test_guard_shadows_only_raw_legacy_unknown_callbacks_not_exact_v2_or_global_start():
     bot = read("app/bot/bot.py")
     calculator = read("app/bot/screens/calculator.py")
     guard = read("app/bot/screens/calculator_unknown_data_guard.py")
@@ -70,4 +73,5 @@ def test_guard_shadows_only_unknown_data_callbacks_not_global_calculator_start()
     assert bot.index("calculator_unknown_data_guard.router,") < bot.index("calculator.router,")
     assert '@router.callback_query(lambda c: c.data in _EXPECTED_FSM)' in guard
     assert 'c.data == "calc_start"' not in guard
-    assert 'c.data in {"calc_unknown_price", "calc_unknown_date"}' in calculator
+    assert 'startswith("calc_unknown_price:v2:")' in calculator
+    assert 'startswith("calc_unknown_date:v2:")' in calculator

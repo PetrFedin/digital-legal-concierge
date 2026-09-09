@@ -1,5 +1,10 @@
 from pathlib import Path
 
+import pytest
+
+from app.bot import calculator_draft as calculator_draft_module
+from app.bot.screens import calculator_active_case_recovery as recovery_module
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -46,17 +51,72 @@ def test_recovery_resolves_exact_case_and_never_creates_replacement_case():
     assert '("🧮 Новый расчёт", "calc_start")' in recovery
 
 
-def test_saved_fsm_draft_is_offered_and_missing_draft_restarts_only_same_case_questionnaire():
+def test_saved_fsm_draft_is_offered_and_actions_are_case_bound():
     recovery = read("app/bot/screens/calculator_active_case_recovery.py")
 
     assert "has_saved_calculator_draft(data)" in recovery
     assert "draft_case_id == int(case_id)" in recovery
     assert "calculator._draft_summary(data)" in recovery
     assert "draft_step_label(data)" in recovery
-    assert '("▶️ Продолжить расчёт", "calc_resume")' in recovery
-    assert '("Начать заново", "calc_restart_confirm")' in recovery
+    assert 'bound_case_callback("calc_resume", int(case_id))' in recovery
+    assert 'bound_case_callback("calc_restart_confirm", int(case_id))' in recovery
+    assert '("▶️ Продолжить расчёт", "calc_resume")' not in recovery
+    assert '("Начать заново", "calc_restart_confirm")' not in recovery
     assert "await calculator._start_fresh(" in recovery
     assert "case_id=int(case_id)" in recovery
+
+
+@pytest.mark.asyncio
+async def test_recovered_draft_buttons_carry_exact_case_provenance(monkeypatch):
+    async def fake_activate(state, *, case_id: int):
+        return {
+            calculator_draft_module.CALCULATOR_CASE_ID: int(case_id),
+            calculator_draft_module.DRAFT_MARKER: True,
+            "contract_price": "8500000",
+        }
+
+    monkeypatch.setattr(
+        recovery_module,
+        "activate_calculator_case_draft",
+        fake_activate,
+    )
+
+    class FakeState:
+        current = "unexpected"
+
+        async def set_state(self, value):
+            self.current = value
+
+    class FakeMessage:
+        def __init__(self):
+            self.edits = []
+
+        async def edit_text(self, text, reply_markup=None):
+            self.edits.append((text, reply_markup))
+
+    class FakeCallback:
+        def __init__(self):
+            self.message = FakeMessage()
+
+    callback = FakeCallback()
+    state = FakeState()
+    await recovery_module._show_recoverable_calculation(
+        callback,
+        state,
+        case_id=77,
+    )
+
+    assert state.current is None
+    markup = callback.message.edits[-1][1]
+    callbacks = [
+        button.callback_data
+        for row in markup.inline_keyboard
+        for button in row
+    ]
+    assert callbacks[:2] == [
+        "calc_resume:v2:77",
+        "calc_restart_confirm:v2:77",
+    ]
 
 
 def test_recovery_router_order_is_safe_because_callback_tokens_are_distinct():

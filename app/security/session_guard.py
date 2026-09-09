@@ -20,12 +20,14 @@ from app.security.access_control import (
 from app.security.token_revocation import is_token_revoked
 
 
-# These canonical HTML surfaces historically depended on precedence-based guard
-# routers. Keep authentication at the global session boundary while route
-# ownership is consolidated; their JSON/data actions still perform their own
-# domain authorization checks.
+# Canonical sensitive staff surfaces are protected at the global personal
+# session boundary. This keeps authentication independent from router assembly
+# order while canonical route handlers retain their own domain authorization
+# where the operation mutates or exposes domain data.
 _PROTECTED_UI_ROLES: dict[str, frozenset[str]] = {
     "/document-access/ui": frozenset({ROLE_ADMIN, ROLE_SUPERADMIN, ROLE_LAWYER}),
+    "/final-qa/status": frozenset({ROLE_ADMIN, ROLE_SUPERADMIN}),
+    "/final-qa/ui": frozenset({ROLE_ADMIN, ROLE_SUPERADMIN}),
     "/retention/ui": frozenset({ROLE_SUPERADMIN}),
 }
 

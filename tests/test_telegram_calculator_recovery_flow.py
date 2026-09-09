@@ -5,12 +5,16 @@ import inspect
 import pytest
 from aiogram.exceptions import TelegramBadRequest
 
+from app.bot.calculator_draft import CALCULATOR_CASE_ID
+from app.bot.screens import calculator
 from app.bot.screens.calculator import (
+    _future_date_keyboard,
     _present_committed_callback,
     back_planned,
     back_transfer_status,
     calculate_show_callback,
     no,
+    planned,
     result_kb,
     to_m1,
     to_m2,
@@ -29,8 +33,14 @@ class FakeState:
     async def get_data(self):
         return dict(self.data)
 
+    async def set_data(self, data):
+        self.data = dict(data)
+
     async def update_data(self, **kwargs):
         self.data.update(kwargs)
+
+    async def get_state(self):
+        return self.current
 
     async def set_state(self, state):
         self.current = getattr(state, "state", state)
@@ -42,7 +52,8 @@ class FakeState:
 
 
 class FakeMessage:
-    def __init__(self, edit_error: Exception | None = None):
+    def __init__(self, text="", edit_error: Exception | None = None):
+        self.text = text
         self.edit_error = edit_error
         self.edits = []
         self.answers = []
@@ -75,9 +86,10 @@ def _callbacks(markup) -> list[str]:
 
 
 @pytest.mark.asyncio
-async def test_back_navigation_preserves_calculator_values():
+async def test_back_navigation_preserves_calculator_values_and_exact_case_binding():
     state = FakeState(
         {
+            CALCULATOR_CASE_ID: 77,
             "contract_price": "8500000",
             "planned_transfer_date": "2026-07-01",
             "object_transferred": True,
@@ -85,22 +97,24 @@ async def test_back_navigation_preserves_calculator_values():
         current=CalculatorStates.waiting_actual_transfer_date.state,
     )
 
-    transfer = FakeCallback("calc_back_transfer_status")
+    transfer = FakeCallback("calc_back_transfer_status:v2:77")
     await back_transfer_status(transfer, state)
 
     assert state.clear_count == 0
+    assert state.data[CALCULATOR_CASE_ID] == 77
     assert state.data["contract_price"] == "8500000"
     assert state.data["planned_transfer_date"] == "2026-07-01"
     assert state.current == CalculatorStates.waiting_object_transfer_status.state
     assert "шаг 3 из 4" in transfer.message.edits[-1][0]
 
-    planned = FakeCallback("calc_back_planned")
-    await back_planned(planned, state)
+    planned_callback = FakeCallback("calc_back_planned:v2:77")
+    await back_planned(planned_callback, state)
 
     assert state.clear_count == 0
+    assert state.data[CALCULATOR_CASE_ID] == 77
     assert state.data["contract_price"] == "8500000"
     assert state.current == CalculatorStates.waiting_planned_transfer_date.state
-    assert "01.07.2026" in planned.message.edits[-1][0]
+    assert "01.07.2026" in planned_callback.message.edits[-1][0]
 
 
 @pytest.mark.asyncio
@@ -108,9 +122,9 @@ async def test_back_navigation_preserves_calculator_values():
 async def test_stale_transfer_buttons_recover_instead_of_using_missing_data(callback_handler):
     state = FakeState(current=CalculatorStates.waiting_object_transfer_status.state)
     callback = FakeCallback(
-        "calc_object_transferred_yes"
+        "calc_object_transferred_yes:v2:77"
         if callback_handler is yes
-        else "calc_object_transferred_no"
+        else "calc_object_transferred_no:v2:77"
     )
 
     if callback_handler is no:
@@ -118,13 +132,74 @@ async def test_stale_transfer_buttons_recover_instead_of_using_missing_data(call
     else:
         await callback_handler(callback, state)
 
-    assert state.clear_count == 1
     assert "больше не актуален" in callback.message.edits[-1][0]
     assert _callbacks(callback.message.edits[-1][1]) == [
         "calc_start",
         "my_case_open",
         "nav_home",
     ]
+
+
+@pytest.mark.asyncio
+async def test_future_contractual_date_is_saved_before_information_exit_and_clears_downstream_answers():
+    state = FakeState(
+        {
+            CALCULATOR_CASE_ID: 77,
+            "contract_price": "8500000",
+            "object_transferred": True,
+            "actual_transfer_date": "2026-01-10",
+        },
+        current=CalculatorStates.waiting_planned_transfer_date.state,
+    )
+    message = FakeMessage(text="01.01.2099")
+
+    await planned(message, state)
+
+    assert state.data[CALCULATOR_CASE_ID] == 77
+    assert state.data["contract_price"] == "8500000"
+    assert state.data["planned_transfer_date"] == "2099-01-01"
+    assert "object_transferred" not in state.data
+    assert "actual_transfer_date" not in state.data
+    assert state.current == CalculatorStates.waiting_planned_transfer_date.state
+    text, markup = message.answers[-1]
+    assert "Срок передачи по ДДУ ещё не наступил" in text
+    assert "01.01.2099" in text
+    assert _callbacks(markup) == [
+        "calc_future_date_consult:v2:77",
+        "calc_back_planned:v2:77",
+        "nav_home",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_early_actual_transfer_reaches_calculation_instead_of_input_error(monkeypatch):
+    state = FakeState(
+        {
+            CALCULATOR_CASE_ID: 77,
+            "contract_price": "8500000",
+            "planned_transfer_date": "2026-07-10",
+            "object_transferred": True,
+        },
+        current=CalculatorStates.waiting_actual_transfer_date.state,
+    )
+    message = FakeMessage(text="05.07.2026")
+    calls = []
+
+    async def fake_calculate_show_message(message_arg, state_arg, db_arg):
+        calls.append((message_arg, state_arg, db_arg))
+
+    monkeypatch.setattr(
+        calculator,
+        "calculate_show_message",
+        fake_calculate_show_message,
+    )
+
+    db = object()
+    await calculator.actual(message, state, db)
+
+    assert state.data["actual_transfer_date"] == "2026-07-05"
+    assert message.answers == []
+    assert calls == [(message, state, db)]
 
 
 @pytest.mark.asyncio
@@ -147,15 +222,16 @@ async def test_committed_calculation_result_falls_back_to_new_message():
     assert callback.callback_answers[-1][0] == "Изменение сохранено. Результат открыт новым сообщением."
 
 
-def test_callback_calculation_commits_before_clearing_state_and_rendering():
+def test_callback_calculation_commits_before_finishing_case_draft_and_rendering():
     source = inspect.getsource(calculate_show_callback)
 
     commit = source.index("await db.commit()")
-    clear = source.index("await state.clear()")
+    finish = source.index("await finish_calculator_case(")
     present = source.index("await _present_committed_callback(")
-    assert commit < clear < present
+    assert commit < finish < present
     assert "await db.rollback()" in source
     assert "Введённые данные сохранены" in source
+    assert "await state.clear()" not in source
 
 
 def test_all_post_calculation_route_writes_separate_commit_from_presentation():
@@ -167,19 +243,61 @@ def test_all_post_calculation_route_writes_separate_commit_from_presentation():
         assert "await db.rollback()" in source
 
 
-def test_calculator_result_actions_are_clear_and_have_an_exit():
-    markup = result_kb()
+def test_positive_calculation_result_exposes_case_bound_m1_m2_postpone_and_recalculation():
+    markup = result_kb(77, allow_m1=True)
     texts = [button.text for row in markup.inline_keyboard for button in row]
     callbacks = _callbacks(markup)
 
-    assert texts[:3] == [
+    assert texts == [
         "Продолжить ведение дела",
         "💬 Перейти к консультации",
         "Пока изучаю вопрос",
+        "🧮 Изменить данные и пересчитать",
+        "🏠 Главная",
     ]
     assert callbacks == [
-        "calc_continue_m1",
-        "calc_to_m2",
-        "calc_postpone",
+        "calc_continue_m1:v2:77",
+        "calc_to_m2:v2:77",
+        "calc_postpone:v2:77",
+        "calc_repeat:v2:77",
+        "nav_home",
+    ]
+
+
+def test_zero_delay_result_does_not_offer_m1_but_keeps_safe_outcomes():
+    markup = result_kb(77, allow_m1=False)
+    callbacks = _callbacks(markup)
+    texts = [button.text for row in markup.inline_keyboard for button in row]
+
+    assert "Продолжить ведение дела" not in texts
+    assert "calc_continue_m1:v2:77" not in callbacks
+    assert callbacks == [
+        "calc_to_m2:v2:77",
+        "calc_postpone:v2:77",
+        "calc_repeat:v2:77",
+        "nav_home",
+    ]
+
+
+def test_future_date_consultation_has_its_own_truthful_reason_not_unknown_date_reason():
+    source = inspect.getsource(unknown_calc_data)
+    assert 'action = "calc_future_date_consult"' in source
+    assert "Срок передачи по ДДУ ещё не наступил; клиент запросил консультацию" in source
+    assert 'reason = "Клиент не знает дату передачи"' in source
+
+
+def test_m1_transition_rechecks_latest_calculation_before_status_change():
+    source = inspect.getsource(to_m1)
+    guard = source.index("require_m1_eligible_calculation")
+    status_change = source.index("change_status(")
+    commit = source.index("await db.commit()")
+    assert guard < status_change < commit
+    assert "except CalculatorRouteEligibilityError" in source
+
+
+def test_future_date_keyboard_is_exact_case_bound():
+    assert _callbacks(_future_date_keyboard(77)) == [
+        "calc_future_date_consult:v2:77",
+        "calc_back_planned:v2:77",
         "nav_home",
     ]

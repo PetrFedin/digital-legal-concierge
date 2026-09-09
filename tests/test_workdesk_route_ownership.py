@@ -9,6 +9,11 @@ from app.api.assignment_queue import (
     consultation_queue_with_slot_lawyer,
     workdesk_case_responsibility,
 )
+from app.api.m1_internal_payment_recovery import (
+    recover_payment_stage,
+    recovery_context,
+    recovery_ui,
+)
 from app.api.workdesk import (
     workdesk_case_consultation_outcomes,
     workdesk_case_consultations_today,
@@ -84,6 +89,13 @@ def test_workdesk_ui_and_daily_actions_have_explicit_product_owners():
     )
     assert _endpoint("/admin/workdesk/cases/{case_id}/timeline") is workdesk_case_timeline
     assert _endpoint("/admin/workdesk/integrity") is workdesk_integrity_guard
+
+
+def test_m1_payment_recovery_has_one_exact_runtime_owner_per_operation():
+    path = "/admin/workdesk/cases/{case_id}/recover-payment-stage"
+    assert _endpoint(path, "GET") is recovery_context
+    assert _endpoint(path, "POST") is recover_payment_stage
+    assert _endpoint(f"{path}/ui", "GET") is recovery_ui
 
 
 def test_assignment_projections_are_exact_routes_not_shadow_precedence():

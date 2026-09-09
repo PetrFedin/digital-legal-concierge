@@ -72,10 +72,9 @@ class PenaltyCalculator:
                 raise PenaltyCalculationError(
                     "Для переданного объекта нужна фактическая дата передачи"
                 )
-            if data.actual_transfer_date < data.planned_transfer_date:
-                raise PenaltyCalculationError(
-                    "Фактическая дата передачи не может быть раньше договорной"
-                )
+            # Досрочная передача — допустимый фактический исход, а не ошибка
+            # ввода. В таком случае период просрочки равен нулю; max(...) ниже
+            # гарантирует нулевой результат без отрицательных дней/суммы.
             if data.actual_transfer_date > data.calculation_date:
                 raise PenaltyCalculationError(
                     "Фактическая дата передачи не может быть позже даты расчёта"
@@ -90,7 +89,7 @@ class PenaltyCalculator:
 
         # Просрочка начинается на следующий день после договорной даты. Разность
         # дат уже даёт точное число календарных дней такого периода включительно
-        # по конечную дату.
+        # по конечную дату. Досрочная/своевременная передача даёт ноль дней.
         delay_days = max((end_date - data.planned_transfer_date).days, 0)
         amount = (
             price
