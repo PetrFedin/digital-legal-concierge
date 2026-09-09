@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
@@ -58,11 +60,24 @@ def has_saved_calculator_draft(data: dict) -> bool:
     return bool(data.get(DRAFT_MARKER) and has_meaningful_calculator_data(data))
 
 
-def draft_step(data: dict) -> str:
+def draft_step(data: dict, *, today: date | None = None) -> str:
     if not data.get("contract_price"):
         return "price"
-    if not data.get("planned_transfer_date"):
+    raw_planned_date = data.get("planned_transfer_date")
+    if not raw_planned_date:
         return "planned_date"
+    try:
+        planned_date = date.fromisoformat(str(raw_planned_date))
+    except (TypeError, ValueError):
+        # A corrupt/stale draft must return to a safe input boundary instead of
+        # advancing to a calculation with an unparseable contractual date.
+        return "planned_date"
+    if planned_date > (today or date.today()):
+        # The functional specification treats a future contractual date as an
+        # informational terminal boundary for the current attempt: do not move
+        # into delay calculation until the date has arrived. Keeping this as a
+        # distinct draft step also makes Save/Home + later resume truthful.
+        return "future_date"
     if "object_transferred" not in data:
         return "transfer_status"
     if bool(data.get("object_transferred")) and not data.get("actual_transfer_date"):
@@ -73,13 +88,14 @@ def draft_step(data: dict) -> str:
     return "actual_date" if bool(data.get("object_transferred")) else "transfer_status"
 
 
-def draft_step_label(data: dict) -> str:
+def draft_step_label(data: dict, *, today: date | None = None) -> str:
     return {
         "price": "стоимость объекта",
         "planned_date": "дата передачи по ДДУ",
+        "future_date": "наступление срока передачи по ДДУ",
         "transfer_status": "статус передачи объекта",
         "actual_date": "дата фактической передачи",
-    }[draft_step(data)]
+    }[draft_step(data, today=today)]
 
 
 def _drafts_by_case(data: dict) -> dict[str, dict]:
