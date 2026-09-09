@@ -5,9 +5,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin import require_admin
-from app.api.m1_internal_payment_recovery import (
-    router as m1_internal_payment_recovery_router,
-)
 from app.api.technical_case_recovery import router as technical_case_recovery_router
 from app.db.session import get_db
 from app.domain.cases.case_timeline import get_client_visible_status
@@ -207,11 +204,10 @@ async def workdesk_case_timeline(
     }
 
 
-# These are existing Workdesk recovery endpoints with no overlapping public
-# paths. They remain colocated with the timeline module until application
-# assembly is split into explicit staff/platform groups; no UI template is
-# patched and no foreign router table is mutated here.
-router.include_router(m1_internal_payment_recovery_router)
+# Technical Case recovery remains colocated with the timeline for now. M1
+# payment-stage recovery is intentionally not re-mounted here: it already has a
+# separate runtime owner, and mounting the same router through the timeline made
+# those financial recovery endpoints depend on route-registration order.
 router.include_router(technical_case_recovery_router)
 
 __all__ = ["router", "workdesk_case_timeline"]
