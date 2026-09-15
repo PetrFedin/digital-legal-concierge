@@ -4,6 +4,7 @@ from fastapi import Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.workdesk_calculator_ui_patch import WORKDESK_CALCULATOR_EXTENSION
 from app.api.workdesk_integrity import _WORKDESK_INTEGRITY_PATCH
 from app.api.workdesk_ui import WORKDESK_HTML
 from app.config import settings
@@ -221,6 +222,7 @@ def render_workdesk_runtime_html() -> str:
     return _append_body_extensions(
         html,
         _WORKDESK_PRODUCT_EXTENSION,
+        WORKDESK_CALCULATOR_EXTENSION,
         _WORKDESK_INTEGRITY_PATCH,
     )
 

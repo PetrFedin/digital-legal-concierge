@@ -14,6 +14,7 @@ from app.api.workdesk import (
     workdesk_case_documents,
     workdesk_case_sla,
 )
+from app.api.workdesk_calculator_projection import guarded_workdesk_case_calculator
 from app.api.workdesk_projections import (
     guarded_active_work_queue,
     guarded_workdesk_attention,
@@ -40,6 +41,12 @@ router.add_api_route(
     workdesk_case_documents,
     methods=["GET"],
     name="workdesk_case_documents",
+)
+router.add_api_route(
+    "/admin/workdesk/cases/{case_id}/calculator",
+    guarded_workdesk_case_calculator,
+    methods=["GET"],
+    name="workdesk_case_calculator",
 )
 router.add_api_route(
     "/admin/workdesk/cases/{case_id}/consultation-outcomes",

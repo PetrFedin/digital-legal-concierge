@@ -15,6 +15,7 @@ from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.types import BotCommand, BotCommandScopeDefault, CallbackQuery, Message
 
 from app.bot.calculator_draft import CalculatorDraftNavigationMiddleware
+from app.bot.calculator_durable import DurableCalculatorIntakeMiddleware
 from app.bot.client_activity import record_client_activity
 from app.bot.client_case_navigation import install_case_bound_navigation
 from app.bot.client_message_provenance import ClientMessageProvenanceMiddleware
@@ -183,6 +184,11 @@ def build_dispatcher() -> Dispatcher:
     dispatcher = Dispatcher(storage=build_fsm_storage())
     dispatcher.update.middleware(DbMiddleware())
     flood_control = FloodControlMiddleware()
+    # Durable intake wraps calculator navigation so its post-handler snapshot
+    # sees the restored Case-bound draft. Redis remains a conversation cache;
+    # PostgreSQL remains the accepted-input source of truth.
+    dispatcher.message.middleware(DurableCalculatorIntakeMiddleware())
+    dispatcher.callback_query.middleware(DurableCalculatorIntakeMiddleware())
     # Home/Cancel are allowed to leave the calculator, but they must not erase
     # answers already entered. The middleware snapshots only calculator FSM
     # data, lets the canonical navigation render, then restores a paused draft.

@@ -1,7 +1,9 @@
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.calculator.intake_service import CalculationIntakeService
 from app.domain.cases.case_service import CaseService
+from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.users.user_service import UserService
 
 
@@ -41,7 +43,7 @@ class BotContextService:
         status="NEW",
         title: str | None = None,
     ):
-        return await self.case_service.create_case_for_operation(
+        case = await self.case_service.create_case_for_operation(
             client=user,
             operation_key=f"telegram_callback:{callback.id}",
             purpose=purpose,
@@ -49,6 +51,17 @@ class BotContextService:
             status=status,
             title=title,
         )
+        # PM-017: the Case binding itself is a meaningful calculator draft fact.
+        # Create the PostgreSQL intake before the caller commits/presents B-003,
+        # even when the client has not entered the first answer yet. Exact
+        # callback redelivery remains idempotent because the intake is unique per
+        # Case and ensure() returns the existing row.
+        if purpose == "calculator_start" and str(case.status) in {
+            CaseStatus.NEW.value,
+            CaseStatus.CALCULATOR_STARTED.value,
+        }:
+            await CalculationIntakeService(self.db).ensure(case_id=int(case.id))
+        return case
 
     async def create_case_from_message(
         self,
