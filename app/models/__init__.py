@@ -7,6 +7,8 @@ from app.models.case_creation_request import CaseCreationRequest
 from app.models.consent_acceptance import ConsentAcceptance
 from app.models.case_retention import CaseRetentionRecord
 from app.models.calculation import Calculation
+from app.models.calculation_intake import CalculationIntake
+from app.models.calculation_rule_revision import CalculationRuleRevision
 from app.models.document import Document
 from app.models.document_access_grant import DocumentAccessGrant
 from app.models.payment_event import PaymentEvent
