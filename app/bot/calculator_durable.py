@@ -15,9 +15,11 @@ from app.models.case import Case
 
 logger = logging.getLogger(__name__)
 
-_RECOVERABLE_CALCULATOR_STATUSES = {
+_CALCULATOR_DRAFT_STATUSES = {
     CaseStatus.NEW.value,
     CaseStatus.CALCULATOR_STARTED.value,
+    CaseStatus.CALCULATED.value,
+    CaseStatus.CLIENT_DECISION.value,
 }
 _CALCULATOR_FIELDS = (
     "contract_price",
@@ -66,8 +68,10 @@ class DurableCalculatorIntakeMiddleware:
     transaction locks the Case row so two Telegram deliveries cannot race the
     one-row-per-Case intake into contradictory snapshots.
 
-    The completed calculation path is intentionally excluded here: Calculator-
-    Service writes the completed intake in the same transaction as Calculation.
+    Only the *post-handler* active calculator working set is mirrored. When a
+    completed calculation clears its FSM Case binding, CalculatorService's same-
+    transaction completed intake remains authoritative and cannot be overwritten
+    by the pre-handler Redis snapshot.
     """
 
     async def __call__(self, handler, event, data):
@@ -75,16 +79,9 @@ class DurableCalculatorIntakeMiddleware:
         if state is None:
             return await handler(event, data)
 
-        before = dict(await state.get_data())
         result = await handler(event, data)
         after = dict(await state.get_data())
-
-        # Prefer post-handler state. Navigation middleware may intentionally
-        # restore the same draft after rendering Home/My Case. If a successful
-        # handler cleared FSM because the Case progressed, the pre-handler Case
-        # is inspected but never written unless it is still a calculator Case.
-        candidate = after if _case_id(after) > 0 else before
-        case_id = _case_id(candidate)
+        case_id = _case_id(after)
         if case_id <= 0:
             return result
 
@@ -99,17 +96,14 @@ class DurableCalculatorIntakeMiddleware:
                 ).scalar_one_or_none()
                 if case is None:
                     return result
-                if str(case.status) not in _RECOVERABLE_CALCULATOR_STATUSES:
-                    # CALCULATED/M1/M2/terminal Cases are owned by completed
-                    # Calculation/process records. Never let an old Redis draft
-                    # overwrite that durable truth after the business transition.
+                if str(case.status) not in _CALCULATOR_DRAFT_STATUSES:
                     return result
                 if str(case.route or "") == "M2":
                     return result
 
                 await CalculationIntakeService(db).sync_from_draft(
                     case_id=case_id,
-                    data=_durable_snapshot(candidate),
+                    data=_durable_snapshot(after),
                     today=date.today(),
                 )
                 await db.commit()
