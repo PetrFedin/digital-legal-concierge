@@ -10,6 +10,7 @@ from app.domain.calculator.intake_service import CalculationIntakeService
 from app.domain.calculator.rule_engine import (
     CalculationRuleEngine,
     RuleBasedCalculationInput,
+    RuleBasedCalculationResult,
 )
 from app.domain.calculator.rule_revision_service import CalculationRuleRevisionService
 from app.domain.cases.case_history import add_case_history_event
@@ -31,6 +32,78 @@ class CalculatorRouteEligibilityError(ValueError):
     """Raised when a calculator outcome cannot enter the requested legal route."""
 
 
+def _result_from_persisted(calculation: Calculation) -> RuleBasedCalculationResult:
+    """Reconstruct the already-committed result for an idempotent Telegram retry."""
+
+    if (
+        calculation.contract_price is None
+        or calculation.planned_transfer_date is None
+        or calculation.calculation_date is None
+        or calculation.object_transferred is None
+        or calculation.penalty_amount is None
+        or calculation.consumer_multiplier is None
+        or calculation.rule_revision_id is None
+        or not calculation.rule_revision_key
+        or not calculation.rule_snapshot_sha256
+        or not isinstance(calculation.rule_snapshot, dict)
+    ):
+        raise CalculatorRouteEligibilityError(
+            "Сохранённый расчёт не содержит полного набора воспроизводимых данных"
+        )
+
+    total_days = int(
+        calculation.delay_days_total
+        if calculation.delay_days_total is not None
+        else calculation.delay_days or 0
+    )
+    chargeable_days = int(
+        calculation.delay_days_chargeable
+        if calculation.delay_days_chargeable is not None
+        else calculation.delay_days or 0
+    )
+    excluded_days = int(calculation.moratorium_days or 0)
+    amount = Decimal(calculation.penalty_amount)
+    warning = None
+    if total_days == 0:
+        warning = "Просрочка на выбранную дату не обнаружена."
+    elif chargeable_days == 0:
+        warning = "Весь период просрочки исключён утверждёнными правилами расчёта."
+    elif amount == 0:
+        warning = "Расчёт по утверждённым правилам дал нулевую сумму."
+
+    return RuleBasedCalculationResult(
+        contract_price=Decimal(calculation.contract_price),
+        planned_transfer_date=calculation.planned_transfer_date,
+        calculation_date=calculation.calculation_date,
+        object_transferred=bool(calculation.object_transferred),
+        actual_transfer_date=calculation.actual_transfer_date,
+        delay_days=chargeable_days,
+        delay_days_total=total_days,
+        delay_days_chargeable=chargeable_days,
+        moratorium_days=excluded_days,
+        key_rate=(
+            Decimal(calculation.key_rate)
+            if calculation.key_rate is not None
+            else None
+        ),
+        consumer_multiplier=Decimal(calculation.consumer_multiplier),
+        client_type=str(calculation.client_type or "consumer"),
+        penalty_amount=amount,
+        formula_version=str(calculation.formula_version or "rule:persisted"),
+        formula=str(calculation.formula_version or "rule:persisted"),
+        recommended_route=(
+            "M1" if chargeable_days > 0 and amount > 0 else "M2"
+        ),
+        rule_revision_id=int(calculation.rule_revision_id),
+        rule_revision_key=str(calculation.rule_revision_key),
+        rule_snapshot_sha256=str(calculation.rule_snapshot_sha256),
+        rule_snapshot=dict(calculation.rule_snapshot),
+        applied_segments=list(calculation.applied_segments or []),
+        is_preliminary=bool(calculation.is_preliminary),
+        warning=warning,
+    )
+
+
 class CalculatorService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -48,15 +121,7 @@ class CalculatorService:
         return (await self.db.execute(statement)).scalar_one_or_none()
 
     async def require_m1_eligible_calculation(self, *, case_id: int) -> Calculation:
-        """Require the current Case outcome to contain a positive charged delay/amount.
-
-        Calculator result buttons are Telegram messages and may be replayed after
-        a later recalculation. Eligibility therefore comes from the newest stored
-        Calculation, never from the button that happened to be clicked. A
-        zero-delay/zero-amount outcome is an informational completion/M2 outcome
-        under the approved functional specification and cannot be promoted to M1
-        by a stale positive-result button.
-        """
+        """Require the current Case outcome to contain a positive charged delay/amount."""
 
         calculation = await self.latest_calculation_for_case(case_id=case_id)
         if calculation is None:
@@ -85,15 +150,31 @@ class CalculatorService:
         object_transferred: bool,
         actual_transfer_date: date | None = None,
         client_type: str = "consumer",
-    ):
-        """Calculate only from one approved effective-dated legal rule revision.
+    ) -> RuleBasedCalculationResult:
+        """Create one immutable Calculation or return the already completed one.
 
-        There is deliberately no settings/env/key-rate fallback here. If the
-        lawyer-approved rule directory is absent, overlapping or fails integrity
-        validation, the calculation fails closed instead of presenting a guessed
-        legal amount to the client.
+        The current Case intake is row-locked for the whole finalization. If a
+        previous attempt committed but Telegram failed before presentation, its
+        ``completed_calculation_id`` is returned verbatim instead of appending a
+        duplicate Calculation/history event. Explicit recalculation first resets
+        that intake identity.
         """
 
+        intake = await self.intakes.get_for_update(case_id=int(case.id))
+        if intake is not None and intake.completed_calculation_id is not None:
+            existing = await self.db.get(
+                Calculation,
+                int(intake.completed_calculation_id),
+            )
+            if existing is None or int(existing.case_id) != int(case.id):
+                raise CalculatorRouteEligibilityError(
+                    "Завершённый черновик ссылается на недоступный расчёт"
+                )
+            return _result_from_persisted(existing)
+
+        # There is deliberately no settings/env/key-rate fallback. If the
+        # lawyer-approved rule directory is absent, overlapping or corrupted,
+        # calculation fails closed before any historical result is appended.
         revision = await self.rule_revisions.resolve(calculation_date=calculation_date)
         result = self.calculator.calculate(
             RuleBasedCalculationInput(
@@ -110,9 +191,6 @@ class CalculatorService:
             rule_snapshot=dict(revision.rules),
         )
 
-        # Every completed calculation is a historical fact. Never overwrite a
-        # previous Calculation: the approved model is Case -> Calculation 1:N,
-        # and readers determine the current value by newest created_at/id.
         calculation = Calculation(
             case_id=case.id,
             contract_price=result.contract_price,
@@ -137,12 +215,14 @@ class CalculatorService:
             is_preliminary=True,
         )
         self.db.add(calculation)
+        # The id must exist before it is sealed into the durable intake.
+        await self.db.flush()
 
-        # Completion writes the exact accepted questionnaire facts to the Case
-        # card in the same database transaction as the immutable Calculation.
-        # Redis can disappear immediately after commit without losing the input
-        # that produced this result.
-        await self.intakes.complete_from_result(case_id=int(case.id), result=result)
+        await self.intakes.complete_from_result(
+            case_id=int(case.id),
+            result=result,
+            calculation_id=int(calculation.id),
+        )
 
         # Recalculation must not silently move a case backwards from an active
         # legal or consultation stage. Only the initial calculator phase changes
