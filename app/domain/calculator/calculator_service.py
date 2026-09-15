@@ -128,12 +128,14 @@ class CalculatorService:
             raise CalculatorRouteEligibilityError(
                 "Для продолжения М1 нужен сохранённый предварительный расчёт."
             )
+        # Historical Calculation rows and older focused tests only have
+        # delay_days. New PM-016 rows own delay_days_chargeable explicitly; do
+        # not force legacy facts to masquerade as a newer schema revision.
+        chargeable = getattr(calculation, "delay_days_chargeable", None)
         delay_days = int(
-            calculation.delay_days_chargeable
-            if calculation.delay_days_chargeable is not None
-            else calculation.delay_days or 0
+            chargeable if chargeable is not None else getattr(calculation, "delay_days", 0) or 0
         )
-        penalty_amount = Decimal(calculation.penalty_amount or 0)
+        penalty_amount = Decimal(getattr(calculation, "penalty_amount", 0) or 0)
         if delay_days <= 0 or penalty_amount <= 0:
             raise CalculatorRouteEligibilityError(
                 "По последнему расчёту просрочка или положительная сумма неустойки отсутствует."
