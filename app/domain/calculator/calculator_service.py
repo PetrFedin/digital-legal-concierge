@@ -6,6 +6,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.calculator.intake_service import CalculationIntakeService
 from app.domain.calculator.rule_engine import (
     CalculationRuleEngine,
     RuleBasedCalculationInput,
@@ -35,6 +36,7 @@ class CalculatorService:
         self.db = db
         self.calculator = CalculationRuleEngine()
         self.rule_revisions = CalculationRuleRevisionService(db)
+        self.intakes = CalculationIntakeService(db)
 
     async def latest_calculation_for_case(self, *, case_id: int) -> Calculation | None:
         statement = (
@@ -135,6 +137,12 @@ class CalculatorService:
             is_preliminary=True,
         )
         self.db.add(calculation)
+
+        # Completion writes the exact accepted questionnaire facts to the Case
+        # card in the same database transaction as the immutable Calculation.
+        # Redis can disappear immediately after commit without losing the input
+        # that produced this result.
+        await self.intakes.complete_from_result(case_id=int(case.id), result=result)
 
         # Recalculation must not silently move a case backwards from an active
         # legal or consultation stage. Only the initial calculator phase changes
