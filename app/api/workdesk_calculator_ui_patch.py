@@ -11,13 +11,16 @@ WORKDESK_CALCULATOR_EXTENSION = r"""
   function yesNo(value){
     return value===true?'да':value===false?'нет':'не указано';
   }
+  function optionalMoney(value){
+    return value===null||value===undefined||value===''?'—':money(value);
+  }
   function calculatorSection(payload){
     const intake=payload.intake,calc=payload.latest_calculation;
     if(!intake&&!calc)return'';
     const source=intake?`
       <div class="section-title">Исходные данные клиента</div>
       <div class="grid">
-        <div class="cell"><span>Стоимость по ДДУ</span>${money(intake.contract_price)}</div>
+        <div class="cell"><span>Стоимость по ДДУ</span>${optionalMoney(intake.contract_price)}</div>
         <div class="cell"><span>Дата передачи по ДДУ</span>${calendarDate(intake.planned_transfer_date)}</div>
         <div class="cell"><span>Объект передан</span>${yesNo(intake.object_transferred)}</div>
         <div class="cell"><span>Фактическая передача</span>${calendarDate(intake.actual_transfer_date)}</div>
@@ -27,7 +30,7 @@ WORKDESK_CALCULATOR_EXTENSION = r"""
     const result=calc?`
       <div class="section-title" style="margin-top:12px">Последний предварительный расчёт</div>
       <div class="grid">
-        <div class="cell"><span>Сумма</span>${money(calc.penalty_amount)}</div>
+        <div class="cell"><span>Сумма</span>${optionalMoney(calc.penalty_amount)}</div>
         <div class="cell"><span>Дата расчёта</span>${calendarDate(calc.calculation_date)}</div>
         <div class="cell"><span>Просрочка всего</span>${e(calc.delay_days_total??0)} дн.</div>
         <div class="cell"><span>Начисляемые дни</span>${e(calc.delay_days_chargeable??0)} дн.</div>
