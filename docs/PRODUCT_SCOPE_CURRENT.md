@@ -27,6 +27,16 @@ Delivery retries of the **same source operation** are idempotent through `CaseCr
 
 No database or application invariant may enforce “one active Case per client”.
 
+### Calculator source-spec reconciliation
+
+The Functional Specification is authoritative for calculator business outcomes when its rule conflicts with a Telegram UX/UI validation sentence. The source UX/UI callback rule that describes `calc_actual_date_submit` as “Дата не раньше договорной” is therefore not an acceptance rule for the current product.
+
+For an already transferred object, `actual_transfer_date < planned_transfer_date` and `actual_transfer_date == planned_transfer_date` are valid factual inputs. They are not rejected as date-validation errors. The completed Calculation is persisted with zero delay and zero penalty, M1 is not offered from that result, and the client may finish the calculator flow or continue to M2 as defined by the Functional Specification.
+
+A contractual transfer date later than the calculation date is likewise a valid informational outcome rather than a fabricated positive claim: the entered facts/result remain Case-bound and the client is not offered M1 from a non-positive current Calculation.
+
+This reconciliation defines input/outcome semantics only. It does **not** approve or freeze any legal formula, rate, coefficient, moratorium or exclusion period. Those calculation rules must come from the parameterized, versioned and effective-dated lawyer-approved rule source required by the Functional Specification; a hard-coded/configuration fallback is not release authority.
+
 ## Selected Case context
 
 Telegram maintains an explicit selected Case context through `ClientCaseContext.selected_case_id`.
