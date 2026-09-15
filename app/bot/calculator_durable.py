@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime
 
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 
 from app.bot.calculator_draft import CALCULATOR_CASE_ID
-from app.db.session import AsyncSessionLocal
+from app.bot.states import CalculatorStates
 from app.domain.calculator.intake_service import CalculationIntakeService
+from app.domain.calculator.penalty_calculator import parse_money
 from app.domain.statuses.case_statuses import CaseStatus
 from app.models.case import Case
+from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,11 @@ _CALCULATOR_FIELDS = (
     "object_transferred",
     "actual_transfer_date",
 )
+_CALLBACK_PREFIXES = {
+    "calc_object_transferred_yes:v2:": "transfer_yes",
+    "calc_object_transferred_no:v2:": "transfer_no",
+    "calc_restart:v2:": "restart",
+}
 
 
 def _case_id(data: dict) -> int:
@@ -37,18 +44,25 @@ def _case_id(data: dict) -> int:
     return value if value > 0 else 0
 
 
-def _durable_snapshot(data: dict) -> dict:
-    snapshot = {CALCULATOR_CASE_ID: _case_id(data)}
-    for key in _CALCULATOR_FIELDS:
-        if key in data:
-            snapshot[key] = data[key]
-    return snapshot
+def _callback_case_id(raw: str, prefix: str) -> int:
+    if not raw.startswith(prefix):
+        return 0
+    try:
+        value = int(raw[len(prefix) :])
+    except (TypeError, ValueError):
+        return 0
+    return value if value > 0 else 0
+
+
+def _has_legacy_facts(data: dict) -> bool:
+    return any(key in data for key in _CALCULATOR_FIELDS)
 
 
 async def _warn_durable_failure(event) -> None:
     text = (
-        "⚠️ Текущий шаг остался в сессии Telegram, но не удалось подтвердить его "
-        "сохранение в карточке обращения. Не закрывайте диалог и повторите действие."
+        "⚠️ Не удалось надёжно сохранить этот шаг в карточке обращения. "
+        "Переход к следующему шагу не выполнен. Повторите действие — ранее "
+        "сохранённые данные не удалены."
     )
     try:
         if isinstance(event, CallbackQuery) and event.message is not None:
@@ -59,62 +73,177 @@ async def _warn_durable_failure(event) -> None:
         logger.exception("Could not present durable calculator intake failure")
 
 
+async def _owned_calculator_case(db, *, case_id: int, telegram_id: int) -> Case | None:
+    """Lock the exact owned Case before accepting a durable questionnaire fact."""
+
+    return (
+        await db.execute(
+            select(Case)
+            .join(User, User.id == Case.client_id)
+            .where(
+                Case.id == int(case_id),
+                User.telegram_id == int(telegram_id),
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+
+
 class DurableCalculatorIntakeMiddleware:
-    """Mirror accepted calculator FSM facts into the Case database record.
+    """Write accepted calculator facts to PostgreSQL before UI progression.
 
-    Canonical handlers still own validation, Case provenance and UI. This
-    middleware runs only after a handler returns successfully, then persists the
-    resulting exact Case-bound working set in a separate short transaction. The
-    transaction locks the Case row so two Telegram deliveries cannot race the
-    one-row-per-Case intake into contradictory snapshots.
+    This middleware deliberately runs *before* the canonical calculator handler
+    for the small set of events that can add/change questionnaire facts. It
+    mirrors the handler's syntactic validation, locks the exact owned Case, and
+    commits the durable intake first. Only then may the handler update Redis/FSM
+    and render the next screen.
 
-    Only the *post-handler* active calculator working set is mirrored. When a
-    completed calculation clears its FSM Case binding, CalculatorService's same-
-    transaction completed intake remains authoritative and cannot be overwritten
-    by the pre-handler Redis snapshot.
+    Invalid input is not persisted and is passed to the canonical handler so the
+    existing validation copy remains the single presentation owner. A database
+    failure is fail-closed: the handler is not called, therefore Telegram cannot
+    advance while PostgreSQL still contains an older business state.
+
+    For a pre-PM-017 session with no intake row, an existing Case-bound Redis
+    draft may be imported once before the new accepted fact is written. Once a
+    PostgreSQL intake exists, Redis is never allowed to overwrite it.
     """
 
     async def __call__(self, handler, event, data):
         state: FSMContext | None = data.get("state")
-        if state is None:
+        db = data.get("db")
+        if state is None or db is None:
             return await handler(event, data)
 
-        result = await handler(event, data)
-        after = dict(await state.get_data())
-        case_id = _case_id(after)
+        before = dict(await state.get_data())
+        case_id = _case_id(before)
         if case_id <= 0:
-            return result
+            return await handler(event, data)
+
+        mutation: tuple[str, object] | None = None
+        current_state = await state.get_state()
+
+        if isinstance(event, Message):
+            if current_state == CalculatorStates.waiting_contract_price.state:
+                try:
+                    mutation = ("price", parse_money(event.text))
+                except Exception:
+                    return await handler(event, data)
+            elif current_state == CalculatorStates.waiting_planned_transfer_date.state:
+                try:
+                    mutation = (
+                        "planned_date",
+                        datetime.strptime(str(event.text or "").strip(), "%d.%m.%Y").date(),
+                    )
+                except Exception:
+                    return await handler(event, data)
+            elif current_state == CalculatorStates.waiting_actual_transfer_date.state:
+                try:
+                    actual_date = datetime.strptime(
+                        str(event.text or "").strip(), "%d.%m.%Y"
+                    ).date()
+                except Exception:
+                    return await handler(event, data)
+                if actual_date > date.today():
+                    return await handler(event, data)
+                mutation = ("actual_date", actual_date)
+            else:
+                return await handler(event, data)
+
+        elif isinstance(event, CallbackQuery):
+            raw = str(event.data or "")
+            for prefix, action in _CALLBACK_PREFIXES.items():
+                callback_case_id = _callback_case_id(raw, prefix)
+                if callback_case_id <= 0:
+                    continue
+                # A stale button for another Case remains presentation-only and
+                # is handled by the canonical stale-step guard without a write.
+                if callback_case_id != case_id:
+                    return await handler(event, data)
+                mutation = (action, callback_case_id)
+                break
+            if mutation is None:
+                return await handler(event, data)
+        else:
+            return await handler(event, data)
+
+        user = getattr(event, "from_user", None)
+        telegram_id = int(getattr(user, "id", 0) or 0)
+        if telegram_id <= 0:
+            await _warn_durable_failure(event)
+            return None
 
         try:
-            async with AsyncSessionLocal() as db:
-                case = (
-                    await db.execute(
-                        select(Case)
-                        .where(Case.id == case_id)
-                        .with_for_update()
-                    )
-                ).scalar_one_or_none()
-                if case is None:
-                    return result
-                if str(case.status) not in _CALCULATOR_DRAFT_STATUSES:
-                    return result
-                if str(case.route or "") == "M2":
-                    return result
+            case = await _owned_calculator_case(
+                db,
+                case_id=case_id,
+                telegram_id=telegram_id,
+            )
+            if (
+                case is None
+                or str(case.status) not in _CALCULATOR_DRAFT_STATUSES
+                or str(case.route or "") == "M2"
+            ):
+                await db.rollback()
+                await _warn_durable_failure(event)
+                return None
 
-                await CalculationIntakeService(db).sync_from_draft(
+            service = CalculationIntakeService(db)
+            intake = await service.get(case_id=case_id)
+            if intake is None and _has_legacy_facts(before):
+                # One-time cutover only. Existing PostgreSQL state always wins.
+                await service.sync_from_draft(
                     case_id=case_id,
-                    data=_durable_snapshot(after),
+                    data=before,
                     today=date.today(),
                 )
-                await db.commit()
+
+            action, value = mutation
+            if action == "price":
+                await service.save_price(
+                    case_id=case_id,
+                    contract_price=value,
+                )
+            elif action == "planned_date":
+                await service.save_planned_date(
+                    case_id=case_id,
+                    planned_transfer_date=value,
+                    today=date.today(),
+                )
+            elif action == "transfer_yes":
+                await service.save_transfer_status(
+                    case_id=case_id,
+                    object_transferred=True,
+                )
+            elif action == "transfer_no":
+                await service.save_transfer_status(
+                    case_id=case_id,
+                    object_transferred=False,
+                )
+            elif action == "actual_date":
+                await service.save_actual_date(
+                    case_id=case_id,
+                    actual_transfer_date=value,
+                    today=date.today(),
+                )
+            elif action == "restart":
+                await service.reset(case_id=case_id)
+            else:  # pragma: no cover - defensive closed world
+                raise RuntimeError(f"Unsupported calculator intake mutation: {action}")
+
+            # This commit is intentionally before handler/FSM/render. A later
+            # Telegram failure can be recovered from PostgreSQL; the opposite
+            # ordering would lose accepted business data after Redis loss.
+            await db.commit()
         except Exception:
+            await db.rollback()
             logger.exception(
-                "Durable calculator intake sync failed for case_id=%s",
+                "Durable calculator intake pre-commit failed for case_id=%s",
                 case_id,
             )
             await _warn_durable_failure(event)
+            return None
 
-        return result
+        return await handler(event, data)
 
 
 __all__ = ["DurableCalculatorIntakeMiddleware"]
