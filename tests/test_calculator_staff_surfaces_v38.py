@@ -38,4 +38,7 @@ def test_workdesk_case_card_renders_inputs_separately_from_latest_result():
     assert "Исходные данные клиента" in html
     assert "Последний предварительный расчёт" in html
     assert "/admin/workdesk/cases/'+id+'/calculator" in html
-    assert "rule_snapshot" not in html
+    # Routine staff UI may expose the revision/hash identifier but never the
+    # full reproducibility snapshot payload itself.
+    assert "rule_snapshot_json" not in html
+    assert "applied_segments" not in html
