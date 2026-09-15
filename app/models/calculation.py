@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, ForeignKey, Integer, Numeric, String
+from sqlalchemy import Boolean, Date, ForeignKey, Integer, JSON, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -24,6 +24,11 @@ class Calculation(Base, TimestampMixin):
     calculation_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     actual_transfer_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     object_transferred: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+    # Legacy aggregate fields remain readable for calculations created before
+    # PM-016. New calculations persist exact rule evidence below and in
+    # CalculationSegment rows instead of pretending historical rows used a
+    # rule revision that did not exist at the time.
     delay_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     key_rate: Mapped[Decimal | None] = mapped_column(Numeric(7, 6), nullable=True)
     consumer_multiplier: Mapped[Decimal | None] = mapped_column(
@@ -37,4 +42,28 @@ class Calculation(Base, TimestampMixin):
     )
     is_preliminary: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    # PM-016 reproducibility evidence. Nullable is intentional for legacy rows;
+    # the domain service will require these fields for newly completed
+    # calculations once the versioned rule engine becomes the runtime owner.
+    rule_set_id: Mapped[int | None] = mapped_column(
+        ForeignKey("calculation_rule_sets.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    rule_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rule_snapshot_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    rule_snapshot_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    calculation_end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    delay_days_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    delay_days_chargeable: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    moratorium_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     case = relationship("Case", back_populates="calculations")
+    rule_set = relationship("CalculationRuleSet", back_populates="calculations")
+    segments = relationship(
+        "CalculationSegment",
+        back_populates="calculation",
+        order_by="CalculationSegment.sequence_no",
+    )
