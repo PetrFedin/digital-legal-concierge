@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.domain.calculator.intake_service import (
+    INTAKE_COMPLETED,
+    INTAKE_IN_PROGRESS,
     CalculationIntakeError,
     CalculationIntakeService,
 )
@@ -16,8 +18,14 @@ from app.models.calculation_intake import CalculationIntake
 def service_and_intake():
     db = SimpleNamespace(flush=AsyncMock())
     service = CalculationIntakeService(db)
-    intake = CalculationIntake(case_id=42, current_step="price")
+    intake = CalculationIntake(
+        case_id=42,
+        current_step="price",
+        status=INTAKE_IN_PROGRESS,
+        version=1,
+    )
     service.ensure = AsyncMock(return_value=intake)
+    service.get_for_update = AsyncMock(return_value=intake)
     return service, intake, db
 
 
@@ -44,6 +52,8 @@ async def test_draft_snapshot_persists_each_accepted_fact(service_and_intake):
     assert intake.actual_transfer_date == date(2026, 1, 10)
     assert intake.current_step == "ready"
     assert intake.completed_at is None
+    assert intake.status == INTAKE_IN_PROGRESS
+    assert intake.version == 2
 
 
 @pytest.mark.asyncio
@@ -99,22 +109,22 @@ async def test_restart_snapshot_resets_only_active_intake(service_and_intake):
     intake.contract_price = Decimal("8500000")
     intake.planned_transfer_date = date(2026, 1, 15)
     intake.object_transferred = False
+    intake.status = INTAKE_COMPLETED
+    intake.completed_calculation_id = 77
 
-    await service.sync_from_draft(
-        case_id=42,
-        data={"calculator_case_id": 42},
-        today=date(2026, 9, 15),
-    )
+    await service.reset(case_id=42)
 
     assert intake.contract_price is None
     assert intake.planned_transfer_date is None
     assert intake.object_transferred is None
     assert intake.actual_transfer_date is None
     assert intake.current_step == "price"
+    assert intake.status == INTAKE_IN_PROGRESS
+    assert intake.completed_calculation_id is None
 
 
 @pytest.mark.asyncio
-async def test_completed_result_copies_exact_input_facts(service_and_intake):
+async def test_completed_result_copies_exact_input_facts_and_seals_calculation(service_and_intake):
     service, intake, _db = service_and_intake
     result = SimpleNamespace(
         contract_price=Decimal("8500000.00"),
@@ -124,7 +134,11 @@ async def test_completed_result_copies_exact_input_facts(service_and_intake):
         calculation_date=date(2026, 9, 15),
     )
 
-    await service.complete_from_result(case_id=42, result=result)
+    await service.complete_from_result(
+        case_id=42,
+        result=result,
+        calculation_id=501,
+    )
 
     assert intake.contract_price == Decimal("8500000.00")
     assert intake.planned_transfer_date == date(2026, 1, 15)
@@ -133,6 +147,31 @@ async def test_completed_result_copies_exact_input_facts(service_and_intake):
     assert intake.calculation_date == date(2026, 9, 15)
     assert intake.completed_at is not None
     assert intake.current_step == "completed"
+    assert intake.status == INTAKE_COMPLETED
+    assert intake.completed_calculation_id == 501
+    assert intake.version == 2
+
+
+@pytest.mark.asyncio
+async def test_completed_intake_cannot_be_rebound_to_different_calculation(service_and_intake):
+    service, intake, _db = service_and_intake
+    intake.status = INTAKE_COMPLETED
+    intake.completed_calculation_id = 501
+    intake.completed_at = SimpleNamespace()
+    result = SimpleNamespace(
+        contract_price=Decimal("8500000.00"),
+        planned_transfer_date=date(2026, 1, 15),
+        object_transferred=False,
+        actual_transfer_date=None,
+        calculation_date=date(2026, 9, 15),
+    )
+
+    with pytest.raises(CalculationIntakeError, match="уже завершён другим расчётом"):
+        await service.complete_from_result(
+            case_id=42,
+            result=result,
+            calculation_id=502,
+        )
 
 
 @pytest.mark.asyncio
