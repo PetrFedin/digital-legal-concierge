@@ -6,15 +6,23 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
-from app.domain.calculator.penalty_calculator import (
-    PenaltyCalculationInput,
-    PenaltyCalculator,
+from app.domain.calculator.calculation_period_service import (
+    CalculationPeriodService,
+    SegmentedCalculationInput,
+    SegmentedCalculationResult,
 )
+from app.domain.calculator.calculation_rule_snapshot import (
+    ResolvedCalculationRule,
+    canonical_rule_snapshot,
+    canonical_rule_snapshot_hash,
+    resolved_rule_from_orm,
+)
+from app.domain.calculator.legal_rule_service import LegalRuleService
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
 from app.domain.statuses.case_statuses import CaseStatus
 from app.models.calculation import Calculation
+from app.models.calculation_segment import CalculationSegment
 from app.models.case import Case
 
 
@@ -31,9 +39,18 @@ class CalculatorRouteEligibilityError(ValueError):
 
 
 class CalculatorService:
+    """Persist preliminary calculations as immutable, reproducible facts.
+
+    PM-016 makes an APPROVED/effective-dated legal rule revision the production
+    source of calculation truth. The service deliberately has no fallback to
+    settings.legal_key_rate or to an implicit client multiplier. A synthetic
+    ResolvedCalculationRule may be injected by focused tests, but normal runtime
+    callers resolve the approved database revision.
+    """
+
     def __init__(self, db: AsyncSession):
         self.db = db
-        self.calculator = PenaltyCalculator()
+        self.period_calculator = CalculationPeriodService()
 
     async def latest_calculation_for_case(self, *, case_id: int) -> Calculation | None:
         statement = (
@@ -45,14 +62,12 @@ class CalculatorService:
         return (await self.db.execute(statement)).scalar_one_or_none()
 
     async def require_m1_eligible_calculation(self, *, case_id: int) -> Calculation:
-        """Require the current Case outcome to contain a positive delay/amount.
+        """Require the newest stored result to have chargeable delay and amount.
 
-        Calculator result buttons are Telegram messages and may be replayed after
-        a later recalculation. Eligibility therefore comes from the newest stored
-        Calculation, never from the button that happened to be clicked. A
-        zero-delay/zero-amount outcome is an informational completion/M2 outcome
-        under the approved functional specification and cannot be promoted to M1
-        by a stale positive-result button.
+        New PM-016 calculations use delay_days_chargeable. Historical rows did
+        not have that field, so they retain the previous delay_days eligibility
+        semantics instead of being rewritten to pretend a newer rule revision
+        existed when they were calculated.
         """
 
         calculation = await self.latest_calculation_for_case(case_id=case_id)
@@ -60,11 +75,15 @@ class CalculatorService:
             raise CalculatorRouteEligibilityError(
                 "Для продолжения М1 нужен сохранённый предварительный расчёт."
             )
-        delay_days = int(calculation.delay_days or 0)
+        chargeable_days = (
+            int(calculation.delay_days_chargeable)
+            if calculation.delay_days_chargeable is not None
+            else int(calculation.delay_days or 0)
+        )
         penalty_amount = Decimal(calculation.penalty_amount or 0)
-        if delay_days <= 0 or penalty_amount <= 0:
+        if chargeable_days <= 0 or penalty_amount <= 0:
             raise CalculatorRouteEligibilityError(
-                "По последнему расчёту просрочка или положительная сумма неустойки отсутствует."
+                "По последнему расчёту начисляемая просрочка или положительная сумма неустойки отсутствует."
             )
         return calculation
 
@@ -77,29 +96,48 @@ class CalculatorService:
         calculation_date: date,
         object_transferred: bool,
         actual_transfer_date: date | None = None,
-        key_rate: Decimal | None = None,
-        consumer_multiplier: Decimal = Decimal("2"),
-    ):
-        effective_rate = (
-            Decimal(str(settings.legal_key_rate))
-            if key_rate is None
-            else Decimal(str(key_rate))
-        )
-        result = self.calculator.calculate(
-            PenaltyCalculationInput(
+        resolved_rule: ResolvedCalculationRule | None = None,
+    ) -> SegmentedCalculationResult:
+        """Calculate once from an exact rule snapshot and append immutable evidence.
+
+        The caller owns commit/rollback. If no approved rule applies, resolution
+        fails closed before any Calculation row is inserted.
+        """
+
+        rule = resolved_rule
+        if rule is None:
+            orm_rule = await LegalRuleService(self.db).resolve_rule_set(
+                as_of=calculation_date
+            )
+            rule = resolved_rule_from_orm(orm_rule)
+
+        result = self.period_calculator.calculate(
+            data=SegmentedCalculationInput(
                 contract_price=contract_price,
                 planned_transfer_date=planned_transfer_date,
                 calculation_date=calculation_date,
                 object_transferred=object_transferred,
                 actual_transfer_date=actual_transfer_date,
-                key_rate=effective_rate,
-                consumer_multiplier=consumer_multiplier,
-            )
+            ),
+            rule=rule,
         )
+        snapshot = canonical_rule_snapshot(rule)
+        snapshot_hash = canonical_rule_snapshot_hash(rule)
 
-        # Every completed calculation is a historical fact. Never overwrite a
-        # previous Calculation: the approved model is Case -> Calculation 1:N,
-        # and readers determine the current value by newest created_at/id.
+        # The old scalar key_rate column is retained only as a compatibility
+        # projection when one chargeable rate really did apply. A multi-rate
+        # calculation never fabricates a single rate; segments + snapshot are
+        # the authoritative evidence.
+        chargeable_rates = {
+            Decimal(segment.rate_value)
+            for segment in result.segments
+            if segment.days_chargeable > 0
+        }
+        compatibility_rate = (
+            next(iter(chargeable_rates)) if len(chargeable_rates) == 1 else None
+        )
+        compatibility_formula_version = f"ruleset:{rule.rule_set_id}:r{rule.revision}"
+
         calculation = Calculation(
             case_id=case.id,
             contract_price=result.contract_price,
@@ -107,18 +145,48 @@ class CalculatorService:
             calculation_date=result.calculation_date,
             actual_transfer_date=result.actual_transfer_date,
             object_transferred=result.object_transferred,
-            delay_days=result.delay_days,
-            key_rate=result.key_rate,
-            consumer_multiplier=result.consumer_multiplier,
+            # Legacy projection: gross delay. M1 eligibility for new rows uses
+            # delay_days_chargeable explicitly.
+            delay_days=result.delay_days_total,
+            key_rate=compatibility_rate,
+            consumer_multiplier=rule.consumer_multiplier,
             penalty_amount=result.penalty_amount,
-            formula_version=result.formula_version,
+            formula_version=compatibility_formula_version,
             is_preliminary=True,
+            rule_set_id=rule.rule_set_id,
+            rule_revision=rule.revision,
+            rule_snapshot_hash=snapshot_hash,
+            rule_snapshot_json=snapshot,
+            calculation_end_date=result.calculation_end_date,
+            delay_days_total=result.delay_days_total,
+            delay_days_chargeable=result.delay_days_chargeable,
+            moratorium_days=result.moratorium_days,
         )
         self.db.add(calculation)
+        await self.db.flush()
 
-        # Recalculation must not silently move a case backwards from an active
-        # legal or consultation stage. Only the initial calculator phase changes
-        # the workflow status.
+        for segment in result.segments:
+            self.db.add(
+                CalculationSegment(
+                    calculation_id=calculation.id,
+                    rule_set_id=rule.rule_set_id,
+                    rule_revision=rule.revision,
+                    sequence_no=segment.sequence_no,
+                    period_from=segment.period_from,
+                    period_to=segment.period_to,
+                    days_total=segment.days_total,
+                    days_excluded=segment.days_excluded,
+                    days_chargeable=segment.days_chargeable,
+                    rate_period_id=segment.rate_period_id,
+                    rate_value=segment.rate_value,
+                    consumer_multiplier=segment.consumer_multiplier,
+                    amount=segment.amount,
+                    exclusion_evidence=list(segment.exclusion_evidence) or None,
+                )
+            )
+
+        # Recalculation must not silently move a Case backwards from an active
+        # legal or consultation stage. Only the calculator phase is advanced.
         if CaseStatus(str(case.status)) in _CALCULATION_PHASE_STATUSES:
             await CaseService(self.db).change_status(
                 case=case,
@@ -138,11 +206,17 @@ class CalculatorService:
             new_value={
                 "calculation_id": calculation.id,
                 "penalty_amount": str(result.penalty_amount),
-                "delay_days": result.delay_days,
+                "delay_days_total": result.delay_days_total,
+                "delay_days_chargeable": result.delay_days_chargeable,
+                "moratorium_days": result.moratorium_days,
                 "calculation_date": result.calculation_date.isoformat(),
-                "key_rate": str(result.key_rate),
-                "consumer_multiplier": str(result.consumer_multiplier),
-                "formula_version": result.formula_version,
+                "calculation_end_date": result.calculation_end_date.isoformat(),
+                "rule_set_id": rule.rule_set_id,
+                "rule_revision": rule.revision,
+                "rule_snapshot_hash": snapshot_hash,
+                "formula_code": rule.formula_code,
+                "rounding_code": rule.rounding_code,
+                "segment_count": len(result.segments),
             },
         )
         await self.db.flush()
