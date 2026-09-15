@@ -69,6 +69,32 @@ def _audit_value(revision: CalculationRuleRevision) -> dict[str, Any]:
     }
 
 
+def _parse_expected_updated_at(value: str | datetime | None) -> datetime | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError as error:
+        raise CalculationRuleRevisionError(
+            "Некорректная версия редактируемого черновика"
+        ) from error
+
+
+def _same_moment(left: datetime | None, right: datetime | None) -> bool:
+    if left is None or right is None:
+        return left is right
+    # SQLite often round-trips timezone-naive timestamps while PostgreSQL keeps
+    # timezone information. Compare normalized wall-clock UTC-compatible values
+    # rather than making optimistic concurrency backend-specific.
+    if left.tzinfo is not None:
+        left = left.astimezone(timezone.utc).replace(tzinfo=None)
+    if right.tzinfo is not None:
+        right = right.astimezone(timezone.utc).replace(tzinfo=None)
+    return left == right
+
+
 class CalculationRuleRevisionService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -131,6 +157,69 @@ class CalculationRuleRevisionService:
             actor_id=actor_id,
             old_value=None,
             comment="Создан черновик редакции правил предварительного расчёта",
+        )
+        await self.db.flush()
+        return revision
+
+    async def get_for_update(self, *, revision_id: int) -> CalculationRuleRevision:
+        revision = (
+            await self.db.execute(
+                select(CalculationRuleRevision)
+                .where(CalculationRuleRevision.id == int(revision_id))
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if revision is None:
+            raise CalculationRuleRevisionError("Ревизия правил не найдена")
+        return revision
+
+    async def update_draft(
+        self,
+        *,
+        revision_id: int,
+        effective_from: date,
+        effective_to: date | None,
+        rules: dict[str, Any],
+        note: str | None,
+        expected_updated_at: str | datetime | None,
+        actor_type: str,
+        actor_id: int,
+    ) -> CalculationRuleRevision:
+        """Edit only DRAFT content with optimistic conflict detection.
+
+        ``revision_key`` is intentionally immutable. An approved revision is
+        never edited; a legal change is represented by another revision.
+        """
+
+        revision = await self.get_for_update(revision_id=revision_id)
+        if str(revision.status).upper() != "DRAFT":
+            raise CalculationRuleRevisionError(
+                "Редактировать можно только DRAFT-ревизию"
+            )
+        expected = _parse_expected_updated_at(expected_updated_at)
+        if expected is not None and not _same_moment(revision.updated_at, expected):
+            raise CalculationRuleRevisionError(
+                "Черновик уже изменён другим пользователем; обновите страницу"
+            )
+        if effective_to is not None and effective_to < effective_from:
+            raise CalculationRuleRevisionError("effective_to не может быть раньше effective_from")
+        validate_rule_payload(rules)
+
+        before = _audit_value(revision)
+        revision.effective_from = effective_from
+        revision.effective_to = effective_to
+        revision.rules = rules
+        revision.rules_sha256 = rule_payload_sha256(rules)
+        revision.note = note
+        await self.db.flush()
+        self._audit(
+            revision=revision,
+            action="CALCULATION_RULE_DRAFT_UPDATED",
+            actor_type=actor_type,
+            actor_id=int(actor_id),
+            old_value=before,
+            comment="Изменён черновик редакции правил предварительного расчёта",
         )
         await self.db.flush()
         return revision
