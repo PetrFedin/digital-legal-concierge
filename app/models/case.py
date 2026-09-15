@@ -84,6 +84,12 @@ class Case(Base, TimestampMixin):
         back_populates="case",
         order_by="Calculation.created_at",
     )
+    calculation_intake = relationship(
+        "CalculationIntake",
+        back_populates="case",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
     documents = relationship("Document", back_populates="case")
     payments = relationship("Payment", back_populates="case")
     consultations = relationship(
