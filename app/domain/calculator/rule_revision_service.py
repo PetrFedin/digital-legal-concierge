@@ -9,6 +9,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.calculator.rule_engine import CalculationRuleError, _parse_rule_payload
+from app.models.audit_log import AuditLog
 from app.models.calculation_rule_revision import CalculationRuleRevision
 
 
@@ -50,9 +51,50 @@ def validate_rule_payload(rules: dict[str, Any]) -> None:
     canonical_rule_json(rules)
 
 
+def _audit_value(revision: CalculationRuleRevision) -> dict[str, Any]:
+    return {
+        "revision_key": revision.revision_key,
+        "status": revision.status,
+        "effective_from": revision.effective_from.isoformat(),
+        "effective_to": (
+            revision.effective_to.isoformat() if revision.effective_to else None
+        ),
+        "rules_sha256": revision.rules_sha256,
+        "approved_by_actor_type": revision.approved_by_actor_type,
+        "approved_by_actor_id": revision.approved_by_actor_id,
+        "approved_at": (
+            revision.approved_at.isoformat() if revision.approved_at else None
+        ),
+        "note": revision.note,
+    }
+
+
 class CalculationRuleRevisionService:
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    def _audit(
+        self,
+        *,
+        revision: CalculationRuleRevision,
+        action: str,
+        actor_type: str,
+        actor_id: int | None,
+        old_value: dict[str, Any] | None,
+        comment: str,
+    ) -> None:
+        self.db.add(
+            AuditLog(
+                actor_type=str(actor_type or "staff").strip() or "staff",
+                actor_id=actor_id,
+                action=action,
+                entity_type="calculation_rule_revision",
+                entity_id=int(revision.id) if revision.id is not None else None,
+                old_value=old_value,
+                new_value=_audit_value(revision),
+                comment=comment,
+            )
+        )
 
     async def create_draft(
         self,
@@ -62,6 +104,8 @@ class CalculationRuleRevisionService:
         effective_to: date | None,
         rules: dict[str, Any],
         note: str | None = None,
+        actor_type: str = "staff",
+        actor_id: int | None = None,
     ) -> CalculationRuleRevision:
         key = str(revision_key or "").strip()
         if not key:
@@ -80,7 +124,29 @@ class CalculationRuleRevisionService:
         )
         self.db.add(revision)
         await self.db.flush()
+        self._audit(
+            revision=revision,
+            action="CALCULATION_RULE_DRAFT_CREATED",
+            actor_type=actor_type,
+            actor_id=actor_id,
+            old_value=None,
+            comment="Создан черновик редакции правил предварительного расчёта",
+        )
+        await self.db.flush()
         return revision
+
+    async def _lock_all_revisions(self) -> list[CalculationRuleRevision]:
+        # Approval is a very low-volume staff operation. Serializing the small
+        # directory is preferable to allowing two concurrent transactions to
+        # both observe no overlapping APPROVED row and create ambiguous legal
+        # authority. Stable ordering avoids lock-order deadlocks.
+        statement = (
+            select(CalculationRuleRevision)
+            .order_by(CalculationRuleRevision.id.asc())
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return list((await self.db.execute(statement)).scalars().all())
 
     async def approve(
         self,
@@ -89,6 +155,12 @@ class CalculationRuleRevisionService:
         actor_type: str,
         actor_id: int,
     ) -> CalculationRuleRevision:
+        locked = await self._lock_all_revisions()
+        current = next((item for item in locked if item.id == revision.id), None)
+        if current is None:
+            raise CalculationRuleRevisionError("Ревизия правил не найдена")
+        revision = current
+
         if str(revision.status).upper() != "DRAFT":
             raise CalculationRuleRevisionError(
                 "Утверждать можно только DRAFT-ревизию; утверждённая ревизия не редактируется"
@@ -102,34 +174,66 @@ class CalculationRuleRevisionService:
         if revision.effective_to is not None and revision.effective_to < revision.effective_from:
             raise CalculationRuleRevisionError("Некорректный период действия ревизии")
 
-        overlap_conditions = [
-            CalculationRuleRevision.status == "APPROVED",
-            CalculationRuleRevision.id != revision.id,
-            or_(
-                CalculationRuleRevision.effective_to.is_(None),
-                CalculationRuleRevision.effective_to >= revision.effective_from,
-            ),
-        ]
-        if revision.effective_to is not None:
-            overlap_conditions.append(
-                CalculationRuleRevision.effective_from <= revision.effective_to
+        for existing in locked:
+            if existing.id == revision.id or str(existing.status).upper() != "APPROVED":
+                continue
+            starts_before_target_ends = (
+                revision.effective_to is None
+                or existing.effective_from <= revision.effective_to
             )
-        existing = (
-            await self.db.execute(
-                select(CalculationRuleRevision.id)
-                .where(*overlap_conditions)
-                .limit(1)
+            target_starts_before_existing_ends = (
+                existing.effective_to is None
+                or existing.effective_to >= revision.effective_from
             )
-        ).scalar_one_or_none()
-        if existing is not None:
-            raise CalculationRuleRevisionError(
-                "Период действия пересекается с другой APPROVED-ревизией"
-            )
+            if starts_before_target_ends and target_starts_before_existing_ends:
+                raise CalculationRuleRevisionError(
+                    "Период действия пересекается с другой APPROVED-ревизией"
+                )
 
+        before = _audit_value(revision)
         revision.status = "APPROVED"
         revision.approved_by_actor_type = str(actor_type or "").strip() or "staff"
         revision.approved_by_actor_id = int(actor_id)
         revision.approved_at = datetime.now(timezone.utc)
+        await self.db.flush()
+        self._audit(
+            revision=revision,
+            action="CALCULATION_RULE_APPROVED",
+            actor_type=actor_type,
+            actor_id=int(actor_id),
+            old_value=before,
+            comment="Утверждена редакция юридических правил предварительного расчёта",
+        )
+        await self.db.flush()
+        return revision
+
+    async def retire(
+        self,
+        *,
+        revision: CalculationRuleRevision,
+        actor_type: str,
+        actor_id: int,
+    ) -> CalculationRuleRevision:
+        locked = await self._lock_all_revisions()
+        current = next((item for item in locked if item.id == revision.id), None)
+        if current is None:
+            raise CalculationRuleRevisionError("Ревизия правил не найдена")
+        revision = current
+        if str(revision.status).upper() != "APPROVED":
+            raise CalculationRuleRevisionError(
+                "В архив можно перевести только APPROVED-ревизию"
+            )
+        before = _audit_value(revision)
+        revision.status = "RETIRED"
+        await self.db.flush()
+        self._audit(
+            revision=revision,
+            action="CALCULATION_RULE_RETIRED",
+            actor_type=actor_type,
+            actor_id=int(actor_id),
+            old_value=before,
+            comment="Редакция правил исключена из новых расчётов; исторические расчёты не изменены",
+        )
         await self.db.flush()
         return revision
 
