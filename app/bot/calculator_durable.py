@@ -33,6 +33,10 @@ _CALLBACK_PREFIXES = {
     "calc_object_transferred_yes:v2:": "transfer_yes",
     "calc_object_transferred_no:v2:": "transfer_no",
     "calc_restart:v2:": "restart",
+    # A committed result clears the active FSM binding. The explicit result
+    # action still carries an exact Case id and is the authority to reopen only
+    # that Case's intake before the canonical handler starts a fresh working set.
+    "calc_repeat:v2:": "restart_explicit",
 }
 
 
@@ -115,14 +119,14 @@ class DurableCalculatorIntakeMiddleware:
             return await handler(event, data)
 
         before = dict(await state.get_data())
-        case_id = _case_id(before)
-        if case_id <= 0:
-            return await handler(event, data)
-
+        state_case_id = _case_id(before)
+        case_id = state_case_id
         mutation: tuple[str, object] | None = None
         current_state = await state.get_state()
 
         if isinstance(event, Message):
+            if case_id <= 0:
+                return await handler(event, data)
             if current_state == CalculatorStates.waiting_contract_price.state:
                 try:
                     mutation = ("price", parse_money(event.text))
@@ -155,10 +159,16 @@ class DurableCalculatorIntakeMiddleware:
                 callback_case_id = _callback_case_id(raw, prefix)
                 if callback_case_id <= 0:
                     continue
-                # A stale button for another Case remains presentation-only and
-                # is handled by the canonical stale-step guard without a write.
-                if callback_case_id != case_id:
-                    return await handler(event, data)
+                if action == "restart_explicit":
+                    # A result-screen recalc is explicitly Case-bound even after
+                    # finish_calculator_case removed the active FSM case id.
+                    case_id = callback_case_id
+                else:
+                    # All in-questionnaire buttons must match the exact current
+                    # Case or remain presentation-only stale callbacks.
+                    if state_case_id <= 0 or callback_case_id != state_case_id:
+                        return await handler(event, data)
+                    case_id = state_case_id
                 mutation = (action, callback_case_id)
                 break
             if mutation is None:
@@ -168,7 +178,7 @@ class DurableCalculatorIntakeMiddleware:
 
         user = getattr(event, "from_user", None)
         telegram_id = int(getattr(user, "id", 0) or 0)
-        if telegram_id <= 0:
+        if telegram_id <= 0 or case_id <= 0:
             await _warn_durable_failure(event)
             return None
 
@@ -189,7 +199,11 @@ class DurableCalculatorIntakeMiddleware:
 
             service = CalculationIntakeService(db)
             intake = await service.get(case_id=case_id)
-            if intake is None and _has_legacy_facts(before):
+            if (
+                intake is None
+                and state_case_id == case_id
+                and _has_legacy_facts(before)
+            ):
                 # One-time cutover only. Existing PostgreSQL state always wins.
                 await service.sync_from_draft(
                     case_id=case_id,
@@ -225,7 +239,7 @@ class DurableCalculatorIntakeMiddleware:
                     actual_transfer_date=value,
                     today=date.today(),
                 )
-            elif action == "restart":
+            elif action in {"restart", "restart_explicit"}:
                 await service.reset(case_id=case_id)
             else:  # pragma: no cover - defensive closed world
                 raise RuntimeError(f"Unsupported calculator intake mutation: {action}")
