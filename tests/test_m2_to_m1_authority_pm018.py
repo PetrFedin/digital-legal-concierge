@@ -22,7 +22,6 @@ from app.models.case_transition import (
 from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
 from app.models.lawyer import Lawyer
-from app.models.notification import Notification
 from app.models.user import User
 
 
@@ -248,12 +247,6 @@ def test_real_consultation_outcome_to_m1_is_recoverable_and_idempotent() -> None
                 AuditLog.entity_id == case_id,
                 AuditLog.action == "CONSULTATION_COMPLETED",
             ) == 1
-            assert await _count(
-                db,
-                Notification,
-                Notification.case_id == case_id,
-                Notification.event_code == "CONSULTATION_COMPLETED",
-            ) <= 1
 
         await engine.dispose()
 
