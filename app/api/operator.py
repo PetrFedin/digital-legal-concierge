@@ -112,6 +112,7 @@ main{max-width:1180px;margin:auto;padding:22px}.intro{display:flex;justify-conte
 .notice{margin:0 0 15px;border:1px solid #c7d2fe;background:var(--primary-soft);border-radius:13px;padding:12px;font-size:13px}.notice.error{border-color:#fecdca;background:var(--red-soft);color:var(--red)}
 .role-badge{display:inline-flex;background:#eef2f6;color:#344054;border-radius:999px;padding:6px 9px;font-size:12px;font-weight:750}.section-title{margin:20px 0 10px}.section-title h2{margin:0 0 3px;font-size:19px}.loading,.empty{grid-column:1/-1;background:#fff;border:1px dashed var(--line);border-radius:15px;padding:28px;text-align:center;color:var(--muted)}
 button{border:0;border-radius:10px;padding:9px 12px;color:#fff;background:var(--primary);font-weight:750;cursor:pointer}
+a:focus-visible,button:focus-visible{outline:3px solid #9db0f5;outline-offset:2px}
 @media(max-width:900px){.workspace-grid{grid-template-columns:1fr}.status-grid{grid-template-columns:1fr 1fr}}
 @media(max-width:620px){header,.header-inner,.intro{align-items:flex-start}.header-inner,.intro{flex-direction:column}.status-grid,.links{grid-template-columns:1fr}main{padding:14px}.header-actions{width:100%}.header-actions form,.header-actions button{width:100%}}
 </style>
@@ -134,7 +135,7 @@ button{border:0;border-radius:10px;padding:9px 12px;color:#fff;background:var(--
   <div class="intro">
     <div><h2>Рабочее пространство</h2><div class="muted">Сначала — ежедневные действия. Технические разделы вынесены отдельно.</div></div>
   </div>
-  <div id="accessNotice" class="notice">Проверяем доступные разделы…</div>
+  <div id="accessNotice" class="notice" role="status" aria-live="polite">Проверяем доступные разделы…</div>
   <div class="status-grid">
     <article class="status-card"><div class="status-top"><h3>Telegram-бот</h3><span class="pill __BOT_CLASS__">__BOT_LABEL__</span></div><p>Принимает обращения и ведёт клиента по расчёту, делу и консультации.</p></article>
     <article class="status-card"><div class="status-top"><h3>Автоматические проверки</h3><span class="pill __SCHED_CLASS__">__SCHED_LABEL__</span></div><p>Контролирует сроки, уведомления, консультации и системные задания.</p></article>
@@ -174,9 +175,9 @@ const workspaces=document.getElementById('workspaces'),notice=document.getElemen
 function esc(v){return String(v??'').replace(/[&<>\x22\x27]/g,c=>c==='&'?'&amp;':c==='<'?'&lt;':c==='>'?'&gt;':c.charCodeAt(0)===34?'&quot;':'&#39;')}
 function link(href,title,description,cls=''){return `<a class="link ${cls}" href="${href}"><b>${esc(title)}</b><span>${esc(description)}</span></a>`}
 function group(title,description,links){return `<article class="workspace"><h3>${esc(title)}</h3><p>${esc(description)}</p><div class="links">${links.join('')}</div></article>`}
-function roleLabel(roles){const labels=[];if(roles.includes('lawyer'))labels.push('Юрист');if(roles.includes('admin'))labels.push('Администратор');if(roles.includes('superadmin'))labels.push('Суперадминистратор');return labels.join(' · ')||'Сотрудник'}
+function roleLabel(roles){const labels=[];if(roles.includes('superadmin'))labels.push('Суперадминистратор');else if(roles.includes('admin'))labels.push('Администратор');if(roles.includes('lawyer'))labels.push('Юрист');return labels.join(' · ')||'Сотрудник'}
 function renderRoles(roles){
-  const isLawyer=roles.includes('lawyer'),isAdmin=roles.includes('admin')||roles.includes('superadmin');
+  const isLawyer=roles.includes('lawyer'),isSuperAdmin=roles.includes('superadmin'),isAdmin=roles.includes('admin')||isSuperAdmin;
   roleName.textContent=roleLabel(roles);
   const groups=[];
   if(isLawyer){groups.push(group('Работа юриста','Мои дела, документы, сроки и консультации без перехода в административные очереди',[
@@ -190,23 +191,31 @@ function renderRoles(roles){
     link('/message-center/ui','Сообщения','Непрочитанные обращения и ответы команды'),
     link('/document-access/review/ui','Документы','Проверка и контроль версий'),
     link('/admin/consultation-outcomes/ui','Исходы консультаций','Результаты, переносы и неявки'),
+    link('/consultation-slots/ui','Расписание','Свободные слоты, резервы и время юристов'),
     link('/admin/payment-reviews/ui','Сверка платежей','Деньги получены, но автоматика безопасно остановила действие','warn'),
     link('/admin/refunds/ui','Возвраты','Фиксация фактически выполненных возвратов')
   ]))}
   workspaces.innerHTML=groups.join('')||'<div class="empty">Для текущей роли рабочий кабинет не настроен. Обратитесь к администратору доступа.</div>';
   if(isAdmin){
     systemSection.hidden=false;
-    systemLinks.innerHTML=group('Контроль сервиса','Сроки, безопасность и эксплуатация',[
+    let systemGroups=group('Контроль сервиса','Сроки, доставка, безопасность и эксплуатация',[
       link('/admin/sla/ui','SLA и просрочки','Сроки реакции, действия и эскалации','warn'),
       link('/admin/notification-delivery/ui','Telegram-доставка','Ошибки, очередь и повторы'),
       link('/monitoring-center/ui','Мониторинг','Работоспособность приложения'),
       link('/security-events/ui','Безопасность','События и подозрительные действия')
-    ])+group('Настройка','Редкие административные операции вынесены из ежедневной очереди',[
-      link('/admin-ui','Рабочая зона администратора','Перейти к единому Workdesk'),
+    ])+group('Настройка продукта','Редкие административные операции вынесены из ежедневной очереди',[
       link('/settings-ui','Настройки','Суммы, сроки и параметры продукта'),
-      link('/admin/sla/ui','Контроль сроков','SLA и эскалации'),
-      link('/admin/notification-delivery/ui','Очередь уведомлений','Повторы и ошибки доставки')
+      link('/admin-ui','Расширенная панель','Технические и служебные разделы администратора')
     ]);
+    if(isSuperAdmin){
+      systemGroups+=group('Руководительский контроль','Доступ, неизменяемый аудит, резервирование и политика хранения',[
+        link('/access/ui','Доступ и роли','Пользователи, роли, MFA и отзыв сессий','primary'),
+        link('/audit-center/ui','Аудит','Целостность журнала действий и проверка цепочки'),
+        link('/backup-center/ui','Резервные копии','Контроль зашифрованных резервных копий'),
+        link('/retention/ui','Хранение и legal hold','Удержания, сроки и двухэтапное удаление','warn')
+      ]);
+    }
+    systemLinks.innerHTML=systemGroups;
   }else{systemSection.hidden=true;systemLinks.innerHTML=''}
   notice.textContent='Доступ определён вашей персональной сессией. Клиентские данные не передаются в этот экран до открытия профильного раздела.';
 }
