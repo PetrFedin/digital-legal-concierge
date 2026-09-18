@@ -90,8 +90,8 @@ jobs:
           cat /tmp/dlc-browser-e2e.log
           exit 1
 
-      - name: Run staff browser E2E
-        run: pytest -q tests/test_browser_staff_e2e.py
+      - name: Run staff browser and role UX E2E
+        run: pytest -q tests/test_browser_staff_e2e.py tests/test_operator_role_ux_pm022.py
 
       - name: Application log
         if: always()
