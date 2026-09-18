@@ -77,7 +77,6 @@ class CaseTransitionOutboxEvent(Base, TimestampMixin):
         String(36),
         nullable=False,
         unique=True,
-        index=True,
     )
     case_id: Mapped[int] = mapped_column(
         ForeignKey("cases.id", ondelete="RESTRICT"),
@@ -88,7 +87,6 @@ class CaseTransitionOutboxEvent(Base, TimestampMixin):
         ForeignKey("case_transition_commands.id", ondelete="RESTRICT"),
         nullable=False,
         unique=True,
-        index=True,
     )
     aggregate_version: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     event_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
