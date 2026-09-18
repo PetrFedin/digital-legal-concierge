@@ -68,6 +68,58 @@ jobs:
           echo "latest governed commit: ${latest_governed_commit:-none}"
           echo "latest process-map commit: $latest_map_commit"
 
+  pm018-authority-proof:
+    name: PM-018 authority and M2 handoff proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      APP_ENV: test
+      DATABASE_URL: sqlite+aiosqlite:///./pm018_ci.db
+      BOT_TOKEN: CHANGE_ME
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: admin-change-me
+      ADMIN_API_TOKEN: ci-admin-token-change-me
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[test]"
+
+      - name: Compile PM-018 sources and proofs
+        run: |
+          python -m compileall -q \
+            app/domain/cases/case_service.py \
+            app/domain/consultations/outcome_service.py \
+            app/models/case.py \
+            app/models/case_transition.py \
+            migrations/versions/20260918_0024_case_transition_authority_recovery.py \
+            tests/test_case_transition_authority_pm018.py \
+            tests/test_m2_to_m1_authority_pm018.py
+
+      - name: Prove migration 0024 and ORM parity
+        run: |
+          rm -f pm018_ci.db
+          alembic upgrade head
+          alembic current
+          alembic check
+
+      - name: Run PM-018 regression and negative proof
+        run: |
+          pytest -q \
+            tests/test_case_transition_authority_pm018.py \
+            tests/test_m2_to_m1_authority_pm018.py
+
   sqlite-tests:
     name: SQLite application tests
     runs-on: ubuntu-24.04
