@@ -62,5 +62,5 @@ jobs:
           alembic upgrade head
           alembic check
 
-      - name: Verify Redis-backed Telegram restart contract
-        run: pytest -q tests/test_telegram_redis_runtime.py
+      - name: Verify Redis-backed Telegram restart and client UX contracts
+        run: pytest -q tests/test_telegram_redis_runtime.py tests/test_telegram_client_ux_pm022.py
