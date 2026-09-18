@@ -21,6 +21,14 @@ class Case(Base, TimestampMixin):
     )
     route: Mapped[str | None] = mapped_column(String(10), nullable=True)
     status: Mapped[str] = mapped_column(String(100), index=True)
+    # Monotonic aggregate version used by CaseService for optimistic/stale-action
+    # protection. It advances exactly once for each persisted process transition.
+    version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default="1",
+    )
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source: Mapped[str] = mapped_column(
         String(100),

@@ -178,6 +178,7 @@ class ConsultationOutcomeService:
             )
 
         case = await self._lock_case(consultation.case_id)
+        case_version = int(case.version or 1)
         slot = await self._lock_slot(consultation)
         self._ensure_started(slot)
         old_value = {
@@ -192,12 +193,19 @@ class ConsultationOutcomeService:
         slot.status = "completed"
         slot.hold_expires_at = None
 
+        transition_key = (
+            f"consultation:{int(consultation.id)}:complete:{normalized_decision}"
+        )
+        transition_correlation = f"consultation:{int(consultation.id)}:complete"
         if normalized_decision == "to_m1":
             await self.cases.transfer_to_m1(
                 case=case,
                 actor_type="lawyer",
                 actor_id=lawyer_id,
                 comment="Перевод в маршрут М1 по результату консультации",
+                expected_version=case_version,
+                idempotency_key=transition_key,
+                correlation_id=transition_correlation,
             )
         elif normalized_decision == "close":
             case.close_reason = "M2_CONSULTATION_COMPLETED"
@@ -207,6 +215,9 @@ class ConsultationOutcomeService:
                 actor_type="lawyer",
                 actor_id=lawyer_id,
                 comment="Консультация завершена, обращение закрыто",
+                expected_version=case_version,
+                idempotency_key=transition_key,
+                correlation_id=transition_correlation,
             )
         else:
             await self.cases.change_status(
@@ -215,6 +226,9 @@ class ConsultationOutcomeService:
                 actor_type="lawyer",
                 actor_id=lawyer_id,
                 comment="Результат консультации зафиксирован",
+                expected_version=case_version,
+                idempotency_key=transition_key,
+                correlation_id=transition_correlation,
             )
             case.next_action = (
                 "Назначить следующую консультацию"

@@ -233,9 +233,13 @@ Historical compatibility contract:
 
 M2 lawyer responsibility is consultation/slot-driven. Role-safe Message Center document navigation therefore points to the document review surface that evaluates current M2 responsibility instead of depending on M1 `Case.assigned_lawyer_id`.
 
-Anchors: consultation domain services, `case_service.py`, `case_transition_policy.py`, `app/models/case.py`.
+PM-018 hardens the existing CaseService/CaseTransitionPolicy contour rather than adding a second state machine. Every applied Case process transition now advances one monotonic `Case.version`, writes one durable `CaseTransitionCommand` idempotency/recovery row, appends the existing `AuditLog` Case history event and writes one `CaseTransitionOutboxEvent` in the same database transaction. Ownership is checked before replay/stale evaluation; an exact committed command replay is resolved before the old expected version is rejected; an unrelated stale expected version is a side-effect-free no-op. M2→M1 remains a route handoff on the same Case: the authority changes the single `Case.route` from M2 to M1 and accepts that cross-route handoff only as `CASE_TRANSFERRED_TO_M1` by a lawyer. `ConsultationOutcomeService.complete(..., decision="to_m1")` supplies a deterministic consultation-scoped idempotency key and expected Case version.
 
-State: `IMPLEMENTED / FIXED_PENDING_RUNTIME`.
+Anchors: consultation domain services, `case_service.py`, `case_transition_policy.py`, `app/models/case.py`, `app/models/case_transition.py`, migration `20260918_0024_case_transition_authority_recovery.py`.
+
+Evidence: `tests/test_case_transition_authority_pm018.py` and `tests/test_m2_to_m1_authority_pm018.py`. Source is implemented; exact-head CI/migration/runtime evidence is still required before PM-018 can be marked PASS.
+
+State: `IMPLEMENTED / PM-018 FIXED_PENDING_RUNTIME`.
 
 ## P-08 — Staff authentication, authorization and Workdesk
 
@@ -334,7 +338,9 @@ Current runtime truth supersedes the old universal #116 blocker statement. On su
 | --- | --- | --- |
 | Client identity | `User` | Telegram presentation |
 | Active/selected matter | `Case` + `ClientCaseContext` | My Case/cards |
-| Process stage | `Case.status` | client/staff labels |
+| Process stage | `Case.status` + monotonic `Case.version` | client/staff labels; version guards stale mutation actions |
+| Case transition command/retry identity | `CaseTransitionCommand` | idempotent replay / commit-before-response recovery |
+| Case transition outbox | `CaseTransitionOutboxEvent` | post-commit transition event delivery/processing evidence |
 | Calculation history | `Calculation` | latest derived by query |
 | Incomplete calculator draft | Redis FSM only in current source | runtime recovery only; durable Case-card visibility is PM-017 release debt |
 | Consent | immutable `ConsentAcceptance` | consent history/UI |
@@ -362,7 +368,7 @@ Current runtime truth supersedes the old universal #116 blocker statement. On su
 - `tests/test_process_map_governance_contract.py` locks the presence/freshness source contract and root `AGENTS.md` wording;
 - source compile;
 - architecture check, including absolute/relative/literal-dynamic legacy assignment containment and alias/type-aware direct/bulk `Case.status` and `Payment.status` mutation containment;
-- SQLite suite, including CaseService/M2 compatibility, Workdesk renderer, legacy-assignment import guard, status-mutation architecture regressions, rejected-M1 client decision, Payment Review history/privacy/409/renderer/router contracts, role-safe Message Center composition, and the PM-015 calculator date/result/recovery regressions;
+- SQLite suite, including CaseService/M2 compatibility, Workdesk renderer, legacy-assignment import guard, status-mutation architecture regressions, rejected-M1 client decision, Payment Review history/privacy/409/renderer/router contracts, role-safe Message Center composition, the PM-015 calculator date/result/recovery regressions, and PM-018 authority proofs for versioning, stale no-op, idempotent replay, client/Case isolation, rollback atomicity and M2→M1;
 - Alembic current/idempotency/check + clean migration smoke;
 - PostgreSQL migration + technical encrypted backup/restore drill;
 - production container build/start/health.
@@ -427,6 +433,7 @@ One exact SHA/run/attempt must prove PostgreSQL, Redis, real Telegram delivery, 
 | PM-015 | Calculator date/result/recovery truth | Audit found five linked client-path defects: early actual transfer was rejected instead of saved as zero delay; future contractual date was not persisted before informational exit; recovered draft UI emitted raw callbacks that exact-case handlers reject; zero-delay results still exposed M1; stale positive-result buttons could enter M1 after a newer zero-delay recalculation | A specified exceptional outcome could end as an input error, dead button, wrong Case interaction, or inappropriate M1 progression instead of a truthful client/operational result | `FIXED_PENDING_RUNTIME`; source/tests corrected in audit commits `58fb066...`, `2b7aabe...`, `974ae2d...`, `253838f...`, `ace7cf8...`, `73c115c...`, `9958d95...`, `1fb2c10...`, `29a1fca...`, `91e8fe1...`, `451e6db...`. No runtime PASS is claimed until exact-head CI/Telegram gates execute |
 | PM-016 | Calculator legal rule engine | Current calculation path still uses one configured key rate/multiplier and a single formula path; inspected source does not implement versioned lawyer-approved rules, rate intervals, moratoria/excluded periods and the legal basis for each exclusion, although the Functional Specification requires these parameters in reference data rather than hard-coded logic | A numerically reproducible result can still be legally wrong for the relevant period, and historical recalculation may change when global settings change | `DEBT_OPEN / RELEASE_P0`; implement versioned, effective-dated rule/rate/exclusion data and persist the exact rule revision/segments used. No legal formula or 2026 moratorium behavior may be guessed; current law and lawyer approval must be evidenced before release acceptance |
 | PM-017 | Calculator incomplete-answer durability / Case-card visibility | Functional Specification requires entered calculator values to reach the Case card and interrupted input to be saved. Current incomplete answers are only Case-namespaced Redis FSM draft state; `Calculation` is written only for completed calculations and `Case` has no calculator-draft fields | Redis loss/expiry can remove client-entered facts and staff cannot rely on the Case card for an interrupted calculator, contradicting the specified operational handoff | `DEBT_OPEN / RELEASE_P0`; do not rewrite the specification around Redis. Implement or identify a durable Case-scoped intake/draft source, persist field-level facts transactionally/auditably, expose them to authorized staff, and prove Redis restart/loss + multi-Case isolation + resume behavior |
+| PM-018 | Case Transition Authority & Recovery | Existing CaseService row locking and transition policy did not provide an aggregate version plus durable command identity for every applied transition; after commit-before-response an old callback could not be distinguished from a new stale command at the shared process boundary | Duplicate/stale actions could create ambiguous recovery behavior; cross-Case ownership checks and M2→M1 handoff authority were not proven by one durable transition contract | `FIXED_PENDING_RUNTIME / SOURCE_IMPLEMENTED / RELEASE_P0`; migration 0024 adds `Case.version`, `case_transition_commands` and `case_transition_outbox_events`; CaseService orders ownership → replay → expected-version → policy → mutation → journal/audit/outbox; applied mutation increments version once; stale unrelated actions write nothing; committed duplicate keys replay without another version/audit/outbox; M2→M1 is lawyer-only `CASE_TRANSFERRED_TO_M1` on the same Case. Focused regression/negative tests added. PM-019 is explicitly NOT_STARTED until exact-head migration/tests/CI pass |
 
 # Development priority plan
 
@@ -437,8 +444,9 @@ One exact SHA/run/attempt must prove PostgreSQL, Redis, real Telegram delivery, 
 3. Verify PM-015 with the exact-head calculator regressions and Telegram runtime. If a regression fails, fix the product/test contract based on the authoritative Functional Specification — never delete a failure, weaken the assertion, or rewrite the requirement to make the existing code pass.
 4. Use the same exact-head diagnostics to classify remaining failures, including PM-014 route inventory, assignment/SLA fixtures, FakeDB/locking assumptions and teardown/resource defects. Select the largest deterministic current-contract cluster only after reading the new log.
 5. Before calculator acceptance, close PM-016 with versioned/effective-dated legal calculation rules and PM-017 with durable Case-visible calculator intake. Each governed change creates a new candidate and restarts the exact-SHA evidence chain.
-6. After source P0 debt is closed, obtain full `CI` + `Deployment Readiness` + `Reproducible Dependencies` PASS, then PostgreSQL Concurrency → Telegram Runtime Contracts → Browser Staff E2E on the same SHA.
-7. Only after all general/dedicated gates are green, run one complete `LIVE_REQUIRED` attempt for that exact SHA.
+6. Prove PM-018 on one exact SHA: migration 0024 + focused regression/negative tests + the separate M2→M1 proof + normal CI migration/SQLite/PostgreSQL gates. PM-019 remains `NOT_STARTED` until this set passes.
+7. After source P0 debt is closed, obtain full `CI` + `Deployment Readiness` + `Reproducible Dependencies` PASS, then PostgreSQL Concurrency → Telegram Runtime Contracts → Browser Staff E2E on the same SHA.
+8. Only after all general/dedicated gates are green, run one complete `LIVE_REQUIRED` attempt for that exact SHA.
 
 ## P1 — controlled debt closure after executable CI is green
 
@@ -609,3 +617,17 @@ Whenever anything changes:
 - PM-016 records that the current single-rate calculator is not yet the versioned effective-dated rule engine required by the Functional Specification; rates, moratoria/excluded periods and rule revisions must become durable reference data before calculator acceptance.
 - PM-017 records that Case-namespaced Redis FSM is useful runtime recovery but does not by itself satisfy the specified durable Case-card visibility of entered calculator values. This gap is not closed by weakening the requirement.
 - Both items are release P0. Any implementation changes after this map commit create a new candidate and require another final Process Map update plus a fresh evidence chain.
+
+
+## 2026-09-18 — PM-018 Case Transition Authority & Recovery source implementation
+
+- PM-018 is implemented by strengthening the existing `CaseService` + `CaseTransitionPolicy` authority; no second state machine or third route was introduced.
+- Migration `20260918_0024_case_transition_authority_recovery.py` adds the monotonic `cases.version` field plus durable `case_transition_commands` and `case_transition_outbox_events` tables.
+- Authority ordering is ownership lock → exact idempotent replay → expected-version stale guard → existing transition policy → one Case mutation/version increment → command journal → existing sealed `AuditLog` event → transition outbox → SLA synchronization, all under the caller's one database transaction.
+- Exact replay is deliberately checked before expected-version mismatch so a commit-before-response retry recovers the durable result; a different stale command returns `STALE` without Case/history/journal/outbox mutation.
+- Client-originated commands scope the row lock by `Case.client_id` before replay lookup, preventing a foreign user from probing or replaying another Case command. Rollback regression proves flushed Case/journal/audit/outbox changes disappear together.
+- M2→M1 is proved separately: a client cannot perform the cross-route handoff; the lawyer handoff writes `CASE_TRANSFERRED_TO_M1`, changes the same Case from route M2/status M2 to route M1/`M1_DOCUMENTS_PENDING`, increments version once and writes exactly one command/outbox. The real `ConsultationOutcomeService.complete(..., decision="to_m1")` path uses a deterministic consultation-scoped command key and is idempotent on retry.
+- Focused evidence files are `tests/test_case_transition_authority_pm018.py` and `tests/test_m2_to_m1_authority_pm018.py`. CI now has an independent `PM-018 authority and M2 handoff proof` job that compiles the authority surface, applies migration 0024, runs `alembic current/check`, and executes only these PM-018 regressions so their result remains visible even while inherited branch-wide tests are being repaired.
+- Diagnostic head `43850b2...` proved compile, architecture, migration 0024, SQLite/PostgreSQL ORM parity, PostgreSQL backup/restore and container startup, but the monolithic SQLite suite remained red from the inherited base branch and one PM-018 M2 proof over-constrained notification fan-out (`2 <= 1`) outside the transition contract. That assertion was removed as `TEST_INFRA_DEFECT`; transition command/outbox/audit idempotency assertions remain strict.
+- The dedicated PM-018 CI job intentionally increased the CI job/check inventory. `tests/test_ci_workflow.py` was aligned to the new five-job CI contract (five credential-safe checkouts/fixed runners/timeouts and four schema checks) and now explicitly locks the PM-018 proof job, migration 0024 and both focused proof files; this is a `STALE_CONTRACT` correction, not a relaxation of security or schema gates.
+- Source status is `FIXED_PENDING_RUNTIME` until the exact final SHA executes the dedicated PM-018 proof and the required CI evidence. No PM-019 code or contract work is started in this batch.

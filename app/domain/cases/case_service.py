@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +19,7 @@ from app.domain.cases.sla_service import CaseSLAService
 from app.domain.statuses.case_statuses import CaseStatus, RouteCode
 from app.models.case import Case
 from app.models.case_creation_request import CaseCreationRequest
+from app.models.case_transition import CaseTransitionCommand, CaseTransitionOutboxEvent
 from app.models.client_case_context import ClientCaseContext
 from app.models.user import User
 
@@ -39,6 +42,20 @@ _TERMINAL_CASE_VALUES = {
 
 class CaseSelectionRequired(RuntimeError):
     """Raised when a mutating flow cannot determine which client Case it owns."""
+
+
+@dataclass(frozen=True)
+class CaseTransitionResult:
+    """Authoritative result of one Case process transition command."""
+
+    case: Case
+    outcome: str
+    changed: bool
+    command_id: int | None
+    applied_version: int
+    source_status: str
+    target_status: str
+    result_payload: dict
 
 
 class CaseService:
@@ -343,51 +360,246 @@ class CaseService:
         await self.db.flush()
         return case
 
-    async def _lock_case_for_transition(self, case: Case) -> Case:
-        """Serialize every legal status mutation on the persisted Case row.
+    async def _lock_case_for_transition(
+        self,
+        case: Case,
+        *,
+        request_client_id: int | None = None,
+    ) -> Case:
+        """Serialize and re-read the exact persisted Case before a mutation.
 
-        Callers may have loaded the Case before another worker committed a legal
-        fact. Flush caller-prepared non-status fields, then re-read the row under
-        ``FOR UPDATE`` with ``populate_existing`` so transition validation always
-        runs against the database truth that actually won the race.
+        A client-originated command is additionally scoped by client_id.
+        Ownership is proven before idempotency recovery or stale-state details
+        are evaluated, so a foreign caller cannot probe another client's journal.
         """
 
         if getattr(case, "id", None) is None:
             raise CaseTransitionError("Нельзя изменить статус несохранённого дела")
         await self.db.flush()
+        statement = select(Case).where(Case.id == int(case.id))
+        if request_client_id is not None:
+            statement = statement.where(
+                Case.client_id == int(request_client_id)
+            )
         locked = (
             await self.db.execute(
-                select(Case)
-                .where(Case.id == int(case.id))
-                .with_for_update()
-                .execution_options(populate_existing=True)
+                statement.with_for_update().execution_options(
+                    populate_existing=True
+                )
             )
         ).scalar_one_or_none()
         if locked is None:
-            raise LookupError("Дело не найдено")
+            raise LookupError("Дело не найдено или недоступно")
         return locked
 
-    async def _transition(
+    @staticmethod
+    def _transition_payload(case: Case) -> dict:
+        return {
+            "case_id": int(case.id),
+            "status": normalize_status(case.status).value,
+            "route": str(case.route) if case.route is not None else None,
+            "version": int(case.version or 1),
+            "next_action": case.next_action,
+            "closed_at": case.closed_at.isoformat() if case.closed_at else None,
+        }
+
+    async def _existing_transition_command(
+        self,
+        *,
+        case_id: int,
+        idempotency_key: str,
+    ) -> CaseTransitionCommand | None:
+        return (
+            await self.db.execute(
+                select(CaseTransitionCommand).where(
+                    CaseTransitionCommand.case_id == int(case_id),
+                    CaseTransitionCommand.idempotency_key == idempotency_key,
+                )
+            )
+        ).scalar_one_or_none()
+
+    @staticmethod
+    def _assert_replay_identity(
+        command: CaseTransitionCommand,
+        *,
+        actor_type: str,
+        actor_id: int | None,
+        request_client_id: int | None,
+        action: str,
+        target_status: CaseStatus,
+    ) -> None:
+        if (
+            str(command.actor_type) != actor_type
+            or command.actor_id != actor_id
+            or command.request_client_id != request_client_id
+            or str(command.action) != action
+            or str(command.target_status) != target_status.value
+        ):
+            raise CaseTransitionError(
+                "Идемпотентный ключ уже использован другим переходом дела"
+            )
+
+    async def execute_transition(
         self,
         *,
         case: Case,
         next_status: str | CaseStatus,
         actor_type: str,
-        actor_id: int | None,
-        comment: str | None,
-        force: bool,
-        action: str,
-    ) -> tuple[Case, bool]:
-        case = await self._lock_case_for_transition(case)
+        actor_id: int | None = None,
+        comment: str | None = None,
+        force: bool = False,
+        action: str = "CASE_STATUS_CHANGED",
+        expected_version: int | None = None,
+        idempotency_key: str | None = None,
+        request_client_id: int | None = None,
+        correlation_id: str | None = None,
+    ) -> CaseTransitionResult:
+        """Apply one authoritative M1/M2 process transition.
+
+        Ordering is ownership lock, idempotent replay, optimistic version check,
+        policy validation, mutation, journal, audit and outbox. A committed
+        command is therefore recoverable before a stale expected version can
+        reject its retry, while an unrelated stale action has no side effects.
+        """
+
+        normalized_actor = str(actor_type or "").strip().lower()
+        if not normalized_actor:
+            raise CaseTransitionError("Не указан тип участника перехода")
+        normalized_actor_id = int(actor_id) if actor_id is not None else None
+
+        effective_client_id = (
+            int(request_client_id) if request_client_id is not None else None
+        )
+        if normalized_actor == "client":
+            if normalized_actor_id is None:
+                raise CaseTransitionError(
+                    "Клиентский переход требует идентификатор клиента"
+                )
+            if (
+                effective_client_id is not None
+                and effective_client_id != normalized_actor_id
+            ):
+                raise CaseTransitionError(
+                    "Клиент не соответствует владельцу команды"
+                )
+            effective_client_id = normalized_actor_id
+
+        destination = normalize_status(next_status)
+        clean_action = str(action or "").strip()
+        if not clean_action:
+            raise CaseTransitionError("Не указан тип перехода")
+        if len(clean_action) > 100:
+            raise CaseTransitionError("Тип перехода превышает 100 символов")
+
+        explicit_idempotency = idempotency_key is not None
+        clean_key = str(idempotency_key or "").strip()
+        if explicit_idempotency and not clean_key:
+            raise CaseTransitionError("Пустой idempotency key недопустим")
+        if not clean_key:
+            clean_key = f"internal:{uuid4()}"
+        if len(clean_key) > 255:
+            raise CaseTransitionError("Idempotency key превышает 255 символов")
+
+        clean_correlation = str(correlation_id or "").strip() or None
+        if clean_correlation and len(clean_correlation) > 255:
+            raise CaseTransitionError("Correlation id превышает 255 символов")
+
+        normalized_expected: int | None = None
+        if expected_version is not None:
+            try:
+                normalized_expected = int(expected_version)
+            except (TypeError, ValueError) as error:
+                raise CaseTransitionError(
+                    "Некорректная ожидаемая версия дела"
+                ) from error
+            if normalized_expected < 1:
+                raise CaseTransitionError(
+                    "Ожидаемая версия дела должна быть положительной"
+                )
+
+        case = await self._lock_case_for_transition(
+            case,
+            request_client_id=effective_client_id,
+        )
+
+        if explicit_idempotency:
+            existing = await self._existing_transition_command(
+                case_id=int(case.id),
+                idempotency_key=clean_key,
+            )
+            if existing is not None:
+                self._assert_replay_identity(
+                    existing,
+                    actor_type=normalized_actor,
+                    actor_id=normalized_actor_id,
+                    request_client_id=effective_client_id,
+                    action=clean_action,
+                    target_status=destination,
+                )
+                payload = dict(existing.result_payload or {})
+                return CaseTransitionResult(
+                    case=case,
+                    outcome="REPLAYED",
+                    changed=False,
+                    command_id=int(existing.id),
+                    applied_version=int(existing.applied_version),
+                    source_status=str(existing.source_status),
+                    target_status=str(existing.target_status),
+                    result_payload=payload,
+                )
+
+        current_version = int(case.version or 1)
+        if (
+            normalized_expected is not None
+            and normalized_expected != current_version
+        ):
+            payload = self._transition_payload(case)
+            return CaseTransitionResult(
+                case=case,
+                outcome="STALE",
+                changed=False,
+                command_id=None,
+                applied_version=current_version,
+                source_status=normalize_status(case.status).value,
+                target_status=destination.value,
+                result_payload=payload,
+            )
+
         source, destination = validate_transition(
             case.status,
-            next_status,
+            destination,
             force=force,
-            actor_type=actor_type,
+            actor_type=normalized_actor,
             comment=comment,
         )
+
+        if (
+            source.value.startswith("M2_")
+            and destination.value.startswith("M1_")
+        ):
+            if (
+                normalized_actor != "lawyer"
+                or normalized_actor_id is None
+                or clean_action != "CASE_TRANSFERRED_TO_M1"
+            ):
+                raise CaseTransitionError(
+                    "Перевод M2 в M1 доступен только как решение юриста "
+                    "через authority-переход CASE_TRANSFERRED_TO_M1"
+                )
+
         if source == destination:
-            return case, False
+            payload = self._transition_payload(case)
+            return CaseTransitionResult(
+                case=case,
+                outcome="NOOP",
+                changed=False,
+                command_id=None,
+                applied_version=current_version,
+                source_status=source.value,
+                target_status=destination.value,
+                result_payload=payload,
+            )
+
         if (
             getattr(case, "content_deleted_at", None) is not None
             and destination not in TERMINAL_STATUSES
@@ -398,7 +610,8 @@ class CaseService:
 
         old = {
             "status": source.value,
-            "route": case.route,
+            "route": str(case.route) if case.route is not None else None,
+            "version": current_version,
             "next_action": case.next_action,
             "closed_at": case.closed_at.isoformat() if case.closed_at else None,
         }
@@ -414,34 +627,121 @@ class CaseService:
         elif destination.value.startswith("M2_"):
             case.route = RouteCode.M2
         case.next_action = self.get_next_action(destination)
+        case.version = current_version + 1
+
+        payload = self._transition_payload(case)
+        command = CaseTransitionCommand(
+            case_id=int(case.id),
+            request_client_id=effective_client_id,
+            actor_type=normalized_actor,
+            actor_id=normalized_actor_id,
+            action=clean_action,
+            idempotency_key=clean_key,
+            correlation_id=clean_correlation,
+            expected_version=normalized_expected,
+            applied_version=int(case.version),
+            source_status=source.value,
+            target_status=destination.value,
+            outcome="APPLIED",
+            result_payload=payload,
+        )
+        self.db.add(command)
+        await self.db.flush()
 
         await add_case_history_event(
             self.db,
-            actor_type=actor_type,
-            actor_id=actor_id,
+            actor_type=normalized_actor,
+            actor_id=normalized_actor_id,
             case_id=case.id,
-            action=action,
+            action=clean_action,
             old_value=old,
             new_value={
-                "status": destination.value,
-                "route": case.route,
-                "next_action": case.next_action,
-                "closed_at": case.closed_at.isoformat() if case.closed_at else None,
+                **payload,
                 "forced": force,
+                "transition_command_id": int(command.id),
+                "idempotency_key": clean_key,
+                "correlation_id": clean_correlation,
             },
             comment=comment,
         )
+
+        outbox = CaseTransitionOutboxEvent(
+            event_id=str(uuid4()),
+            case_id=int(case.id),
+            command_id=int(command.id),
+            aggregate_version=int(case.version),
+            event_type="CASE_TRANSITION_APPLIED",
+            payload={
+                "case_id": int(case.id),
+                "action": clean_action,
+                "source_status": source.value,
+                "target_status": destination.value,
+                "route": payload["route"],
+                "version": int(case.version),
+                "actor_type": normalized_actor,
+                "actor_id": normalized_actor_id,
+                "correlation_id": clean_correlation,
+            },
+            status="PENDING",
+            attempt_count=0,
+        )
+        self.db.add(outbox)
+
         await CaseSLAService(self.db).synchronize_case_status(
             case=case,
-            actor_type=actor_type,
-            actor_id=actor_id,
+            actor_type=normalized_actor,
+            actor_id=normalized_actor_id,
             comment=(
                 f"Синхронизация SLA после статуса {destination.value}. "
                 f"{comment or ''}"
             ).strip(),
         )
         await self.db.flush()
-        return case, True
+        return CaseTransitionResult(
+            case=case,
+            outcome="APPLIED",
+            changed=True,
+            command_id=int(command.id),
+            applied_version=int(case.version),
+            source_status=source.value,
+            target_status=destination.value,
+            result_payload=payload,
+        )
+
+    async def _transition(
+        self,
+        *,
+        case: Case,
+        next_status: str | CaseStatus,
+        actor_type: str,
+        actor_id: int | None,
+        comment: str | None,
+        force: bool,
+        action: str,
+        expected_version: int | None = None,
+        idempotency_key: str | None = None,
+        request_client_id: int | None = None,
+        correlation_id: str | None = None,
+    ) -> tuple[Case, bool]:
+        result = await self.execute_transition(
+            case=case,
+            next_status=next_status,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            comment=comment,
+            force=force,
+            action=action,
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            request_client_id=request_client_id,
+            correlation_id=correlation_id,
+        )
+        if result.outcome == "STALE":
+            raise CaseTransitionError(
+                "Состояние дела изменилось после загрузки действия. "
+                f"Текущая версия: {result.applied_version}; обновите экран."
+            )
+        return result.case, result.changed
 
     @staticmethod
     def _normalize_client_document_handoff(
@@ -480,12 +780,26 @@ class CaseService:
         actor_id: int | None = None,
         comment: str | None = None,
         force: bool = False,
+        expected_version: int | None = None,
+        idempotency_key: str | None = None,
+        request_client_id: int | None = None,
+        correlation_id: str | None = None,
     ):
         # Client handoff normalization also depends on the current legal state,
         # so refresh that state under the same row lock before interpreting the
         # requested target. ``_transition`` intentionally re-locks the same row;
         # PostgreSQL treats that as a re-entrant lock within this transaction.
-        case = await self._lock_case_for_transition(case)
+        effective_client_id = request_client_id
+        if (
+            effective_client_id is None
+            and str(actor_type or "").strip().lower() == "client"
+            and actor_id is not None
+        ):
+            effective_client_id = int(actor_id)
+        case = await self._lock_case_for_transition(
+            case,
+            request_client_id=effective_client_id,
+        )
         next_status, comment = self._normalize_client_document_handoff(
             case=case,
             next_status=next_status,
@@ -500,6 +814,10 @@ class CaseService:
             comment=comment,
             force=force,
             action="CASE_STATUS_CHANGED",
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            request_client_id=effective_client_id,
+            correlation_id=correlation_id,
         )
         return case
 
@@ -537,6 +855,10 @@ class CaseService:
         actor_type: str,
         actor_id: int | None,
         reason: str,
+        expected_version: int | None = None,
+        idempotency_key: str | None = None,
+        request_client_id: int | None = None,
+        correlation_id: str | None = None,
     ):
         case, _changed = await self._transition(
             case=case,
@@ -546,6 +868,10 @@ class CaseService:
             comment=reason,
             force=False,
             action="CASE_TRANSFERRED_TO_M2",
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            request_client_id=request_client_id,
+            correlation_id=correlation_id,
         )
         return case
 
@@ -556,6 +882,10 @@ class CaseService:
         actor_type: str,
         actor_id: int | None,
         comment: str | None = None,
+        expected_version: int | None = None,
+        idempotency_key: str | None = None,
+        request_client_id: int | None = None,
+        correlation_id: str | None = None,
     ):
         case, _changed = await self._transition(
             case=case,
@@ -565,6 +895,10 @@ class CaseService:
             comment=comment,
             force=False,
             action="CASE_TRANSFERRED_TO_M1",
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            request_client_id=request_client_id,
+            correlation_id=correlation_id,
         )
         return case
 
@@ -617,5 +951,6 @@ __all__ = [
     "CaseService",
     "CaseSelectionRequired",
     "CaseTransitionError",
+    "CaseTransitionResult",
     "generate_case_number",
 ]
