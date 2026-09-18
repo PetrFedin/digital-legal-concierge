@@ -4,25 +4,21 @@ from sqlalchemy.pool import NullPool
 from app.config import settings
 
 
-# PostgreSQL integration tests intentionally run multiple synchronous pytest
-# functions that each own an ``asyncio.run(...)`` loop. Reusing an asyncpg
-# pooled connection after its original loop has closed makes later race tests
-# fail before exercising the domain contract ("Future attached to a different
-# loop" / "another operation is in progress"). Keep production/staging pooling
-# unchanged; in the test environment each PostgreSQL AsyncSession receives a
-# fresh physical connection while the concurrency scenarios still use real,
-# independent PostgreSQL transactions and row locks.
-if (
-    settings.app_env.strip().lower() == "test"
-    and settings.database_url.startswith(("postgresql", "postgres"))
-):
-    engine = create_async_engine(
-        settings.database_url,
-        echo=False,
-        poolclass=NullPool,
-    )
-else:
-    engine = create_async_engine(settings.database_url, echo=False)
+# Test code intentionally enters many independent asyncio event loops (both
+# pytest-asyncio tests and synchronous tests that call asyncio.run(...)).
+# Async DB connections are loop-owned resources: retaining an asyncpg or
+# aiosqlite connection in a pool after the loop that created it has closed can
+# surface later as "Future attached to a different loop", "Event loop is
+# closed", or an aiosqlite worker-thread warning in an unrelated test.
+#
+# Keep production/staging pooling unchanged. In APP_ENV=test use NullPool for
+# every async backend so returning a connection from a session closes the
+# physical connection instead of retaining it for a future test/event loop.
+_engine_kwargs: dict[str, object] = {"echo": False}
+if settings.app_env.strip().lower() == "test":
+    _engine_kwargs["poolclass"] = NullPool
+
+engine = create_async_engine(settings.database_url, **_engine_kwargs)
 
 # ``expire_on_commit=False`` prevents SQLAlchemy from implicitly expiring every
 # already-loaded scalar immediately after a successful commit. It is useful for
