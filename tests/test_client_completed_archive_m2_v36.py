@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from app.domain.cases.case_service import CaseService
 from app.domain.cases.client_case_scope import (
@@ -18,7 +19,7 @@ from app.models.user import User
 
 
 async def create_database(tmp_path, name: str):
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / name}")
+    engine = create_async_engine(\n        f"sqlite+aiosqlite:///{tmp_path / name}",\n        poolclass=NullPool,\n    )
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
