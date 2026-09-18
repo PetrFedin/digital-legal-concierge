@@ -211,6 +211,12 @@ def _assert_html_surface(page: Page, path: str) -> None:
     assert page.url.startswith(f"{BASE_URL}{path}")
 
 
+def _assert_no_horizontal_overflow(page: Page) -> None:
+    assert page.evaluate(
+        "() => document.documentElement.scrollWidth <= window.innerWidth + 2"
+    )
+
+
 def _accept_review_dialogs(page: Page, *, comment: str) -> None:
     def handle(dialog) -> None:  # noqa: ANN001
         if dialog.type == "prompt":
@@ -300,6 +306,34 @@ def test_lawyer_browser_is_role_scoped_and_cannot_enter_admin_workdesk() -> None
         assert page.url.startswith((f"{BASE_URL}/admin-ui", f"{BASE_URL}/operator"))
 
         context.close()
+        browser.close()
+
+
+def test_staff_hub_role_information_architecture_and_mobile_layout() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+
+        admin_context = browser.new_context(viewport={"width": 390, "height": 844})
+        admin = admin_context.new_page()
+        _login(admin, ADMIN_USERNAME, ADMIN_PASSWORD)
+        expect(admin.locator("#roleName")).to_have_text("Администратор")
+        expect(admin.locator('a[href="/consultation-slots/ui"]')).to_be_visible()
+        assert admin.locator('a[href="/access/ui"]').count() == 0
+        _assert_no_horizontal_overflow(admin)
+        _assert_html_surface(admin, "/admin/workdesk/ui")
+        _assert_no_horizontal_overflow(admin)
+        admin_context.close()
+
+        lawyer_context = browser.new_context(viewport={"width": 390, "height": 844})
+        lawyer = lawyer_context.new_page()
+        _login(lawyer, LAWYER_USERNAME, LAWYER_PASSWORD)
+        expect(lawyer.locator("#roleName")).to_have_text("Юрист")
+        assert lawyer.locator('a[href="/admin/payment-reviews/ui"]').count() == 0
+        _assert_no_horizontal_overflow(lawyer)
+        _assert_html_surface(lawyer, "/lawyer/workspace/ui")
+        _assert_no_horizontal_overflow(lawyer)
+        lawyer_context.close()
+
         browser.close()
 
 
