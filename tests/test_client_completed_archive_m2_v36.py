@@ -19,7 +19,10 @@ from app.models.user import User
 
 
 async def create_database(tmp_path, name: str):
-    engine = create_async_engine(\n        f"sqlite+aiosqlite:///{tmp_path / name}",\n        poolclass=NullPool,\n    )
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / name}",
+        poolclass=NullPool,
+    )
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
