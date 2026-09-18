@@ -17,7 +17,8 @@ def test_ci_uses_current_node24_actions_without_persisted_credentials():
     assert "actions/setup-python@v6" in text
     assert "actions/checkout@v4" not in text
     assert "actions/setup-python@v5" not in text
-    assert text.count("persist-credentials: false") == 3
+    # Every checkout in the five CI jobs must disable credential persistence.
+    assert text.count("persist-credentials: false") == 5
 
 
 def test_ci_has_least_privilege_and_cancels_obsolete_runs():
@@ -36,8 +37,8 @@ def test_ci_verifies_source_and_restored_database_schemas():
     assert "postgres-migrations:" in text
     assert "postgres:16-alpine" in text
     assert "postgresql+asyncpg://" in text
-    # SQLite source, PostgreSQL source and restored PostgreSQL staging database.
-    assert text.count("alembic check") == 3
+    # PM-018 isolated proof, SQLite source, PostgreSQL source and restored staging.
+    assert text.count("alembic check") == 4
     assert text.count("alembic upgrade head") >= 4
 
 
@@ -90,5 +91,17 @@ def test_ci_builds_and_starts_the_production_container():
 def test_every_ci_job_has_a_timeout_and_fixed_runner_image():
     text = workflow_text()
 
-    assert text.count("runs-on: ubuntu-24.04") == 3
-    assert text.count("timeout-minutes:") == 3
+    assert text.count("runs-on: ubuntu-24.04") == 5
+    assert text.count("timeout-minutes:") == 5
+
+
+def test_ci_has_dedicated_pm018_authority_proof():
+    text = workflow_text()
+
+    assert "pm018-authority-proof:" in text
+    assert "PM-018 authority and M2 handoff proof" in text
+    assert "20260918_0024_case_transition_authority_recovery.py" in text
+    assert "tests/test_case_transition_authority_pm018.py" in text
+    assert "tests/test_m2_to_m1_authority_pm018.py" in text
+    assert "Prove migration 0024 and ORM parity" in text
+    assert "Run PM-018 regression and negative proof" in text
