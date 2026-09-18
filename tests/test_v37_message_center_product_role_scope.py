@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -132,6 +133,6 @@ def test_admin_with_auxiliary_operator_label_keeps_broad_operational_scope(monke
 
 
 def test_access_management_keeps_operator_as_auxiliary_not_base_workspace_role():
-    source = open("app/api/access_management.py", encoding="utf-8").read()
+    source = Path("app/api/access_management.py").read_text(encoding="utf-8")
     assert "PRODUCT_WORKSPACE_ROLES = frozenset({ROLE_ADMIN, ROLE_SUPERADMIN, ROLE_LAWYER})" in source
     assert "Роли «Оператор» и «Тестировщик» являются дополнительными" in source
