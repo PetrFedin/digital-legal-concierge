@@ -1,4 +1,9 @@
+from pathlib import Path
+
 from app.bot.screens.consultation_intake import _active_context
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_stale_disabled_payment_has_completed_m2_archive_recovery_contract():
@@ -7,7 +12,9 @@ def test_stale_disabled_payment_has_completed_m2_archive_recovery_contract():
 
 
 def test_stale_disabled_payment_does_not_offer_new_booking_for_completed_m2():
-    source = open("app/bot/screens/consultation_intake.py", encoding="utf-8").read()
+    source = (ROOT / "app/bot/screens/consultation_intake.py").read_text(
+        encoding="utf-8"
+    )
     assert 'latest_completed_strict_m2_case_for_user' in source
     assert '"consultation_result_open"' in source
     assert '"consult_booking_start"' not in source.split(

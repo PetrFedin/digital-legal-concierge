@@ -4,18 +4,14 @@ from sqlalchemy.pool import NullPool
 from app.config import settings
 
 
-# PostgreSQL integration tests intentionally run multiple synchronous pytest
-# functions that each own an ``asyncio.run(...)`` loop. Reusing an asyncpg
-# pooled connection after its original loop has closed makes later race tests
-# fail before exercising the domain contract ("Future attached to a different
-# loop" / "another operation is in progress"). Keep production/staging pooling
-# unchanged; in the test environment each PostgreSQL AsyncSession receives a
-# fresh physical connection while the concurrency scenarios still use real,
-# independent PostgreSQL transactions and row locks.
-if (
-    settings.app_env.strip().lower() == "test"
-    and settings.database_url.startswith(("postgresql", "postgres"))
-):
+# Pytest intentionally mixes async tests with synchronous tests that own fresh
+# ``asyncio.run(...)`` loops. Reusing any async DBAPI connection after the
+# event loop that created it has closed can fail outside the business assertion:
+# asyncpg reports cross-loop futures, while aiosqlite worker threads can surface
+# "Event loop is closed" / unclosed-connection warnings during later test
+# setup/teardown. In APP_ENV=test every AsyncSession therefore receives a fresh
+# physical connection. Production/staging pooling is unchanged.
+if settings.app_env.strip().lower() == "test":
     engine = create_async_engine(
         settings.database_url,
         echo=False,
