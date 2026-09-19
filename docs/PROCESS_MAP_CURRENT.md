@@ -652,3 +652,12 @@ Whenever anything changes:
 - Added pytest-only `tests/conftest.py` interception before test-module import: test-owned SQLite/aiosqlite engines that do not explicitly request a pool now use `NullPool`. Explicit pool tests can still override `poolclass`; production/staging code is unchanged.
 - Aligned `Dockerfile.test` to `APP_ENV=test` and expanded `tests/test_test_db_event_loop_lifecycle.py` to prove both the shared application engine and a direct historical-style aiosqlite engine use `NullPool`, plus sequential fresh-loop DB access.
 - A fresh exact-head rerun is required. Until that result, PM-021 remains `FIXED_PENDING_RUNTIME`; PM-018 remains bounded with focused proof green but not formally closed, and PM-019 remains `NOT_STARTED`.
+
+## 2026-09-19 — PM-021 second runtime isolated a NullPool overreach
+
+- Exact candidate `43fcf4e843da5ff5ddbd1d037447b3391cfe7053` removed the targeted file-backed aiosqlite leakage signal from both suites: the CI SQLite job and locked-image suite reported no `Connection ... deleted before being closed` and no `RuntimeError: Event loop is closed` markers.
+- The same candidate also exposed a bounded test-infrastructure regression in the new pytest constructor guard: it applied `NullPool` to `sqlite+aiosqlite:///:memory:`, so PM-018 focused tests that intentionally create one in-memory database per engine lost their schema between connection checkouts and failed with `sqlite3.OperationalError: no such table`. This is not a PM-018 product failure.
+- Aggregate results on that superseded candidate were SQLite **275 failed, 1557 passed, 20 skipped** and locked **276 failed, 1556 passed, 20 skipped**. The increase is not accepted as remediation evidence because the in-memory pool regression contaminated the suite.
+- The test-only constructor guard is now narrowed to **file-backed** aiosqlite only. In-memory SQLite retains SQLAlchemy's normal shared-engine pool semantics. Focused lifecycle proof now locks both contracts: file-backed test engines use `NullPool`; in-memory engines preserve schema/data across logical connections.
+- PM-021 remains `FIXED_PENDING_RUNTIME` until this corrected exact head reruns. PM-018 remains bounded and not formally closed; PM-019 remains `NOT_STARTED`.
+
