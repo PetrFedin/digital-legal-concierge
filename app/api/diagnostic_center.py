@@ -90,4 +90,4 @@ async function load(){status.textContent='Обновляем…';try{const r=awa
 load();
 </script></body></html>
 """
-    ) )
+    )
