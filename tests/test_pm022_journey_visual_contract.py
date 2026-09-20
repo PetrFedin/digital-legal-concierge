@@ -69,9 +69,9 @@ def test_telegram_persistent_menu_hides_unavailable_case_sections() -> None:
         "🏠 Главная",
         "🧮 Рассчитать неустойку",
         "📁 Моё дело",
+        "💬 Связаться с юристом",
     ]
     assert "📄 Документы" not in _reply_texts(completed)
-    assert "💬 Связаться с юристом" not in _reply_texts(completed)
 
 
 def test_canonical_telegram_reply_menu_is_one_screen_case_bound_action_hub() -> None:
