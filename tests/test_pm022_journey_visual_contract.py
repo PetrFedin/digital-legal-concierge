@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from app.bot.keyboards import reply_main_menu
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -35,6 +37,40 @@ def test_operator_landing_has_keyboard_focus_and_live_access_feedback() -> None:
     assert ".link:focus-visible" in source
     assert "button:focus-visible" in source
     assert 'role="status" aria-live="polite"' in source
+
+
+def _reply_texts(markup) -> list[str]:
+    return [button.text for row in markup.keyboard for button in row]
+
+
+def test_telegram_persistent_menu_hides_unavailable_case_sections() -> None:
+    first_entry = reply_main_menu(False)
+    active = reply_main_menu(True)
+    completed = reply_main_menu(False, completed_case=True)
+
+    assert _reply_texts(first_entry) == [
+        "🏠 Главная",
+        "🧮 Рассчитать неустойку",
+        "💬 Связаться с юристом",
+    ]
+    assert "📁 Моё дело" not in _reply_texts(first_entry)
+    assert "📄 Документы" not in _reply_texts(first_entry)
+
+    assert _reply_texts(active) == [
+        "🏠 Главная",
+        "🧮 Рассчитать неустойку",
+        "📁 Моё дело",
+        "📄 Документы",
+        "💬 Связаться с юристом",
+    ]
+
+    assert _reply_texts(completed) == [
+        "🏠 Главная",
+        "🧮 Рассчитать неустойку",
+        "📁 Моё дело",
+    ]
+    assert "📄 Документы" not in _reply_texts(completed)
+    assert "💬 Связаться с юристом" not in _reply_texts(completed)
 
 
 def test_canonical_telegram_reply_menu_is_one_screen_case_bound_action_hub() -> None:
