@@ -21,13 +21,14 @@ EXPECTED_ACTIVE_REPLY_MENU = [
 EXPECTED_COMPLETED_REPLY_MENU = [
     ["🏠 Главная", "🧮 Рассчитать неустойку"],
     ["📁 Моё дело"],
+    ["💬 Связаться с юристом"],
 ]
 
 
 def test_reply_menu_visibility_tracks_client_context():
     # The approved UX contract keeps Home/Calculator available globally,
-    # exposes My Case/Documents only after a Case exists, and avoids active-case
-    # shortcuts after completion while preserving access to the read-only archive.
+    # exposes My Case/Documents only after a Case exists, keeps the read-only
+    # archive after completion, and preserves Contact Lawyer as the global M2/help entry.
     assert _texts(reply_main_menu(False)) == EXPECTED_NEW_REPLY_MENU
     assert _texts(reply_main_menu(True)) == EXPECTED_ACTIVE_REPLY_MENU
     assert (
