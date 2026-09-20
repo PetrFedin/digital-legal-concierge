@@ -18,11 +18,15 @@ def test_operator_landing_separates_daily_admin_and_superadmin_leadership_work()
     assert "link('/consultation-slots/ui','Расписание консультаций'" in source
     assert 'id="leadershipSection" hidden' in source
     assert "link('/access/ui','Доступ сотрудников'" in source
+    assert "link('/security-events/ui','Безопасность'" in source
     assert "link('/audit-center/ui','Аудит'" in source
     assert "link('/backup-center/ui','Резервные копии'" in source
     assert "link('/retention/ui','Хранение данных'" in source
     assert source.count("link('/admin/sla/ui'") == 1
     assert source.count("link('/admin/notification-delivery/ui'") == 1
+    assert "link('/diagnostic-center/ui','Диагностика сервиса'" in source
+    admin_block = source.split("if(isAdmin){", 1)[1].split("if(isSuperadmin){", 1)[0]
+    assert "/security-events/ui" not in admin_block
 
 
 def test_operator_landing_has_keyboard_focus_and_live_access_feedback() -> None:
@@ -82,6 +86,32 @@ def test_superadmin_leadership_surfaces_use_one_russian_navigation_language() ->
     assert 'href="/operator" style="color:white">Руководство и контроль</a>' in retention
     assert 'href="/admin-ui"' not in retention
     assert "Проверить без изменений" in retention
+
+
+def test_admin_and_leadership_support_surfaces_use_role_safe_navigation() -> None:
+    diagnostics = read("app/api/diagnostic_center.py")
+    health = read("app/api/health_center.py")
+    settings = read("app/api/settings_ui.py")
+    security = read("app/api/security_event_center.py")
+
+    assert "<title>Диагностика сервиса — Digital Legal Concierge</title>" in diagnostics
+    assert "Главный следующий шаг" in diagnostics
+    assert "JSON.stringify(d,null,2)" not in diagnostics
+    assert 'href=\'/operator\'>Все разделы</a>' in diagnostics
+    assert 'RedirectResponse(url="/operator", status_code=303)' in diagnostics
+
+    assert "Быстрая проверка ключевых рабочих контуров." in health
+    assert "Только безопасные operational checks." not in health
+    assert "Автоматические проверки" in health
+    assert "href='/operator'>Все разделы</a>" in health
+
+    assert 'RedirectResponse(url="/operator", status_code=303)' in settings
+    assert 'href="/operator">Все разделы</a>' in settings
+
+    assert "<title>Контроль безопасности</title>" in security
+    assert "🛡 Контроль безопасности" in security
+    assert 'href="/operator">Руководство и контроль</a>' in security
+    assert "Security Center" not in security
 
 
 def test_admin_financial_surfaces_return_to_canonical_staff_hub() -> None:
