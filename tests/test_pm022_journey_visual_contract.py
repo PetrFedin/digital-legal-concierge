@@ -160,3 +160,12 @@ def test_admin_financial_surfaces_return_to_canonical_staff_hub() -> None:
     assert "focus-visible" in payment_review
     assert "focus-visible" in refunds
 
+def test_lawyer_work_surfaces_keep_visible_keyboard_focus() -> None:
+    workspace = read("app/api/lawyer_workspace.py")
+    consultations = read("app/api/lawyer_consultation_desk.py")
+    contracts = read("app/api/contract_center.py")
+
+    assert "focus-visible" in workspace
+    assert "focus-visible" in consultations
+    assert "focus-visible" in contracts
+
