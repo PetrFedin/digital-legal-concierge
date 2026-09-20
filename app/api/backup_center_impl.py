@@ -368,20 +368,20 @@ BACKUP_CENTER_HTML = r"""
 <html lang="ru">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Backup Center</title>
+<title>Резервные копии</title>
 <style>
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;margin:0;background:#f6f7fb;color:#111827}header{background:#111827;color:white;padding:22px}main{max-width:1100px;margin:auto;padding:22px;display:grid;gap:16px}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.card{background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;box-shadow:0 1px 2px rgba(0,0,0,.04)}.ok{color:#166534;font-weight:700}.bad{color:#991b1b;font-weight:700}.muted{font-size:13px;color:#6b7280}button,a.button{display:inline-block;border:0;padding:9px 12px;border-radius:9px;background:#2563eb;color:#fff;text-decoration:none;font-weight:700;cursor:pointer}button:disabled{opacity:.5;cursor:not-allowed}table{width:100%;border-collapse:collapse}td,th{padding:9px;border-bottom:1px solid #e5e7eb;text-align:left}code,pre{background:#0b1020;color:#d1e7ff;border-radius:10px;padding:10px;display:block;overflow:auto}@media(max-width:800px){.grid{grid-template-columns:1fr}table{display:block;overflow:auto}}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;margin:0;background:#f6f7fb;color:#111827}header{background:#111827;color:white;padding:18px 22px}header .inner{max-width:1100px;margin:auto;display:flex;justify-content:space-between;align-items:flex-start;gap:16px}header h1{margin:0 0 5px;font-size:22px}header p{margin:0;color:#d0d5dd;font-size:13px;line-height:1.45}.header-link{color:#fff;text-decoration:none;border:1px solid #475467;border-radius:10px;padding:9px 12px;font-weight:700;white-space:nowrap}main{max-width:1100px;margin:auto;padding:22px;display:grid;gap:16px}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.card{background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;box-shadow:0 1px 2px rgba(0,0,0,.04)}.ok{color:#166534;font-weight:700}.bad{color:#991b1b;font-weight:700}.muted{font-size:13px;color:#6b7280}button,a.button{display:inline-block;border:0;padding:9px 12px;border-radius:9px;background:#2563eb;color:#fff;text-decoration:none;font-weight:700;cursor:pointer}button:focus-visible,a:focus-visible{outline:3px solid #c7d2fe;outline-offset:2px}button:disabled{opacity:.5;cursor:not-allowed}table{width:100%;border-collapse:collapse}td,th{padding:9px;border-bottom:1px solid #e5e7eb;text-align:left}code,pre{background:#0b1020;color:#d1e7ff;border-radius:10px;padding:10px;display:block;overflow:auto}@media(max-width:800px){header .inner{flex-direction:column}.grid{grid-template-columns:1fr}table{display:block;overflow:auto}.header-link{width:100%;text-align:center}}
 </style>
 </head>
 <body>
-<header><h1>💾 Зашифрованные резервные копии</h1><p>AES-GCM, manifest SHA-256, restore-fence и проверенное восстановление только в staging.</p></header>
+<header><div class="inner"><div><h1>💾 Резервные копии</h1><p>Зашифрованные копии, контроль целостности и безопасная проверка восстановления.</p></div><a class="header-link" href="/operator">Руководство и контроль</a></div></header>
 <main>
 <section id="summary" class="grid"><div class="card">Загрузка…</div></section>
 <section class="card"><h2>Последние копии</h2><div id="files"></div><div id="message" class="muted"></div></section>
 <section class="card"><h2>Команды</h2><pre>./backup.sh
 python -m app.security.backup_cli verify backups/имя.dlcbak
 ./restore.sh backups/имя.dlcbak /пустой/staging-каталог</pre><p class="muted">`.env` и ключи намеренно не входят в архив. Их необходимо хранить отдельно в secret manager.</p></section>
-<section class="card"><a class="button" href="/security-events/ui">Security Center</a> <a class="button" href="/launch-check">Launch check</a></section>
+<section class="card"><a class="button" href="/security-events/ui">События безопасности</a> <a class="button" href="/launch-check">Проверка запуска</a></section>
 </main>
 <script>
 let token='';
