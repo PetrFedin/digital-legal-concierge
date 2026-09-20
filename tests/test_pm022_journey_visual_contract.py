@@ -27,6 +27,7 @@ def test_operator_landing_separates_daily_admin_and_superadmin_leadership_work()
     assert source.count("link('/admin/sla/ui'") == 1
     assert source.count("link('/admin/notification-delivery/ui'") == 1
     assert "link('/diagnostic-center/ui','Диагностика сервиса'" in source
+    assert "link('/health-center/ui','Быстрая проверка'" in source
     admin_block = source.split("if(isAdmin){", 1)[1].split("if(isSuperadmin){", 1)[0]
     assert "/security-events/ui" not in admin_block
 
@@ -135,6 +136,7 @@ def test_admin_and_leadership_support_surfaces_use_role_safe_navigation() -> Non
     assert "JSON.stringify(d,null,2)" not in diagnostics
     assert 'href=\'/operator\'>Все разделы</a>' in diagnostics
     assert 'RedirectResponse(url="/operator", status_code=303)' in diagnostics
+    assert '"/admin-ui"' not in diagnostics
 
     assert "Быстрая проверка ключевых рабочих контуров." in health
     assert "Только безопасные operational checks." not in health
