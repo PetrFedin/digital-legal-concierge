@@ -56,7 +56,7 @@ async def diagnostic_center(
             "/health-center/ui",
             "/recovery-center/ui",
             "/admin/workdesk/ui",
-            "/admin-ui",
+            "/operator",
         ],
     }
 
