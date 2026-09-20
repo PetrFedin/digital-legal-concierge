@@ -4,8 +4,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # Persistent Telegram navigation follows the approved visibility contract:
 # Home / Calculator / Contact are available on first entry; Case/Documents only
-# appear after an active Case exists. A completed Case keeps only its read-only
-# archive entry plus a clear way to start a new matter. Destination handlers
+# appear after an active Case exists. A completed Case keeps its read-only
+# archive entry while Contact Lawyer remains a global M2/help entry. Destination handlers
 # remain fail-closed, so old Telegram keyboards/messages are still safe.
 NEW_CASE_REPLY_MENU_BUTTONS = [
     [KeyboardButton(text="🏠 Главная"), KeyboardButton(text="🧮 Рассчитать неустойку")],
@@ -21,6 +21,7 @@ ACTIVE_CASE_REPLY_MENU_BUTTONS = [
 COMPLETED_CASE_REPLY_MENU_BUTTONS = [
     [KeyboardButton(text="🏠 Главная"), KeyboardButton(text="🧮 Рассчитать неустойку")],
     [KeyboardButton(text="📁 Моё дело")],
+    [KeyboardButton(text="💬 Связаться с юристом")],
 ]
 
 # Compatibility aliases remain deterministic but no longer imply that every
@@ -39,7 +40,7 @@ def reply_main_menu(
         placeholder = "Дело · документы · юрист · новый расчёт"
     elif completed_case:
         keyboard = COMPLETED_CASE_REPLY_MENU_BUTTONS
-        placeholder = "Архив обращения или новое обращение"
+        placeholder = "Архив обращения или помощь юриста"
     else:
         keyboard = NEW_CASE_REPLY_MENU_BUTTONS
         placeholder = "Расчёт или помощь юриста"
