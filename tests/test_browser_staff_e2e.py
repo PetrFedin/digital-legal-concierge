@@ -350,6 +350,10 @@ def test_admin_browser_login_staff_surfaces_and_logout_revoke() -> None:
             "/document-access/review/ui",
             "/admin/sla/ui",
             "/admin/consultation-outcomes/ui",
+            "/admin/notification-delivery/ui",
+            "/diagnostic-center/ui",
+            "/health-center/ui",
+            "/settings-ui",
         ):
             _assert_html_surface(page, path)
 
@@ -442,6 +446,7 @@ def test_superadmin_landing_has_distinct_leadership_workspace() -> None:
         ).to_be_visible()
         for name in (
             "Доступ сотрудников",
+            "Безопасность",
             "Аудит",
             "Резервные копии",
             "Хранение данных",
@@ -456,6 +461,7 @@ def test_superadmin_landing_has_distinct_leadership_workspace() -> None:
         # session must be accepted by the protected supervisory surfaces.
         for path in (
             "/access/ui",
+            "/security-events/ui",
             "/audit-center/ui",
             "/backup-center/ui",
             "/retention/ui",
