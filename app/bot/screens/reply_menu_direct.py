@@ -151,6 +151,16 @@ async def direct_reply_my_case(message: Message, state: FSMContext, db):
     elif text.startswith("🏠 Добро пожаловать"):
         text = text.replace("🏠 Добро пожаловать", "📁 МОЁ ДЕЛО", 1)
 
+    # The persistent reply entry must read like the canonical My Case screen,
+    # not like a renamed Home snapshot. Keep the same safe data/provenance but
+    # normalize the visual hierarchy to one current state + one next step.
+    if case is not None:
+        text = text.replace("\nТекущий этап\n", "\nСЕЙЧАС\n")
+        text = text.replace(
+            "\n📌 Ваш следующий шаг\n",
+            "\nГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n",
+        )
+
     if case is not None:
         view = await load_client_case_view(db, case)
         markup = one(*my_case._case_buttons(view))

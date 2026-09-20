@@ -9,22 +9,31 @@ def _flat(markup):
     return sum(_texts(markup), [])
 
 
-EXPECTED_CANONICAL_REPLY_MENU = [
+EXPECTED_NEW_REPLY_MENU = [
+    ["🏠 Главная", "🧮 Рассчитать неустойку"],
+    ["💬 Связаться с юристом"],
+]
+EXPECTED_ACTIVE_REPLY_MENU = [
     ["🏠 Главная", "🧮 Рассчитать неустойку"],
     ["📁 Моё дело", "📄 Документы"],
     ["💬 Связаться с юристом"],
 ]
+EXPECTED_COMPLETED_REPLY_MENU = [
+    ["🏠 Главная", "🧮 Рассчитать неустойку"],
+    ["📁 Моё дело"],
+    ["💬 Связаться с юристом"],
+]
 
 
-def test_reply_menu_is_stable_for_new_active_and_completed_contexts():
-    # Persistent navigation must not jump around as the Case changes stage.
-    # Destination screens explain availability and ambiguity; the keyboard stays
-    # compact and predictable for the client.
-    assert _texts(reply_main_menu(False)) == EXPECTED_CANONICAL_REPLY_MENU
-    assert _texts(reply_main_menu(True)) == EXPECTED_CANONICAL_REPLY_MENU
+def test_reply_menu_visibility_tracks_client_context():
+    # The approved UX contract keeps Home/Calculator available globally,
+    # exposes My Case/Documents only after a Case exists, keeps the read-only
+    # archive after completion, and preserves Contact Lawyer as the global M2/help entry.
+    assert _texts(reply_main_menu(False)) == EXPECTED_NEW_REPLY_MENU
+    assert _texts(reply_main_menu(True)) == EXPECTED_ACTIVE_REPLY_MENU
     assert (
         _texts(reply_main_menu(False, completed_case=True))
-        == EXPECTED_CANONICAL_REPLY_MENU
+        == EXPECTED_COMPLETED_REPLY_MENU
     )
 
 

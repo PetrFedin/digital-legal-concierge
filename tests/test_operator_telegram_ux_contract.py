@@ -77,7 +77,8 @@ def test_operator_page_is_authenticated_role_aware_hub_without_secrets():
     assert "Рабочие разделы показываются в соответствии с вашей ролью" in source
     assert "fetch('/auth/session'" in source
     assert "const isLawyer=roles.includes('lawyer')" in source
-    assert "isAdmin=roles.includes('admin')||roles.includes('superadmin')" in source
+    assert "isSuperadmin=roles.includes('superadmin')" in source
+    assert "isAdmin=roles.includes('admin')||isSuperadmin" in source
     assert "systemSection.hidden=true" in source
     assert "link('/lawyer/workspace/ui'" in source
     assert "link('/lawyer/consultation-desk/ui'" in source

@@ -10,6 +10,7 @@ import pytest
 from playwright.sync_api import Page, expect, sync_playwright
 from sqlalchemy import func, select
 
+from app.config import settings
 from app.db.session import AsyncSessionLocal
 from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
@@ -24,7 +25,13 @@ from app.models.consultation_slot import ConsultationSlot
 from app.models.lawyer import Lawyer
 from app.models.payment import Payment
 from app.models.user import User
-from app.security.access_control import ROLE_ADMIN, ROLE_LAWYER, hash_password
+from app.security.access_control import (
+    ROLE_ADMIN,
+    ROLE_LAWYER,
+    ROLE_SUPERADMIN,
+    create_access_token,
+    hash_password,
+)
 
 
 BASE_URL = os.environ.get("BROWSER_E2E_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
@@ -34,6 +41,8 @@ ADMIN_EMAIL = "browser-e2e-admin@example.test"
 LAWYER_USERNAME = "browser-e2e-lawyer"
 LAWYER_PASSWORD = "Browser-E2E-Lawyer-2026!"
 LAWYER_EMAIL = "browser-e2e-lawyer@example.test"
+SUPERADMIN_USERNAME = "browser-e2e-superadmin"
+SUPERADMIN_EMAIL = "browser-e2e-superadmin@example.test"
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("BROWSER_E2E") != "1",
@@ -86,6 +95,29 @@ async def _upsert_staff() -> None:
             lawyer_account.role = ROLE_LAWYER
             lawyer_account.is_active = True
             lawyer_account.mfa_enabled = False
+
+        superadmin = await db.scalar(
+            select(AdminUser).where(AdminUser.username == SUPERADMIN_USERNAME)
+        )
+        if superadmin is None:
+            superadmin = AdminUser(
+                full_name="Browser E2E Superadmin",
+                username=SUPERADMIN_USERNAME,
+                email=SUPERADMIN_EMAIL,
+                password_hash=hash_password("Browser-E2E-Superadmin-2026!"),
+                role=f"{ROLE_SUPERADMIN},{ROLE_ADMIN}",
+                is_active=True,
+                mfa_enabled=True,
+                mfa_confirmed_at=datetime.now(timezone.utc),
+                session_version=1,
+            )
+            db.add(superadmin)
+        else:
+            superadmin.email = SUPERADMIN_EMAIL
+            superadmin.role = f"{ROLE_SUPERADMIN},{ROLE_ADMIN}"
+            superadmin.is_active = True
+            superadmin.mfa_enabled = True
+            superadmin.mfa_confirmed_at = datetime.now(timezone.utc)
 
         lawyer = await db.scalar(select(Lawyer).where(Lawyer.email == LAWYER_EMAIL))
         if lawyer is None:
@@ -204,6 +236,53 @@ def _login(page: Page, username: str, password: str) -> None:
     expect(page.get_by_role("heading", name="Digital Legal Concierge")).to_be_visible()
 
 
+async def _superadmin_session_token() -> str:
+    async with AsyncSessionLocal() as db:
+        account = await db.scalar(
+            select(AdminUser).where(AdminUser.username == SUPERADMIN_USERNAME)
+        )
+        assert account is not None
+        return create_access_token(
+            int(account.id),
+            account.username,
+            account.role,
+            session_version=int(account.session_version or 1),
+            mfa_verified=True,
+        )
+
+
+def _add_superadmin_session(context, token: str) -> None:  # noqa: ANN001
+    context.add_cookies(
+        [
+            {
+                "name": settings.admin_session_cookie,
+                "value": token,
+                "url": BASE_URL,
+                "httpOnly": True,
+                "sameSite": "Strict",
+            }
+        ]
+    )
+
+
+def _assert_no_horizontal_overflow(page: Page) -> None:
+    fits = page.evaluate(
+        """() => document.documentElement.scrollWidth <=
+        document.documentElement.clientWidth + 1"""
+    )
+    assert fits, (
+        f"Horizontal overflow on {page.url}: "
+        + str(
+            page.evaluate(
+                """() => ({
+                    scrollWidth: document.documentElement.scrollWidth,
+                    clientWidth: document.documentElement.clientWidth
+                })"""
+            )
+        )
+    )
+
+
 def _assert_html_surface(page: Page, path: str) -> None:
     response = page.goto(f"{BASE_URL}{path}", wait_until="domcontentloaded")
     assert response is not None
@@ -258,6 +337,11 @@ def test_admin_browser_login_staff_surfaces_and_logout_revoke() -> None:
         expect(page).to_have_title("Digital Legal Concierge — рабочий стол")
         expect(page.get_by_role("heading", name="⚖ Единый рабочий стол")).to_be_visible()
 
+        page.goto(f"{BASE_URL}/operator", wait_until="domcontentloaded")
+        expect(page.get_by_role("link", name="Расписание консультаций")).to_be_visible()
+        assert page.get_by_role("link", name="SLA и просрочки").count() == 1
+        assert page.get_by_role("link", name="Telegram-доставка").count() == 1
+
         # Existing daily admin work surfaces must render through the same
         # authenticated browser session; no query token is supplied.
         for path in (
@@ -266,6 +350,10 @@ def test_admin_browser_login_staff_surfaces_and_logout_revoke() -> None:
             "/document-access/review/ui",
             "/admin/sla/ui",
             "/admin/consultation-outcomes/ui",
+            "/admin/notification-delivery/ui",
+            "/diagnostic-center/ui",
+            "/health-center/ui",
+            "/settings-ui",
         ):
             _assert_html_surface(page, path)
 
@@ -298,6 +386,88 @@ def test_lawyer_browser_is_role_scoped_and_cannot_enter_admin_workdesk() -> None
         page.goto(f"{BASE_URL}/admin/workdesk/ui", wait_until="domcontentloaded")
         assert page.url != f"{BASE_URL}/admin/workdesk/ui"
         assert page.url.startswith((f"{BASE_URL}/admin-ui", f"{BASE_URL}/operator"))
+
+        context.close()
+        browser.close()
+
+
+def test_staff_landing_and_primary_surfaces_are_mobile_safe() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+
+        admin_context = browser.new_context(viewport={"width": 390, "height": 844})
+        admin_page = admin_context.new_page()
+        _login(admin_page, ADMIN_USERNAME, ADMIN_PASSWORD)
+        for path in (
+            "/operator",
+            "/admin/workdesk/ui",
+            "/consultation-slots/ui",
+            "/admin/payment-reviews/ui",
+            "/admin/refunds/ui",
+            "/admin/sla/ui",
+            "/admin/consultation-outcomes/ui",
+        ):
+            _assert_html_surface(admin_page, path)
+            _assert_no_horizontal_overflow(admin_page)
+        admin_context.close()
+
+        lawyer_context = browser.new_context(viewport={"width": 390, "height": 844})
+        lawyer_page = lawyer_context.new_page()
+        _login(lawyer_page, LAWYER_USERNAME, LAWYER_PASSWORD)
+        for path in (
+            "/operator",
+            "/lawyer/workspace/ui",
+            "/lawyer/consultation-desk/ui",
+            "/message-center/ui",
+            "/document-access/review/ui",
+        ):
+            _assert_html_surface(lawyer_page, path)
+            _assert_no_horizontal_overflow(lawyer_page)
+        lawyer_context.close()
+
+        browser.close()
+
+
+def test_superadmin_landing_has_distinct_leadership_workspace() -> None:
+    # Generate the signed session before entering Playwright's synchronous
+    # event-loop bridge; asyncio.run() cannot be nested inside sync_playwright().
+    token = asyncio.run(_superadmin_session_token())
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context(viewport={"width": 390, "height": 844})
+        _add_superadmin_session(context, token)
+        page = context.new_page()
+
+        _assert_html_surface(page, "/operator")
+        expect(page.locator("#roleName")).to_have_text("Суперадминистратор")
+        expect(
+            page.get_by_role("heading", name="Руководство и контроль")
+        ).to_be_visible()
+        for name in (
+            "Доступ сотрудников",
+            "Безопасность",
+            "Аудит",
+            "Резервные копии",
+            "Хранение данных",
+        ):
+            expect(page.get_by_role("link", name=name)).to_be_visible()
+        expect(page.locator("body")).not_to_contain_text(
+            "Администратор · Суперадминистратор"
+        )
+        _assert_no_horizontal_overflow(page)
+
+        # Leadership links are not decorative: the same MFA-verified personal
+        # session must be accepted by the protected supervisory surfaces.
+        for path in (
+            "/access/ui",
+            "/security-events/ui",
+            "/audit-center/ui",
+            "/backup-center/ui",
+            "/retention/ui",
+        ):
+            _assert_html_surface(page, path)
+            _assert_no_horizontal_overflow(page)
 
         context.close()
         browser.close()

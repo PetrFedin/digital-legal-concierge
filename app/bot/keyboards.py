@@ -2,20 +2,32 @@ from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
-# Canonical persistent information architecture. Availability is explained by
-# the destination screen instead of hiding stable navigation items as a Case
-# moves through M1/M2. This keeps Telegram muscle memory predictable.
-CANONICAL_REPLY_MENU_BUTTONS = [
+# Persistent Telegram navigation follows the approved visibility contract:
+# Home / Calculator / Contact are available on first entry; Case/Documents only
+# appear after an active Case exists. A completed Case keeps its read-only
+# archive entry while Contact Lawyer remains a global M2/help entry. Destination handlers
+# remain fail-closed, so old Telegram keyboards/messages are still safe.
+NEW_CASE_REPLY_MENU_BUTTONS = [
+    [KeyboardButton(text="🏠 Главная"), KeyboardButton(text="🧮 Рассчитать неустойку")],
+    [KeyboardButton(text="💬 Связаться с юристом")],
+]
+
+ACTIVE_CASE_REPLY_MENU_BUTTONS = [
     [KeyboardButton(text="🏠 Главная"), KeyboardButton(text="🧮 Рассчитать неустойку")],
     [KeyboardButton(text="📁 Моё дело"), KeyboardButton(text="📄 Документы")],
     [KeyboardButton(text="💬 Связаться с юристом")],
 ]
 
-# Compatibility aliases for code/tests that still import historical names.
-NEW_CASE_REPLY_MENU_BUTTONS = CANONICAL_REPLY_MENU_BUTTONS
-ACTIVE_CASE_REPLY_MENU_BUTTONS = CANONICAL_REPLY_MENU_BUTTONS
-COMPLETED_CASE_REPLY_MENU_BUTTONS = CANONICAL_REPLY_MENU_BUTTONS
-MAIN_MENU_BUTTONS = CANONICAL_REPLY_MENU_BUTTONS
+COMPLETED_CASE_REPLY_MENU_BUTTONS = [
+    [KeyboardButton(text="🏠 Главная"), KeyboardButton(text="🧮 Рассчитать неустойку")],
+    [KeyboardButton(text="📁 Моё дело")],
+    [KeyboardButton(text="💬 Связаться с юристом")],
+]
+
+# Compatibility aliases remain deterministic but no longer imply that every
+# navigation item is visible in every client state.
+CANONICAL_REPLY_MENU_BUTTONS = ACTIVE_CASE_REPLY_MENU_BUTTONS
+MAIN_MENU_BUTTONS = ACTIVE_CASE_REPLY_MENU_BUTTONS
 
 
 def reply_main_menu(
@@ -23,14 +35,20 @@ def reply_main_menu(
     *,
     completed_case: bool = False,
 ) -> ReplyKeyboardMarkup:
-    # case_exists/completed_case remain in the public function signature because
-    # older callers supply them. The persistent IA itself is deliberately stable.
-    _ = (case_exists, completed_case)
+    if case_exists:
+        keyboard = ACTIVE_CASE_REPLY_MENU_BUTTONS
+        placeholder = "Дело · документы · юрист · новый расчёт"
+    elif completed_case:
+        keyboard = COMPLETED_CASE_REPLY_MENU_BUTTONS
+        placeholder = "Архив обращения или помощь юриста"
+    else:
+        keyboard = NEW_CASE_REPLY_MENU_BUTTONS
+        placeholder = "Расчёт или помощь юриста"
     return ReplyKeyboardMarkup(
-        keyboard=CANONICAL_REPLY_MENU_BUTTONS,
+        keyboard=keyboard,
         resize_keyboard=True,
         is_persistent=True,
-        input_field_placeholder="Главная · расчёт · дело · документы · юрист",
+        input_field_placeholder=placeholder,
     )
 
 
@@ -75,8 +93,8 @@ def main_menu(
         text, callback_data = primary_action
         kb.button(text=text, callback_data=callback_data)
 
-    # Inline actions are contextual; the persistent reply keyboard above is the
-    # stable five-item navigation. These shortcuts focus on the selected Case.
+    # Inline actions are contextual; the persistent reply keyboard above follows
+    # current client state. These shortcuts focus on the selected Case.
     secondary("📁 Моё дело", "my_case_open")
     secondary("📄 Документы", "documents_open")
     secondary("💬 Связаться с юристом", "contact_lawyer")
