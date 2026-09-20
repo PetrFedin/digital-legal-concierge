@@ -12,7 +12,7 @@ def test_settings_get_and_post_recover_unauthorized_or_wrong_staff_role():
 
     assert "def _auth_recovery" in source
     assert 'RedirectResponse(url="/login?next=/settings-ui", status_code=303)' in source
-    assert 'RedirectResponse(url="/admin-ui", status_code=303)' in source
+    assert 'RedirectResponse(url="/operator", status_code=303)' in source
     assert source.count("except (DocumentAccessError, HTTPException) as error:") >= 2
     assert "error.status_code in {403, 409}" in source
 
@@ -22,6 +22,6 @@ def test_diagnostic_ui_recovers_role_mismatch_and_session_expiry():
 
     assert "except (DocumentAccessError, HTTPException) as exc:" in source
     assert 'RedirectResponse(url="/login", status_code=303)' in source
-    assert 'RedirectResponse(url="/admin-ui", status_code=303)' in source
+    assert 'RedirectResponse(url="/operator", status_code=303)' in source
     assert "if(r.status===401){location.href='/login';return}" in source
-    assert "if(r.status===403){location.href='/admin-ui';return}" in source
+    assert "if(r.status===403){location.href='/operator';return}" in source
