@@ -83,6 +83,16 @@ class ClientCaseView:
 
 
 CLIENT_ACTIONS: dict[str, ClientAction] = {
+    "NEW": ClientAction(
+        "Продолжить расчёт",
+        "calc_recover",
+        "Продолжите предварительный расчёт с сохранённого шага.",
+    ),
+    "CALCULATOR_STARTED": ClientAction(
+        "Продолжить расчёт",
+        "calc_recover",
+        "Продолжите предварительный расчёт с сохранённого шага.",
+    ),
     "CALCULATED": ClientAction(
         "Выбрать дальнейший путь",
         "calc_decision_open",
@@ -438,10 +448,16 @@ def effective_client_route(case) -> str | None:
     route = str(case.route or "").strip()
     if route:
         return route
-    # Historical CLIENT_DECISION records were created only after the client
-    # explicitly chose M1, before route persistence was introduced.
-    if str(case.status) == "CLIENT_DECISION":
+
+    status = str(case.status)
+    # Old rows may predate persisted route identity. Derive only from a status
+    # whose route is unambiguous; never override an explicit conflicting route.
+    if status == "CLIENT_DECISION" or status.startswith("M1_"):
         return "M1"
+    if status == "M2_TO_M1":
+        return "M1"
+    if status.startswith("M2_"):
+        return "M2"
     return None
 
 
@@ -589,14 +605,16 @@ def _priority_action(case, documents: DocumentOverview) -> ClientAction | None:
 
 def _route_projection_is_consistent(case) -> bool:
     status = str(case.status)
-    route = effective_client_route(case)
+    persisted_route = str(case.route or "").strip()
+    if not persisted_route:
+        return True
     if status.startswith("M1_"):
-        return route in {None, "M1"}
+        return persisted_route == "M1"
     if status.startswith("M2_") and status != "M2_TO_M1":
-        return route in {None, "M2"}
+        return persisted_route == "M2"
     if status == "M2_TO_M1":
-        return route in {None, "M1", "M2"}
-    return route in {None, "M1", "M2"}
+        return persisted_route in {"M1", "M2"}
+    return persisted_route in {"M1", "M2"}
 
 
 def _stage_blocker(status: str, documents: DocumentOverview) -> str | None:
