@@ -104,7 +104,7 @@ def test_upload_explains_that_file_is_not_yet_submitted():
     assert "hidden" not in item.detail
 
 
-def test_document_decision_keeps_bounded_client_comment_only():
+def test_document_decision_keeps_staff_comment_out_of_client_history():
     item = present_case_activity(
         audit(
             "DOCUMENT_REVIEW_DECISION",
@@ -123,10 +123,26 @@ def test_document_decision_keeps_bounded_client_comment_only():
     assert item.title == "Юрист проверил документ"
     assert item.detail is not None
     assert "нужна новая версия" in item.detail
-    assert "Комментарий:" in item.detail
-    assert item.detail.endswith("…")
-    assert len(item.detail) < 260
+    assert "Комментарий:" not in item.detail
+    assert "Добавьте читаемую страницу" not in item.detail
     assert "document_id" not in item.detail
+
+    staff_item = present_case_activity(
+        audit(
+            "DOCUMENT_REVIEW_DECISION",
+            new_value={
+                "document_id": 77,
+                "status": "NEEDS_REUPLOAD",
+                "version": 3,
+            },
+            comment="Добавьте читаемую страницу с подписями " * 20,
+            actor_type="lawyer",
+        ),
+        audience="staff",
+    )
+    assert staff_item is not None
+    assert staff_item.detail is not None
+    assert "Комментарий:" in staff_item.detail
 
 
 def test_telegram_timeline_has_bound_target_and_readable_business_time_output():
