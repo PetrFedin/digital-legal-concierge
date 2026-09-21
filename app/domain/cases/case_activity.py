@@ -274,9 +274,14 @@ def _safe_detail(log: AuditLog, audience: ActivityAudience) -> str | None:
     if action == "DOCUMENT_REVIEW_DECISION":
         status = DOCUMENT_STATUS_LABELS.get(str(payload.get("status") or ""))
         detail = f"{_document_label(payload)}: {status}." if status else None
-        comment = _clean_text(log.comment, 180)
-        if comment:
-            return f"{detail or _document_label(payload) + '.'} Комментарий: {comment}"
+        # Audit comments are staff evidence. They are not a client-content field
+        # and may contain internal reasoning. Client history therefore exposes
+        # only the normalized document decision; staff history may retain the
+        # bounded comment projection.
+        if audience == "staff":
+            comment = _clean_text(log.comment, 180)
+            if comment:
+                return f"{detail or _document_label(payload) + '.'} Комментарий: {comment}"
         return detail
 
     if action in {
