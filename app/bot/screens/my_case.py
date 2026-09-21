@@ -103,33 +103,49 @@ def _case_buttons(
     has_multiple_active_cases: bool = False,
 ) -> list[tuple[str, str]]:
     buttons: list[tuple[str, str]] = []
-    if view.unread_team_messages:
+    has_consultation_result = _has_consultation_result(view)
+
+    # Exactly one projected primary action comes first. Unread messages are a
+    # visible secondary signal; they do not silently replace the process action
+    # shown in the projection.
+    if has_consultation_result:
+        buttons.append(("👨‍⚖ Итог консультации", "consultation_result_open"))
+    else:
+        offline_payment = offline_m1_payment_presentation(view)
+        if offline_payment:
+            buttons.append((offline_payment.button_label, offline_payment.callback))
+        elif view.action:
+            if view.action.callback == "my_case_open":
+                buttons.append(("🔄 Обновить статус", "my_case_open"))
+            elif view.action.callback in {
+                "message_history",
+                "documents_open",
+                "payments_open",
+                "case_history_open",
+                "contact_lawyer",
+                "consultation_result_open",
+                "consultation_booked_open",
+            }:
+                buttons.append((f"▶️ {view.action.label}", view.action.callback))
+            else:
+                buttons.append(
+                    (
+                        f"▶️ {view.action.label}",
+                        f"next_action:v2:{view.case_id}:{view.action_key}",
+                    )
+                )
+        else:
+            buttons.append(("🔄 Обновить статус", "my_case_open"))
+
+    if view.unread_team_messages and not (
+        view.action and view.action.callback == "message_history"
+    ):
         buttons.append(
             (
                 f"💬 Прочитать новые ответы ({view.unread_team_messages})",
                 "message_history",
             )
         )
-
-    has_consultation_result = _has_consultation_result(view)
-    if has_consultation_result:
-        buttons.append(("👨‍⚖ Итог консультации", "consultation_result_open"))
-
-    offline_payment = offline_m1_payment_presentation(view)
-    if offline_payment:
-        buttons.append((offline_payment.button_label, offline_payment.callback))
-    elif view.action and not (
-        has_consultation_result
-        and view.action.callback == "consultation_booked_open"
-    ):
-        buttons.append(
-            (
-                f"▶️ {view.action.label}",
-                f"next_action:v2:{view.case_id}:{view.action_key}",
-            )
-        )
-    elif not has_consultation_result:
-        buttons.append(("🔄 Обновить статус", "my_case_open"))
 
     if not view.action or view.action.callback not in {
         "documents_open",
@@ -141,13 +157,12 @@ def _case_buttons(
 
     # Payment provider availability controls creation, not access to financial
     # history. Keep the Payments cabinet visible even in disabled/offline mode.
-    buttons.append(("💳 Оплаты", "payments_open"))
-    buttons.extend(
-        [
-            ("🕘 История дела", "case_history_open"),
-            ("💬 Связаться с юристом", "contact_lawyer"),
-        ]
-    )
+    if not (view.action and view.action.callback == "payments_open"):
+        buttons.append(("💳 Оплаты", "payments_open"))
+    if not (view.action and view.action.callback == "case_history_open"):
+        buttons.append(("🕘 История дела", "case_history_open"))
+    if not (view.action and view.action.callback == "contact_lawyer"):
+        buttons.append(("💬 Связаться с юристом", "contact_lawyer"))
     if has_multiple_active_cases:
         buttons.append(("📁 Выбрать другое обращение", "my_cases_open"))
     buttons.append(("🏠 Главная", "nav_home"))
@@ -190,7 +205,7 @@ async def _render_completed_case(
     notice: str | None = None,
 ) -> None:
     view = await load_client_case_view(db, case)
-    payment_summary = await _payment_summary(db, case.id)
+    payment_summary = view.payments_summary or "Платежей по обращению нет"
     is_m2 = str(view.route or "") == "M2"
     has_consultation_result = _has_consultation_result(view)
 
@@ -355,6 +370,22 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
             "СЕЙЧАС",
             f"{view.status_label}",
             progress_bar(view.progress_percent),
+            view.now_text,
+            "",
+            "ТРЕБУЕТСЯ ОТ ВАС",
+            view.client_requirement,
+        ]
+    )
+    if view.blocker:
+        lines.extend(
+            [
+                "",
+                "⚠️ ЧТО МЕШАЕТ ПРОДОЛЖИТЬ",
+                view.blocker,
+            ]
+        )
+    lines.extend(
+        [
             "",
             "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ",
             shown_next_action,
@@ -365,22 +396,14 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
             [
                 "",
                 f"💬 Новые ответы команды: {view.unread_team_messages}",
-                "Сначала откройте переписку: ответ может уточнять документы, сроки или дальнейшие действия.",
-            ]
-        )
-    if view.documents.blocker:
-        lines.extend(
-            [
-                "",
-                "⚠️ ЧТО МЕШАЕТ ПРОДОЛЖИТЬ",
-                view.documents.blocker,
+                "Новые ответы доступны в переписке и не меняют процессный этап сами по себе.",
             ]
         )
 
     lines.extend(
         [
             "",
-            "ГОТОВНОСТЬ",
+            "СВОДКА",
             f"🧮 Расчёт: {view.calculation_summary}",
             f"📄 Документы: {_document_detail(view)}",
         ]
@@ -390,6 +413,7 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
     lines.extend(
         [
             f"💳 Оплаты: {payment_summary}",
+            f"🕘 История: {view.history_summary}",
             "",
             f"Обновлено: {format_updated_at(view.updated_at)}",
             (
