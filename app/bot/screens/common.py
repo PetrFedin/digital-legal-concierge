@@ -65,18 +65,20 @@ def _shown_next_action(view) -> str:
 
 
 def _primary_action(view) -> tuple[str, str]:
-    if view.unread_team_messages:
-        return (
-            f"💬 Прочитать ответ команды ({view.unread_team_messages})",
-            "message_history",
-        )
     offline_payment = offline_m1_payment_presentation(view)
     if offline_payment:
         return (offline_payment.button_label, offline_payment.callback)
     if view.action:
+        if view.action.callback == "my_case_open":
+            return ("🔄 Обновить статус", "my_case_open")
         return (
             f"▶️ {view.action.label}",
             f"next_action:v2:{view.case_id}:{view.action_key}",
+        )
+    if view.unread_team_messages:
+        return (
+            f"💬 Прочитать ответ команды ({view.unread_team_messages})",
+            "message_history",
         )
     return ("📁 Открыть текущее дело", "my_case_open")
 
@@ -212,10 +214,25 @@ async def _home_text(
             "Текущий этап",
             view.status_label,
             progress_bar(view.progress_percent),
+            view.now_text,
             "",
-            "📌 Ваш следующий шаг",
-            shown_next_action,
+            "Требуется от вас",
+            view.client_requirement,
         ]
+        if view.blocker:
+            lines.extend(
+                [
+                    "",
+                    f"⚠️ Что мешает продолжить: {view.blocker}",
+                ]
+            )
+        lines.extend(
+            [
+                "",
+                "📌 Ваш следующий шаг",
+                shown_next_action,
+            ]
+        )
         if result_view:
             lines.extend(
                 [
@@ -232,15 +249,8 @@ async def _home_text(
                     (
                         "Ответы доступны в переписке; итог консультации остаётся главным действием."
                         if result_view
-                        else "Сначала откройте переписку: ответ может уточнять документы, сроки или дальнейшие действия."
+                        else "Ответ доступен в переписке и не меняет процессный этап сам по себе."
                     ),
-                ]
-            )
-        if view.documents.blocker:
-            lines.extend(
-                [
-                    "",
-                    f"⚠️ Что мешает продолжить: {view.documents.blocker}",
                 ]
             )
         lines.extend(
@@ -253,6 +263,7 @@ async def _home_text(
             lines.append(f"🗓 Консультация: {view.consultation_summary}")
         if view.payments_summary:
             lines.append(f"💳 Оплаты: {view.payments_summary}")
+        lines.append(f"🕘 История: {view.history_summary}")
         lines.extend(
             [
                 "",
