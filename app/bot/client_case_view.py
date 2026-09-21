@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.cases.case_activity import CaseActivityService
 from app.domain.cases.case_timeline import (
     get_case_progress_percent,
     get_client_visible_status,
@@ -48,6 +49,15 @@ class DocumentOverview:
 
 
 @dataclass(frozen=True)
+class ClientStageProjection:
+    status_label: str
+    now_text: str
+    client_requirement: str
+    blocker: str | None
+    action: ClientAction | None
+
+
+@dataclass(frozen=True)
 class ClientCaseView:
     case_id: int
     case_number: str
@@ -56,6 +66,9 @@ class ClientCaseView:
     route_label: str
     status_label: str
     progress_percent: int
+    now_text: str
+    client_requirement: str
+    blocker: str | None
     next_action: str
     action: ClientAction | None
     action_key: str
@@ -63,6 +76,7 @@ class ClientCaseView:
     calculation_summary: str
     consultation_summary: str
     payments_summary: str | None
+    history_summary: str
     updated_at: datetime | None
     unread_team_messages: int = 0
     latest_team_message_at: datetime | None = None
@@ -195,9 +209,9 @@ CLIENT_ACTIONS: dict[str, ClientAction] = {
         "Кратко опишите ситуацию, чтобы юрист смог подготовиться.",
     ),
     "M2_DOCUMENTS_OPTIONAL": ClientAction(
-        "Добавить документы",
-        "documents_open",
-        "Добавьте материалы к консультации или продолжите без них.",
+        "Выбрать время",
+        "consult_booking_start",
+        "Вопрос сохранён. Документы для консультации необязательны; выберите удобное время или добавьте материалы отдельно.",
     ),
     "M2_SLOT_PENDING": ClientAction(
         "Выбрать время",
@@ -214,12 +228,182 @@ CLIENT_ACTIONS: dict[str, ClientAction] = {
         "consultation_booked_open",
         "Проверьте дату, время и данные подтверждённой консультации.",
     ),
+    "M2_CONSULTATION_DONE": ClientAction(
+        "Открыть итог консультации",
+        "consultation_result_open",
+        "Консультация проведена. Откройте сохранённый итог и дальнейшие рекомендации юриста.",
+    ),
+    "M2_TO_M1": ClientAction(
+        "Обновить дело",
+        "my_case_open",
+        "Юрист переводит обращение в стандартное ведение. Обновите карточку, чтобы увидеть подтверждённый этап M1.",
+    ),
     "ERROR": ClientAction(
         "Связаться с юристом",
         "contact_lawyer",
         "Не удалось определить следующий автоматический этап. Напишите юристу.",
     ),
 }
+
+CLIENT_STAGE_COPY: dict[str, tuple[str, str]] = {
+    "NEW": (
+        "Обращение создано. Данные для предварительного расчёта ещё не собраны полностью.",
+        "Завершите предварительный расчёт, чтобы система смогла показать доступные варианты продолжения.",
+    ),
+    "CALCULATOR_STARTED": (
+        "Предварительный расчёт ещё не завершён.",
+        "Продолжите ввод данных расчёта или вернитесь к нему позже — уже сохранённые данные не должны теряться.",
+    ),
+    "CALCULATED": (
+        "Предварительный расчёт готов и сохранён в обращении.",
+        "Выберите дальнейший формат работы: стандартное ведение, консультацию или паузу без изменения дела.",
+    ),
+    "CLIENT_DECISION": (
+        "Выбран стандартный маршрут ведения дела; передача документов ещё не подтверждена.",
+        "Подтвердите согласие, после чего можно будет передать документы юристу.",
+    ),
+    "M1_DOCUMENTS_PENDING": (
+        "Для стандартного ведения дела нужен комплект документов.",
+        "Загрузите актуальный ДДУ и остальные имеющиеся материалы.",
+    ),
+    "M1_DOCUMENTS_RECEIVED": (
+        "Документы получены системой; новые файлы могут ожидать передачи юристу.",
+        "Проверьте состав документов и передайте новые файлы на проверку, если они ещё не переданы.",
+    ),
+    "M1_LAWYER_REVIEW": (
+        "Юрист проверяет переданные документы и их достаточность для дальнейшей работы.",
+        "Если юрист не запросил новую версию, от вас сейчас дополнительных действий не требуется.",
+    ),
+    "M1_DOCS_REQUESTED": (
+        "После проверки требуется дополнить комплект или заменить один из файлов.",
+        "Откройте документы и загрузите требуемую актуальную версию.",
+    ),
+    "M1_ACCEPTED": (
+        "Юрист подтвердил возможность стандартного ведения дела.",
+        "От вас сейчас дополнительных действий не требуется; ожидайте открытия договорного этапа.",
+    ),
+    "M1_REJECTED": (
+        "Стандартное ведение по результатам юридической проверки не продолжено.",
+        "Выберите дальнейший вариант: консультация, сообщение команде или завершение обращения.",
+    ),
+    "M1_CONTRACT_READY": (
+        "Договор подготовлен и доступен для ознакомления.",
+        "Откройте договор и подтвердите продолжение работы только после ознакомления с текущей версией.",
+    ),
+    "M1_WAITING_PAYMENT_30000": (
+        "Договорный этап завершён, ожидается подтверждение первого платежа.",
+        "Откройте финансовый этап и выполните доступное действие по первому платежу.",
+    ),
+    "M1_PAYMENT_30000_RECEIVED": (
+        "Первый платёж получен и зафиксирован в истории дела.",
+        "От вас сейчас дополнительных действий не требуется; следующий этап откроется после подтверждённой обработки платежа.",
+    ),
+    "M1_POWER_OF_ATTORNEY": (
+        "Для дальнейшей юридической работы требуется доверенность.",
+        "Откройте инструкцию и оформите доверенность по указанным требованиям.",
+    ),
+    "M1_POA_RECEIVED": (
+        "Доверенность получена юридической командой.",
+        "От вас сейчас ничего не требуется; команда продолжает подготовку претензии.",
+    ),
+    "M1_CLAIM_PREPARATION": (
+        "Юрист готовит претензию по материалам дела.",
+        "От вас сейчас ничего не требуется; значимые события будут отражаться в истории.",
+    ),
+    "M1_CLAIM_SENT": (
+        "Претензия направлена адресату.",
+        "От вас сейчас ничего не требуется; ожидается дальнейшее процессуальное событие.",
+    ),
+    "M1_WAITING_30_DAYS": (
+        "Идёт установленный этап ожидания после направления претензии.",
+        "От вас сейчас ничего не требуется; откройте срок ожидания для актуальной информации.",
+    ),
+    "M1_COURT_STAGE": (
+        "Дело находится на судебном этапе.",
+        "Откройте судебный статус; новые действия появляются только после подтверждённых событий по делу.",
+    ),
+    "M1_WAITING_PAYMENT_70000": (
+        "Для перехода к исполнению ожидается подтверждение второго платежа.",
+        "Откройте финансовый этап и выполните доступное действие по второму платежу.",
+    ),
+    "M1_PAYMENT_70000_RECEIVED": (
+        "Платёж судебного этапа получен и зафиксирован.",
+        "От вас сейчас дополнительных действий не требуется; исполнительный этап откроется после подтверждённой обработки.",
+    ),
+    "M1_ENFORCEMENT": (
+        "Идёт исполнительное производство.",
+        "От вас сейчас ничего не требуется; следите за подтверждёнными событиями в истории дела.",
+    ),
+    "M1_MONEY_RECEIVED": (
+        "Получение денежных средств по делу зафиксировано; остаётся финальный финансовый этап.",
+        "Откройте финальный финансовый этап и выполните доступное действие.",
+    ),
+    "M1_WAITING_SUCCESS_FEE": (
+        "Ожидается завершение финального финансового этапа сопровождения.",
+        "Откройте финальный финансовый этап и выполните доступное действие.",
+    ),
+    "M1_SUCCESS_FEE_RECEIVED": (
+        "Финальный платёж получен и зафиксирован.",
+        "От вас дополнительных действий не требуется; дело будет закрыто после подтверждённой обработки финансового события.",
+    ),
+    "M1_CLOSED": (
+        "Стандартное дело завершено и доступно в режиме просмотра.",
+        "Действий по закрытому делу не требуется; документы, оплаты и история остаются доступны в архиве.",
+    ),
+    "M2_CONSULTATION_ROUTE": (
+        "Выбран консультационный маршрут; описание ситуации ещё не сохранено.",
+        "Кратко опишите ситуацию и конкретный вопрос для юриста.",
+    ),
+    "M2_DESCRIPTION_PENDING": (
+        "Консультационное обращение создано, но вопрос ещё нужно описать.",
+        "Сохраните описание ситуации и вопрос, чтобы перейти к подготовке консультации.",
+    ),
+    "M2_DOCUMENTS_OPTIONAL": (
+        "Вопрос для консультации сохранён. Документы можно добавить при необходимости.",
+        "Выберите время консультации; документы остаются дополнительным материалом и не должны блокировать запись.",
+    ),
+    "M2_SLOT_PENDING": (
+        "Описание сохранено; время консультации ещё не выбрано.",
+        "Выберите доступную дату и время консультации.",
+    ),
+    "M2_PAYMENT_PENDING": (
+        "Время консультации выбрано, но запись ещё не подтверждена.",
+        "Подтвердите запись доступным способом; до подтверждения слот может оставаться временно зарезервированным.",
+    ),
+    "M2_CONSULTATION_BOOKED": (
+        "Консультация подтверждена и назначена.",
+        "Проверьте дату, время и подготовленные материалы. При необходимости задайте вопрос команде.",
+    ),
+    "M2_CONSULTATION_DONE": (
+        "Консультация проведена; результат сохранён в обращении.",
+        "Откройте итог консультации и дальнейшие рекомендации юриста.",
+    ),
+    "M2_TO_M1": (
+        "Юрист подтвердил переход из консультации к стандартному ведению.",
+        "Обновите карточку обращения: следующий подтверждённый этап будет показан уже в M1.",
+    ),
+    "M2_CLOSED": (
+        "Консультационное обращение завершено и доступно в режиме просмотра.",
+        "Действий по закрытому обращению не требуется; итог, документы, оплаты и история сохранены.",
+    ),
+    "ERROR": (
+        "Автоматически определить безопасный следующий этап сейчас не удалось.",
+        "Не повторяйте старые действия вслепую; свяжитесь с юридической командой для уточнения.",
+    ),
+    "ARCHIVED": (
+        "Обращение находится в архиве и доступно только для просмотра.",
+        "Новых действий по этому обращению не требуется.",
+    ),
+}
+
+_DOCUMENT_PRIMARY_STATUSES = frozenset(
+    {
+        "M1_DOCUMENTS_PENDING",
+        "M1_DOCUMENTS_RECEIVED",
+        "M1_LAWYER_REVIEW",
+        "M1_DOCS_REQUESTED",
+    }
+)
 
 _DOCUMENT_REPLACEMENT = {"REJECTED", "NEEDS_REUPLOAD"}
 _DOCUMENT_APPROVED = {"APPROVED", "ACCEPTED", "VERIFIED"}
@@ -269,7 +453,7 @@ def next_action_text(case) -> str:
     action = client_action_for(case)
     if action:
         return action.description
-    return case.next_action or "Ожидайте обновления от юридической команды."
+    return "От вас сейчас ничего не требуется. Ожидайте подтверждённого обновления от юридической команды."
 
 
 def format_consultation_time(consultation: Consultation | None) -> str | None:
@@ -327,9 +511,10 @@ def _document_overview(documents: list[Document]) -> DocumentOverview:
 
     blocker = None
     if replacement:
-        first = replacement[0]
-        reason = _short_comment(first.lawyer_comment)
-        blocker = f"{first.title}: {reason or 'нужно загрузить исправленную версию'}"
+        blocker = (
+            "Требуется новая версия одного или нескольких документов. "
+            "Откройте раздел документов, чтобы увидеть клиентские инструкции по файлам."
+        )
         summary = (
             f"{len(current)} актуальных · {len(replacement)} нужно заменить"
         )
@@ -374,29 +559,95 @@ def _document_overview(documents: list[Document]) -> DocumentOverview:
 
 
 def _priority_action(case, documents: DocumentOverview) -> ClientAction | None:
+    status = str(case.status)
+
+    # Document facts may own the primary action only while the Case itself is
+    # inside the M1 document collection/review contour. An old/rejected file
+    # must never pull a court, payment or consultation Case backwards.
+    if status in _DOCUMENT_PRIMARY_STATUSES:
+        if documents.replacement_count:
+            return ClientAction(
+                "Загрузить новую версию",
+                "documents_open",
+                "Откройте документы и загрузите новую версию файла, который требует замены.",
+            )
+        if documents.uploaded_count:
+            return ClientAction(
+                "Передать документы юристу",
+                "doc_finish_upload",
+                "Передайте безопасно загруженные новые файлы юристу на проверку.",
+            )
+        if documents.legacy_attention_count and not documents.review_count:
+            return ClientAction(
+                "Уточнить статус документов",
+                "message_create",
+                "Статус части документов требует уточнения. Напишите команде по делу.",
+            )
+
+    return client_action_for(case)
+
+
+def _route_projection_is_consistent(case) -> bool:
+    status = str(case.status)
+    route = effective_client_route(case)
+    if status.startswith("M1_"):
+        return route in {None, "M1"}
+    if status.startswith("M2_") and status != "M2_TO_M1":
+        return route in {None, "M2"}
+    if status == "M2_TO_M1":
+        return route in {None, "M1", "M2"}
+    return route in {None, "M1", "M2"}
+
+
+def _stage_blocker(status: str, documents: DocumentOverview) -> str | None:
+    if status not in _DOCUMENT_PRIMARY_STATUSES:
+        return None
     if documents.replacement_count:
-        return ClientAction(
-            "Загрузить новую версию",
-            "documents_open",
-            "Загрузите исправленную версию файла по замечанию юриста.",
-        )
-    if documents.uploaded_count:
-        return ClientAction(
-            "Передать документы юристу",
-            "doc_finish_upload",
-            "Передайте безопасно загруженные файлы юристу на проверку.",
+        return (
+            "Продолжение документального этапа ожидает новую версию одного или "
+            "нескольких файлов."
         )
     if documents.legacy_attention_count and not documents.review_count:
-        return ClientAction(
-            "Уточнить статус документов",
-            "message_create",
-            "Статус части документов требует уточнения. Напишите команде по делу.",
+        return (
+            "Статус части документов требует уточнения юридической командой. "
+            "Не загружайте дубликаты до уточнения."
+        )
+    return None
+
+
+def client_stage_projection(case, documents: DocumentOverview) -> ClientStageProjection:
+    status = str(case.status)
+    safe_copy = CLIENT_STAGE_COPY.get(status)
+
+    if safe_copy is None or not _route_projection_is_consistent(case):
+        return ClientStageProjection(
+            status_label="Статус уточняется",
+            now_text=(
+                "Текущее состояние обращения нельзя однозначно отобразить клиенту "
+                "без дополнительной проверки."
+            ),
+            client_requirement=(
+                "Не выполняйте повторные действия по старым кнопкам до уточнения состояния."
+            ),
+            blocker=(
+                "Клиентская проекция не совпадает с подтверждённым маршрутом или "
+                "использует неподдерживаемое состояние."
+            ),
+            action=ClientAction(
+                "Связаться с юридической командой",
+                "contact_lawyer",
+                "Свяжитесь с юридической командой: текущее состояние требует уточнения.",
+            ),
         )
 
-    status = str(case.status)
-    if status in {"M1_DOCUMENTS_PENDING", "M1_DOCS_REQUESTED"}:
-        return CLIENT_ACTIONS[status]
-    return client_action_for(case)
+    now_text, client_requirement = safe_copy
+    return ClientStageProjection(
+        status_label=get_client_visible_status(status),
+        now_text=now_text,
+        client_requirement=client_requirement,
+        blocker=_stage_blocker(status, documents),
+        action=_priority_action(case, documents),
+    )
 
 
 def _consultation_summary(consultation: Consultation | None) -> str:
@@ -410,6 +661,26 @@ def _consultation_summary(consultation: Consultation | None) -> str:
         status_label = _CONSULTATION_LABELS.get(status, "Статус уточняется")
     scheduled = format_consultation_time(consultation)
     return f"{status_label} · {scheduled}" if scheduled else status_label
+
+
+async def _client_history_summary(
+    db: AsyncSession,
+    *,
+    case_id: int,
+) -> tuple[str, int | None]:
+    page = await CaseActivityService(db).page(
+        case_id=case_id,
+        audience="client",
+        limit=1,
+    )
+    items = list(page.get("items") or [])
+    if not items:
+        return "Клиентских событий пока нет.", None
+    item = items[0]
+    title = " ".join(str(item.get("title") or "").split())
+    if not title:
+        return "История дела доступна для просмотра.", int(item.get("id") or 0) or None
+    return f"Последнее событие: {title}", int(item.get("id") or 0) or None
 
 
 def _calculation_summary(case, calculation: Calculation | None) -> str:
@@ -455,14 +726,19 @@ def _action_key(
     action: ClientAction | None,
     documents: DocumentOverview,
     consultation: Consultation | None,
+    payments: list[Payment],
+    history_event_id: int | None,
     unread_team_messages: int = 0,
     latest_team_message_at: datetime | None = None,
 ) -> str:
     parts = [
         str(case.id),
         str(case.status),
+        str(getattr(case, "version", "") or ""),
         case.updated_at.isoformat() if case.updated_at else "",
         action.callback if action else "wait",
+        action.label if action else "",
+        action.description if action else "",
         str(documents.current_count),
         str(documents.uploaded_count),
         str(documents.review_count),
@@ -475,6 +751,17 @@ def _action_key(
         else "",
         str(unread_team_messages),
         latest_team_message_at.isoformat() if latest_team_message_at else "",
+        str(history_event_id or ""),
+        *[
+            ":".join(
+                (
+                    str(payment.id),
+                    str(payment.status),
+                    payment.updated_at.isoformat() if payment.updated_at else "",
+                )
+            )
+            for payment in payments
+        ],
     ]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:12]
 
@@ -535,14 +822,18 @@ async def load_client_case_view(
     )
 
     document_overview = _document_overview(documents)
-    action = _priority_action(case, document_overview)
+    projection = client_stage_projection(case, document_overview)
+    action = projection.action
     next_action = (
         action.description
         if action
-        else case.next_action
-        or "От вас сейчас ничего не требуется. Ожидайте обновления от юридической команды."
+        else projection.client_requirement
     )
     payments_summary = _payments_summary(payments)
+    history_summary, history_event_id = await _client_history_summary(
+        db,
+        case_id=int(case.id),
+    )
 
     consultation_updated_at = (
         consultation.updated_at if consultation and consultation.updated_at else None
@@ -566,8 +857,11 @@ async def load_client_case_view(
         case_status=str(case.status),
         route=effective_route,
         route_label=route_label(effective_route),
-        status_label=get_client_visible_status(case.status),
+        status_label=projection.status_label,
         progress_percent=get_case_progress_percent(case.status),
+        now_text=projection.now_text,
+        client_requirement=projection.client_requirement,
+        blocker=projection.blocker,
         next_action=next_action,
         action=action,
         action_key=_action_key(
@@ -575,6 +869,8 @@ async def load_client_case_view(
             action=action,
             documents=document_overview,
             consultation=consultation,
+            payments=payments,
+            history_event_id=history_event_id,
             unread_team_messages=unread_team_messages,
             latest_team_message_at=latest_team_message_at,
         ),
@@ -582,6 +878,7 @@ async def load_client_case_view(
         calculation_summary=_calculation_summary(case, calculation),
         consultation_summary=_consultation_summary(consultation),
         payments_summary=payments_summary,
+        history_summary=history_summary,
         updated_at=updated_at,
         unread_team_messages=unread_team_messages,
         latest_team_message_at=latest_team_message_at,
