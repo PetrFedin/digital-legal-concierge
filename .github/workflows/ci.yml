@@ -120,6 +120,46 @@ jobs:
             tests/test_case_transition_authority_pm018.py \
             tests/test_m2_to_m1_authority_pm018.py
 
+  pm019-projection-proof:
+    name: PM-019 My Case projection proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      APP_ENV: test
+      DATABASE_URL: sqlite+aiosqlite:///./pm019_ci.db
+      BOT_TOKEN: CHANGE_ME
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: admin-change-me
+      ADMIN_API_TOKEN: ci-admin-token-change-me
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[test]"
+
+      - name: Compile PM-019 projection and proof
+        run: |
+          python -m compileall -q \
+            app/bot/client_case_view.py \
+            app/bot/screens/my_case.py \
+            app/bot/screens/common.py \
+            app/domain/cases/case_activity.py \
+            tests/test_pm019_my_case_projection.py
+
+      - name: Run PM-019 deterministic projection proof
+        run: pytest -q tests/test_pm019_my_case_projection.py
+
   sqlite-tests:
     name: SQLite application tests
     runs-on: ubuntu-24.04
