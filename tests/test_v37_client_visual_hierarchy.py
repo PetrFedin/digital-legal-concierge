@@ -14,7 +14,8 @@ def test_my_case_is_the_canonical_client_context_and_main_step_surface():
     assert 'f"№ {view.case_number}"' in source
     assert '"СЕЙЧАС"' in source
     assert '"ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ"' in source
-    assert '"ГОТОВНОСТЬ"' in source
+    assert '"ТРЕБУЕТСЯ ОТ ВАС"' in source
+    assert '"СВОДКА"' in source
     assert '"📄 Документы"' in source
     assert '"💳 Оплаты"' in source
     assert '"🕘 История дела"' in source
