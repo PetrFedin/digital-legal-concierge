@@ -6,7 +6,6 @@ from aiogram.types import CallbackQuery
 
 from app.bot.case_callback_scope import bind_payment_case_action
 from app.bot.client_case_view import (
-    client_action_for,
     format_updated_at,
     load_client_case_view,
     progress_bar,
@@ -17,8 +16,6 @@ from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.payment_presentation import offline_m1_payment_presentation
 from app.domain.cases.client_case_scope import latest_completed_m1_case_for_user
-from app.domain.payments.payment_service import PaymentService
-from app.domain.statuses.payment_statuses import PaymentStatus
 
 router = Router()
 
@@ -65,36 +62,6 @@ def _document_detail(view) -> str:
 def _has_consultation_result(view) -> bool:
     summary = str(getattr(view, "consultation_summary", "") or "")
     return summary.startswith(TERMINAL_CONSULTATION_PREFIXES)
-
-
-async def _payment_summary(db, case_id: int) -> str:
-    """Describe real payment history without exposing technical status codes."""
-
-    payments = await PaymentService(db).list_case_payments(case_id)
-    if not payments:
-        return "Платежей по обращению нет"
-
-    statuses = {str(payment.status) for payment in payments}
-    if str(PaymentStatus.PAID_REVIEW) in statuses:
-        return "Есть платёж, который проверяет команда"
-    if str(PaymentStatus.REFUND_PENDING) in statuses:
-        return "Возврат денежных средств обрабатывается"
-    if str(PaymentStatus.REFUND_DECLINED) in statuses:
-        return "По возврату требуется уточнение команды"
-
-    pending_count = sum(
-        1
-        for payment in payments
-        if str(payment.status)
-        in {
-            str(PaymentStatus.PENDING),
-            str(PaymentStatus.WAITING_CONFIRMATION),
-        }
-    )
-    if pending_count:
-        return f"Ожидают подтверждения: {pending_count}"
-
-    return f"Платежей в истории: {len(payments)} · активных действий по оплате нет"
 
 
 def _case_buttons(
