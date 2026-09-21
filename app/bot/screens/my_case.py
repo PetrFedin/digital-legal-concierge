@@ -6,6 +6,7 @@ from aiogram.types import CallbackQuery
 
 from app.bot.case_callback_scope import bind_payment_case_action
 from app.bot.client_case_view import (
+    _payments_summary,
     format_updated_at,
     load_client_case_view,
     progress_bar,
@@ -16,6 +17,7 @@ from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.payment_presentation import offline_m1_payment_presentation
 from app.domain.cases.client_case_scope import latest_completed_m1_case_for_user
+from app.domain.payments.payment_service import PaymentService
 
 router = Router()
 
@@ -62,6 +64,13 @@ def _document_detail(view) -> str:
 def _has_consultation_result(view) -> bool:
     summary = str(getattr(view, "consultation_summary", "") or "")
     return summary.startswith(TERMINAL_CONSULTATION_PREFIXES)
+
+
+async def _payment_summary(db, case_id: int) -> str:
+    """Compatibility adapter to the single shared client payment projection."""
+
+    payments = await PaymentService(db).list_case_payments(case_id)
+    return _payments_summary(payments)
 
 
 def _case_buttons(
