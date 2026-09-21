@@ -238,26 +238,29 @@ def _view(*, unread: int, action: ClientAction | None):
         action=action,
         case_id=7,
         action_key="snapshot",
+        route="M2",
+        case_status=CaseStatus.M2_SLOT_PENDING,
+        consultation_summary="Не назначена",
     )
 
 
-def test_unread_team_reply_becomes_home_primary_action():
+def test_projected_process_action_remains_home_primary_when_reply_is_unread():
     action = ClientAction("Загрузить документы", "documents_open", "Добавьте файл")
     assert _primary_action(_view(unread=2, action=action)) == (
-        "💬 Прочитать ответ команды (2)",
-        "message_history",
-    )
-
-
-def test_my_case_places_unread_reply_before_legal_action():
-    action = ClientAction("Загрузить документы", "documents_open", "Добавьте файл")
-    buttons = _case_buttons(_view(unread=3, action=action))
-
-    assert buttons[0] == ("💬 Прочитать новые ответы (3)", "message_history")
-    assert buttons[1] == (
         "▶️ Загрузить документы",
         "next_action:v2:7:snapshot",
     )
+
+
+def test_my_case_keeps_unread_reply_visible_after_projected_primary_action():
+    action = ClientAction("Загрузить документы", "documents_open", "Добавьте файл")
+    buttons = _case_buttons(_view(unread=3, action=action))
+
+    assert buttons[0] == (
+        "▶️ Загрузить документы",
+        "next_action:v2:7:snapshot",
+    )
+    assert buttons[1] == ("💬 Прочитать новые ответы (3)", "message_history")
 
 
 def test_unread_reply_changes_case_snapshot():
@@ -274,6 +277,8 @@ def test_unread_reply_changes_case_snapshot():
         action=action,
         documents=documents,
         consultation=None,
+        payments=[],
+        history_event_id=None,
         unread_team_messages=0,
         latest_team_message_at=None,
     )
@@ -282,6 +287,8 @@ def test_unread_reply_changes_case_snapshot():
         action=action,
         documents=documents,
         consultation=None,
+        payments=[],
+        history_event_id=None,
         unread_team_messages=1,
         latest_team_message_at=datetime(2026, 8, 5, 11, tzinfo=timezone.utc),
     )
