@@ -342,7 +342,7 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
     active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
     has_multiple_active_cases = len(active_cases) > 1
     view = await load_client_case_view(db, case)
-    payment_summary = await _payment_summary(db, case.id)
+    payment_summary = view.payments_summary or "Платежей по обращению нет"
     has_consultation_result = _has_consultation_result(view)
     stale_booking_action = bool(
         has_consultation_result
