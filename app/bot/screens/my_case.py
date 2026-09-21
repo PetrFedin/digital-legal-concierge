@@ -117,16 +117,6 @@ def _case_buttons(
         elif view.action:
             if view.action.callback == "my_case_open":
                 buttons.append(("🔄 Обновить статус", "my_case_open"))
-            elif view.action.callback in {
-                "message_history",
-                "documents_open",
-                "payments_open",
-                "case_history_open",
-                "contact_lawyer",
-                "consultation_result_open",
-                "consultation_booked_open",
-            }:
-                buttons.append((f"▶️ {view.action.label}", view.action.callback))
             else:
                 buttons.append(
                     (
