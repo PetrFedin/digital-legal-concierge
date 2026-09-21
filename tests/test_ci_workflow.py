@@ -17,8 +17,8 @@ def test_ci_uses_current_node24_actions_without_persisted_credentials():
     assert "actions/setup-python@v6" in text
     assert "actions/checkout@v4" not in text
     assert "actions/setup-python@v5" not in text
-    # Every checkout in the five CI jobs must disable credential persistence.
-    assert text.count("persist-credentials: false") == 5
+    # Every checkout in the six CI jobs must disable credential persistence.
+    assert text.count("persist-credentials: false") == 6
 
 
 def test_ci_has_least_privilege_and_cancels_obsolete_runs():
@@ -91,8 +91,8 @@ def test_ci_builds_and_starts_the_production_container():
 def test_every_ci_job_has_a_timeout_and_fixed_runner_image():
     text = workflow_text()
 
-    assert text.count("runs-on: ubuntu-24.04") == 5
-    assert text.count("timeout-minutes:") == 5
+    assert text.count("runs-on: ubuntu-24.04") == 6
+    assert text.count("timeout-minutes:") == 6
 
 
 def test_ci_has_dedicated_pm018_authority_proof():
@@ -105,3 +105,12 @@ def test_ci_has_dedicated_pm018_authority_proof():
     assert "tests/test_m2_to_m1_authority_pm018.py" in text
     assert "Prove migration 0024 and ORM parity" in text
     assert "Run PM-018 regression and negative proof" in text
+
+
+def test_ci_has_dedicated_pm019_projection_proof():
+    text = workflow_text()
+
+    assert "pm019-projection-proof:" in text
+    assert "PM-019 My Case projection proof" in text
+    assert "tests/test_pm019_my_case_projection.py" in text
+    assert "Run PM-019 deterministic projection proof" in text

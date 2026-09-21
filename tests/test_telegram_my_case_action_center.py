@@ -60,7 +60,7 @@ def test_archived_versions_do_not_inflate_current_document_readiness():
     assert overview.summary == "1 актуальных · все приняты"
 
 
-def test_reupload_reason_overrides_case_status_action():
+def test_reupload_need_overrides_case_status_without_exposing_staff_comment():
     overview = _document_overview(
         [
             document(
@@ -75,9 +75,11 @@ def test_reupload_reason_overrides_case_status_action():
     assert action == ClientAction(
         "Загрузить новую версию",
         "documents_open",
-        "Загрузите исправленную версию файла по замечанию юриста.",
+        "Откройте документы и загрузите новую версию файла, который требует замены.",
     )
-    assert overview.blocker == "ДДУ: Добавьте подписанную последнюю страницу"
+    assert overview.blocker is not None
+    assert "Добавьте подписанную последнюю страницу" not in overview.blocker
+    assert "новая версия" in overview.blocker
 
 
 def test_uploaded_documents_create_real_submission_action():
@@ -110,12 +112,16 @@ def test_action_snapshot_changes_when_document_state_changes():
         action=_priority_action(current_case, uploaded),
         documents=uploaded,
         consultation=None,
+        payments=[],
+        history_event_id=None,
     )
     second = _action_key(
         case=current_case,
         action=_priority_action(current_case, review),
         documents=review,
         consultation=None,
+        payments=[],
+        history_event_id=None,
     )
 
     assert first != second
@@ -138,7 +144,8 @@ def test_my_case_uses_one_primary_action_and_document_aware_snapshot():
     assert "requested_action_key != view.action_key" in source
     assert "Данные дела или документов уже изменились" in source
     assert "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ" in source
-    assert "ГОТОВНОСТЬ" in source
+    assert "СВОДКА" in source
+    assert "ТРЕБУЕТСЯ ОТ ВАС" in source
     assert "ЧТО МЕШАЕТ ПРОДОЛЖИТЬ" in source
     assert "message is not modified" in source
     assert 'c.data.startswith("next_action:")' in source

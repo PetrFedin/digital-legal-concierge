@@ -161,7 +161,8 @@ def test_my_case_is_visual_action_hub_and_no_case_recovers_via_contact_router():
     assert "СЕЙЧАС" in source
     assert "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ" in source
     assert "⚠️ ЧТО МЕШАЕТ ПРОДОЛЖИТЬ" in source
-    assert "ГОТОВНОСТЬ" in source
+    assert "ТРЕБУЕТСЯ ОТ ВАС" in source
+    assert "СВОДКА" in source
     assert "Первая кнопка ниже — самое актуальное безопасное действие." in source
     assert '("💬 Связаться с юристом", "contact_lawyer")' in source
     assert '("💬 Записаться на консультацию", "calc_to_m2")' not in source
