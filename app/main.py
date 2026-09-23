@@ -67,6 +67,7 @@ from app.api.workdesk_integrity_product import router as workdesk_integrity_prod
 from app.api.workdesk_product import router as workdesk_product_router
 from app.api.workdesk_timeline import router as workdesk_timeline_router
 from app.config import settings
+from app.release import APPLICATION_VERSION
 from app.domain.payments.mode import (
     payment_mode_valid,
     payment_provider_name,
@@ -85,7 +86,7 @@ from app.security.http_security import (
 from app.security.keyring import security_key_status
 from app.security.session_guard import AdminSessionGuardMiddleware
 
-VERSION = "1.0.0-v46"
+VERSION = APPLICATION_VERSION
 
 
 def _namespace_duplicate_route_names(router_specs):
