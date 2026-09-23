@@ -12,7 +12,7 @@ from app.domain.cases.assignment_service import CaseAssignmentService
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
 from app.domain.cases.case_transition_policy import CaseTransitionError
-from app.domain.payments.mode import payments_disabled
+from app.domain.payments.mode import payments_offline
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.payments.payment_webhook_service import PaymentWebhookService
 from app.domain.statuses.case_statuses import CaseStatus
@@ -34,6 +34,12 @@ M1_OFFLINE_CONFIRMABLE_CODES = frozenset(
         PaymentCode.M1_INITIAL_PAYMENT,
         PaymentCode.M1_COURT_PAYMENT,
         PaymentCode.M1_SUCCESS_FEE,
+    }
+)
+OFFLINE_CONFIRMABLE_CODES = frozenset(
+    {
+        *M1_OFFLINE_CONFIRMABLE_CODES,
+        PaymentCode.M2_CONSULTATION_PAYMENT,
     }
 )
 
@@ -78,16 +84,16 @@ def payment_can_be_manually_confirmed(payment: Payment) -> bool:
 
 
 def offline_payment_confirmation_enabled() -> bool:
-    return payments_disabled()
+    return payments_offline()
 
 
 def payment_can_be_confirmed_offline(payment: Payment) -> bool:
-    """Allow real admin receipt confirmation only when online payments are disabled."""
+    """Allow verified manual receipt confirmation in explicit offline mode."""
 
     return (
         offline_payment_confirmation_enabled()
-        and payment.payment_code in M1_OFFLINE_CONFIRMABLE_CODES
-        and payment.provider is None
+        and payment.payment_code in OFFLINE_CONFIRMABLE_CODES
+        and payment.provider in {None, "offline"}
         and not payment.payment_url
         and payment.status
         in {
