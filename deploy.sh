@@ -2,13 +2,24 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-compose_file="${COMPOSE_FILE:-docker-compose.yml}"
+compose_files_raw="${COMPOSE_FILES:-${COMPOSE_FILE:-docker-compose.yml}}"
+IFS=':' read -r -a compose_files <<< "$compose_files_raw"
+compose_args=()
+for compose_file in "${compose_files[@]}"; do
+  [ -n "$compose_file" ] || continue
+  compose_args+=(-f "$compose_file")
+done
+[ "${#compose_args[@]}" -gt 0 ] || {
+  echo "ОШИБКА: не задан ни один compose-файл" >&2
+  exit 1
+}
+
 state_dir="${RELEASE_STATE_DIR:-.release}"
 current_state="$state_dir/current.env"
 previous_state="$state_dir/previous.env"
 candidate_state="$state_dir/rollback-candidate.env"
 target_state="$state_dir/target.env"
-dc() { docker compose -f "$compose_file" "$@"; }
+dc() { docker compose "${compose_args[@]}" "$@"; }
 
 fail() {
   echo "ОШИБКА: $*" >&2
@@ -83,6 +94,31 @@ raise SystemExit(
 PY
 }
 
+
+verify_telegram_worker() {
+  if ! dc config --services | grep -qx bot; then
+    return 0
+  fi
+
+  local attempts="${1:-30}"
+  local attempt=1
+  while [ "$attempt" -le "$attempts" ]; do
+    if dc ps --status running --services 2>/dev/null | grep -qx bot; then
+      if dc exec -T bot python scripts/telegram_worker_probe.py >/tmp/dlc-telegram-probe.log 2>&1; then
+        cat /tmp/dlc-telegram-probe.log
+        rm -f /tmp/dlc-telegram-probe.log
+        return 0
+      fi
+    fi
+    sleep 4
+    attempt=$((attempt + 1))
+  done
+
+  cat /tmp/dlc-telegram-probe.log 2>/dev/null || true
+  rm -f /tmp/dlc-telegram-probe.log
+  return 1
+}
+
 verify_readiness() {
   dc exec -T app python - <<'PY'
 import json
@@ -121,7 +157,9 @@ command -v git >/dev/null 2>&1 || fail "Git не установлен"
 command -v docker >/dev/null 2>&1 || fail "Docker не установлен"
 docker compose version >/dev/null 2>&1 || fail "Docker Compose plugin не установлен"
 [ -f .env ] || fail "Нет .env. Скопируйте .env.production.example и заполните значения."
-[ -f "$compose_file" ] || fail "Не найден compose-файл: $compose_file"
+for compose_file in "${compose_files[@]}"; do
+  [ -f "$compose_file" ] || fail "Не найден compose-файл: $compose_file"
+done
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "Деплой разрешён только из Git checkout"
 
 expected_branch="${DEPLOY_BRANCH:-main}"
@@ -213,6 +251,10 @@ if [ "$deploy_ok" = "true" ] && ! verify_readiness; then
 fi
 if [ "$deploy_ok" = "true" ] && ! verify_runtime_release "$GIT_COMMIT_SHA"; then
   echo "Работающий контейнер не соответствует ожидаемому Git commit." >&2
+  deploy_ok=false
+fi
+if [ "$deploy_ok" = "true" ] && ! verify_telegram_worker "${DEPLOY_TELEGRAM_ATTEMPTS:-30}"; then
+  echo "Telegram worker не прошёл identity/polling-lease проверку." >&2
   deploy_ok=false
 fi
 
