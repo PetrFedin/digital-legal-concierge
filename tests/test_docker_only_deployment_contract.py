@@ -292,7 +292,7 @@ def test_production_preflight_accepts_split_web_and_bot_runtime_roles(
 
     monkeypatch.setattr(production_preflight.settings, "runtime_role", "web")
     monkeypatch.setattr(production_preflight.settings, "run_bot", False)
-    monkeypatch.setattr(production_preflight.settings, "run_scheduler", True)
+    monkeypatch.setattr(production_preflight.settings, "run_scheduler", False)
     web_report = production_preflight.build_report()
     assert web_report["checks"]["runtime_role_valid"] is True
     assert web_report["checks"]["bot_mode_matches_runtime_role"] is True
@@ -300,13 +300,13 @@ def test_production_preflight_accepts_split_web_and_bot_runtime_roles(
 
     monkeypatch.setattr(production_preflight.settings, "runtime_role", "bot")
     monkeypatch.setattr(production_preflight.settings, "run_bot", True)
-    monkeypatch.setattr(production_preflight.settings, "run_scheduler", False)
+    monkeypatch.setattr(production_preflight.settings, "run_scheduler", True)
     bot_report = production_preflight.build_report()
     assert bot_report["checks"]["runtime_role_valid"] is True
     assert bot_report["checks"]["bot_mode_matches_runtime_role"] is True
     assert bot_report["checks"]["scheduler_mode_matches_runtime_role"] is True
 
-    monkeypatch.setattr(production_preflight.settings, "run_scheduler", True)
+    monkeypatch.setattr(production_preflight.settings, "run_scheduler", False)
     invalid_report = production_preflight.build_report()
     assert invalid_report["checks"]["scheduler_mode_matches_runtime_role"] is False
     assert "scheduler_mode_matches_runtime_role" in invalid_report["failed"]
@@ -332,6 +332,8 @@ def test_timeweb_split_compose_declares_host_network_bot_and_proxy_web():
     assert "polling_lease_held" in probe
     assert "wait_for_database" in worker
     assert "wait_for_redis" in worker
+    assert "NotificationDispatcher" in worker
+    assert "AppScheduler" in worker
 
 def test_placeholder_endpoints_are_rejected():
     assert not production_preflight._postgres_url_ready(
