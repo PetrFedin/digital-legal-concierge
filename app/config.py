@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     bot_token: str = "CHANGE_ME"
     run_bot: bool = False
     run_scheduler: bool = False
+    runtime_role: str = "all"
 
     # Client/staff presentation. Persisted datetimes stay in UTC; this setting is
     # the single outward-facing business timezone for Telegram, staff UI and
