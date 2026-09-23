@@ -84,14 +84,27 @@ A failed or missing gate stops deployment; manual approval does not turn it into
 
 ## Telegram operations
 
-Production FSM uses Redis. Polling must hold the configured singleton lease so two replicas cannot process the same update stream concurrently.
+Production FSM uses Redis. Polling must hold the configured PostgreSQL singleton lease so two replicas cannot process the same update stream concurrently.
+
+### Timeweb split runtime
+
+The current Timeweb host has a verified asymmetric Telegram route: general IPv4 egress works, Telegram IPv4 times out, while host IPv6 reaches `api.telegram.org`. Docker bridge containers on the host do not currently have usable IPv6 egress. The production topology therefore deliberately separates:
+
+- `legal-concierge` — HTTP staff/API web container on the normal application + proxy bridge networks, with `RUN_BOT=false` and `RUN_SCHEDULER=false`;
+- `legal-concierge-bot` — host-network background worker with `RUN_BOT=true` and `RUN_SCHEDULER=true`; it owns Telegram polling, durable notification delivery and scheduler jobs so every Telegram outbound call uses the host's working route;
+- PostgreSQL and Redis remain the same authoritative services and expose loopback-only host ports for the host-network worker. They must never be published on a public interface.
+
+`docker-compose.timeweb.yml` plus `docker-compose.timeweb.split.yml` is the reproducible Timeweb topology. `TELEGRAM_API_IPV6` is an operator-managed routing value, not a product constant: deployment must run the Telegram identity/singleton probe and fail if the address is stale or unreachable. Do not silently fall back to a second polling consumer.
+
+The application and background worker use the same immutable image/release SHA and the same persistent storage/backups root. A release is not accepted if only the web container changed or only the background worker changed.
 
 On restart:
 
 - persistent Cases/Documents/Payments remain intact;
 - Redis drafts/navigation may resume when healthy;
-- absent transient state degrades to database-backed Home/My Case, never to a fabricated mutation state;
-- stale mutation callbacks remain Case-bound and fail closed.
+- absent transient state degrades to database-backed Home/My Case, never to a fabricated mutation context;
+- stale mutation callbacks remain Case-bound and fail closed;
+- the background worker must reacquire the Telegram polling singleton and scheduler lease; notification delivery resumes from durable rows.
 
 If Telegram delivery fails **after** a committed mutation, do not repeat the domain action from the stale button. First read current Case/Payment state; presentation failure is not transaction failure.
 
