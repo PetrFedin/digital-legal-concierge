@@ -64,10 +64,15 @@ jobs:
           persist-credentials: false
 
       - name: Validate Compose profiles
+        env:
+          BOT_DATABASE_URL: postgresql+asyncpg://legal_concierge:test@127.0.0.1:5432/legal_concierge
+          BOT_REDIS_URL: redis://127.0.0.1:6379/0
+          TELEGRAM_API_IPV6: 2001:67c:4e8:f004::9
         run: |
           cp .env.example .env
           docker compose -f docker-compose.yml config --quiet
           docker compose -f docker-compose.timeweb.yml config --quiet
+          docker compose             -f docker-compose.timeweb.yml             -f docker-compose.timeweb.split.yml             config --quiet
 
       - name: Build isolated test image
         run: docker build --pull -f Dockerfile.test -t digital-legal-concierge:test .
