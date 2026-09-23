@@ -12,7 +12,7 @@ services:
     environment:
       RUNTIME_ROLE: web
       RUN_BOT: "false"
-      RUN_SCHEDULER: "true"
+      RUN_SCHEDULER: "false"
     volumes:
       - "${PRODUCTION_RUNTIME_DIR:-/home/deploy/dlc-production-v46}/data:/app/data"
       - "${PRODUCTION_RUNTIME_DIR:-/home/deploy/dlc-production-v46}/storage:/app/storage"
@@ -30,7 +30,7 @@ services:
     environment:
       RUNTIME_ROLE: bot
       RUN_BOT: "true"
-      RUN_SCHEDULER: "false"
+      RUN_SCHEDULER: "true"
       DATABASE_URL: "${BOT_DATABASE_URL:?BOT_DATABASE_URL is required for the host-network Telegram worker}"
       REDIS_URL: "${BOT_REDIS_URL:?BOT_REDIS_URL is required for the host-network Telegram worker}"
     network_mode: host
@@ -47,6 +47,7 @@ services:
       - python
       - -m
       - app.bot.worker
+    command: []
     healthcheck:
       disable: true
     depends_on:
