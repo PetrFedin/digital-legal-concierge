@@ -116,7 +116,7 @@ def build_report() -> dict[str, object]:
         runtime_role = str(settings.runtime_role or "all").strip().lower()
         role_valid = runtime_role in {"all", "web", "bot"}
         bot_expected = runtime_role in {"all", "bot"}
-        scheduler_expected = runtime_role in {"all", "web"}
+        scheduler_expected = runtime_role in {"all", "bot"}
         checks.update(
             {
                 "runtime_role_valid": role_valid,
