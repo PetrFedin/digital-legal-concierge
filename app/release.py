@@ -8,7 +8,7 @@ from alembic.script import ScriptDirectory
 from app.db.migrations import build_alembic_config
 
 
-APPLICATION_VERSION = "1.0.0-v45"
+APPLICATION_VERSION = "1.0.0-v46"
 UNKNOWN_VALUE = "unknown"
 
 
