@@ -1,7 +1,16 @@
 name: LIVE_REQUIRED Release Matrix
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      payment_mode:
+        description: Payment mode to prove for this candidate
+        required: true
+        default: offline
+        type: choice
+        options:
+          - offline
+          - yookassa
 
 permissions:
   contents: read
@@ -328,16 +337,16 @@ jobs:
         if: always()
         run: cat /tmp/dlc-live-browser.log || true
 
-  provider-sandbox:
-    name: YooKassa test-shop create/retry/retrieve smoke
+  payment_mode:
+    name: Payment mode evidence
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 12
     env:
+      LIVE_PAYMENT_MODE: ${{ inputs.payment_mode }}
       APP_ENV: test
       BOT_TOKEN: CHANGE_ME
       RUN_BOT: "false"
       RUN_SCHEDULER: "false"
-      PAYMENT_PROVIDER: yookassa
       YOOKASSA_SHOP_ID: ${{ secrets.LIVE_YOOKASSA_SHOP_ID }}
       YOOKASSA_SECRET_KEY: ${{ secrets.LIVE_YOOKASSA_SECRET_KEY }}
       LIVE_YOOKASSA_TEST_PAYMENT_ID: ${{ secrets.LIVE_YOOKASSA_TEST_PAYMENT_ID }}
@@ -350,24 +359,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Fail closed when provider sandbox secrets are absent
-        shell: bash
-        run: |
-          missing=0
-          for name in \
-            YOOKASSA_SHOP_ID \
-            YOOKASSA_SECRET_KEY \
-            LIVE_YOOKASSA_TEST_PAYMENT_ID \
-            PUBLIC_BASE_URL; do
-            if [ -z "${!name:-}" ]; then
-              echo "::error::${name} is required for LIVE_REQUIRED provider sandbox"
-              missing=1
-            fi
-          done
-          if [ "$missing" -ne 0 ]; then
-            exit 1
-          fi
-
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -375,24 +366,56 @@ jobs:
           cache: pip
 
       - name: Install
-        run: pip install -e .
+        run: pip install -e ".[test]"
 
-      - name: Prove test shop then create, retry and retrieve an unconfirmed payment
+      - name: Prove explicit offline payment contract
+        if: ${{ inputs.payment_mode == 'offline' }}
+        run: >-
+          pytest -q
+          tests/test_payment_disabled_fail_closed_v37.py
+          tests/test_offline_m1_payment_confirmation_v36.py
+          tests/test_telegram_offline_payment_presentation_v36.py
+
+      - name: Fail closed when YooKassa sandbox secrets are absent
+        if: ${{ inputs.payment_mode == 'yookassa' }}
+        shell: bash
+        run: |
+          missing=0
+          for name in             YOOKASSA_SHOP_ID             YOOKASSA_SECRET_KEY             LIVE_YOOKASSA_TEST_PAYMENT_ID             PUBLIC_BASE_URL; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::${name} is required for LIVE_REQUIRED YooKassa mode"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Prove YooKassa test shop then create, retry and retrieve
+        if: ${{ inputs.payment_mode == 'yookassa' }}
+        env:
+          PAYMENT_PROVIDER: yookassa
         run: python scripts/live_required_smoke.py provider
 
-      - name: Record provider evidence
+      - name: Reject unsupported payment mode
+        if: ${{ inputs.payment_mode != 'offline' && inputs.payment_mode != 'yookassa' }}
+        run: |
+          echo "::error::Unsupported LIVE_REQUIRED payment_mode"
+          exit 1
+
+      - name: Record payment-mode evidence
         run: >-
           python scripts/live_required_evidence.py write
-          --component provider-sandbox
+          --component payment-mode
           --sha "$GITHUB_SHA"
-          --output .live-required/provider-sandbox.json
-          --detail "YooKassa test-shop preflight, create, exact idempotent retry and retrieve passed while payment stayed test/unpaid/pending"
+          --output .live-required/payment-mode.json
+          --detail "Selected payment mode ${LIVE_PAYMENT_MODE} passed its release-specific evidence gate"
 
-      - name: Upload provider evidence
+      - name: Upload payment-mode evidence
         uses: actions/upload-artifact@v4
         with:
-          name: live-required-evidence-provider-sandbox-${{ github.run_attempt }}
-          path: .live-required/provider-sandbox.json
+          name: live-required-evidence-payment-mode-${{ github.run_attempt }}
+          path: .live-required/payment-mode.json
           if-no-files-found: error
           retention-days: 30
 
@@ -404,7 +427,7 @@ jobs:
       - redis
       - telegram
       - browser
-      - provider-sandbox
+      - payment_mode
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -414,7 +437,7 @@ jobs:
           REDIS_RESULT: ${{ needs.redis.result }}
           TELEGRAM_RESULT: ${{ needs.telegram.result }}
           BROWSER_RESULT: ${{ needs.browser.result }}
-          PROVIDER_RESULT: ${{ needs.provider-sandbox.result }}
+          PAYMENT_MODE_RESULT: ${{ needs.payment_mode.result }}
         shell: bash
         run: |
           failed=0
@@ -460,7 +483,7 @@ jobs:
           --input-dir .live-required/components
           --sha "$GITHUB_SHA"
           --output .live-required/LIVE_REQUIRED_MANIFEST.json
-          --require postgres redis telegram browser provider-sandbox
+          --require postgres redis telegram browser payment-mode
 
       - name: Upload release evidence manifest
         uses: actions/upload-artifact@v4
