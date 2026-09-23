@@ -29,7 +29,7 @@ from app.domain.consultations.consultation_no_payment_booking import (
     ConsultationNoPaymentBookingService,
 )
 from app.domain.consultations.slot_service import SlotUnavailableError
-from app.domain.payments.mode import payments_disabled
+from app.domain.payments.mode import payments_disabled, payments_offline
 from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.payments.payment_webhook_service import PaymentWebhookService
@@ -59,10 +59,11 @@ M1_PAYMENT_EXPECTED_STATUSES = {
     PaymentCode.M1_INITIAL_PAYMENT: CaseStatus.M1_WAITING_PAYMENT_30000,
     PaymentCode.M1_COURT_PAYMENT: CaseStatus.M1_WAITING_PAYMENT_70000,
 }
-OFFLINE_M1_PAYMENT_CODES = {
+OFFLINE_PAYMENT_CODES = {
     PaymentCode.M1_INITIAL_PAYMENT,
     PaymentCode.M1_COURT_PAYMENT,
     PaymentCode.M1_SUCCESS_FEE,
+    PaymentCode.M2_CONSULTATION_PAYMENT,
 }
 
 
@@ -78,34 +79,34 @@ def payment_status_label(value) -> str:
     return PAYMENT_STATUS_LABELS.get(status, "Статус уточняется")
 
 
-def is_offline_m1_payment_waiting_for_team(payment: Payment) -> bool:
-    """Identify a real offline M1 obligation, not merely a runtime provider toggle."""
+def is_offline_payment_waiting_for_team(payment: Payment) -> bool:
+    """Identify a persisted obligation in explicit offline/manual mode."""
 
     return bool(
-        payments_disabled()
-        and payment.payment_code in OFFLINE_M1_PAYMENT_CODES
+        payments_offline()
+        and payment.payment_code in OFFLINE_PAYMENT_CODES
         and payment.status
         in {
             PaymentStatus.PENDING,
             PaymentStatus.WAITING_CONFIRMATION,
         }
         and not payment.payment_url
-        and not payment.provider
+        and payment.provider in {None, "offline"}
     )
 
 
 def client_payment_status_label(payment: Payment) -> str:
-    if is_offline_m1_payment_waiting_for_team(payment):
+    if is_offline_payment_waiting_for_team(payment):
         return "Ожидает подтверждения командой"
     return payment_status_label(payment.status)
 
 
 def client_payment_status_note(payment: Payment) -> str:
-    if not is_offline_m1_payment_waiting_for_team(payment):
+    if not is_offline_payment_waiting_for_team(payment):
         return ""
     return (
-        "Онлайн-оплата для этого этапа отключена. Новый платёж через бот создавать не нужно. "
-        "Команда обновит статус после проверки фактического поступления денег."
+        "Оплата проходит вне бота. После перевода новый платёж создавать не нужно: "
+        "команда сверит фактическое поступление и подтвердит его в системе."
     )
 
 
@@ -550,24 +551,6 @@ async def start_payment(
             case=case,
             payment_code=code,
         )
-        if is_m1_payment and payments_disabled():
-            payment_title = str(payment.title)
-            payment_amount = payment.amount
-            await db.commit()
-            await _present_committed_callback(
-                callback,
-                f"💳 {payment_title}\n"
-                f"Обращение № {case_number}\n\n"
-                f"Сумма: {money(payment_amount)}\n\n"
-                "Онлайн-оплата сейчас отключена. Платёж уже зафиксирован в системе как ожидающий; "
-                "команда изменит этап только после проверки фактического поступления денег.",
-                reply_markup=one(
-                    ("💳 Оплаты", "payments_open"),
-                    ("📁 Моё дело", "my_case_open"),
-                    ("🏠 Главная", "nav_home"),
-                ),
-            )
-            return
         payment = await service.create_payment_link(payment)
         # The payment projection is now final for this transaction. Build all UI
         # data before commit so presentation cannot trigger implicit database I/O
@@ -644,7 +627,36 @@ async def start_payment(
         )
         return
 
-    if code == PaymentCode.M2_CONSULTATION_PAYMENT:
+    if payments_offline():
+        if code == PaymentCode.M2_CONSULTATION_PAYMENT:
+            next_step = (
+                "После подтверждения фактического поступления команда закрепит "
+                "выбранный слот за вами."
+            )
+        elif code == PaymentCode.M1_INITIAL_PAYMENT:
+            next_step = (
+                "После подтверждения фактического поступления система откроет "
+                "этап оформления доверенности."
+            )
+        elif code == PaymentCode.M1_SUCCESS_FEE:
+            next_step = (
+                "После подтверждения фактического поступления финансовый этап "
+                "будет завершён и дело сможет закрыться."
+            )
+        else:
+            next_step = (
+                "После подтверждения фактического поступления система откроет "
+                "следующий этап дела."
+            )
+        text = (
+            f"💳 {payment_title}\n"
+            f"Обращение № {case_number}\n\n"
+            f"Сумма: {money(payment_amount)}\n\n"
+            "Оплата проходит вне бота по реквизитам, согласованным с командой. "
+            "В системе уже создано обязательство; повторно создавать платёж не нужно.\n\n"
+            f"{next_step}"
+        )
+    elif code == PaymentCode.M2_CONSULTATION_PAYMENT:
         text = (
             f"💳 {payment_title}\n"
             f"Обращение № {case_number}\n\n"
