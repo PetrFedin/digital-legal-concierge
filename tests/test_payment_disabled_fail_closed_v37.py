@@ -3,6 +3,8 @@ from __future__ import annotations
 import inspect
 from decimal import Decimal
 
+import pytest
+
 from app.config import settings
 from app.domain.payments.mode import (
     payment_mode_valid,
