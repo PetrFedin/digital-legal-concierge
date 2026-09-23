@@ -108,7 +108,7 @@ def build_report() -> dict[str, object]:
             "sqlite+aiosqlite:////app/data/"
         )
         payment_provider = settings.payment_provider.strip().lower()
-        payment_ready = payment_provider in {"disabled", "offline"} or (
+        payment_ready = payment_provider == "offline" or (
             payment_provider == "yookassa"
             and bool(settings.yookassa_shop_id)
             and _secret_ready(settings.yookassa_secret_key, minimum=8)
@@ -144,8 +144,9 @@ def build_report() -> dict[str, object]:
                     _secret_ready(value) for value in key_values
                 ),
                 "security_keys_are_unique": len(set(key_values)) == len(key_values),
-                "payment_webhook_secret_ready": _secret_ready(
-                    settings.payment_webhook_secret
+                "payment_webhook_secret_ready": (
+                    payment_provider != "yookassa"
+                    or _secret_ready(settings.payment_webhook_secret)
                 ),
                 "public_base_url_ready": _public_url_ready(
                     str(settings.public_base_url or "")
