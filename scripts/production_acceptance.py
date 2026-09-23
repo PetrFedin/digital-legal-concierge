@@ -1,82 +1,98 @@
 from __future__ import annotations
 
-import importlib
-import os
-import sys
-from pathlib import Path
+import asyncio
+import json
 
-ROOT = Path(__file__).resolve().parents[1]
-os.chdir(ROOT)
-sys.path.insert(0, str(ROOT))
+from sqlalchemy import text
 
-REQUIRED_FILES = [
-    "run.sh",
-    "bot-control.sh",
-    "acceptance.sh",
-    "Dockerfile",
-    "docker-compose.yml",
-    "docker-compose.production.yml",
-    ".env.example",
-    ".env.production.example",
-    "docs/START_SIMPLE_V29.md",
-    "docs/FINAL_HANDOVER_V29.md",
-    "deploy/nginx/legal-concierge-bot.conf",
-    "deploy/systemd/legal-concierge-bot.service",
-]
-
-REQUIRED_MODULES = [
-    "app.main",
-    "app.api.production_center",
-    "app.api.admin",
-    "app.api.operator",
-    "app.api.payment_webhooks",
-    "app.bot.bot",
-]
+from app.db.session import AsyncSessionLocal
+from app.domain.payments.mode import payment_mode_valid, payment_provider_name
+from app.release import APPLICATION_VERSION, expected_migration_heads, release_metadata
+from app.security.audit_integrity import verify_audit_chain
+from app.security.backup_freshness import backup_freshness_status
+from app.security.keyring import security_key_status
+from scripts.production_preflight import build_report
+from scripts.wait_for_database import wait_for_database
+from scripts.wait_for_redis import wait_for_redis
 
 
-def ok(name: str):
-    print(f"✅ {name}")
+async def _database_evidence() -> dict[str, object]:
+    async with AsyncSessionLocal() as db:
+        versions = set(
+            (
+                await db.execute(text("SELECT version_num FROM alembic_version"))
+            ).scalars().all()
+        )
+        audit = await verify_audit_chain(db)
+        counts = {}
+        for table in ("users", "cases", "payments", "audit_logs"):
+            value = (
+                await db.execute(text(f'SELECT COUNT(*) FROM "{table}"'))
+            ).scalar_one()
+            counts[table] = int(value)
+
+    expected = set(expected_migration_heads())
+    return {
+        "migration_heads": sorted(versions),
+        "migration_heads_expected": sorted(expected),
+        "migration_heads_match": versions == expected,
+        "audit_ok": bool(audit.get("ok")),
+        "audit_event_count": int(audit.get("event_count") or 0),
+        "counts": counts,
+    }
 
 
-def fail(name: str, detail: str):
-    print(f"❌ {name}: {detail}")
-    return False
+async def build_acceptance_report() -> dict[str, object]:
+    preflight = build_report()
+    database_wait = await wait_for_database()
+    redis_wait = await wait_for_redis()
+    database = await _database_evidence()
+    keys = security_key_status()
+    backup = backup_freshness_status()
+    release = release_metadata()
 
+    checks = {
+        "preflight": bool(preflight.get("ok")),
+        "database_reachable": bool(database_wait.get("ok")),
+        "redis_reachable": bool(redis_wait.get("ok")),
+        "migration_heads_match": bool(database["migration_heads_match"]),
+        "audit_chain_valid": bool(database["audit_ok"]),
+        "security_keys_ready": bool(keys.get("ok")),
+        "verified_backup_fresh": bool(backup.ok),
+        "payment_mode_valid": bool(payment_mode_valid()),
+        "release_identity_present": (
+            release.get("git_commit") not in {None, "", "unknown"}
+            and release.get("image_tag") not in {None, "", "unknown"}
+        ),
+    }
 
-def check_files() -> bool:
-    result = True
-    for file in REQUIRED_FILES:
-        if (ROOT / file).exists():
-            ok(file)
-        else:
-            result = fail(file, "файл отсутствует")
-    return result
-
-
-def check_imports() -> bool:
-    # Dependencies are installed during ./run.sh or pip install -e .
-    # Here we intentionally perform a lightweight source-level check,
-    # so acceptance can run on a clean machine before installation.
-    result = True
-    for module in REQUIRED_MODULES:
-        source = ROOT / (module.replace(".", "/") + ".py")
-        if source.exists():
-            ok(f"source:{module}")
-        else:
-            result = fail(module, "исходный файл отсутствует")
-    return result
+    return {
+        "ok": all(checks.values()),
+        "application_version": APPLICATION_VERSION,
+        "payment_mode": payment_provider_name(),
+        "runtime_role": preflight.get("environment") and __import__(
+            "app.config", fromlist=["settings"]
+        ).settings.runtime_role,
+        "checks": checks,
+        "database": database,
+        "release": {
+            "application_version": release.get("application_version"),
+            "release": release.get("release"),
+            "git_commit": release.get("git_commit"),
+            "image_repository": release.get("image_repository"),
+            "image_tag": release.get("image_tag"),
+            "migration_heads": release.get("migration_heads"),
+        },
+        "preflight_failed": list(preflight.get("failed") or []),
+        "preflight_warnings": list(preflight.get("warnings") or []),
+        "secrets_exposed": False,
+    }
 
 
 def main() -> int:
-    print("Production acceptance v29")
-    print("=" * 32)
-    files_ok = check_files()
-    imports_ok = check_imports()
-    if files_ok and imports_ok:
-        print("\nREADY FOR OPERATOR TEST")
-        return 0
-    print("\nNOT READY")
-    return 1
+    report = asyncio.run(build_acceptance_report())
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    return 0 if report["ok"] else 2
 
 
 if __name__ == "__main__":
