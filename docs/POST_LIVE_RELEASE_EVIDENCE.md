@@ -13,10 +13,10 @@ For one immutable release-candidate commit SHA, execute in this order:
 1. **Runner allocation restored** — issue #116 is no longer blocking execution; jobs have a real runner allocation and real executed steps.
 2. **Full CI** — every required PR check for the exact candidate SHA executes and passes. This includes the main CI workflow and any required security/dependency/deployment checks attached to the PR.
 3. **Dedicated runtime workflows** — run and pass the PostgreSQL concurrency, Redis/Telegram runtime and browser staff E2E workflows for that same SHA. A configured workflow that never receives a runner is not evidence.
-4. **One complete LIVE_REQUIRED run** — dispatch `.github/workflows/live-required.yml` for the same SHA and retain the SHA/run/attempt-bound `LIVE_REQUIRED_MANIFEST.json`. Do not combine component evidence from different workflow attempts.
+4. **One complete LIVE_REQUIRED run** — dispatch `.github/workflows/live-required.yml` for the same SHA with `payment_mode` equal to the candidate's actual payment mode, and retain the SHA/run/attempt-bound `LIVE_REQUIRED_MANIFEST.json`. Do not combine component evidence from different workflow attempts.
 5. **Real Telegram M1/M2 persona walkthroughs** — execute the complete client/staff paths with dedicated non-production Telegram identities/chats against the production-like PostgreSQL/Redis application image. Record Case ids, timestamps and sanitized evidence references; do not record bot tokens, document plaintext or payment credentials.
 6. **Encrypted backup -> separate restore drill** — take the post-persona data state, create and verify an encrypted backup, restore it only into a separate empty staging/restore/drill PostgreSQL database and restored storage directory, then prove application-level facts and runtime usability.
-7. **Provider paid/refund sandbox expansion** — only after all previous gates pass, add and execute only YooKassa test-shop paid/refund scenarios that can be completed safely without any production credential, production shop, production payment or production callback target.
+7. **Provider paid/refund sandbox expansion, when YooKassa is being enabled** — only after all previous gates pass, execute YooKassa test-shop paid/refund scenarios that can be completed safely without any production credential, production shop, production payment or production callback target. An offline-only release records this gate as not applicable rather than fabricating provider evidence.
 8. **Release decision** — PR #114 remains unmerged until the required evidence above is complete and no unresolved blocker/regression remains.
 
 If any source, migration, workflow or release-evidence script changes after step 2 begins, freeze a new candidate SHA and restart from full CI. Evidence from the superseded SHA may be retained for diagnosis but must not be used to approve the new SHA.
@@ -59,9 +59,9 @@ Release evidence requires the final manifest from one exact workflow run and att
 
 `live-required-release-evidence-<SHA>-attempt-<run_attempt>`
 
-The manifest must name the frozen candidate SHA and contain successful evidence for PostgreSQL, Redis, real Telegram delivery, browser and safe YooKassa test-shop create/retry/retrieve. See `docs/LIVE_REQUIRED_RUNBOOK.md` for the component contract.
+The manifest must name the frozen candidate SHA and contain successful evidence for PostgreSQL, Redis, real Telegram delivery, browser and the selected payment-mode gate. See `docs/LIVE_REQUIRED_RUNBOOK.md` for the component contract.
 
-The provider component at this stage intentionally stops at a test-shop unpaid/pending payment. It is not provider-side paid/refund proof.
+For an offline candidate, payment-mode evidence proves the application/manual-reconciliation contract; the later real personas prove actual administrator receipt confirmation. For a YooKassa candidate, the provider component intentionally stops at a test-shop unpaid/pending payment and is not provider-side paid/refund proof.
 
 ## Gate 5 — real Telegram M1/M2 personas
 
@@ -198,7 +198,9 @@ Only the combination of successful encrypted backup verification, safe staging r
 
 ## Gate 7 — safe YooKassa paid/refund expansion
 
-Do not use the paid/refund sandbox extension as a prerequisite for proving the earlier infrastructure gates. It starts only after the restore drill passes.
+This gate is required only when the release is enabling YooKassa. An offline-only candidate records it as **NOT APPLICABLE / NOT ENABLED**.
+
+Do not use the paid/refund sandbox extension as a prerequisite for proving the earlier infrastructure gates. When applicable, it starts only after the restore drill passes.
 
 Hard safety rules:
 
