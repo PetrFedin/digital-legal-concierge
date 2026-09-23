@@ -127,9 +127,9 @@ def test_aggregate_rejects_component_from_different_sha(
     components = tmp_path / "components"
     _write_all(components, monkeypatch)
     write_component_evidence(
-        component="provider-sandbox",
+        component="payment-mode",
         sha="b" * 40,
-        output=components / "provider-sandbox.json",
+        output=components / "payment-mode.json",
         detail="wrong SHA",
     )
 
