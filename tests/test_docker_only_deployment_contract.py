@@ -176,7 +176,7 @@ def test_production_preflight_requires_runtime_dependencies_and_valid_payment_mo
     assert '"fsm_storage_is_redis"' in source
     assert '"redis_url_ready"' in source
     assert '"trusted_proxy_configured"' in source
-    assert 'payment_provider in {"disabled", "offline"}' in source
+    assert 'payment_provider == "offline"' in source
     assert 'payment_provider == "yookassa"' in source
     assert '"payment_provider_ready": payment_ready' in source
     assert '"runtime_role_valid"' in source
@@ -202,7 +202,7 @@ def _configure_preflight_paths(monkeypatch, tmp_path) -> None:
     )
 
 
-def test_production_preflight_accepts_offline_and_disabled_modes_but_rejects_fake(
+def test_production_preflight_accepts_offline_but_rejects_disabled_and_fake(
     monkeypatch,
     tmp_path,
 ):
