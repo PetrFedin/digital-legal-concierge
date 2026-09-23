@@ -136,11 +136,25 @@ Provider timeout after create is an idempotency/reconciliation case, not permiss
 
 ## Payment provider enable/disable and sandbox sequence
 
-When online payments are disabled, Telegram must not manufacture external payment links. Existing obligations/history remain visible and staff use the approved offline/manual reconciliation path.
+### Offline production mode
 
-### LIVE_REQUIRED baseline
+The current no-provider production path is `PAYMENT_PROVIDER=offline`, not `disabled`.
 
-Before post-LIVE manual acceptance, the automated provider smoke may only:
+In offline mode:
+
+- M1/M2 obligations are still persisted as Payment records;
+- no external payment URL is fabricated;
+- the client pays using requisites approved by the operating team;
+- staff must reconcile actual bank/accounting evidence before confirmation;
+- the admin confirmation requires a reference + comment and applies the canonical payment lifecycle;
+- M2 is still paid: a selected slot is not finally booked until the exact payment obligation is confirmed;
+- PaymentEvent and Case/Audit evidence must reconcile with the client/staff result.
+
+`PAYMENT_PROVIDER=disabled` is fail-closed in staging/production and intentionally fails production readiness. It is not a shortcut for offline payment and cannot advance a legal/consultation stage. Historical no-payment behavior is local/test only.
+
+### YooKassa LIVE_REQUIRED baseline
+
+When a candidate deliberately enables YooKassa, the automated provider smoke may only:
 
 - prove credentials belong to a YooKassa test shop;
 - create a small test payment;
@@ -149,7 +163,7 @@ Before post-LIVE manual acceptance, the automated provider smoke may only:
 - require `test=true`, unpaid/pending state;
 - avoid opening/completing the confirmation URL.
 
-This is connectivity/idempotency evidence, not provider-side paid/refund proof.
+This is connectivity/idempotency evidence, not provider-side paid/refund proof. It is not run as fake evidence for an offline-only release.
 
 ### Provider-side paid/refund expansion
 
