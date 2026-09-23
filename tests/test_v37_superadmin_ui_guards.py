@@ -81,6 +81,14 @@ def test_audit_and_security_ui_authenticate_before_returning_html():
     _only("/security-events/ui")
 
 
+def test_admin_ui_shell_is_fail_closed_by_global_personal_session_gate():
+    session_guard = read("app/security/session_guard.py")
+
+    assert '"/admin-ui": frozenset({ROLE_ADMIN, ROLE_SUPERADMIN})' in session_guard
+    assert "protected_ui_roles = _PROTECTED_UI_ROLES.get(path)" in session_guard
+    _only("/admin-ui")
+
+
 def test_retention_shell_is_fail_closed_by_global_personal_session_gate():
     retention = read("app/api/retention_center.py")
     session_guard = read("app/security/session_guard.py")
