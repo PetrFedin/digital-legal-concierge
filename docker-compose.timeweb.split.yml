@@ -13,6 +13,11 @@ services:
       RUNTIME_ROLE: web
       RUN_BOT: "false"
       RUN_SCHEDULER: "true"
+    volumes:
+      - "${PRODUCTION_RUNTIME_DIR:-/home/deploy/dlc-production-v46}/data:/app/data"
+      - "${PRODUCTION_RUNTIME_DIR:-/home/deploy/dlc-production-v46}/storage:/app/storage"
+      - "${PRODUCTION_RUNTIME_DIR:-/home/deploy/dlc-production-v46}/logs:/app/logs"
+      - "${PRODUCTION_RUNTIME_DIR:-/home/deploy/dlc-production-v46}/backups:/app/backups"
     networks:
       - default
       - proxy
@@ -32,10 +37,10 @@ services:
     extra_hosts:
       api.telegram.org: "${TELEGRAM_API_IPV6:?TELEGRAM_API_IPV6 is required on Timeweb while Telegram IPv4 is unreachable}"
     volumes:
-      - concierge_data:/app/data
-      - concierge_storage:/app/storage
-      - concierge_logs:/app/logs
-      - concierge_backups:/app/backups
+      - "${PRODUCTION_RUNTIME_DIR:-/home/deploy/dlc-production-v46}/data:/app/data"
+      - "${PRODUCTION_RUNTIME_DIR:-/home/deploy/dlc-production-v46}/storage:/app/storage"
+      - "${PRODUCTION_RUNTIME_DIR:-/home/deploy/dlc-production-v46}/logs:/app/logs"
+      - "${PRODUCTION_RUNTIME_DIR:-/home/deploy/dlc-production-v46}/backups:/app/backups"
     restart: unless-stopped
     stop_grace_period: 45s
     entrypoint:
