@@ -2,8 +2,14 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-compose_file="${COMPOSE_FILE:-docker-compose.yml}"
-dc() { docker compose -f "$compose_file" "$@"; }
+compose_files_raw="${COMPOSE_FILES:-${COMPOSE_FILE:-docker-compose.yml}}"
+IFS=':' read -r -a compose_files <<< "$compose_files_raw"
+compose_args=()
+for compose_file in "${compose_files[@]}"; do
+  [ -n "$compose_file" ] || continue
+  compose_args+=(-f "$compose_file")
+done
+dc() { docker compose "${compose_args[@]}" "$@"; }
 
 show_menu() {
   cat <<'EOF'
@@ -38,15 +44,23 @@ case "$choice" in
     dc run --rm --no-deps --entrypoint python app scripts/production_preflight.py
     ;;
   2|build) dc build --pull app ;;
-  3|deploy|start) COMPOSE_FILE="$compose_file" bash ./deploy.sh ;;
-  4|restart) dc restart app ;;
-  5|status) COMPOSE_FILE="$compose_file" bash ./status.sh ;;
-  6|logs) dc logs -f --tail=300 app redis ;;
-  7|backup) COMPOSE_FILE="$compose_file" bash ./backup.sh ;;
+  3|deploy|start) COMPOSE_FILES="$compose_files_raw" bash ./deploy.sh ;;
+  4|restart)
+    services=(app)
+    if dc config --services | grep -qx bot; then services+=(bot); fi
+    dc restart "${services[@]}"
+    ;;
+  5|status) COMPOSE_FILES="$compose_files_raw" bash ./status.sh ;;
+  6|logs)
+    services=(app redis)
+    if dc config --services | grep -qx bot; then services+=(bot); fi
+    dc logs -f --tail=300 "${services[@]}"
+    ;;
+  7|backup) COMPOSE_FILES="$compose_files_raw" bash ./backup.sh ;;
   8|migrate) dc run --rm --no-deps --entrypoint python app scripts/init_db.py ;;
-  9|accept) COMPOSE_FILE="$compose_file" bash ./acceptance.sh ;;
+  9|accept) COMPOSE_FILES="$compose_files_raw" bash ./acceptance.sh ;;
   10|test) bash ./test.sh ;;
-  11|rollback) COMPOSE_FILE="$compose_file" bash ./rollback.sh ;;
+  11|rollback) COMPOSE_FILES="$compose_files_raw" bash ./rollback.sh ;;
   12|stop) dc down ;;
   13|secrets) bash ./generate-secrets.sh ;;
   0|exit) exit 0 ;;
