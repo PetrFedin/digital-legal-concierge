@@ -25,6 +25,7 @@ from app.security.token_revocation import is_token_revoked
 # order while canonical route handlers retain their own domain authorization
 # where the operation mutates or exposes domain data.
 _PROTECTED_UI_ROLES: dict[str, frozenset[str]] = {
+    "/admin-ui": frozenset({ROLE_ADMIN, ROLE_SUPERADMIN}),
     "/document-access/ui": frozenset({ROLE_ADMIN, ROLE_SUPERADMIN, ROLE_LAWYER}),
     "/final-qa/status": frozenset({ROLE_ADMIN, ROLE_SUPERADMIN}),
     "/final-qa/ui": frozenset({ROLE_ADMIN, ROLE_SUPERADMIN}),
