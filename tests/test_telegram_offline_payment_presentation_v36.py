@@ -79,7 +79,7 @@ def test_online_mode_keeps_normal_guarded_case_action(monkeypatch):
 
 
 def test_offline_presentation_does_not_override_m2(monkeypatch):
-    monkeypatch.setattr(payment_presentation, "payments_disabled", lambda: True)
+    monkeypatch.setattr(payment_presentation, "payments_offline", lambda: True)
 
     assert (
         payment_presentation.offline_m1_payment_presentation(
@@ -97,12 +97,12 @@ def test_offline_m1_payment_row_says_team_confirmation_not_pay_again(monkeypatch
         "Ожидает подтверждения командой"
     )
     note = payments_screen.client_payment_status_note(row)
-    assert "Новый платёж через бот создавать не нужно" in note
-    assert "проверки фактического поступления" in note
+    assert "после перевода новый платёж создавать не нужно" in note.lower()
+    assert "фактическое поступление" in note.lower()
 
 
 def test_provider_toggle_does_not_relabel_existing_online_payment_as_offline(monkeypatch):
-    monkeypatch.setattr(payments_screen, "payments_disabled", lambda: True)
+    monkeypatch.setattr(payments_screen, "payments_offline", lambda: True)
     row = payment(
         status=PaymentStatus.WAITING_CONFIRMATION,
         payment_url="https://provider.example/pay/123",
@@ -145,7 +145,7 @@ def test_telegram_home_my_case_and_status_share_offline_payment_presentation():
     assert "client_payment_status_label(payment)" in payments_source
     assert "client_payment_status_note(payment)" in payments_source
     assert "not payment.payment_url" in payments_source
-    assert "not payment.provider" in payments_source
+    assert 'payment.provider in {None, "offline"}' in payments_source
 
     # Provider availability belongs to presentation/payment execution, not the
     # durable case projection. This keeps persisted history stable across a
