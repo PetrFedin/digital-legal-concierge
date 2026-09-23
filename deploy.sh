@@ -146,10 +146,15 @@ rollback_candidate() {
     # shellcheck disable=SC1090
     . "$candidate_state"
     set +a
-    dc up -d --no-deps --no-build --force-recreate app
+    rollback_services=(app)
+    if dc config --services | grep -qx bot; then
+      rollback_services+=(bot)
+    fi
+    dc up -d --no-deps --no-build --force-recreate "${rollback_services[@]}"
     wait_for_health 30
     verify_runtime_release "$GIT_COMMIT_SHA"
     verify_readiness
+    verify_telegram_worker 30
   )
 }
 
