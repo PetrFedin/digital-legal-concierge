@@ -5,6 +5,7 @@ import json
 
 from sqlalchemy import text
 
+from app.config import settings
 from app.db.session import AsyncSessionLocal
 from app.domain.payments.mode import payment_mode_valid, payment_provider_name
 from app.release import APPLICATION_VERSION, expected_migration_heads, release_metadata
@@ -70,9 +71,7 @@ async def build_acceptance_report() -> dict[str, object]:
         "ok": all(checks.values()),
         "application_version": APPLICATION_VERSION,
         "payment_mode": payment_provider_name(),
-        "runtime_role": preflight.get("environment") and __import__(
-            "app.config", fromlist=["settings"]
-        ).settings.runtime_role,
+        "runtime_role": settings.runtime_role,
         "checks": checks,
         "database": database,
         "release": {
