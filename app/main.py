@@ -205,8 +205,14 @@ def create_app():
         backup_freshness = await asyncio.to_thread(backup_freshness_status)
         provider = payment_provider_name()
         payment_disabled = payments_disabled()
-        payment_webhook_secret_ready = payment_disabled or (
-            settings.app_env != "production"
+        payment_offline = payments_offline()
+        payment_webhook_secret_ready = (
+            payment_offline
+            or payment_disabled
+            or settings.app_env != "production"
+            or (
+                provider != "yookassa"
+            )
             or (
                 len(str(settings.payment_webhook_secret or "")) >= 32
                 and settings.payment_webhook_secret
