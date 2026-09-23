@@ -446,7 +446,7 @@ jobs:
             "redis=${REDIS_RESULT}" \
             "telegram=${TELEGRAM_RESULT}" \
             "browser=${BROWSER_RESULT}" \
-            "provider-sandbox=${PROVIDER_RESULT}"; do
+            "payment-mode=${PAYMENT_MODE_RESULT}"; do
             name="${pair%%=*}"
             result="${pair#*=}"
             echo "${name}: ${result}"
