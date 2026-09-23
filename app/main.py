@@ -392,7 +392,7 @@ def create_app():
                 "freshness": backup_freshness.as_dict(),
             },
             "payment_webhook_security": {
-                "enabled": not payment_disabled,
+                "enabled": provider == "yookassa",
                 "max_body_kb": settings.max_payment_webhook_kb,
                 "idempotent_ledger": True,
                 "replay_payload_conflict_detection": True,
