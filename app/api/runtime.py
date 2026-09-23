@@ -40,6 +40,8 @@ async def release_info():
         "application_version": metadata.get("application_version"),
         "release": metadata.get("release"),
         "git_commit": metadata.get("git_commit"),
+        "image_tag": metadata.get("image_tag"),
+        "migration_heads": metadata.get("migration_heads"),
     }
 
 
