@@ -221,7 +221,8 @@ def test_production_preflight_accepts_offline_and_disabled_modes_but_rejects_fak
 
     monkeypatch.setattr(production_preflight.settings, "payment_provider", "disabled")
     disabled_report = production_preflight.build_report()
-    assert disabled_report["checks"]["payment_provider_ready"] is True
+    assert disabled_report["checks"]["payment_provider_ready"] is False
+    assert "payment_provider_ready" in disabled_report["failed"]
     assert any(
         "fail-closed" in warning
         for warning in disabled_report["warnings"]
