@@ -122,7 +122,12 @@ def test_production_template_is_fail_closed_and_restart_safe():
     assert "DATABASE_STARTUP_WAIT_SECONDS=120" in template
     assert "FSM_STORAGE_BACKEND=redis" in template
     assert "REDIS_URL=redis://redis:6379/0" in template
-    assert "PAYMENT_PROVIDER=yookassa" in template
+    assert "PAYMENT_PROVIDER=offline" in template
+    assert "RUNTIME_ROLE=all" in template
+    assert "BOT_DATABASE_URL=" in template
+    assert "BOT_REDIS_URL=redis://127.0.0.1:6379/0" in template
+    assert "TELEGRAM_API_IPV6=" in template
+    assert "TELEGRAM_EXPECTED_USERNAME=DL_Concierge_bot" in template
     assert "APP_BIND_ADDRESS=127.0.0.1" in template
 
 
@@ -148,6 +153,7 @@ def test_settings_include_container_telegram_and_fsm_restart_policy():
     assert settings.telegram_singleton_retry_seconds == 3
     assert settings.fsm_storage_backend == "memory"
     assert settings.redis_startup_wait_seconds == 60
+    assert settings.runtime_role == "all"
 
 
 def test_bot_rejects_memory_fsm_in_production():
@@ -170,10 +176,13 @@ def test_production_preflight_requires_runtime_dependencies_and_valid_payment_mo
     assert '"fsm_storage_is_redis"' in source
     assert '"redis_url_ready"' in source
     assert '"trusted_proxy_configured"' in source
-    assert 'payment_provider == "disabled"' in source
+    assert 'payment_provider in {"disabled", "offline"}' in source
     assert 'payment_provider == "yookassa"' in source
     assert '"payment_provider_ready": payment_ready' in source
-    assert "Онлайн-оплата отключена" in source
+    assert '"runtime_role_valid"' in source
+    assert '"bot_mode_matches_runtime_role"' in source
+    assert '"scheduler_mode_matches_runtime_role"' in source
+    assert "Оплата работает в офлайн-режиме" in source
     assert "secrets_exposed" in source
     assert "your-domain" in source
     assert 'not in {"host", "localhost"}' in source
@@ -193,18 +202,28 @@ def _configure_preflight_paths(monkeypatch, tmp_path) -> None:
     )
 
 
-def test_production_preflight_accepts_explicit_disabled_mode_but_rejects_fake(
+def test_production_preflight_accepts_offline_and_disabled_modes_but_rejects_fake(
     monkeypatch,
     tmp_path,
 ):
     _configure_preflight_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(production_preflight.settings, "runtime_role", "all")
+    monkeypatch.setattr(production_preflight.settings, "run_bot", True)
+    monkeypatch.setattr(production_preflight.settings, "run_scheduler", True)
+
+    monkeypatch.setattr(production_preflight.settings, "payment_provider", "offline")
+    offline_report = production_preflight.build_report()
+    assert offline_report["checks"]["payment_provider_ready"] is True
+    assert any(
+        "офлайн-режиме" in warning
+        for warning in offline_report["warnings"]
+    )
+
     monkeypatch.setattr(production_preflight.settings, "payment_provider", "disabled")
-
     disabled_report = production_preflight.build_report()
-
     assert disabled_report["checks"]["payment_provider_ready"] is True
     assert any(
-        "Онлайн-оплата отключена" in warning
+        "fail-closed" in warning
         for warning in disabled_report["warnings"]
     )
 
@@ -261,6 +280,57 @@ def test_local_preflight_does_not_require_or_expose_secrets(monkeypatch, tmp_pat
     assert report["secrets_exposed"] is False
     assert report["failed"] == []
 
+
+
+def test_production_preflight_accepts_split_web_and_bot_runtime_roles(
+    monkeypatch,
+    tmp_path,
+):
+    _configure_preflight_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(production_preflight.settings, "payment_provider", "offline")
+
+    monkeypatch.setattr(production_preflight.settings, "runtime_role", "web")
+    monkeypatch.setattr(production_preflight.settings, "run_bot", False)
+    monkeypatch.setattr(production_preflight.settings, "run_scheduler", True)
+    web_report = production_preflight.build_report()
+    assert web_report["checks"]["runtime_role_valid"] is True
+    assert web_report["checks"]["bot_mode_matches_runtime_role"] is True
+    assert web_report["checks"]["scheduler_mode_matches_runtime_role"] is True
+
+    monkeypatch.setattr(production_preflight.settings, "runtime_role", "bot")
+    monkeypatch.setattr(production_preflight.settings, "run_bot", True)
+    monkeypatch.setattr(production_preflight.settings, "run_scheduler", False)
+    bot_report = production_preflight.build_report()
+    assert bot_report["checks"]["runtime_role_valid"] is True
+    assert bot_report["checks"]["bot_mode_matches_runtime_role"] is True
+    assert bot_report["checks"]["scheduler_mode_matches_runtime_role"] is True
+
+    monkeypatch.setattr(production_preflight.settings, "run_scheduler", True)
+    invalid_report = production_preflight.build_report()
+    assert invalid_report["checks"]["scheduler_mode_matches_runtime_role"] is False
+    assert "scheduler_mode_matches_runtime_role" in invalid_report["failed"]
+
+
+def test_timeweb_split_compose_declares_host_network_bot_and_proxy_web():
+    split = read("docker-compose.timeweb.split.yml")
+    deploy = read("timeweb-deploy.sh")
+    probe = read("scripts/telegram_worker_probe.py")
+    worker = read("app/bot/worker.py")
+
+    assert "container_name: legal-concierge" in split
+    assert "container_name: legal-concierge-bot" in split
+    assert "RUNTIME_ROLE: web" in split
+    assert "RUNTIME_ROLE: bot" in split
+    assert "network_mode: host" in split
+    assert "api.telegram.org" in split
+    assert "BOT_DATABASE_URL" in split
+    assert "BOT_REDIS_URL" in split
+    assert "proxy:" in split
+    assert "docker-compose.timeweb.split.yml" in deploy
+    assert "POSTGRES_TELEGRAM_LOCK_KEY" in probe
+    assert "polling_lease_held" in probe
+    assert "wait_for_database" in worker
+    assert "wait_for_redis" in worker
 
 def test_placeholder_endpoints_are_rejected():
     assert not production_preflight._postgres_url_ready(
