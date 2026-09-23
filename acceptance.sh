@@ -13,5 +13,4 @@ dc() { docker compose "${compose_args[@]}" "$@"; }
 
 COMPOSE_FILES="$compose_files_raw" bash ./status.sh
 
-dc run --rm --no-deps \
-  --entrypoint python app scripts/production_acceptance.py
+dc exec -T app python scripts/production_acceptance.py
