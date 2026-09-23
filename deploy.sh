@@ -264,7 +264,11 @@ if [ "$deploy_ok" = "true" ] && ! verify_telegram_worker "${DEPLOY_TELEGRAM_ATTE
 fi
 
 if [ "$deploy_ok" != "true" ]; then
-  dc logs --tail=200 app redis || true
+  if dc config --services | grep -qx bot; then
+    dc logs --tail=200 app redis bot || true
+  else
+    dc logs --tail=200 app redis || true
+  fi
   if rollback_candidate; then
     echo "Предыдущий image восстановлен. Неуспешный release не записан как текущий." >&2
   else
