@@ -14,7 +14,7 @@ DEFAULT_REQUIRED_COMPONENTS = (
     "redis",
     "telegram",
     "browser",
-    "provider-sandbox",
+    "payment-mode",
 )
 
 
