@@ -189,6 +189,8 @@ Source split:
 
 Rules: late failure cannot overwrite received money; exact retry differs from stale command; stale Payment Review returns authoritative 409 without a duplicate resolution; M2 payment stays bound to exact reservation/consultation context; stale money never resurrects obsolete legal state.
 
+The production manual-payment path is now explicit `PAYMENT_PROVIDER=offline`, not the old `disabled` ambiguity. Offline creation persists the real obligation with provider identity `offline` and no external URL; it never marks money received. Authenticated administrator confirmation requires expected status, bank/accounting reference and comment, then reuses the canonical successful-payment application boundary so Payment/PaymentEvent, M1 stage or exact M2 reservation, notification and Audit evidence advance together. `disabled` remains local/test bypass only and is fail-closed/not-ready in production.
+
 Payment Review audit traceability is read-only and exact-payment scoped: `GET /admin/payment-reviews/{payment_id}/history` remains available after a payment leaves the active `PAID_REVIEW` queue, queries the Case audit actions, filters the exact `payment_id` before bounding the visible timeline, and returns only a normalized whitelist. Free-text reconciliation comments, raw `old_value`/`new_value`, provider/reservation payloads and audit-chain integrity metadata are deliberately not exported by this endpoint.
 
 The stale-command 409 recovery projection follows the same minimization rule. `payment_review_conflict_snapshot()` returns only server-authoritative state needed to explain the conflict and prevent overwrite: payment/Case state, normalized resolution decision, exact consultation/slot identifiers where applicable, actor id and resolution time. The persisted free-text `AuditLog.comment`, raw provider/reservation values and unrelated audit payload are not part of the conflict response. The browser keeps its own local draft/comment separately and reloads current server truth before any retry.
@@ -206,6 +208,8 @@ State: `IMPLEMENTED / FIXED_PENDING_RUNTIME`.
 Flow: `client/staff message → exact Case provenance → Message → priority/read state → notification event → dedupe → delivery → Telegram outcome`.
 
 Rules: history/pagination are Case-bound; draft protection prevents silent loss; delivery failure after a committed mutation must not replay the mutation; reminders/notifications do not establish legal facts.
+
+On Timeweb, Telegram polling and durable notification delivery run in the same host-network background worker because the host has working Telegram IPv6 while its Docker bridge currently has no usable IPv6 route and Telegram IPv4 times out. The HTTP container never starts a second bot/dispatcher. PostgreSQL remains the durable source and the polling advisory lock remains the singleton authority.
 
 Message Center document navigation must resolve through the role-aware document review surface `/document-access/review/ui?case_id=...`; it must not use M1 operator Workdesk document actions as a proxy for M2 lawyer responsibility. Current final composition normalizes every composed legacy document action after the guided patch. Duplicate source ownership in the base Message Center template and the guided patch remains explicit debt under PM-013 and must not be confused with a second authorization model.
 
@@ -295,9 +299,11 @@ Singleton scheduler covers:
 - login/token/grant/MFA/document/backup/quarantine cleanup/migration work;
 - pending notification delivery.
 
-Anchors: `app/scheduler/scheduler.py`, `jobs.py`, `lease.py`, `notification_dispatcher.py`.
+Anchors: `app/scheduler/scheduler.py`, `jobs.py`, `lease.py`, `notification_dispatcher.py`, `app/bot/worker.py`.
 
-State: `IMPLEMENTED / RUNTIME_PENDING`.
+Timeweb release topology assigns scheduler + notification dispatcher + Telegram polling to one supervised host-network background worker. The web process is HTTP-only. The worker runs the same immutable image/SHA, waits for PostgreSQL/Redis, runs strict production preflight, and exits if any supervised background service unexpectedly terminates. Deployment/status/rollback verify the Telegram identity and held polling lease and treat app + worker as one release unit.
+
+State: `IMPLEMENTED / FIXED_PENDING_RUNTIME`.
 
 ## P-12 — Security, keys and access revocation
 
@@ -322,10 +328,10 @@ Ordered chain for one candidate SHA:
 1. prove runner allocation and executable steps for the exact candidate;
 2. `CI` + `Deployment Readiness` + `Reproducible Dependencies` pass;
 3. dedicated `PostgreSQL Concurrency` → `Telegram Runtime Contracts` → `Browser Staff E2E` pass;
-4. one complete manual `LIVE_REQUIRED` run passes and creates exact SHA/run/attempt manifest;
-5. real Telegram M1/M2 personas pass with UI ↔ PostgreSQL ↔ Audit/PaymentEvent reconciliation;
+4. one complete manual `LIVE_REQUIRED` run passes with `payment_mode` equal to the candidate's actual mode and creates one exact SHA/run/attempt manifest;
+5. real Telegram M1/M2 personas pass with UI ↔ PostgreSQL ↔ Audit/PaymentEvent reconciliation, including the selected payment mechanism;
 6. encrypted backup→restore application/runtime proof passes;
-7. safe YooKassa test-shop provider-side paid/refund proof is expanded only then;
+7. YooKassa provider-side paid/refund proof is expanded only if YooKassa is actually being enabled; an offline-only candidate records that gate as not applicable rather than fabricating provider evidence;
 8. release/merge decision.
 
 Any source/migration/workflow/evidence-script change after evidence collection begins creates a new candidate SHA and restarts from full CI.
@@ -438,42 +444,40 @@ One exact SHA/run/attempt must prove PostgreSQL, Redis, real Telegram delivery, 
 | PM-023 | Residual test resource hygiene — source handles | After DB lifecycle leakage was removed, strict-warning diagnostics exposed an inherited test that reads `app/api/access_management.py` through raw `open(...).read()` and leaves the file for GC | An unrelated test may fail through `PytestUnraisableExceptionWarning`, but this no longer contaminates DB/event-loop ownership or PM-018 differential classification | `DEBT_OPEN / P1 / TEST_HYGIENE`; GitHub issue #128. Replace only proven unclosed source handles with context-managed/`Path.read_text()` reads; keep warnings strict and do not mix in inherited business assertion repair |
 | PM-022 | End-to-end role journey and visual UX acceptance | Source/route audit confirmed the core M1/M2 client and staff journeys exist, but the canonical staff landing mixed daily operational links with supervisory controls, rendered normalized superadmin roles as redundant `Администратор · Суперадминистратор`, omitted consultation schedule from the administrator daily-work group, duplicated SLA/Telegram control links, exposed the superadmin-only Security Center to normal administrators, and Browser Staff E2E verified route availability more strongly than responsive visual composition. Telegram direct reply-menu ownership was already case-bound and one-screen, but the persistent `Моё дело` entry inherited Home labels instead of the canonical `СЕЙЧАС / ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ` hierarchy | Staff can waste time finding the correct workspace or hit a role-denied dead end; leadership controls look like ordinary admin operations; raw technical diagnostics/English control-center copy weakens the human workflow; mobile regressions or presentation drift can survive an HTTP-200 test; client visual hierarchy can differ depending on how the same screen is opened | `BOUNDED_COMPLETE / DIFFERENTIAL_PROOF_ACCEPTED / RELEASE_BASELINE_RED / PRESENTATION_ONLY`; exact PM-022 head `ceca95365dad69f72972c5f50e87e6d18c82e7a9` passed Deployment Readiness, PostgreSQL Concurrency, Telegram Runtime Contracts and Browser Staff E2E (5 passed), while the normal/locked common suites retained only inherited failing node ids. `/operator` de-duplicates role naming, adds consultation schedule to daily admin work, removes duplicated control links, sends normal administrators to canonical Diagnostics and keeps Security in the superadmin-only leadership group together with Access/Audit/Backup/Retention. Diagnostics is now an action-oriented human dashboard instead of raw JSON; Settings/Health/Security recover to the canonical role hub; leadership/control pages use consistent Russian navigation and visible keyboard focus/live feedback. Browser Staff E2E covers admin/lawyer support surfaces and MFA-verified superadmin leadership surfaces at 390px with horizontal-overflow checks. Telegram direct `Моё дело` keeps the same safe Case data/actions but normalizes the headings to the canonical current-state/next-step hierarchy; the persistent reply menu now hides unavailable `Моё дело`/`Документы` before a Case exists, keeps completed `Моё дело` read-only, and preserves `Связаться с юристом` as the global M2/help entry. PM-019 business projection semantics are untouched |
 | PM-019 | Deterministic My Case Projection & Next Action | The existing shared client presenter already centralized much of My Case/Home, but it could fall back to free-form `Case.next_action`, document replacement state could globally override later court/payment/consultation stages, the My Case blocker could reuse `Document.lawyer_comment`, payment/history facts were not part of the stale-action fingerprint, and Home/My Case disagreed on whether unread lawyer messages silently replace the process action | A client can be shown non-authoritative/internal copy, a stale document can pull the apparent next step backwards, free-text staff reasoning can leak into the client cabinet, and a button may remain valid after a payment/history fact changed | `IMPLEMENTED / FIXED_PENDING_EXACT_RUNTIME`; `client_case_view.py` now owns an explicit safe projection for every supported CaseStatus: client stage → what is happening → what is required → blocker → one projected action → document/payment/history summaries. Unsupported or route-conflicting state fails closed; arbitrary `Case.next_action` is never rendered; document precedence is limited to the M1 document contour; M2 optional documents do not block slot selection; document-review audit comments stay staff-only; snapshot identity includes Case.version, payment state and latest client-visible history. Home and My Case consume the same projection. Focused PM-019 CI proof is green (9 passed); exact final differential full-suite classification is pending the governed map commit |
+| PM-024 | Timeweb Telegram production egress / split runtime | Live diagnostics proved general IPv4 egress works, Telegram IPv4 TCP/443 times out, host IPv6 reaches Telegram, and ordinary Docker bridge containers have no usable IPv6 route | A healthy web release can silently leave polling, notifications and scheduled Telegram delivery offline; ad-hoc manual containers are not reboot/release reproducible | `SOURCE_FIXED / RUNTIME_PENDING / RELEASE_P0`; v47 adds a reproducible split Timeweb compose overlay: HTTP app on bridge+proxy, host-network background worker for bot + notification dispatcher + scheduler, loopback-only PostgreSQL/Redis access, operator-managed Telegram IPv6 mapping, same-image identity, polling-lease probe, unified deploy/status/rollback and restart-policy checks. Must still pass real /start, post-reboot acceptance and exact-SHA runtime evidence before closure |
+| PM-025 | Production payment mode ambiguity | Live v46 had `PAYMENT_PROVIDER=disabled`; preflight tolerated it while /ready correctly rejected it, and old copy conflated provider-off with manual/offline receipt handling | Production could stay permanently not-ready or operators could mistake a disabled test bypass for a legitimate financial process | `SOURCE_FIXED / RUNTIME_PENDING / RELEASE_P0`; v47 introduces explicit `offline` provider mode with no external URL, canonical PaymentEvent/Audit lifecycle, admin bank/accounting confirmation for M1 and exact M2 reservation, fail-closed production `disabled`, role-aware readiness and payment-mode-specific LIVE_REQUIRED evidence. Must pass real M1/M2 offline persona reconciliation before closure |
 
 # Development priority plan
 
-## P0 — current release truth and production-critical calculator closure
+## P0 — production acceptance before new feature scope
 
-1. Keep this Process Map as the final governed commit for this batch and treat its resulting SHA as the next audit candidate.
-2. Open the calculator audit as a stacked **draft** PR against `feat/v37-guided-case-dashboard-telegram`, then execute exact-SHA `CI` + `Deployment Readiness` + `Reproducible Dependencies`; do not classify executed failures as infrastructure without current-run evidence.
-3. Verify PM-015 with the exact-head calculator regressions and Telegram runtime. If a regression fails, fix the product/test contract based on the authoritative Functional Specification — never delete a failure, weaken the assertion, or rewrite the requirement to make the existing code pass.
-4. Use the same exact-head diagnostics to classify remaining failures, including PM-014 route inventory, assignment/SLA fixtures, FakeDB/locking assumptions and teardown/resource defects. Select the largest deterministic current-contract cluster only after reading the new log.
-5. Before calculator acceptance, close PM-016 with versioned/effective-dated legal calculation rules and PM-017 with durable Case-visible calculator intake. Each governed change creates a new candidate and restarts the exact-SHA evidence chain.
-6. Keep PM-018 bounded: its exact-head migration/authority/M2→M1 proof is evaluated separately from inherited branch-wide failures. Do not pull the 250+ pre-existing failures into PR #121.
-7. Close PM-021 as a separate test-infrastructure pass: isolate async DB connections across pytest event loops, remove directly observed resource leaks, rerun the same SQLite/locked suites and compare failure identities on unchanged product semantics.
-8. PM-018 closure decision is now recorded: differential proof is sufficient for the **bounded PM-018 change** because the corrected PM-021 candidate has zero current-only FAIL/ERROR node ids versus the stacked base and the focused authority proof is green. Do not reinterpret this as release readiness.
-9. PM-019 is implemented as a bounded stacked change in draft PR #130. Keep its acceptance independent from inherited release debt: require focused projection proof plus zero PM-019-owned current-only FAIL/ERROR node ids against PM-022 base. A bounded acceptance does not waive the separate fully-green release requirement.
-10. PM-023 stays P1 test hygiene and must not be pulled back into PM-018. Only after all required general/dedicated release gates are green, run one complete `LIVE_REQUIRED` attempt for that exact SHA.
+1. **PM-024 / v47 production topology** — get the exact map-final candidate through CI/deployment gates, deploy web + host-network background worker as one immutable SHA, prove public web login, real Telegram `/start`, one polling consumer, durable notification delivery, restart policies and controlled Timeweb reboot recovery.
+2. **Real M1 persona** — `/start → calculation → M1 → consent → documents → lawyer request/accept → contract → offline payment confirmation → POA → claim → court → second payment → enforcement → recovered amount → success fee → close/archive`. At every mutation reconcile Telegram/staff UI ↔ PostgreSQL ↔ AuditLog/PaymentEvent.
+3. **Real M2 persona** — description → optional document/skip → slot → exact offline payment obligation/confirmation → booked consultation → result/no-show/reschedule where applicable → close or M2→M1, again with UI ↔ PostgreSQL ↔ immutable evidence reconciliation.
+4. **PM-025 payment closure** — current release mode is explicit `offline`. Do not enable YooKassa production credentials until offline acceptance, personas and restore proof are complete. If YooKassa is later selected, use only its test-shop sequence first.
+5. **Document production proof** — real test PDF/DOCX/JPEG upload, validation/quarantine behavior, encryption-at-rest, version/replacement/rejection, authorized one-time download and encrypted backup→separate restore/decrypt proof.
+6. **Notification/scheduler time proof** — prove actual delayed/due behavior for document request, contract/payment reminder, consultation reminder, SLA escalation, claim waiting event and durable Telegram delivery after transient failure.
+7. **Release baseline debt** — after live behavior is proven, classify the inherited common-suite failures by product/stale-contract/fixture/resource ownership and drive the required release baseline to green rather than relying indefinitely on differential proof.
+8. **PM-017 durable calculator intake** — move incomplete Case-bound answers from Redis-only recovery to a durable auditable business source visible in the Case card; prove Redis loss/restart and multi-Case isolation.
+9. **UX consolidation** — only after the above: simplify staff surfaces to `what is happening → what is overdue/blocking → what is required from me → one main action`, remove legacy navigation/duplicate controls/technical copy without adding new product routes.
+10. **PM-016 remains a legal release blocker** — infrastructure acceptance and pilot personas do not legalize the current single-rate calculator. Before presenting calculator results as production legal authority, implement lawyer-approved versioned/effective-dated rates, exclusions/moratoria and persisted rule revision/segments. No legal rule may be guessed.
 
-## P1 — controlled debt closure after executable CI is green
+## P1 — controlled debt closure after P0 runtime truth
 
-0. PM-022: execute the responsive role/visual acceptance on the exact stacked candidate; keep presentation-only findings separate from PM-018/PM-021 closure evidence.
+1. PM-013: collapse duplicate Message Center document-route source ownership while preserving canonical role-aware review.
+2. PM-004: remove legacy assignment modules only after historical/external-consumer audit and regressions.
+3. PM-006: verify actual repository branch/rules settings and required contexts.
+4. Reconcile stale issue #116 with current runner reality.
+5. Complete PM-023 residual test-resource hygiene without weakening strict warnings.
+6. Review PM-009/PM-011 runtime evidence and close only evidence-backed remaining architecture/privacy debt.
 
-1. PM-013: collapse duplicate Message Center document-route ownership in the base/guided sources so final composition does not need compatibility normalization; preserve canonical `/document-access/review/ui` and M2 consultation/slot responsibility.
-2. PM-004: finish exact historical/external consumer audit and delete legacy assignment modules only if safe-removal proof and regressions exist.
-3. PM-006: verify actual branch/rules settings and exact required contexts; align them with the gate contract without weakening it.
-4. Reconcile or close stale GitHub issue #116 so repository issue metadata matches AGENTS/Process Map runtime truth.
-5. Browser-check centralized Workdesk renderer for M1/M2 responsibility/action semantics.
-6. Audit real staging/restore DB for remaining `M2_CONSULTATION_ROUTE` rows before considering compatibility enum removal.
-7. Review PM-009 runtime results before deciding whether a later model/session-level mutation authorization backstop is justified.
-8. Exercise PM-011 with authenticated browser/API sessions against active and terminal Payment Review records, including stale 409 server-truth fields, terminal history and cache headers.
+## P2 — post-acceptance expansion
 
-## P2 — post-LIVE evidence and release decision
-
-1. Real Telegram M1/M2 personas and evidence reconciliation.
-2. Encrypted backup→restore application/runtime proof.
-3. Safe YooKassa test-shop paid/refund expansion.
-4. Resolve or explicitly accept every remaining release-relevant PM-item.
-5. Release/merge decision; no automatic merge.
+1. Encrypted backup→restore application/runtime evidence package retained for the accepted persona state.
+2. YooKassa test-shop paid/refund expansion only if online payment is actually selected.
+3. Resolve or explicitly accept every remaining release-relevant PM item.
+4. Release/merge decision; no automatic merge.
+5. Only after release stability: consider new services/routes/AI scope through a new approved product contract.
 
 # Change impact rule
 
@@ -712,3 +716,15 @@ Whenever anything changes:
 - Added dedicated CI job `PM-019 My Case projection proof` and `tests/test_pm019_my_case_projection.py`. The focused proof executes 9 tests covering full status coverage, fail-closed route/state mismatch, document precedence, internal-copy privacy, audit-comment privacy, payment/version stale snapshot and shared Home/My Case semantics.
 - The first complete normal-suite pass before contract reconciliation exposed eight PM-019-owned current-only nodes. They were all expected contract deltas: one client-history comment expectation, two CI job-count assertions, two old `ГОТОВНОСТЬ` visual assertions, and three unread-message/action-key expectations. Those tests were updated to the approved PM-019 contract; inherited branch-wide business failures were not repaired.
 - Current source classification before exact governed rerun: `IMPLEMENTED / FOCUSED_PROOF_GREEN / DIFFERENTIAL_RERUN_REQUIRED`. The next exact candidate must show no PM-019-owned current-only failures in both normal and locked suites before bounded completion can be recorded.
+
+## 2026-09-24 — v47 production acceptance topology and explicit offline payments
+
+- Recorded live Timeweb evidence: GitHub/Google IPv4 egress works; Telegram IPv4 times out; host Telegram IPv6 works; current bridge containers have no IPv6 route. PM-024 owns this infrastructure/runtime gap.
+- Added `docker-compose.timeweb.split.yml`: web is HTTP-only on app/proxy networks; `legal-concierge-bot` uses host networking and owns polling, durable notification delivery and scheduler. PostgreSQL/Redis are exposed only on loopback for this worker.
+- Added `app/bot/worker.py` supervision plus `scripts/telegram_worker_probe.py`; deployment, status, acceptance and rollback now treat web + worker as one immutable release and verify polling singleton identity.
+- Replaced the v29 source-only acceptance script with live PostgreSQL/Alembic/audit/security-key/backup/payment/release evidence and bumped application identity to `1.0.0-v47`.
+- PM-025 formalizes `PAYMENT_PROVIDER=offline` as the current production manual-reconciliation mode. It persists real obligations without external links and uses authenticated staff receipt confirmation through the canonical payment-success lifecycle for M1/M2. `disabled` is now fail-closed/not-ready in production.
+- LIVE_REQUIRED now records the candidate's selected payment mode: offline contract evidence when offline is deployed, or YooKassa test-shop evidence only when YooKassa is explicitly selected.
+- Updated PRODUCT_SCOPE, SYSTEM_CONTRACT, ACCEPTANCE, RUNBOOK, LIVE_REQUIRED and POST_LIVE documents to the same semantics. No new legal route, migration or client web cabinet was introduced.
+- This map commit is the governed end of the source batch. All changes remain `FIXED_PENDING_RUNTIME`; no live /start, controlled reboot, persona, document, scheduler-time or full-baseline PASS is claimed yet.
+
