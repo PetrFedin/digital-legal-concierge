@@ -17,8 +17,15 @@ if [ -n "$(find "$destination" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
   exit 1
 fi
 
-compose_file="${COMPOSE_FILE:-docker-compose.yml}"
-docker compose -f "$compose_file" run --rm --no-deps \
+compose_files_raw="${COMPOSE_FILES:-${COMPOSE_FILE:-docker-compose.yml}}"
+IFS=':' read -r -a compose_files <<< "$compose_files_raw"
+compose_args=()
+for compose_file in "${compose_files[@]}"; do
+  [ -n "$compose_file" ] || continue
+  compose_args+=(-f "$compose_file")
+done
+dc() { docker compose "${compose_args[@]}" "$@"; }
+dc run --rm --no-deps \
   --entrypoint python \
   -v "$archive:/restore/source.dlcbak:ro" \
   -v "$destination:/restore/output" \
