@@ -26,7 +26,7 @@ def test_release_metadata_exposes_only_non_sensitive_build_identity(monkeypatch)
     payload = release_metadata()
 
     assert payload == {
-        "application_version": "1.0.0-v45",
+        "application_version": "1.0.0-v46",
         "release": "release-20260803",
         "git_commit": "a" * 40,
         "build_timestamp": "2026-08-03T16:00:00Z",
