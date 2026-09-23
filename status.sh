@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
-compose_file="${COMPOSE_FILE:-docker-compose.yml}"
-dc() { docker compose -f "$compose_file" "$@"; }
+compose_files_raw="${COMPOSE_FILES:-${COMPOSE_FILE:-docker-compose.yml}}"
+IFS=':' read -r -a compose_files <<< "$compose_files_raw"
+compose_args=()
+for compose_file in "${compose_files[@]}"; do
+  [ -n "$compose_file" ] || continue
+  compose_args+=(-f "$compose_file")
+done
+dc() { docker compose "${compose_args[@]}" "$@"; }
 
 dc ps
 
@@ -46,3 +52,9 @@ print("release_identity_matches_image", identity_ok)
 all_ok = all_ok and identity_ok
 raise SystemExit(0 if all_ok else 2)
 PY
+
+
+if dc config --services | grep -qx bot; then
+  echo "telegram worker probe"
+  dc exec -T bot python scripts/telegram_worker_probe.py
+fi
