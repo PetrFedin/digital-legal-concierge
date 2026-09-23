@@ -122,9 +122,11 @@ if ! (
     # shellcheck disable=SC1090
     . "$current_state"
     set +a
-    dc up -d --no-deps --no-build --force-recreate app
+    mapfile -t services < <(rollback_services)
+    dc up -d --no-deps --no-build --force-recreate "${services[@]}"
     wait_for_health
     verify_release_and_readiness "$GIT_COMMIT_SHA"
+    verify_telegram_worker
   ) || fail "Не удалось восстановить исходный image; требуется аварийная процедура"
   fail "Rollback отменён, исходный release восстановлен"
 fi
