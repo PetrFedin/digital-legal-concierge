@@ -73,6 +73,7 @@ from app.domain.payments.mode import (
     payment_provider_name,
     payments_disabled,
     payments_enabled,
+    payments_offline,
 )
 from app.security.backup_freshness import backup_freshness_status
 from app.security.client_address import (
@@ -219,6 +220,11 @@ def create_app():
             proxy_networks = ()
             trusted_proxy_config_valid = False
 
+        runtime_role = str(settings.runtime_role or "all").strip().lower()
+        role_valid = runtime_role in {"all", "web", "bot"}
+        bot_expected = runtime_role in {"all", "bot"}
+        scheduler_expected = runtime_role in {"all", "web"}
+
         checks = {
             "bot_token_configured": bool(
                 settings.bot_token and settings.bot_token != "CHANGE_ME"
@@ -287,8 +293,13 @@ def create_app():
                 1 <= int(settings.trusted_proxy_max_hops) <= 20
             ),
             "database_url_configured": bool(settings.database_url),
-            "scheduler_enabled": settings.run_scheduler,
-            "bot_enabled": settings.run_bot,
+            "runtime_role_valid": role_valid,
+            "scheduler_mode_matches_runtime_role": (
+                bool(settings.run_scheduler) == scheduler_expected if role_valid else False
+            ),
+            "bot_mode_matches_runtime_role": (
+                bool(settings.run_bot) == bot_expected if role_valid else False
+            ),
             "legacy_admin_token_disabled_in_production": (
                 settings.app_env != "production"
                 or settings.admin_api_token != "dev-admin-token"
@@ -305,9 +316,15 @@ def create_app():
             "payment_mode": {
                 "provider": provider,
                 "enabled": payments_enabled(),
+                "offline_manual_confirmation": payments_offline(),
                 "disabled_by_configuration": payment_disabled,
                 "payment_links_created": payments_enabled(),
                 "pilot_flows_continue_without_payment": payment_disabled,
+            },
+            "runtime": {
+                "role": runtime_role,
+                "run_bot": bool(settings.run_bot),
+                "run_scheduler": bool(settings.run_scheduler),
             },
             "security_keys": key_status,
             "trusted_proxy_security": {
