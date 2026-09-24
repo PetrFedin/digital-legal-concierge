@@ -102,3 +102,14 @@ def test_staff_source_projection_exposes_only_referenced_saved_sources():
     assert all(item["url"].startswith("https://") for item in sources)
     assert sources[0]["locator"] == "ч. 2 ст. 6"
     assert "UNUSED" not in {item["code"] for item in sources}
+
+
+def test_client_can_reopen_calculation_legal_details_from_my_case_and_archive():
+    my_case = read("app/bot/screens/my_case.py")
+    calculator = read("app/bot/screens/calculator.py")
+
+    assert "🔎 Основания и детализация расчёта" in my_case
+    assert 'f"calc_details:v2:{int(view.case_id)}"' in my_case
+    assert 'startswith("calc_details:v2:")' in calculator
+    assert "get_case_for_user(" in calculator
+    assert "format_calculation_details(calculation)" in calculator
