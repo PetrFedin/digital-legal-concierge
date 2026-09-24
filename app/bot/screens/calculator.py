@@ -1515,7 +1515,7 @@ async def calculation_legal_details(callback: CallbackQuery, state: FSMContext, 
         [
             "⚖️ Как рассчитана предварительная сумма",
             "",
-            f"Обращение № {case.number}",
+            f"Обращение № {case.case_number}",
             f"Версия правил: {calculation.rule_revision_key}",
             f"Контрольная сумма правил: {str(calculation.rule_snapshot_sha256)[:16]}…",
             "",
@@ -1565,7 +1565,6 @@ async def calculation_legal_details(callback: CallbackQuery, state: FSMContext, 
     await callback.message.edit_text(
         text,
         reply_markup=keyboard.as_markup(),
-        disable_web_page_preview=True,
     )
 
 
