@@ -34,6 +34,11 @@ _CALCULATOR_FIELDS = frozenset(
     {
         "contract_price",
         "planned_transfer_date",
+        "client_type",
+        "deadline_confirmed",
+        "unique_object",
+        "ddu_signing_date",
+        "acceptance_evasion",
         "object_transferred",
         "actual_transfer_date",
     }
@@ -74,17 +79,24 @@ def draft_step(data: dict, *, today: date | None = None) -> str:
         return "planned_date"
     if planned_date > (today or date.today()):
         # The functional specification treats a future contractual date as an
-        # informational terminal boundary for the current attempt: do not move
-        # into delay calculation until the date has arrived. Keeping this as a
-        # distinct draft step also makes Save/Home + later resume truthful.
+        # informational terminal boundary for the current attempt.
         return "future_date"
+    if str(data.get("client_type") or "") not in {"consumer", "business"}:
+        return "participant_type"
+    if data.get("deadline_confirmed") is not True:
+        return "deadline_confirmation"
+    if "unique_object" not in data:
+        return "unique_object"
+    if bool(data.get("unique_object")) and not data.get("ddu_signing_date"):
+        return "ddu_signing_date"
+    if str(data.get("acceptance_evasion") or "") not in {"no", "yes", "unknown"}:
+        return "acceptance_evasion"
+    if str(data.get("acceptance_evasion")) != "no":
+        return "manual_review"
     if "object_transferred" not in data:
         return "transfer_status"
     if bool(data.get("object_transferred")) and not data.get("actual_transfer_date"):
         return "actual_date"
-    # A complete value set normally gets committed immediately. If the UI was
-    # interrupted between the last answer and calculation, return to the final
-    # safe confirmation/input boundary rather than silently creating a case.
     return "actual_date" if bool(data.get("object_transferred")) else "transfer_status"
 
 
@@ -93,6 +105,12 @@ def draft_step_label(data: dict, *, today: date | None = None) -> str:
         "price": "стоимость объекта",
         "planned_date": "дата передачи по ДДУ",
         "future_date": "наступление срока передачи по ДДУ",
+        "participant_type": "тип участника",
+        "deadline_confirmation": "подтверждение последнего действующего срока",
+        "unique_object": "проверка уникального объекта",
+        "ddu_signing_date": "дата заключения ДДУ",
+        "acceptance_evasion": "обстоятельства приёмки",
+        "manual_review": "проверка юристом",
         "transfer_status": "статус передачи объекта",
         "actual_date": "дата фактической передачи",
     }[draft_step(data, today=today)]
