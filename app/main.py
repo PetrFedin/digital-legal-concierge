@@ -14,6 +14,7 @@ from app.api.auth import router as auth_router
 from app.api.backup_center import router as backup_center_router
 from app.api.backup_manager import router as backup_manager_router
 from app.api.calculator_builder import router as calculator_builder_router
+from app.api.calculator_builder_v2 import router as calculator_builder_v2_router
 from app.api.case_assignment import router as case_assignment_router
 from app.api.consultation_outcomes_product import router as consultation_outcomes_product_router
 from app.api.consultation_slots import router as consultation_slots_router
@@ -130,6 +131,7 @@ def create_app():
         ("initial_setup_wizard", initial_setup_wizard_router),
         ("template_builder", template_builder_router),
         ("calculator_builder", calculator_builder_router),
+        ("calculator_builder_v2", calculator_builder_v2_router),
         ("integration_center", integration_center_router),
         ("operations_center", operations_center_router),
         ("monitoring_center", monitoring_center_router),
