@@ -22,7 +22,11 @@ from app.bot.case_callback_scope import bound_case_callback
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.states import CalculatorStates
-from app.domain.calculator.calculator_result_formatter import format_calculation_result
+from app.domain.calculator.calculator_result_formatter import (
+    format_calculation_result,
+    format_money,
+    format_percent,
+)
 from app.domain.calculator.rule_catalog_v2 import client_sources
 from app.domain.calculator.calculator_service import (
     CalculatorRouteEligibilityError,
@@ -1424,6 +1428,7 @@ def result_kb(case_id: int, *, allow_m1: bool = True):
         items.append(("Продолжить ведение дела", f"calc_continue_m1:v2:{case_id}"))
     items.extend(
         [
+            ("⚖️ Как рассчитано и правовые основания", f"calc_legal_details:v2:{case_id}"),
             ("💬 Перейти к консультации", f"calc_to_m2:v2:{case_id}"),
             ("Пока изучаю вопрос", f"calc_postpone:v2:{case_id}"),
             ("🧮 Изменить данные и пересчитать", f"calc_repeat:v2:{case_id}"),
@@ -1431,6 +1436,167 @@ def result_kb(case_id: int, *, allow_m1: bool = True):
         ]
     )
     return one(*items)
+
+
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_legal_details:v2:")
+)
+async def calculation_legal_details(callback: CallbackQuery, state: FSMContext, db):
+    try:
+        case_id = parse_bound_case_callback(
+            callback.data,
+            prefix="calc_legal_details",
+        )
+    except Exception:
+        await callback.answer("Детализация устарела", show_alert=True)
+        return
+
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    case = await ctx.case_service.get_case_for_user(
+        user_id=int(user.id),
+        case_id=int(case_id),
+    )
+    if case is None:
+        await callback.answer("Расчёт недоступен", show_alert=True)
+        return
+
+    calculation = await CalculatorService(db).latest_calculation_for_case(
+        case_id=int(case_id)
+    )
+    if (
+        calculation is None
+        or not isinstance(calculation.rule_snapshot, dict)
+        or not calculation.rule_revision_key
+    ):
+        await callback.answer("Для этого расчёта нет воспроизводимой детализации", show_alert=True)
+        return
+
+    snapshot = dict(calculation.rule_snapshot)
+    branch = str(getattr(calculation, "calculation_branch", None) or "standard")
+    if branch == "unique":
+        branch_rules = snapshot.get("unique_object") or {}
+    else:
+        branch_rules = snapshot.get("standard_object") or {}
+    divisor = str(branch_rules.get("divisor") or "—")
+    base_rate = (
+        format_percent(Decimal(calculation.key_rate))
+        if calculation.key_rate is not None
+        else "—"
+    )
+    rate_date = getattr(calculation, "base_rate_date", None) or calculation.planned_transfer_date
+    end_date = calculation.actual_transfer_date or calculation.calculation_date
+    segments = list(calculation.applied_segments or [])
+
+    segment_lines: list[str] = []
+    for item in segments[:12]:
+        effective = item.get("effective_rate") or item.get("rate")
+        try:
+            effective_text = format_percent(Decimal(str(effective)))
+        except Exception:
+            effective_text = str(effective or "—")
+        cap = f"; ограничение {item.get('cap_code')}" if item.get("cap_code") else ""
+        segment_lines.append(
+            f"• {item.get('start')} — {item.get('end')}: "
+            f"{item.get('days')} дн., ставка {effective_text}{cap}"
+        )
+    if len(segments) > 12:
+        segment_lines.append(f"• … ещё сегментов: {len(segments) - 12}")
+
+    source_ids = list(getattr(calculation, "applied_source_ids", None) or [])
+    sources = client_sources(snapshot, source_ids)
+    source_lines = [
+        f"{index}. {item.get('title')} — {item.get('authority')}"
+        for index, item in enumerate(sources, start=1)
+    ]
+
+    text = "\n".join(
+        [
+            "⚖️ Как рассчитана предварительная сумма",
+            "",
+            f"Обращение № {case.number}",
+            f"Версия правил: {calculation.rule_revision_key}",
+            f"Контрольная сумма правил: {str(calculation.rule_snapshot_sha256)[:16]}…",
+            "",
+            f"Цена ДДУ: {format_money(Decimal(calculation.contract_price or 0))}",
+            f"Договорный срок передачи: {calculation.planned_transfer_date.strftime('%d.%m.%Y')}",
+            f"Конец расчётного периода: {end_date.strftime('%d.%m.%Y') if end_date else '—'}",
+            f"Ставка на договорную дату {rate_date.strftime('%d.%m.%Y') if rate_date else '—'}: {base_rate}",
+            f"Делитель: {divisor}",
+            f"Коэффициент участника: {calculation.consumer_multiplier}",
+            f"Всего дней просрочки: {calculation.delay_days_total or 0}",
+            f"Исключено дней: {calculation.moratorium_days or 0}",
+            f"Начисляемых дней: {calculation.delay_days_chargeable or calculation.delay_days or 0}",
+            "",
+            "Расчётные сегменты:",
+            *(segment_lines or ["• Начисляемых сегментов нет"]),
+            "",
+            f"Итог: {format_money(Decimal(calculation.penalty_amount or 0))}",
+            (
+                "Лимит 5% для уникального объекта применён."
+                if bool(getattr(calculation, "penalty_cap_applied", False))
+                else "Дополнительный лимит суммы не применялся."
+            ),
+            "",
+            "Правовые и расчётные основания:",
+            *(source_lines or ["Источники в историческом snapshot не найдены."]),
+            "",
+            "Это предварительный автоматизированный расчёт. Он не подменяет "
+            "проверку ДДУ, дополнительных соглашений и фактических обстоятельств юристом.",
+        ]
+    )
+
+    keyboard = InlineKeyboardBuilder()
+    for index, item in enumerate(sources, start=1):
+        url = str(item.get("url") or "").strip()
+        if url:
+            keyboard.button(
+                text=f"Источник {index} ↗",
+                url=url,
+            )
+    keyboard.button(
+        text="⬅️ К результату",
+        callback_data=f"calc_result_view:v2:{case_id}",
+    )
+    keyboard.button(text="📁 Моё дело", callback_data="my_case_open")
+    keyboard.adjust(1)
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=keyboard.as_markup(),
+        disable_web_page_preview=True,
+    )
+
+
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_result_view:v2:")
+)
+async def return_to_calculation_result(callback: CallbackQuery, state: FSMContext, db):
+    try:
+        case_id = parse_bound_case_callback(callback.data, prefix="calc_result_view")
+    except Exception:
+        await callback.answer("Результат устарел", show_alert=True)
+        return
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    case = await ctx.case_service.get_case_for_user(
+        user_id=int(user.id),
+        case_id=int(case_id),
+    )
+    if case is None:
+        await callback.answer("Обращение недоступно", show_alert=True)
+        return
+    calculation = await CalculatorService(db).latest_calculation_for_case(
+        case_id=int(case_id)
+    )
+    if calculation is None:
+        await callback.answer("Расчёт не найден", show_alert=True)
+        return
+    result = _result_from_persisted(calculation)
+    await callback.message.edit_text(
+        format_calculation_result(result),
+        reply_markup=result_kb(case_id, allow_m1=_result_allows_m1(result)),
+    )
 
 
 @router.callback_query(
