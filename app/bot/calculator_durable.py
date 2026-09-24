@@ -42,6 +42,7 @@ _CALLBACK_PREFIXES = {
     "calc_repeat:v2:": "restart_explicit",
     "calc_client_consumer:v2:": "client_consumer",
     "calc_client_other:v2:": "client_other",
+    "calc_client_unknown:v2:": "client_unknown",
     "calc_unique_yes:v2:": "unique_yes",
     "calc_unique_no:v2:": "unique_no",
     "calc_unique_unknown:v2:": "unique_unknown",
@@ -257,6 +258,8 @@ class DurableCalculatorIntakeMiddleware:
                     case_id=case_id,
                     client_type="other",
                 )
+            elif action == "client_unknown":
+                await service.mark_client_type_unknown(case_id=case_id)
             elif action == "unique_yes":
                 await service.save_unique_object(
                     case_id=case_id,
