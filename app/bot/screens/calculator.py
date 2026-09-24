@@ -1249,16 +1249,17 @@ async def calculation_details(callback: CallbackQuery, db):
         case_id = _parse_case_callback(callback.data, "calc_details")
         ctx = BotContextService(db)
         user = await ctx.get_user_from_callback(callback)
-        await ctx.case_service.select_case_for_user(
+        owned_case = await ctx.case_service.get_case_for_user(
             user_id=int(user.id),
             case_id=case_id,
         )
+        if owned_case is None:
+            raise LookupError("Обращение недоступно")
         calculation = await CalculatorService(db).latest_calculation_for_case(
             case_id=case_id
         )
         if calculation is None:
             raise LookupError("Расчёт не найден")
-        await db.commit()
     except Exception:
         await db.rollback()
         await callback.answer(
