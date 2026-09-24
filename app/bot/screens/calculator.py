@@ -1275,6 +1275,19 @@ async def calc_result(state, db, case):
             if data.get("actual_transfer_date")
             else None
         ),
+        client_type=str(data.get("client_type") or "consumer"),
+        deadline_confirmed=data.get("deadline_confirmed"),
+        unique_object=data.get("unique_object"),
+        acceptance_evasion=(
+            str(data.get("acceptance_evasion"))
+            if data.get("acceptance_evasion") is not None
+            else None
+        ),
+        ddu_signing_date=(
+            date.fromisoformat(data["ddu_signing_date"])
+            if data.get("ddu_signing_date")
+            else None
+        ),
     )
 
 
