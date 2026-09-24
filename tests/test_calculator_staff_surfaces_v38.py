@@ -1,9 +1,17 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 from app.api.workdesk_calculator_projection import _source_projection
 from app.api.calculator_builder import router as calculator_builder_router
 from app.api.workdesk_product import router as workdesk_router
 from app.api.workdesk_runtime_ui import render_workdesk_runtime_html
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def read(path: str) -> str:
+    return (ROOT / path).read_text(encoding="utf-8")
 
 
 def _routes(router):
