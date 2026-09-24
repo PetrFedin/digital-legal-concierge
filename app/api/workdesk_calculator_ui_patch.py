@@ -33,7 +33,8 @@ WORKDESK_CALCULATOR_EXTENSION = r"""
         ?'<a href="'+e(rawUrl)+'" target="_blank" rel="noopener noreferrer">Открыть источник ↗</a>'
         :'<span class="bad">Ссылка отсутствует/некорректна</span>';
       const checked=source.checked_at?' · проверено '+e(source.checked_at):'';
-      return '<div class="legal-source"><div><code>'+e(source.code||'—')+'</code> · '+e(source.title||'Источник')+checked+'</div><div>'+link+'</div></div>';
+      const locator=source.locator?'<div class="muted">Основание: '+e(source.locator)+'</div>':'';
+      return '<div class="legal-source"><div><code>'+e(source.code||'—')+'</code> · '+e(source.title||'Источник')+checked+'</div>'+locator+'<div>'+link+'</div></div>';
     }).join('')+'</div>';
   }
   function chargeSegments(calc){
