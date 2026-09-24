@@ -422,6 +422,11 @@ def _parse_rule_payload_v2(rules: dict[str, Any], *, client_type: str) -> dict[s
     if not isinstance(unique, dict):
         raise CalculationRuleError("Не задана отдельная ветка уникального объекта")
 
+    judicial_source_ids: set[str] = set()
+    for item in list(rules.get("judicial_adjustments") or []):
+        if isinstance(item, dict):
+            judicial_source_ids.update(_source_ids(item.get("source_ids")))
+
     return {
         "schema_version": 2,
         "divisor": divisor,
@@ -431,12 +436,14 @@ def _parse_rule_payload_v2(rules: dict[str, Any], *, client_type: str) -> dict[s
         "money_quant": money_quant,
         "rounding_name": rounding_name,
         "rounding": _SUPPORTED_ROUNDING[rounding_name],
+        "rounding_source_ids": _source_ids(rounding.get("source_ids")),
         "rate_schedule": rate_schedule,
         "rate_source_ids": _source_ids(rate_basis.get("source_ids")),
         "exclusions": exclusions,
         "caps": caps,
         "standard_source_ids": _source_ids(standard.get("source_ids")),
         "period_source_ids": _source_ids(period.get("source_ids")),
+        "judicial_source_ids": tuple(sorted(judicial_source_ids)),
         "unique": unique,
     }
 
@@ -742,7 +749,12 @@ def _calculate_v2(
     moratorium_days = sum(item.days for item in merged_excluded)
     chargeable_days = sum(item.days for item in chargeable)
     applied_segments: list[dict[str, Any]] = []
-    applied_source_ids = set(base_rate_sources) | set(branch_source_ids)
+    applied_source_ids = (
+        set(base_rate_sources)
+        | set(branch_source_ids)
+        | set(parsed["rounding_source_ids"])
+        | set(parsed["judicial_source_ids"])
+    )
     raw_total = Decimal("0")
 
     for interval in chargeable:
