@@ -401,10 +401,24 @@ async def _resume_draft(callback: CallbackQuery, state: FSMContext) -> None:
     if not _base_data_ready(data):
         await _start_fresh(callback, state, case_id=case_id)
         return
-    await state.set_state(CalculatorStates.waiting_actual_transfer_date)
+    if step == "actual_date":
+        await state.set_state(CalculatorStates.waiting_actual_transfer_date)
+        await callback.message.edit_text(
+            _actual_prompt(),
+            reply_markup=_actual_keyboard(case_id),
+        )
+        return
+    if step == "client_type":
+        await state.set_state(CalculatorStates.waiting_client_type)
+        await callback.message.edit_text(
+            _client_type_prompt(),
+            reply_markup=_client_type_keyboard(case_id),
+        )
+        return
+    await state.set_state(CalculatorStates.waiting_unique_object)
     await callback.message.edit_text(
-        _actual_prompt(),
-        reply_markup=_actual_keyboard(case_id),
+        _unique_object_prompt(),
+        reply_markup=_unique_object_keyboard(case_id),
     )
 
 
