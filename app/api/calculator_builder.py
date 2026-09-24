@@ -471,7 +471,7 @@ async def calculator_ui(
               <input type="hidden" name="rules_json" value="">
               <div class="sticky-actions">
                 <button type="submit">Сохранить DRAFT</button>
-                <button class="validate" type="submit" formaction="/calculator-builder/{item.id}/validate">Проверить схему + контрольные примеры</button>
+                <button class="validate" type="submit" formaction="/calculator-builder/{item.id}/validate">Проверить сохранённую DRAFT</button>
               </div>
             </form>
             """
