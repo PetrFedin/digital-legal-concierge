@@ -15,6 +15,7 @@ from app.domain.calculator.rule_engine import (
     RuleBasedCalculationInput,
 )
 from app.domain.calculator.rule_revision_service import (
+    _prune_orphan_sources,
     rule_payload_sha256,
     run_control_examples,
     validate_rule_payload,
@@ -206,3 +207,39 @@ def test_due_date_outside_confirmed_cbr_directory_fails_closed():
             object_transferred=True,
             actual_transfer_date=date(2016, 1, 2),
         )
+
+
+def test_clearing_rule_section_prunes_only_sources_that_are_no_longer_referenced():
+    rules = {
+        "schema_version": 2,
+        "formula": {"source_refs": ["SHARED"]},
+        "stop_factors": [
+            {
+                "flag": "manual",
+                "message": "manual",
+                "source_refs": ["SECTION_ONLY", "SHARED"],
+            }
+        ],
+        "sources": {
+            "SHARED": {
+                "title": "Shared",
+                "url": "https://example.test/shared",
+            },
+            "SECTION_ONLY": {
+                "title": "Only in cleared section",
+                "url": "https://example.test/section",
+            },
+            "ALREADY_ORPHAN": {
+                "title": "Already orphaned",
+                "url": "https://example.test/orphan",
+            },
+        },
+    }
+    cleared = deepcopy(rules)
+    cleared.pop("stop_factors")
+
+    pruned = _prune_orphan_sources(cleared)
+
+    assert set(pruned["sources"]) == {"SHARED"}
+    assert "SECTION_ONLY" not in pruned["sources"]
+    assert "ALREADY_ORPHAN" not in pruned["sources"]
