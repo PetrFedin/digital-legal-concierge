@@ -207,9 +207,14 @@ def _parse_sources(raw: object) -> dict[str, dict[str, Any]]:
         if not code or not isinstance(raw_value, dict):
             raise CalculationRuleError("Некорректная запись реестра источников")
         title = str(raw_value.get("title") or "").strip()
+        locator = str(raw_value.get("locator") or "").strip()
         url = str(raw_value.get("url") or "").strip()
         if not title:
             raise CalculationRuleError(f"Источник {code}: не задано наименование")
+        if not locator:
+            raise CalculationRuleError(
+                f"Источник {code}: не указан точный пункт/раздел/таблица основания"
+            )
         if not url.startswith("https://"):
             raise CalculationRuleError(
                 f"Источник {code}: требуется проверяемая HTTPS-ссылка"
@@ -217,6 +222,7 @@ def _parse_sources(raw: object) -> dict[str, dict[str, Any]]:
         sources[code] = {
             **raw_value,
             "title": title,
+            "locator": locator,
             "url": url,
         }
     return sources
