@@ -22,6 +22,7 @@ from app.bot.screens.calculator import (
     yes,
 )
 from app.bot.states import CalculatorStates
+from app.domain.calculator.rule_revision_service import CalculationRuleRevisionError
 
 
 class FakeState:
@@ -221,6 +222,58 @@ async def test_committed_calculation_result_falls_back_to_new_message():
     assert callback.message.answers == [("Расчёт уже сохранён.", None)]
     assert callback.callback_answers[-1][0] == "Изменение сохранено. Результат открыт новым сообщением."
 
+
+
+
+@pytest.mark.asyncio
+async def test_rule_authority_failure_does_not_ask_client_to_repeat_saved_date(monkeypatch):
+    state = FakeState(
+        {
+            CALCULATOR_CASE_ID: 77,
+            "contract_price": "8500000",
+            "planned_transfer_date": "2026-05-01",
+            "object_transferred": True,
+            "actual_transfer_date": "2026-05-25",
+        },
+        current=CalculatorStates.waiting_actual_transfer_date.state,
+    )
+    message = FakeMessage(text="25.05.2026")
+
+    class FakeContext:
+        async def get_user_from_message(self, _message):
+            return object()
+
+    async def fake_bound_case(_ctx, _user, _state):
+        return type("Case", (), {"id": 77})()
+
+    async def blocked_result(_state, _db, _case):
+        raise CalculationRuleRevisionError(
+            "Для даты расчёта нет утверждённой ревизии юридических правил"
+        )
+
+    class FakeDB:
+        async def commit(self):
+            raise AssertionError("commit must not be called")
+
+        async def rollback(self):
+            return None
+
+    monkeypatch.setattr(calculator, "BotContextService", lambda _db: FakeContext())
+    monkeypatch.setattr(calculator, "_bound_case", fake_bound_case)
+    monkeypatch.setattr(calculator, "calc_result", blocked_result)
+
+    await calculator.calculate_show_message(message, state, FakeDB())
+
+    assert state.data["actual_transfer_date"] == "2026-05-25"
+    text, markup = message.answers[-1]
+    assert "повторно вводить её не нужно" in text
+    assert "утверждённых правил" in text
+    assert "Повторите дату" not in text
+    assert _callbacks(markup) == [
+        "calc_back_transfer_status:v2:77",
+        "nav_home",
+        "my_case_open",
+    ]
 
 def test_callback_calculation_commits_before_finishing_case_draft_and_rendering():
     source = inspect.getsource(calculate_show_callback)
