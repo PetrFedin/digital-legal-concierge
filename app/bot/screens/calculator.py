@@ -21,13 +21,19 @@ from app.bot.case_callback_scope import bound_case_callback
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.states import CalculatorStates
-from app.domain.calculator.calculator_result_formatter import format_calculation_result
+from app.domain.calculator.calculator_result_formatter import (
+    format_calculation_details,
+    format_calculation_result,
+)
 from app.domain.calculator.calculator_service import (
     CalculatorRouteEligibilityError,
     CalculatorService,
 )
 from app.domain.calculator.penalty_calculator import parse_money
-from app.domain.calculator.rule_engine import CalculationRuleError
+from app.domain.calculator.rule_engine import (
+    CalculationManualReviewRequired,
+    CalculationRuleError,
+)
 from app.domain.statuses.case_statuses import CaseStatus
 
 logger = logging.getLogger(__name__)
@@ -51,7 +57,7 @@ _LEGACY_UNBOUND_CALCULATOR_ACTIONS = frozenset(
 def _price_prompt(current: str | None = None) -> str:
     current_note = f"\nСейчас сохранено: {current} ₽. Введите новую сумму." if current else ""
     return (
-        "🧮 Расчёт неустойки · шаг 1 из 4\n\n"
+        "🧮 Расчёт неустойки · шаг 1 из 6\n\n"
         "Ответьте на несколько вопросов. Расчёт будет предварительным и не является юридическим заключением.\n\n"
         "💰 Введите стоимость объекта по ДДУ в рублях.\n"
         f"Например: 8500000{current_note}"
@@ -61,7 +67,7 @@ def _price_prompt(current: str | None = None) -> str:
 def _planned_prompt(current: str | None = None) -> str:
     current_note = f"\nСейчас сохранена дата: {current}." if current else ""
     return (
-        "🧮 Расчёт неустойки · шаг 2 из 4\n\n"
+        "🧮 Расчёт неустойки · шаг 2 из 6\n\n"
         "📅 Укажите дату передачи объекта по ДДУ. Формат ДД.ММ.ГГГГ."
         f"{current_note}"
     )
@@ -78,13 +84,32 @@ def _future_date_prompt(planned_date: date) -> str:
 
 
 def _transfer_prompt() -> str:
-    return "🧮 Расчёт неустойки · шаг 3 из 4\n\n🏗 Объект уже передан по акту?"
+    return "🧮 Расчёт неустойки · шаг 3 из 6\n\n🏗 Объект уже передан по акту?"
 
 
 def _actual_prompt() -> str:
     return (
-        "🧮 Расчёт неустойки · шаг 4 из 4\n\n"
+        "🧮 Расчёт неустойки · шаг 4 из 6\n\n"
         "📅 Укажите дату фактической передачи по акту. Формат ДД.ММ.ГГГГ"
+    )
+
+
+def _client_type_prompt() -> str:
+    return (
+        "🧮 Расчёт неустойки · шаг 5 из 6\n\n"
+        "👤 Уточните статус участника ДДУ.\n\n"
+        "Вы являетесь гражданином и заключали ДДУ для личных, семейных, "
+        "домашних или иных нужд, не связанных с предпринимательской деятельностью?"
+    )
+
+
+def _unique_object_prompt() -> str:
+    return (
+        "🧮 Расчёт неустойки · шаг 6 из 6\n\n"
+        "🏢 Отнесён ли дом или иной объект недвижимости по проектной документации "
+        "к уникальным объектам?\n\n"
+        "Если вы не уверены, автоматический расчёт не будет угадывать этот факт — "
+        "мы передадим вопрос юристу."
     )
 
 
@@ -145,6 +170,36 @@ def _actual_keyboard(case_id: int):
     )
 
 
+def _client_type_keyboard(case_id: int):
+    return one(
+        (
+            "Да, гражданин для личных нужд",
+            bound_case_callback("calc_client_consumer", case_id),
+        ),
+        (
+            "Нет, иной участник",
+            bound_case_callback("calc_client_other", case_id),
+        ),
+        (
+            "Не уверен — нужна проверка",
+            bound_case_callback("calc_client_unknown", case_id),
+        ),
+        ("💾 Сохранить и выйти", "nav_home"),
+    )
+
+
+def _unique_object_keyboard(case_id: int):
+    return one(
+        ("Да, уникальный объект", bound_case_callback("calc_unique_yes", case_id)),
+        ("Нет", bound_case_callback("calc_unique_no", case_id)),
+        (
+            "Не знаю — проверить документы",
+            bound_case_callback("calc_unique_unknown", case_id),
+        ),
+        ("💾 Сохранить и выйти", "nav_home"),
+    )
+
+
 def _result_recovery_keyboard():
     return one(
         ("🧮 Новый расчёт", "calc_start"),
@@ -173,6 +228,20 @@ def _draft_summary(data: dict) -> str:
         except (TypeError, ValueError):
             shown_actual = str(data["actual_transfer_date"])
         rows.append(f"🗓 Фактическая передача: {shown_actual}")
+    if str(data.get("client_type") or "") in {"consumer", "other"}:
+        rows.append(
+            "👤 Тип участника: "
+            + (
+                "гражданин для личных нужд"
+                if data["client_type"] == "consumer"
+                else "иной участник"
+            )
+        )
+    if "unique_object" in data:
+        rows.append(
+            "🏢 Уникальный объект: "
+            + ("да" if bool(data.get("unique_object")) else "нет")
+        )
     return "\n".join(rows) or "Расчёт начат, ответы пока не введены."
 
 
