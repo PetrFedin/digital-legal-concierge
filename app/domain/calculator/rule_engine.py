@@ -929,7 +929,9 @@ class CalculationRuleEngine:
             )
             if end_date > threshold:
                 manual_reasons.append(
-                    "Просрочка по уникальному объекту превышает утверждённый порог автоматического расчёта"
+                    "Просрочка по уникальному объекту превышает утверждённый порог "
+                    f"{parsed['unique_rule']['manual_review_after_months']} месяцев "
+                    "для автоматического расчёта"
                 )
 
         if manual_reasons:
