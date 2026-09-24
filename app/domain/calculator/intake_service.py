@@ -238,6 +238,29 @@ class CalculationIntakeService:
         await self.db.flush()
         return intake
 
+    async def mark_client_type_unknown(
+        self,
+        *,
+        case_id: int,
+    ) -> CalculationIntake:
+        intake = await self._mutable(case_id=case_id)
+        if (
+            intake.contract_price is None
+            or intake.planned_transfer_date is None
+            or intake.object_transferred is None
+            or (intake.object_transferred and intake.actual_transfer_date is None)
+        ):
+            raise CalculationIntakeError(
+                "Неопределённый тип участника нельзя сохранить до основных фактов"
+            )
+        self._reopen(intake)
+        intake.client_type = None
+        intake.unique_object = None
+        intake.manual_review_flags = ["client_type_unknown"]
+        intake.current_step = "manual_review"
+        await self.db.flush()
+        return intake
+
     async def mark_unique_object_unknown(
         self,
         *,
