@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, JSON, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -35,6 +35,9 @@ class CalculationIntake(Base, TimestampMixin):
     object_transferred: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     actual_transfer_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     calculation_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    client_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    unique_object: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    manual_review_flags: Mapped[list | None] = mapped_column(JSON, nullable=True)
     current_step: Mapped[str] = mapped_column(
         String(50), nullable=False, default="price", index=True
     )
