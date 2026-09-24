@@ -315,6 +315,49 @@ def set_unique_object_rule(
     return prune_unused_sources(result)
 
 
+def upsert_control_example(
+    rules: dict[str, Any],
+    *,
+    code: str,
+    title: str,
+    input_data: dict[str, Any],
+    expected: dict[str, Any],
+    source_id: str,
+    source_title: str,
+    source_authority: str,
+    source_url: str = "",
+    source_document_ref: str = "",
+) -> dict[str, Any]:
+    result = _require_v2(rules)
+    code = str(code or "").strip()
+    title = str(title or "").strip()
+    if not code or not title:
+        raise RuleEditorV2Error("Для контрольного примера обязательны код и название")
+    if not isinstance(input_data, dict) or not isinstance(expected, dict):
+        raise RuleEditorV2Error("Вход и ожидаемый результат должны быть JSON-объектами")
+    sid = _upsert_source(
+        result,
+        source_id=source_id,
+        title=source_title,
+        authority=source_authority,
+        url=source_url,
+        document_ref=source_document_ref,
+    )
+    rows = list(result.get("control_examples") or [])
+    rows = [item for item in rows if str(item.get("code") or "") != code]
+    rows.append(
+        {
+            "code": code,
+            "title": title,
+            "input": deepcopy(input_data),
+            "expected": deepcopy(expected),
+            "source_ids": [sid],
+        }
+    )
+    result["control_examples"] = rows
+    return prune_unused_sources(result)
+
+
 def upsert_manual_review_condition(
     rules: dict[str, Any],
     *,
@@ -445,6 +488,7 @@ __all__ = [
     "set_participant_multiplier",
     "set_unique_object_rule",
     "update_source_card",
+    "upsert_control_example",
     "upsert_manual_review_condition",
     "upsert_period",
     "upsert_rate",
