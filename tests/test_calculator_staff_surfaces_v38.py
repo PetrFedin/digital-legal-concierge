@@ -70,16 +70,19 @@ def test_staff_source_projection_exposes_only_referenced_saved_sources():
             "sources": {
                 "LAW": {
                     "title": "Правовая норма",
+                    "locator": "ч. 2 ст. 6",
                     "url": "https://example.test/law",
                     "checked_at": "2026-09-24",
                 },
                 "CBR": {
                     "title": "Ставка ЦБ",
+                    "locator": "таблица ключевой ставки",
                     "url": "https://example.test/cbr",
                     "checked_at": "2026-09-24",
                 },
                 "UNUSED": {
                     "title": "Неиспользуемый источник",
+                    "locator": "unused",
                     "url": "https://example.test/unused",
                 },
             },
@@ -97,4 +100,5 @@ def test_staff_source_projection_exposes_only_referenced_saved_sources():
 
     assert [item["code"] for item in sources] == ["LAW", "CBR"]
     assert all(item["url"].startswith("https://") for item in sources)
+    assert sources[0]["locator"] == "ч. 2 ст. 6"
     assert "UNUSED" not in {item["code"] for item in sources}
