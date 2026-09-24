@@ -27,7 +27,7 @@ from app.domain.calculator.calculator_service import (
     CalculatorService,
 )
 from app.domain.calculator.penalty_calculator import parse_money
-from app.domain.calculator.rule_revision_service import CalculationRuleRevisionError
+from app.domain.calculator.rule_engine import CalculationRuleError
 from app.domain.statuses.case_statuses import CaseStatus
 
 logger = logging.getLogger(__name__)
@@ -839,7 +839,7 @@ async def calculate_show_message(message: Message, state: FSMContext, db):
         case_id = int(case.id)
         result = await calc_result(state, db, case)
         await db.commit()
-    except CalculationRuleRevisionError:
+    except CalculationRuleError:
         await db.rollback()
         logger.warning(
             "Calculator result blocked: no valid approved rule revision for current calculation date"
@@ -897,7 +897,7 @@ async def calculate_show_callback(callback: CallbackQuery, state: FSMContext, db
         case_id = int(case.id)
         result = await calc_result(state, db, case)
         await db.commit()
-    except CalculationRuleRevisionError:
+    except CalculationRuleError:
         await db.rollback()
         logger.warning(
             "Calculator result blocked: no valid approved rule revision for current calculation date"
