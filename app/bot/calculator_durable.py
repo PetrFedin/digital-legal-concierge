@@ -26,10 +26,24 @@ _CALCULATOR_DRAFT_STATUSES = {
 _CALCULATOR_FIELDS = (
     "contract_price",
     "planned_transfer_date",
+    "client_type",
+    "deadline_confirmed",
+    "unique_object",
+    "ddu_signing_date",
+    "acceptance_evasion",
     "object_transferred",
     "actual_transfer_date",
 )
 _CALLBACK_PREFIXES = {
+    "calc_client_consumer:v2:": "client_consumer",
+    "calc_client_other:v2:": "client_other",
+    "calc_deadline_confirm_yes:v2:": "deadline_yes",
+    "calc_deadline_confirm_review:v2:": "deadline_review",
+    "calc_unique_yes:v2:": "unique_yes",
+    "calc_unique_no:v2:": "unique_no",
+    "calc_acceptance_evasion_no:v2:": "evasion_no",
+    "calc_acceptance_evasion_yes:v2:": "evasion_yes",
+    "calc_acceptance_evasion_unknown:v2:": "evasion_unknown",
     "calc_object_transferred_yes:v2:": "transfer_yes",
     "calc_object_transferred_no:v2:": "transfer_no",
     "calc_restart:v2:": "restart",
@@ -140,6 +154,16 @@ class DurableCalculatorIntakeMiddleware:
                     )
                 except Exception:
                     return await handler(event, data)
+            elif current_state == CalculatorStates.waiting_ddu_signing_date.state:
+                try:
+                    signed_date = datetime.strptime(
+                        str(event.text or "").strip(), "%d.%m.%Y"
+                    ).date()
+                except Exception:
+                    return await handler(event, data)
+                if signed_date > date.today():
+                    return await handler(event, data)
+                mutation = ("ddu_signing_date", signed_date)
             elif current_state == CalculatorStates.waiting_actual_transfer_date.state:
                 try:
                     actual_date = datetime.strptime(
@@ -222,6 +246,57 @@ class DurableCalculatorIntakeMiddleware:
                     case_id=case_id,
                     planned_transfer_date=value,
                     today=date.today(),
+                )
+            elif action == "client_consumer":
+                await service.save_client_type(
+                    case_id=case_id,
+                    client_type="consumer",
+                )
+            elif action == "client_other":
+                await service.save_client_type(
+                    case_id=case_id,
+                    client_type="business",
+                )
+            elif action == "deadline_yes":
+                await service.save_deadline_confirmation(
+                    case_id=case_id,
+                    confirmed=True,
+                )
+            elif action == "deadline_review":
+                await service.save_deadline_confirmation(
+                    case_id=case_id,
+                    confirmed=False,
+                )
+            elif action == "unique_yes":
+                await service.save_unique_object(
+                    case_id=case_id,
+                    unique_object=True,
+                )
+            elif action == "unique_no":
+                await service.save_unique_object(
+                    case_id=case_id,
+                    unique_object=False,
+                )
+            elif action == "ddu_signing_date":
+                await service.save_ddu_signing_date(
+                    case_id=case_id,
+                    ddu_signing_date=value,
+                    today=date.today(),
+                )
+            elif action == "evasion_no":
+                await service.save_acceptance_evasion(
+                    case_id=case_id,
+                    value="no",
+                )
+            elif action == "evasion_yes":
+                await service.save_acceptance_evasion(
+                    case_id=case_id,
+                    value="yes",
+                )
+            elif action == "evasion_unknown":
+                await service.save_acceptance_evasion(
+                    case_id=case_id,
+                    value="unknown",
                 )
             elif action == "transfer_yes":
                 await service.save_transfer_status(
