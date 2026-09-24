@@ -1050,17 +1050,32 @@ async def calculate_show_message(message: Message, state: FSMContext, db):
         case_id = int(case.id)
         result = await calc_result(state, db, case)
         await db.commit()
+    except CalculationManualReviewRequired as error:
+        await db.rollback()
+        data = await state.get_data()
+        case_id = _current_case_id(data)
+        await message.answer(
+            "⚖️ Автоматический расчёт остановлен: требуется ручная юридическая проверка.\n\n"
+            + "\n".join(f"• {reason}" for reason in error.reasons)
+            + "\n\nВведённые данные сохранены; система не подставляет спорное значение.",
+            reply_markup=one(
+                ("💬 Связаться с юристом", "contact_lawyer"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
     except CalculationRuleError:
         await db.rollback()
         logger.warning(
-            "Calculator result blocked: no valid approved rule revision for current calculation date"
+            "Calculator result blocked: no valid production rule revision for current calculation date"
         )
         data = await state.get_data()
         case_id = _current_case_id(data)
         await message.answer(
             "⚠️ Автоматический расчёт сейчас временно недоступен. "
             "Ваши ответы, включая последнюю дату, сохранены — повторно вводить её не нужно. "
-            "Система не подставляет юридические ставки автоматически без утверждённых правил. "
+            "Система не подставляет юридические ставки автоматически без опубликованной production-редакции правил. "
             "Сохраните обращение и вернитесь к расчёту после обновления правил.",
             reply_markup=(
                 one(
@@ -1108,10 +1123,57 @@ async def calculate_show_callback(callback: CallbackQuery, state: FSMContext, db
         case_id = int(case.id)
         result = await calc_result(state, db, case)
         await db.commit()
+    except CalculationManualReviewRequired as error:
+        await db.rollback()
+        data = await state.get_data()
+        case_id = _current_case_id(data)
+        if case_id <= 0:
+            await _recover_stale_step(callback, state)
+            return
+        try:
+            ctx = BotContextService(db)
+            user = await ctx.get_user_from_callback(callback)
+            case = await ctx.case_service.select_case_for_user(
+                user_id=int(user.id),
+                case_id=case_id,
+            )
+            await ctx.case_service.transfer_to_m2(
+                case=case,
+                actor_type="client",
+                actor_id=user.id,
+                reason="Стоп-фактор автоматического расчёта: " + "; ".join(error.reasons),
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            logger.exception("Manual-review calculator stop could not be persisted")
+            await callback.message.edit_text(
+                "⚖️ Расчёт требует ручной юридической проверки, но переход к юристу "
+                "сейчас не удалось сохранить. Ваши ответы не удалены.",
+                reply_markup=one(
+                    ("📁 Моё дело", "my_case_open"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+            )
+            return
+        await finish_calculator_case(state, case_id=case_id)
+        await _present_committed_callback(
+            callback,
+            "⚖️ Автоматический расчёт остановлен: требуется ручная юридическая проверка.\n\n"
+            + "\n".join(f"• {reason}" for reason in error.reasons)
+            + "\n\nОбращение передано юристу. Система не подставляла спорное значение.",
+            reply_markup=one(
+                ("Описать ситуацию", "consult_description_start"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+            saved_notice="Ручная проверка уже зафиксирована.",
+        )
+        return
     except CalculationRuleError:
         await db.rollback()
         logger.warning(
-            "Calculator result blocked: no valid approved rule revision for current calculation date"
+            "Calculator result blocked: no valid production rule revision for current calculation date"
         )
         data = await state.get_data()
         case_id = _current_case_id(data)
@@ -1171,6 +1233,7 @@ def result_kb(case_id: int, *, allow_m1: bool = True):
         items.append(("Продолжить ведение дела", f"calc_continue_m1:v2:{case_id}"))
     items.extend(
         [
+            ("🔎 Основания и детализация", f"calc_details:v2:{case_id}"),
             ("💬 Перейти к консультации", f"calc_to_m2:v2:{case_id}"),
             ("Пока изучаю вопрос", f"calc_postpone:v2:{case_id}"),
             ("🧮 Изменить данные и пересчитать", f"calc_repeat:v2:{case_id}"),
@@ -1178,6 +1241,40 @@ def result_kb(case_id: int, *, allow_m1: bool = True):
         ]
     )
     return one(*items)
+
+
+@router.callback_query(lambda c: str(c.data or "").startswith("calc_details:v2:"))
+async def calculation_details(callback: CallbackQuery, db):
+    try:
+        case_id = _parse_case_callback(callback.data, "calc_details")
+        ctx = BotContextService(db)
+        user = await ctx.get_user_from_callback(callback)
+        await ctx.case_service.select_case_for_user(
+            user_id=int(user.id),
+            case_id=case_id,
+        )
+        calculation = await CalculatorService(db).latest_calculation_for_case(
+            case_id=case_id
+        )
+        if calculation is None:
+            raise LookupError("Расчёт не найден")
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        await callback.answer(
+            "Детализация недоступна или эта кнопка устарела.",
+            show_alert=True,
+        )
+        return
+
+    await callback.message.answer(
+        format_calculation_details(calculation),
+        reply_markup=one(
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ),
+    )
+    await callback.answer("Открыта сохранённая детализация расчёта.")
 
 
 @router.callback_query(
