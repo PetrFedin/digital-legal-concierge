@@ -243,3 +243,12 @@ def test_clearing_rule_section_prunes_only_sources_that_are_no_longer_referenced
     assert set(pruned["sources"]) == {"SHARED"}
     assert "SECTION_ONLY" not in pruned["sources"]
     assert "ALREADY_ORPHAN" not in pruned["sources"]
+
+
+def test_source_without_exact_locator_is_rejected_before_legal_review():
+    rules = _rules()
+    broken = deepcopy(rules)
+    broken["sources"]["214FZ-ART6"].pop("locator")
+
+    with pytest.raises(CalculationRuleError, match="точный пункт|раздел|таблица"):
+        validate_rule_payload(broken)
