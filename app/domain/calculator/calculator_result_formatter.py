@@ -205,8 +205,13 @@ def format_calculation_details(result) -> str:
                 lines.append(f"• {ref}: источник отсутствует в сохранённом снимке")
                 continue
             title = str(source.get("title") or ref)
+            locator = str(source.get("locator") or "").strip()
             url = str(source.get("url") or "")
-            lines.append(f"• {title}\n  {url}")
+            lines.append(
+                f"• {title}"
+                + (f"\n  Основание: {locator}" if locator else "")
+                + f"\n  {url}"
+            )
 
     lines.extend(
         [
