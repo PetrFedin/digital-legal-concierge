@@ -8,6 +8,11 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.calculator.rule_catalog_v2 import (
+    RuleSourceError,
+    prune_unused_sources,
+    validate_source_registry,
+)
 from app.domain.calculator.rule_engine import CalculationRuleError, _parse_rule_payload
 from app.models.audit_log import AuditLog
 from app.models.calculation_rule_revision import CalculationRuleRevision
@@ -36,16 +41,58 @@ def rule_payload_sha256(rules: dict[str, Any]) -> str:
     return hashlib.sha256(canonical_rule_json(rules).encode("utf-8")).hexdigest()
 
 
-def validate_rule_payload(rules: dict[str, Any]) -> None:
+def validate_draft_payload(rules: dict[str, Any]) -> None:
+    """Allow an intentionally incomplete DRAFT while preserving safe structure.
+
+    Clearing a rule value in the editor is a legitimate draft operation. It must
+    not leave a stale source card behind, but it may make the draft temporarily
+    non-approvable. Strict legal/calculation validation is performed at APPROVE.
+    """
+
     if not isinstance(rules, dict):
         raise CalculationRuleRevisionError("Набор правил должен быть JSON-объектом")
-    client_types = rules.get("client_types")
-    if not isinstance(client_types, dict) or not client_types:
-        raise CalculationRuleRevisionError(
-            "В наборе правил должен быть хотя бы один тип клиента"
-        )
-    for client_type in client_types:
-        _parse_rule_payload(rules, client_type=str(client_type))
+    version = rules.get("schema_version")
+    if version not in {1, 2}:
+        raise CalculationRuleRevisionError("Поддерживаются schema_version 1 и 2")
+    canonical_rule_json(rules)
+    if version == 2:
+        try:
+            validate_source_registry(rules, reject_orphans=True)
+        except RuleSourceError as error:
+            raise CalculationRuleRevisionError(str(error)) from error
+
+
+def validate_rule_payload(rules: dict[str, Any]) -> None:
+    """Validate the complete immutable payload before APPROVED/runtime use."""
+
+    if not isinstance(rules, dict):
+        raise CalculationRuleRevisionError("Набор правил должен быть JSON-объектом")
+    version = rules.get("schema_version")
+
+    if version == 1:
+        client_types = rules.get("client_types")
+        if not isinstance(client_types, dict) or not client_types:
+            raise CalculationRuleRevisionError(
+                "В наборе правил должен быть хотя бы один тип клиента"
+            )
+        for client_type in client_types:
+            _parse_rule_payload(rules, client_type=str(client_type))
+    elif version == 2:
+        standard = rules.get("standard_object")
+        if not isinstance(standard, dict):
+            raise CalculationRuleRevisionError("Не задана стандартная ветка расчёта")
+        participant_types = standard.get("participant_types")
+        if not isinstance(participant_types, dict) or not participant_types:
+            raise CalculationRuleRevisionError("Не заданы типы участников")
+        try:
+            validate_source_registry(rules, reject_orphans=True)
+        except RuleSourceError as error:
+            raise CalculationRuleRevisionError(str(error)) from error
+        for client_type in participant_types:
+            _parse_rule_payload(rules, client_type=str(client_type))
+    else:
+        raise CalculationRuleRevisionError("Неподдерживаемая версия схемы правил")
+
     # Canonicalization is part of approval: a revision that cannot be hashed
     # reproducibly cannot become legal calculation authority.
     canonical_rule_json(rules)
@@ -138,7 +185,9 @@ class CalculationRuleRevisionService:
             raise CalculationRuleRevisionError("revision_key обязателен")
         if effective_to is not None and effective_to < effective_from:
             raise CalculationRuleRevisionError("effective_to не может быть раньше effective_from")
-        validate_rule_payload(rules)
+        if rules.get("schema_version") == 2:
+            rules = prune_unused_sources(rules)
+        validate_draft_payload(rules)
         revision = CalculationRuleRevision(
             revision_key=key,
             status="DRAFT",
@@ -204,7 +253,9 @@ class CalculationRuleRevisionService:
             )
         if effective_to is not None and effective_to < effective_from:
             raise CalculationRuleRevisionError("effective_to не может быть раньше effective_from")
-        validate_rule_payload(rules)
+        if rules.get("schema_version") == 2:
+            rules = prune_unused_sources(rules)
+        validate_draft_payload(rules)
 
         before = _audit_value(revision)
         revision.effective_from = effective_from
@@ -368,5 +419,6 @@ __all__ = [
     "CalculationRuleRevisionService",
     "canonical_rule_json",
     "rule_payload_sha256",
+    "validate_draft_payload",
     "validate_rule_payload",
 ]
