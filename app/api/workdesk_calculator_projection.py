@@ -87,6 +87,7 @@ def _source_projection(calculation: Calculation) -> list[dict[str, Any]]:
                 {
                     "code": code,
                     "title": "Источник отсутствует в сохранённом снимке",
+                    "locator": None,
                     "url": None,
                     "checked_at": None,
                     "integrity_ok": False,
@@ -98,6 +99,7 @@ def _source_projection(calculation: Calculation) -> list[dict[str, Any]]:
             {
                 "code": code,
                 "title": str(raw.get("title") or code),
+                "locator": str(raw.get("locator") or "") or None,
                 "url": url if url.startswith("https://") else None,
                 "checked_at": str(raw.get("checked_at") or "") or None,
                 "integrity_ok": bool(url.startswith("https://")),
