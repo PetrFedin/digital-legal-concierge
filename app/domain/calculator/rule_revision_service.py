@@ -66,6 +66,18 @@ def _validate_draft_payload(rules: dict[str, Any]) -> None:
         raise CalculationRuleRevisionError(
             "DRAFT должен явно указывать поддерживаемый schema_version"
         )
+    refs = _collect_source_refs(rules)
+    if refs:
+        sources = rules.get("sources")
+        if not isinstance(sources, dict):
+            raise CalculationRuleRevisionError(
+                "DRAFT содержит source_refs, но реестр sources отсутствует"
+            )
+        missing = sorted(ref for ref in refs if ref not in sources)
+        if missing:
+            raise CalculationRuleRevisionError(
+                "DRAFT ссылается на отсутствующие источники: " + ", ".join(missing)
+            )
     canonical_rule_json(rules)
 
 
@@ -349,6 +361,7 @@ class CalculationRuleRevisionService:
             raise CalculationRuleRevisionError(
                 "effective_to не может быть раньше effective_from"
             )
+        rules = _prune_orphan_sources(rules)
         _validate_draft_payload(rules)
         revision = CalculationRuleRevision(
             revision_key=key,
@@ -411,6 +424,7 @@ class CalculationRuleRevisionService:
             raise CalculationRuleRevisionError(
                 "effective_to не может быть раньше effective_from"
             )
+        rules = _prune_orphan_sources(rules)
         _validate_draft_payload(rules)
 
         before = _audit_value(revision)
