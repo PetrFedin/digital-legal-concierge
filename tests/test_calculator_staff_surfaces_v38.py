@@ -43,7 +43,12 @@ def test_workdesk_case_card_renders_inputs_separately_from_latest_result():
     assert "Исходные данные клиента" in html
     assert "Последний предварительный расчёт" in html
     assert "/admin/workdesk/cases/'+id+'/calculator" in html
-    # Routine staff UI may expose the revision/hash identifier but never the
-    # full reproducibility snapshot payload itself.
+    # Routine staff UI exposes a sanitized evidence projection, not the full
+    # reproducibility rule snapshot. Applied/excluded segments and only their
+    # linked legal sources are intentionally visible.
     assert "rule_snapshot_json" not in html
-    assert "applied_segments" not in html
+    assert "⚖️ Основания, ставки, периоды и источники" in html
+    assert "Правовые и расчётные источники" in html
+    assert "Открыть источник ↗" in html
+    assert "applied_segments" in html
+    assert "excluded_segments" in html
