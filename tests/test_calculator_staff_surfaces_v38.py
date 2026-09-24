@@ -1,3 +1,6 @@
+from types import SimpleNamespace
+
+from app.api.workdesk_calculator_projection import _source_projection
 from app.api.calculator_builder import router as calculator_builder_router
 from app.api.workdesk_product import router as workdesk_router
 from app.api.workdesk_runtime_ui import render_workdesk_runtime_html
@@ -52,3 +55,46 @@ def test_workdesk_case_card_renders_inputs_separately_from_latest_result():
     assert "Открыть источник ↗" in html
     assert "applied_segments" in html
     assert "excluded_segments" in html
+
+
+def test_staff_source_projection_exposes_only_referenced_saved_sources():
+    calculation = SimpleNamespace(
+        client_type="consumer",
+        unique_object=False,
+        rule_snapshot={
+            "formula": {"source_refs": ["LAW"]},
+            "rate_policy": {"source_refs": ["CBR"]},
+            "client_types": {
+                "consumer": {"source_refs": ["LAW"]},
+            },
+            "sources": {
+                "LAW": {
+                    "title": "Правовая норма",
+                    "url": "https://example.test/law",
+                    "checked_at": "2026-09-24",
+                },
+                "CBR": {
+                    "title": "Ставка ЦБ",
+                    "url": "https://example.test/cbr",
+                    "checked_at": "2026-09-24",
+                },
+                "UNUSED": {
+                    "title": "Неиспользуемый источник",
+                    "url": "https://example.test/unused",
+                },
+            },
+        },
+        applied_segments=[
+            {
+                "base_rate_source_refs": ["CBR"],
+                "cap_source_refs": [],
+            }
+        ],
+        excluded_segments=[],
+    )
+
+    sources = _source_projection(calculation)
+
+    assert [item["code"] for item in sources] == ["LAW", "CBR"]
+    assert all(item["url"].startswith("https://") for item in sources)
+    assert "UNUSED" not in {item["code"] for item in sources}
