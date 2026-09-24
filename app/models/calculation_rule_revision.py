@@ -53,4 +53,12 @@ class CalculationRuleRevision(Base, TimestampMixin):
     approved_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
+
+    published_by_actor_type: Mapped[str | None] = mapped_column(
+        String(50), nullable=True
+    )
+    published_by_actor_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
