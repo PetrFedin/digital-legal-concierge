@@ -106,7 +106,7 @@ async def test_back_navigation_preserves_calculator_values_and_exact_case_bindin
     assert state.data["contract_price"] == "8500000"
     assert state.data["planned_transfer_date"] == "2026-07-01"
     assert state.current == CalculatorStates.waiting_object_transfer_status.state
-    assert "шаг 3 из 4" in transfer.message.edits[-1][0]
+    assert "передача объекта" in transfer.message.edits[-1][0]
 
     planned_callback = FakeCallback("calc_back_planned:v2:77")
     await back_planned(planned_callback, state)
@@ -310,6 +310,7 @@ def test_positive_calculation_result_exposes_case_bound_m1_m2_postpone_and_recal
 
     assert texts == [
         "Продолжить ведение дела",
+        "⚖️ Как рассчитано и правовые основания",
         "💬 Перейти к консультации",
         "Пока изучаю вопрос",
         "🧮 Изменить данные и пересчитать",
@@ -317,6 +318,7 @@ def test_positive_calculation_result_exposes_case_bound_m1_m2_postpone_and_recal
     ]
     assert callbacks == [
         "calc_continue_m1:v2:77",
+        "calc_legal_details:v2:77",
         "calc_to_m2:v2:77",
         "calc_postpone:v2:77",
         "calc_repeat:v2:77",
@@ -332,6 +334,7 @@ def test_zero_delay_result_does_not_offer_m1_but_keeps_safe_outcomes():
     assert "Продолжить ведение дела" not in texts
     assert "calc_continue_m1:v2:77" not in callbacks
     assert callbacks == [
+        "calc_legal_details:v2:77",
         "calc_to_m2:v2:77",
         "calc_postpone:v2:77",
         "calc_repeat:v2:77",
