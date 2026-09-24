@@ -6,6 +6,7 @@ from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.bot.calculator_draft import (
     CALCULATOR_CASE_ID,
@@ -22,6 +23,7 @@ from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.states import CalculatorStates
 from app.domain.calculator.calculator_result_formatter import format_calculation_result
+from app.domain.calculator.rule_catalog_v2 import client_sources
 from app.domain.calculator.calculator_service import (
     CalculatorRouteEligibilityError,
     CalculatorService,
@@ -51,7 +53,7 @@ _LEGACY_UNBOUND_CALCULATOR_ACTIONS = frozenset(
 def _price_prompt(current: str | None = None) -> str:
     current_note = f"\nСейчас сохранено: {current} ₽. Введите новую сумму." if current else ""
     return (
-        "🧮 Расчёт неустойки · шаг 1 из 4\n\n"
+        "🧮 Расчёт неустойки · шаг 1\n\n"
         "Ответьте на несколько вопросов. Расчёт будет предварительным и не является юридическим заключением.\n\n"
         "💰 Введите стоимость объекта по ДДУ в рублях.\n"
         f"Например: 8500000{current_note}"
@@ -61,7 +63,7 @@ def _price_prompt(current: str | None = None) -> str:
 def _planned_prompt(current: str | None = None) -> str:
     current_note = f"\nСейчас сохранена дата: {current}." if current else ""
     return (
-        "🧮 Расчёт неустойки · шаг 2 из 4\n\n"
+        "🧮 Расчёт неустойки · шаг 2\n\n"
         "📅 Укажите дату передачи объекта по ДДУ. Формат ДД.ММ.ГГГГ."
         f"{current_note}"
     )
@@ -77,13 +79,57 @@ def _future_date_prompt(planned_date: date) -> str:
     )
 
 
+def _client_type_prompt() -> str:
+    return (
+        "🧮 Расчёт неустойки · тип участника\n\n"
+        "Укажите, кто является участником ДДУ. Для гражданина ч. 2 ст. 6 "
+        "№214-ФЗ предусматривает двойной размер неустойки."
+    )
+
+
+def _deadline_confirmation_prompt() -> str:
+    return (
+        "🧮 Расчёт неустойки · срок по договору\n\n"
+        "Подтвердите: указанная дата — последний действующий срок передачи "
+        "объекта с учётом всех дополнительных соглашений?\n\n"
+        "Если есть сомнение, автоматический расчёт безопасно остановится и "
+        "предложит проверку юристом."
+    )
+
+
+def _unique_object_prompt() -> str:
+    return (
+        "🧮 Расчёт неустойки · тип объекта\n\n"
+        "Есть ли в проектной документации характеристика, по которой дом или "
+        "иной объект относится к уникальным объектам?\n\n"
+        "Для таких объектов действует отдельная ч. 2.1 ст. 6 №214-ФЗ."
+    )
+
+
+def _ddu_signing_prompt() -> str:
+    return (
+        "🧮 Расчёт неустойки · уникальный объект\n\n"
+        "Укажите дату заключения ДДУ. Формат ДД.ММ.ГГГГ. "
+        "Это нужно для проверки применимости специальной ч. 2.1 ст. 6 №214-ФЗ."
+    )
+
+
+def _acceptance_evasion_prompt() -> str:
+    return (
+        "🧮 Расчёт неустойки · обстоятельства приёмки\n\n"
+        "Застройщик своевременно исполнил свои обязанности по передаче, "
+        "но вы уклонялись или отказывались подписывать передаточный документ?\n\n"
+        "Если да или вы не уверены, сумму должен проверить юрист."
+    )
+
+
 def _transfer_prompt() -> str:
-    return "🧮 Расчёт неустойки · шаг 3 из 4\n\n🏗 Объект уже передан по акту?"
+    return "🧮 Расчёт неустойки · передача объекта\n\n🏗 Объект уже передан по акту?"
 
 
 def _actual_prompt() -> str:
     return (
-        "🧮 Расчёт неустойки · шаг 4 из 4\n\n"
+        "🧮 Расчёт неустойки · фактическая передача\n\n"
         "📅 Укажите дату фактической передачи по акту. Формат ДД.ММ.ГГГГ"
     )
 
@@ -113,6 +159,52 @@ def _future_date_keyboard(case_id: int):
             "✏️ Изменить дату по ДДУ",
             bound_case_callback("calc_back_planned", case_id),
         ),
+        ("💾 Сохранить и выйти", "nav_home"),
+    )
+
+
+def _client_type_keyboard(case_id: int):
+    return one(
+        ("👤 Физическое лицо", bound_case_callback("calc_client_consumer", case_id)),
+        ("🏢 Иной участник", bound_case_callback("calc_client_other", case_id)),
+        ("❓ Не знаю — проверить с юристом", bound_case_callback("calc_legal_review", case_id)),
+        ("⬅️ Изменить дату по ДДУ", bound_case_callback("calc_back_planned", case_id)),
+        ("💾 Сохранить и выйти", "nav_home"),
+    )
+
+
+def _deadline_keyboard(case_id: int):
+    return one(
+        ("✅ Да, это последний срок", bound_case_callback("calc_deadline_confirm_yes", case_id)),
+        ("⚖️ Нет / не уверен — проверить", bound_case_callback("calc_deadline_confirm_review", case_id)),
+        ("⬅️ Назад к типу участника", bound_case_callback("calc_back_client_type", case_id)),
+        ("💾 Сохранить и выйти", "nav_home"),
+    )
+
+
+def _unique_keyboard(case_id: int):
+    return one(
+        ("Нет, обычный объект", bound_case_callback("calc_unique_no", case_id)),
+        ("Да, уникальный объект", bound_case_callback("calc_unique_yes", case_id)),
+        ("❓ Не знаю — проверить с юристом", bound_case_callback("calc_legal_review", case_id)),
+        ("⬅️ Назад к сроку", bound_case_callback("calc_back_deadline", case_id)),
+        ("💾 Сохранить и выйти", "nav_home"),
+    )
+
+
+def _ddu_signing_keyboard(case_id: int):
+    return one(
+        ("⬅️ Назад к типу объекта", bound_case_callback("calc_back_unique", case_id)),
+        ("💾 Сохранить и выйти", "nav_home"),
+    )
+
+
+def _acceptance_evasion_keyboard(case_id: int):
+    return one(
+        ("Нет", bound_case_callback("calc_acceptance_evasion_no", case_id)),
+        ("Да", bound_case_callback("calc_acceptance_evasion_yes", case_id)),
+        ("Не знаю", bound_case_callback("calc_acceptance_evasion_unknown", case_id)),
+        ("⬅️ Назад к типу объекта", bound_case_callback("calc_back_unique", case_id)),
         ("💾 Сохранить и выйти", "nav_home"),
     )
 
