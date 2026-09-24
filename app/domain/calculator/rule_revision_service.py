@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -11,9 +12,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.calculator.rule_catalog_v2 import (
     RuleSourceError,
     prune_unused_sources,
+    validate_required_source_bindings,
     validate_source_registry,
 )
-from app.domain.calculator.rule_engine import CalculationRuleError, _parse_rule_payload
+from app.domain.calculator.rule_engine import (
+    CalculationRuleEngine,
+    CalculationRuleError,
+    RuleBasedCalculationInput,
+    _parse_rule_payload,
+)
 from app.models.audit_log import AuditLog
 from app.models.calculation_rule_revision import CalculationRuleRevision
 
@@ -41,6 +48,80 @@ def rule_payload_sha256(rules: dict[str, Any]) -> str:
     return hashlib.sha256(canonical_rule_json(rules).encode("utf-8")).hexdigest()
 
 
+def _validate_control_examples(rules: dict[str, Any]) -> None:
+    if rules.get("schema_version") != 2:
+        return
+    engine = CalculationRuleEngine()
+    examples = rules.get("control_examples")
+    if not isinstance(examples, list) or not examples:
+        raise CalculationRuleRevisionError(
+            "Перед APPROVED требуется хотя бы один контрольный расчёт"
+        )
+    for index, example in enumerate(examples, start=1):
+        if not isinstance(example, dict):
+            raise CalculationRuleRevisionError(
+                f"Контрольный пример #{index} должен быть объектом"
+            )
+        raw = example.get("input")
+        expected = example.get("expected")
+        if not isinstance(raw, dict) or not isinstance(expected, dict):
+            raise CalculationRuleRevisionError(
+                f"Контрольный пример #{index}: нужны input и expected"
+            )
+        try:
+            result = engine.calculate(
+                RuleBasedCalculationInput(
+                    contract_price=Decimal(str(raw["contract_price"])),
+                    planned_transfer_date=date.fromisoformat(str(raw["planned_transfer_date"])),
+                    calculation_date=date.fromisoformat(str(raw["calculation_date"])),
+                    object_transferred=bool(raw.get("object_transferred", True)),
+                    actual_transfer_date=(
+                        date.fromisoformat(str(raw["actual_transfer_date"]))
+                        if raw.get("actual_transfer_date")
+                        else None
+                    ),
+                    client_type=str(raw.get("client_type") or "consumer"),
+                    unique_object=raw.get("unique_object"),
+                    acceptance_evasion=raw.get("acceptance_evasion"),
+                    deadline_confirmed=raw.get("deadline_confirmed"),
+                    ddu_signing_date=(
+                        date.fromisoformat(str(raw["ddu_signing_date"]))
+                        if raw.get("ddu_signing_date")
+                        else None
+                    ),
+                ),
+                rule_revision_id=0,
+                rule_revision_key="APPROVAL-CONTROL",
+                rule_snapshot_sha256="control",
+                rule_snapshot=rules,
+            )
+        except (KeyError, ValueError, CalculationRuleError) as error:
+            raise CalculationRuleRevisionError(
+                f"Контрольный пример #{index} не выполняется: {error}"
+            ) from error
+
+        comparable = {
+            "base_rate": (
+                str(result.base_rate) if result.base_rate is not None else None
+            ),
+            "delay_days_total": result.delay_days_total,
+            "delay_days_chargeable": result.delay_days_chargeable,
+            "moratorium_days": result.moratorium_days,
+            "penalty_amount": str(result.penalty_amount),
+            "penalty_cap_applied": result.penalty_cap_applied,
+            "calculation_branch": result.calculation_branch,
+        }
+        for key, expected_value in expected.items():
+            if key not in comparable:
+                continue
+            actual = comparable[key]
+            if str(actual) != str(expected_value):
+                raise CalculationRuleRevisionError(
+                    f"Контрольный пример #{index}: {key} ожидалось "
+                    f"{expected_value!r}, получено {actual!r}"
+                )
+
+
 def validate_draft_payload(rules: dict[str, Any]) -> None:
     """Allow an intentionally incomplete DRAFT while preserving safe structure.
 
@@ -57,6 +138,7 @@ def validate_draft_payload(rules: dict[str, Any]) -> None:
     canonical_rule_json(rules)
     if version == 2:
         try:
+            validate_required_source_bindings(rules)
             validate_source_registry(rules, reject_orphans=True)
         except RuleSourceError as error:
             raise CalculationRuleRevisionError(str(error)) from error
@@ -93,6 +175,7 @@ def validate_rule_payload(rules: dict[str, Any]) -> None:
     else:
         raise CalculationRuleRevisionError("Неподдерживаемая версия схемы правил")
 
+    _validate_control_examples(rules)
     # Canonicalization is part of approval: a revision that cannot be hashed
     # reproducibly cannot become legal calculation authority.
     canonical_rule_json(rules)
