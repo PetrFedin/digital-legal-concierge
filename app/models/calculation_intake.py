@@ -34,6 +34,11 @@ class CalculationIntake(Base, TimestampMixin):
     planned_transfer_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     object_transferred: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     actual_transfer_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    client_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    deadline_confirmed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    unique_object: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    acceptance_evasion: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    ddu_signing_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     calculation_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     current_step: Mapped[str] = mapped_column(
         String(50), nullable=False, default="price", index=True
