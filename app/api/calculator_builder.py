@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from pathlib import Path
 from html import escape
 from urllib.parse import urlencode
 
@@ -41,6 +42,31 @@ _SECTION_SPECS = (
     ("control_examples", "9. Контрольные примеры", "list"),
     ("sources", "10. Реестр правовых и расчётных источников", "object"),
 )
+
+
+
+_REVIEW_TEMPLATE_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "docs"
+    / "calculator"
+    / "PM016_V2_RULE_TEMPLATE.json"
+)
+
+
+def _load_review_template() -> dict:
+    try:
+        payload = json.loads(_REVIEW_TEMPLATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise CalculationRuleRevisionError(
+            "Согласованный шаблон PM-016 v2 недоступен или повреждён"
+        ) from error
+    if not isinstance(payload, dict) or payload.get("schema_version") != 2:
+        raise CalculationRuleRevisionError(
+            "Согласованный шаблон PM-016 v2 имеет некорректную схему"
+        )
+    validate_rule_payload(payload)
+    run_control_examples(payload)
+    return payload
 
 
 async def _viewer(request: Request, db: AsyncSession, header_token: str | None):
@@ -543,7 +569,10 @@ async def calculator_ui(
     <label>Действует с<input type="date" name="effective_from" required></label>
     <label>Действует по<input type="date" name="effective_to"></label>
     <label class="wide">Комментарий / основание редакции<textarea name="note" rows="2"></textarea></label>
-    <div class="wide actions"><button type="submit">Создать DRAFT v2</button></div>
+    <div class="wide actions">
+      <button type="submit">Создать пустой DRAFT v2</button>
+      <button class="validate" type="submit" name="template_key" value="pm016_v2_reviewed">Создать DRAFT из согласованного шаблона PM-016 v2</button>
+    </div>
   </form>
 </section>
 """
@@ -568,22 +597,34 @@ async def create_rule_draft(
     effective_to: str = Form(default=""),
     note: str = Form(default=""),
     rules_json: str = Form(default=""),
+    template_key: str = Form(default=""),
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
     try:
         actor = await _admin(request, db, x_admin_token)
-        rules = (
-            _parse_rules_json(rules_json)
-            if str(rules_json or "").strip()
-            else {"schema_version": 2, "sources": {}}
-        )
+        if str(template_key or "").strip():
+            if str(template_key).strip() != "pm016_v2_reviewed":
+                raise CalculationRuleRevisionError("Неизвестный шаблон правил")
+            rules = _load_review_template()
+            effective_note = (
+                note.strip()
+                or "DRAFT создан из согласованного шаблона PM-016 v2; "
+                "до production обязательны юридическое подтверждение SHA, APPROVED и публикация"
+            )
+        else:
+            rules = (
+                _parse_rules_json(rules_json)
+                if str(rules_json or "").strip()
+                else {"schema_version": 2, "sources": {}}
+            )
+            effective_note = note.strip() or None
         await CalculationRuleRevisionService(db).create_draft(
             revision_key=revision_key,
             effective_from=_parse_date(effective_from, field="effective_from"),
             effective_to=_parse_date(effective_to, field="effective_to", optional=True),
             rules=rules,
-            note=note.strip() or None,
+            note=effective_note,
             actor_type=str(actor.role),
             actor_id=int(actor.account_id),
         )
