@@ -40,20 +40,24 @@ def _upsert_source(
     document_ref: str = "",
 ) -> str:
     source_id = _clean_source_id(source_id)
-    title = str(title or "").strip()
-    authority = str(authority or "").strip()
-    url = str(url or "").strip()
-    document_ref = str(document_ref or "").strip()
+    registry = rules.setdefault("sources", {})
+    if not isinstance(registry, dict):
+        raise RuleEditorV2Error("Повреждён реестр источников")
+    existing = registry.get(source_id) if isinstance(registry.get(source_id), dict) else {}
+
+    title = str(title or existing.get("title") or "").strip()
+    authority = str(authority or existing.get("authority") or "").strip()
+    url = str(url or existing.get("url") or "").strip()
+    document_ref = str(
+        document_ref or existing.get("document_ref") or ""
+    ).strip()
     if not title or not authority:
         raise RuleEditorV2Error("Для источника обязательны название и орган/владелец")
     if not url and not document_ref:
         raise RuleEditorV2Error("Для источника нужна HTTPS-ссылка или внутренний документ")
 
-    registry = rules.setdefault("sources", {})
-    if not isinstance(registry, dict):
-        raise RuleEditorV2Error("Повреждён реестр источников")
     registry[source_id] = {
-        "kind": str((registry.get(source_id) or {}).get("kind") or "legal"),
+        "kind": str(existing.get("kind") or "legal"),
         "title": title,
         "authority": authority,
         **({"url": url} if url else {}),
