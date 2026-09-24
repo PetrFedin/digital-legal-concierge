@@ -169,25 +169,74 @@ def _core_card(revision: CalculationRuleRevision, rules: dict[str, Any]) -> str:
     actions = ""
     if editable:
         actions = f"""
-        <details><summary>Изменить базовые параметры</summary>
+        <details><summary>Изменить правило периода просрочки</summary>
         <form method="post" action="/calculator-builder/v2/{revision.id}/core">
+          <input type="hidden" name="section" value="period">
           <input type="hidden" name="expected_updated_at" value="{escape(revision.updated_at.isoformat(), quote=True)}">
-          <label>Раздел<select name="section">
-            <option value="period">Период просрочки</option>
-            <option value="standard_formula">Базовая формула</option>
-            <option value="base_rate">Источник ставки</option>
-            <option value="rounding">Округление</option>
-          </select></label>
-          <label class="wide">Поля раздела (JSON)<textarea name="values_json" rows="7" required>{{}}</textarea></label>
+          <label>Начало периода
+            <select name="period_start">
+              <option value="day_after_contractual_due_date" selected>Следующий день после договорного срока</option>
+            </select>
+          </label>
+          <label>Окончание, если объект передан
+            <select name="period_end_transferred">
+              <option value="transfer_document_date_inclusive" selected>Дата передаточного документа включительно</option>
+            </select>
+          </label>
+          <label>Окончание, если объект не передан
+            <select name="period_end_not_transferred">
+              <option value="calculation_date_inclusive" selected>Дата расчёта включительно</option>
+            </select>
+          </label>
           {_source_fields()}
-          <button type="submit">Сохранить раздел и источник</button>
+          <button type="submit">Сохранить правило периода и источник</button>
         </form>
-        <div class="row">
-          {_delete_form(revision, section="period", label="Обнулить период")}
-          {_delete_form(revision, section="standard_formula", label="Обнулить формулу")}
-          {_delete_form(revision, section="base_rate", label="Обнулить источник ставки")}
-          {_delete_form(revision, section="rounding", label="Обнулить округление")}
-        </div>
+        {_delete_form(revision, section="period", label="Обнулить правило периода")}
+        </details>
+
+        <details><summary>Изменить базовую формулу</summary>
+        <form method="post" action="/calculator-builder/v2/{revision.id}/core">
+          <input type="hidden" name="section" value="standard_formula">
+          <input type="hidden" name="expected_updated_at" value="{escape(revision.updated_at.isoformat(), quote=True)}">
+          <label>Делитель<input name="divisor" value="{escape(str(standard.get('divisor') or ''), quote=True)}" required></label>
+          {_source_fields()}
+          <button type="submit">Сохранить формулу и источник</button>
+        </form>
+        {_delete_form(revision, section="standard_formula", label="Обнулить базовую формулу")}
+        </details>
+
+        <details><summary>Изменить правило выбора ставки</summary>
+        <form method="post" action="/calculator-builder/v2/{revision.id}/core">
+          <input type="hidden" name="section" value="base_rate">
+          <input type="hidden" name="expected_updated_at" value="{escape(revision.updated_at.isoformat(), quote=True)}">
+          <label>Дата ставки
+            <select name="rate_basis">
+              <option value="rate_on_contractual_due_date" selected>Ставка на договорную дату исполнения</option>
+            </select>
+          </label>
+          <label>До 2016<input name="rate_before_2016" value="{escape(str(base_rate.get('before_2016') or 'CBR_REFINANCING_RATE'), quote=True)}" required></label>
+          <label>С 2016<input name="rate_from_2016" value="{escape(str(base_rate.get('from_2016') or 'CBR_KEY_RATE'), quote=True)}" required></label>
+          {_source_fields()}
+          <button type="submit">Сохранить правило ставки и источник</button>
+        </form>
+        {_delete_form(revision, section="base_rate", label="Обнулить правило выбора ставки")}
+        </details>
+
+        <details><summary>Изменить правило округления</summary>
+        <form method="post" action="/calculator-builder/v2/{revision.id}/core">
+          <input type="hidden" name="section" value="rounding">
+          <input type="hidden" name="expected_updated_at" value="{escape(revision.updated_at.isoformat(), quote=True)}">
+          <label>Шаг округления<input name="money_quant" value="{escape(str(rounding.get('money_quant') or '0.01'), quote=True)}" required></label>
+          <label>Режим
+            <select name="rounding_mode"><option value="ROUND_HALF_UP" selected>ROUND_HALF_UP</option></select>
+          </label>
+          <label>Этап
+            <select name="rounding_stage"><option value="final_total" selected>Только итоговая сумма</option></select>
+          </label>
+          {_source_fields()}
+          <button type="submit">Сохранить округление и источник</button>
+        </form>
+        {_delete_form(revision, section="rounding", label="Обнулить правило округления")}
         </details>
         """
     return f"""
@@ -612,8 +661,17 @@ async def edit_core(
     revision_id: int,
     request: Request,
     section: str = Form(...),
-    values_json: str = Form(...),
     expected_updated_at: str = Form(...),
+    period_start: str = Form(default=""),
+    period_end_transferred: str = Form(default=""),
+    period_end_not_transferred: str = Form(default=""),
+    divisor: str = Form(default=""),
+    rate_basis: str = Form(default=""),
+    rate_before_2016: str = Form(default=""),
+    rate_from_2016: str = Form(default=""),
+    money_quant: str = Form(default=""),
+    rounding_mode: str = Form(default=""),
+    rounding_stage: str = Form(default=""),
     source_id: str = Form(...),
     source_title: str = Form(default=""),
     source_authority: str = Form(default=""),
@@ -624,12 +682,34 @@ async def edit_core(
 ):
     try:
         actor, revision = await _mutating_request(request, db, x_admin_token, revision_id)
-        values = _json_object(values_json, "Поля раздела")
+        if section == "period":
+            values = {
+                "start": period_start,
+                "end_if_transferred": period_end_transferred,
+                "end_if_not_transferred": period_end_not_transferred,
+            }
+        elif section == "standard_formula":
+            values = {"divisor": divisor}
+        elif section == "base_rate":
+            values = {
+                "basis": rate_basis,
+                "before_2016": rate_before_2016,
+                "from_2016": rate_from_2016,
+            }
+        elif section == "rounding":
+            values = {
+                "money_quant": money_quant,
+                "mode": rounding_mode,
+                "stage": rounding_stage,
+            }
+        else:
+            raise RuleEditorV2Error("Неизвестный базовый раздел")
+
         await _save_mutation(
             db=db, revision=revision, actor=actor,
             expected_updated_at=expected_updated_at,
             mutate=lambda rules: set_core_section(
-                rules, section=section, values={k: str(v) for k, v in values.items()},
+                rules, section=section, values=values,
                 source_id=source_id, source_title=source_title,
                 source_authority=source_authority, source_url=source_url,
                 source_document_ref=source_document_ref,
