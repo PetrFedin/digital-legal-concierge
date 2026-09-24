@@ -6,6 +6,8 @@ class CalculatorStates(StatesGroup):
     waiting_planned_transfer_date = State()
     waiting_object_transfer_status = State()
     waiting_actual_transfer_date = State()
+    waiting_client_type = State()
+    waiting_unique_object = State()
 
 
 class DocumentUploadStates(StatesGroup):
