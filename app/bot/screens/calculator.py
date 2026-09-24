@@ -868,7 +868,11 @@ async def actual(message: Message, state: FSMContext, db):
         )
         return
     await state.update_data(actual_transfer_date=actual_date.isoformat())
-    await calculate_show_message(message, state, db)
+    await state.set_state(CalculatorStates.waiting_client_type)
+    await message.answer(
+        _client_type_prompt(),
+        reply_markup=_client_type_keyboard(case_id),
+    )
 
 
 @router.callback_query(
@@ -889,13 +893,134 @@ async def no(callback: CallbackQuery, state: FSMContext, db):
         await _recover_stale_step(callback, state)
         return
     await state.update_data(object_transferred=False, actual_transfer_date=None)
+    await state.set_state(CalculatorStates.waiting_client_type)
+    await callback.message.edit_text(
+        _client_type_prompt(),
+        reply_markup=_client_type_keyboard(_current_case_id(await state.get_data())),
+    )
+
+
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_client_consumer:v2:")
+    or str(c.data or "").startswith("calc_client_other:v2:")
+)
+async def choose_client_type(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    action = (
+        "calc_client_consumer"
+        if str(callback.data or "").startswith("calc_client_consumer:v2:")
+        else "calc_client_other"
+    )
+    try:
+        case_id = _require_current_case_callback(
+            callback.data,
+            prefix=action,
+            state_data=data,
+        )
+    except Exception:
+        await _recover_stale_step(callback, state)
+        return
+    client_type = "consumer" if action == "calc_client_consumer" else "other"
+    await state.update_data(client_type=client_type)
+    await state.set_state(CalculatorStates.waiting_unique_object)
+    await callback.message.edit_text(
+        _unique_object_prompt(),
+        reply_markup=_unique_object_keyboard(case_id),
+    )
+
+
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_unique_yes:v2:")
+    or str(c.data or "").startswith("calc_unique_no:v2:")
+)
+async def choose_unique_object(callback: CallbackQuery, state: FSMContext, db):
+    data = await state.get_data()
+    action = (
+        "calc_unique_yes"
+        if str(callback.data or "").startswith("calc_unique_yes:v2:")
+        else "calc_unique_no"
+    )
+    try:
+        _require_current_case_callback(
+            callback.data,
+            prefix=action,
+            state_data=data,
+        )
+    except Exception:
+        await _recover_stale_step(callback, state)
+        return
+    await state.update_data(unique_object=(action == "calc_unique_yes"))
     await calculate_show_callback(callback, state, db)
+
+
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_client_unknown:v2:")
+    or str(c.data or "").startswith("calc_unique_unknown:v2:")
+)
+async def legal_fact_unknown(callback: CallbackQuery, state: FSMContext, db):
+    data = await state.get_data()
+    if str(callback.data or "").startswith("calc_client_unknown:v2:"):
+        action = "calc_client_unknown"
+        reason = "Не подтверждён тип участника ДДУ"
+    else:
+        action = "calc_unique_unknown"
+        reason = "Не подтверждён статус уникального объекта"
+    try:
+        case_id = _require_current_case_callback(
+            callback.data,
+            prefix=action,
+            state_data=data,
+        )
+    except Exception:
+        await _recover_stale_step(callback, state)
+        return
+
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    try:
+        case = await _bound_case(ctx, user, state)
+        await ctx.case_service.transfer_to_m2(
+            case=case,
+            actor_type="client",
+            actor_id=user.id,
+            reason=reason,
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        logger.exception("Legal fact uncertainty could not be routed to lawyer")
+        await callback.message.edit_text(
+            "Не удалось сохранить переход к ручной проверке. Ваши ответы сохранены.",
+            reply_markup=one(
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+    await finish_calculator_case(state, case_id=case_id)
+    await _present_committed_callback(
+        callback,
+        "⚖️ Для этого расчёта нужен подтверждённый юридический факт. "
+        "Система не будет угадывать его или подставлять значение по умолчанию. "
+        "Обращение передано в консультационный маршрут.",
+        reply_markup=one(
+            ("Описать ситуацию", "consult_description_start"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ),
+        saved_notice="Ручная проверка уже зафиксирована.",
+    )
 
 
 async def calc_result(state, db, case):
     data = await state.get_data()
-    if not _base_data_ready(data) or "object_transferred" not in data:
-        raise ValueError("Данные расчёта устарели. Начните расчёт заново.")
+    if (
+        not _base_data_ready(data)
+        or "object_transferred" not in data
+        or str(data.get("client_type") or "") not in {"consumer", "other"}
+        or "unique_object" not in data
+    ):
+        raise ValueError("Данные расчёта неполны. Продолжите с сохранённого шага.")
     return await CalculatorService(db).calculate_and_save(
         case=case,
         contract_price=Decimal(data["contract_price"]),
@@ -907,6 +1032,9 @@ async def calc_result(state, db, case):
             if data.get("actual_transfer_date")
             else None
         ),
+        client_type=str(data["client_type"]),
+        unique_object=bool(data["unique_object"]),
+        manual_review_flags=tuple(data.get("manual_review_flags") or ()),
     )
 
 
