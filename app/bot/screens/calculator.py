@@ -411,6 +411,53 @@ async def _resume_draft(callback: CallbackQuery, state: FSMContext) -> None:
             reply_markup=_future_date_keyboard(case_id),
         )
         return
+    if step == "participant_type":
+        await state.set_state(CalculatorStates.waiting_client_type)
+        await callback.message.edit_text(
+            _client_type_prompt(),
+            reply_markup=_client_type_keyboard(case_id),
+        )
+        return
+    if step == "deadline_confirmation":
+        await state.set_state(CalculatorStates.waiting_deadline_confirmation)
+        await callback.message.edit_text(
+            _deadline_confirmation_prompt(),
+            reply_markup=_deadline_keyboard(case_id),
+        )
+        return
+    if step == "unique_object":
+        await state.set_state(CalculatorStates.waiting_unique_object)
+        await callback.message.edit_text(
+            _unique_object_prompt(),
+            reply_markup=_unique_keyboard(case_id),
+        )
+        return
+    if step == "ddu_signing_date":
+        await state.set_state(CalculatorStates.waiting_ddu_signing_date)
+        await callback.message.edit_text(
+            _ddu_signing_prompt(),
+            reply_markup=_ddu_signing_keyboard(case_id),
+        )
+        return
+    if step == "acceptance_evasion":
+        await state.set_state(CalculatorStates.waiting_acceptance_evasion)
+        await callback.message.edit_text(
+            _acceptance_evasion_prompt(),
+            reply_markup=_acceptance_evasion_keyboard(case_id),
+        )
+        return
+    if step == "manual_review":
+        await state.set_state(None)
+        await callback.message.edit_text(
+            "⚖️ Этот черновик требует проверки юристом. Автоматический расчёт "
+            "не продолжится, пока спорный юридический факт не будет подтверждён.",
+            reply_markup=one(
+                ("💬 Связаться с юристом", "contact_lawyer"),
+                ("🧮 Начать новый расчёт", bound_case_callback("calc_restart_confirm", case_id)),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
     if step == "transfer_status":
         if not _base_data_ready(data):
             await _start_fresh(callback, state, case_id=case_id)
