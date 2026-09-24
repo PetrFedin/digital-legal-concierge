@@ -238,6 +238,23 @@ class CalculationIntakeService:
         await self.db.flush()
         return intake
 
+    async def mark_unique_object_unknown(
+        self,
+        *,
+        case_id: int,
+    ) -> CalculationIntake:
+        intake = await self._mutable(case_id=case_id)
+        if intake.client_type not in {"consumer", "other"}:
+            raise CalculationIntakeError(
+                "Неопределённый статус объекта нельзя сохранить до типа участника"
+            )
+        self._reopen(intake)
+        intake.unique_object = None
+        intake.manual_review_flags = ["unique_object_unknown"]
+        intake.current_step = "manual_review"
+        await self.db.flush()
+        return intake
+
     async def set_manual_review_flags(
         self,
         *,
