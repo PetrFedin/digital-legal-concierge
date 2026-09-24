@@ -220,8 +220,8 @@ def _transfer_keyboard(case_id: int):
             bound_case_callback("calc_object_transferred_no", case_id),
         ),
         (
-            "⬅️ Изменить дату по ДДУ",
-            bound_case_callback("calc_back_planned", case_id),
+            "⬅️ Назад к обстоятельствам приёмки",
+            bound_case_callback("calc_back_acceptance", case_id),
         ),
         ("💾 Сохранить и выйти", "nav_home"),
     )
@@ -781,8 +781,16 @@ async def planned(message: Message, state: FSMContext):
     # longer safe to reuse implicitly and are intentionally cleared.
     updated_data = dict(data)
     updated_data["planned_transfer_date"] = planned_date.isoformat()
-    updated_data.pop("object_transferred", None)
-    updated_data.pop("actual_transfer_date", None)
+    for key in (
+        "client_type",
+        "deadline_confirmed",
+        "unique_object",
+        "ddu_signing_date",
+        "acceptance_evasion",
+        "object_transferred",
+        "actual_transfer_date",
+    ):
+        updated_data.pop(key, None)
     await state.set_data(updated_data)
 
     if planned_date > date.today():
@@ -793,10 +801,314 @@ async def planned(message: Message, state: FSMContext):
         )
         return
 
-    await state.set_state(CalculatorStates.waiting_object_transfer_status)
+    await state.set_state(CalculatorStates.waiting_client_type)
     await message.answer(
+        _client_type_prompt(),
+        reply_markup=_client_type_keyboard(case_id),
+    )
+
+
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_client_consumer:v2:")
+    or str(c.data or "").startswith("calc_client_other:v2:")
+)
+async def choose_client_type(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    prefix = (
+        "calc_client_consumer"
+        if str(callback.data or "").startswith("calc_client_consumer:v2:")
+        else "calc_client_other"
+    )
+    try:
+        case_id = _require_current_case_callback(
+            callback.data,
+            prefix=prefix,
+            state_data=data,
+        )
+    except Exception:
+        await _recover_stale_step(callback, state)
+        return
+    client_type = "consumer" if prefix == "calc_client_consumer" else "business"
+    await state.update_data(client_type=client_type)
+    await state.set_state(CalculatorStates.waiting_deadline_confirmation)
+    await callback.message.edit_text(
+        _deadline_confirmation_prompt(),
+        reply_markup=_deadline_keyboard(case_id),
+    )
+
+
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_back_client_type:v2:")
+)
+async def back_client_type(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    try:
+        case_id = _require_current_case_callback(
+            callback.data,
+            prefix="calc_back_client_type",
+            state_data=data,
+        )
+    except Exception:
+        await _recover_stale_step(callback, state)
+        return
+    await state.set_state(CalculatorStates.waiting_client_type)
+    await callback.message.edit_text(
+        _client_type_prompt(),
+        reply_markup=_client_type_keyboard(case_id),
+    )
+
+
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_deadline_confirm_yes:v2:")
+)
+async def confirm_contract_deadline(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    try:
+        case_id = _require_current_case_callback(
+            callback.data,
+            prefix="calc_deadline_confirm_yes",
+            state_data=data,
+        )
+    except Exception:
+        await _recover_stale_step(callback, state)
+        return
+    await state.update_data(deadline_confirmed=True)
+    await state.set_state(CalculatorStates.waiting_unique_object)
+    await callback.message.edit_text(
+        _unique_object_prompt(),
+        reply_markup=_unique_keyboard(case_id),
+    )
+
+
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_back_deadline:v2:")
+)
+async def back_deadline(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    try:
+        case_id = _require_current_case_callback(
+            callback.data,
+            prefix="calc_back_deadline",
+            state_data=data,
+        )
+    except Exception:
+        await _recover_stale_step(callback, state)
+        return
+    await state.set_state(CalculatorStates.waiting_deadline_confirmation)
+    await callback.message.edit_text(
+        _deadline_confirmation_prompt(),
+        reply_markup=_deadline_keyboard(case_id),
+    )
+
+
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_unique_yes:v2:")
+    or str(c.data or "").startswith("calc_unique_no:v2:")
+)
+async def choose_unique_object(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    is_unique = str(callback.data or "").startswith("calc_unique_yes:v2:")
+    prefix = "calc_unique_yes" if is_unique else "calc_unique_no"
+    try:
+        case_id = _require_current_case_callback(
+            callback.data,
+            prefix=prefix,
+            state_data=data,
+        )
+    except Exception:
+        await _recover_stale_step(callback, state)
+        return
+    await state.update_data(unique_object=is_unique)
+    if is_unique:
+        await state.set_state(CalculatorStates.waiting_ddu_signing_date)
+        await callback.message.edit_text(
+            _ddu_signing_prompt(),
+            reply_markup=_ddu_signing_keyboard(case_id),
+        )
+        return
+    await state.update_data(ddu_signing_date=None)
+    await state.set_state(CalculatorStates.waiting_acceptance_evasion)
+    await callback.message.edit_text(
+        _acceptance_evasion_prompt(),
+        reply_markup=_acceptance_evasion_keyboard(case_id),
+    )
+
+
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_back_unique:v2:")
+)
+async def back_unique(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    try:
+        case_id = _require_current_case_callback(
+            callback.data,
+            prefix="calc_back_unique",
+            state_data=data,
+        )
+    except Exception:
+        await _recover_stale_step(callback, state)
+        return
+    await state.set_state(CalculatorStates.waiting_unique_object)
+    await callback.message.edit_text(
+        _unique_object_prompt(),
+        reply_markup=_unique_keyboard(case_id),
+    )
+
+
+@router.message(CalculatorStates.waiting_ddu_signing_date)
+async def ddu_signing_date(message: Message, state: FSMContext):
+    data = await state.get_data()
+    case_id = _current_case_id(data)
+    if case_id <= 0 or data.get("unique_object") is not True:
+        await state.set_state(None)
+        await message.answer(
+            "Этот шаг больше не относится к текущему обращению.",
+            reply_markup=_result_recovery_keyboard(),
+        )
+        return
+    try:
+        signed = datetime.strptime(str(message.text or "").strip(), "%d.%m.%Y").date()
+    except Exception:
+        await message.answer(
+            "⚠️ Дата нужна в формате ДД.ММ.ГГГГ. Предыдущие ответы сохранены.",
+            reply_markup=_ddu_signing_keyboard(case_id),
+        )
+        return
+    if signed > date.today():
+        await message.answer(
+            "⚠️ Дата заключения ДДУ не может быть в будущем.",
+            reply_markup=_ddu_signing_keyboard(case_id),
+        )
+        return
+    await state.update_data(ddu_signing_date=signed.isoformat())
+    await state.set_state(CalculatorStates.waiting_acceptance_evasion)
+    await message.answer(
+        _acceptance_evasion_prompt(),
+        reply_markup=_acceptance_evasion_keyboard(case_id),
+    )
+
+
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_acceptance_evasion_no:v2:")
+)
+async def no_acceptance_evasion(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    try:
+        case_id = _require_current_case_callback(
+            callback.data,
+            prefix="calc_acceptance_evasion_no",
+            state_data=data,
+        )
+    except Exception:
+        await _recover_stale_step(callback, state)
+        return
+    await state.update_data(acceptance_evasion="no")
+    await state.set_state(CalculatorStates.waiting_object_transfer_status)
+    await callback.message.edit_text(
         _transfer_prompt(),
         reply_markup=_transfer_keyboard(case_id),
+    )
+
+
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_back_acceptance:v2:")
+)
+async def back_acceptance(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    try:
+        case_id = _require_current_case_callback(
+            callback.data,
+            prefix="calc_back_acceptance",
+            state_data=data,
+        )
+    except Exception:
+        await _recover_stale_step(callback, state)
+        return
+    await state.set_state(CalculatorStates.waiting_acceptance_evasion)
+    await callback.message.edit_text(
+        _acceptance_evasion_prompt(),
+        reply_markup=_acceptance_evasion_keyboard(case_id),
+    )
+
+
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_deadline_confirm_review:v2:")
+    or str(c.data or "").startswith("calc_acceptance_evasion_yes:v2:")
+    or str(c.data or "").startswith("calc_acceptance_evasion_unknown:v2:")
+    or str(c.data or "").startswith("calc_legal_review:v2:")
+)
+async def calculator_manual_legal_review(
+    callback: CallbackQuery,
+    state: FSMContext,
+    db,
+):
+    raw = str(callback.data or "")
+    if raw.startswith("calc_deadline_confirm_review:v2:"):
+        prefix = "calc_deadline_confirm_review"
+        reason = "Последний действующий срок передачи по ДДУ требует проверки"
+        await state.update_data(deadline_confirmed=False)
+    elif raw.startswith("calc_acceptance_evasion_yes:v2:"):
+        prefix = "calc_acceptance_evasion_yes"
+        reason = "Есть обстоятельства возможного уклонения от приёмки"
+        await state.update_data(acceptance_evasion="yes")
+    elif raw.startswith("calc_acceptance_evasion_unknown:v2:"):
+        prefix = "calc_acceptance_evasion_unknown"
+        reason = "Обстоятельства приёмки неясны"
+        await state.update_data(acceptance_evasion="unknown")
+    else:
+        prefix = "calc_legal_review"
+        reason = "Клиент выбрал ручную юридическую проверку параметров расчёта"
+
+    data = await state.get_data()
+    try:
+        case_id = _require_current_case_callback(
+            callback.data,
+            prefix=prefix,
+            state_data=data,
+        )
+    except Exception:
+        await _recover_stale_step(callback, state)
+        return
+
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    try:
+        case = await _bound_case(ctx, user, state)
+        await ctx.case_service.transfer_to_m2(
+            case=case,
+            actor_type="client",
+            actor_id=user.id,
+            reason=reason,
+        )
+        await ctx.case_service.select_case_for_user(
+            user_id=int(user.id),
+            case_id=int(case.id),
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        logger.exception("Calculator legal-review transfer failed")
+        await callback.message.edit_text(
+            "⚠️ Не удалось сохранить переход к юридической проверке. Повторите действие.",
+            reply_markup=one(
+                ("🔄 Повторить", str(callback.data)),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    await finish_calculator_case(state, case_id=case_id)
+    await callback.message.edit_text(
+        "⚖️ Автоматический расчёт остановлен безопасно.\n\n"
+        f"Причина: {reason}.\n\n"
+        "Юрист проверит договор, дополнительные соглашения, проектную документацию "
+        "и фактические обстоятельства. Система не подставляет спорное юридическое "
+        "значение автоматически.",
+        reply_markup=one(
+            ("💬 Описать ситуацию", "consultation_start"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ),
     )
 
 
