@@ -201,18 +201,20 @@ def _source_links(rules: dict) -> str:
             if url.startswith("https://")
             else escape(url or "ссылка не указана")
         )
+        locator = escape(str(raw.get("locator") or ""))
         checked = escape(str(raw.get("checked_at") or ""))
         rows.append(
             "<tr>"
             f"<td><code>{escape(str(code))}</code></td>"
             f"<td>{title}</td>"
+            f"<td>{locator or '—'}</td>"
             f"<td>{url_html}</td>"
             f"<td>{checked or '—'}</td>"
             "</tr>"
         )
     return (
         "<div class='source-table'><table><thead><tr>"
-        "<th>ID</th><th>Источник</th><th>Ссылка</th><th>Проверено</th>"
+        "<th>ID</th><th>Источник</th><th>Точное основание</th><th>Ссылка</th><th>Проверено</th>"
         "</tr></thead><tbody>"
         + "".join(rows)
         + "</tbody></table></div>"
