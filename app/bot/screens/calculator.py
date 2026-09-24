@@ -1105,7 +1105,7 @@ async def calculator_manual_legal_review(
         "и фактические обстоятельства. Система не подставляет спорное юридическое "
         "значение автоматически.",
         reply_markup=one(
-            ("💬 Описать ситуацию", "consultation_start"),
+            ("💬 Описать ситуацию", "contact_lawyer"),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         ),
