@@ -358,6 +358,20 @@ def _base_data_ready(data: dict) -> bool:
     return bool(data.get("contract_price") and data.get("planned_transfer_date"))
 
 
+def _legal_data_ready(data: dict) -> bool:
+    if str(data.get("client_type") or "") not in {"consumer", "business"}:
+        return False
+    if data.get("deadline_confirmed") is not True:
+        return False
+    if "unique_object" not in data:
+        return False
+    if bool(data.get("unique_object")) and not data.get("ddu_signing_date"):
+        return False
+    if str(data.get("acceptance_evasion") or "") != "no":
+        return False
+    return True
+
+
 async def _start_fresh(
     callback: CallbackQuery,
     state: FSMContext,
@@ -1181,6 +1195,9 @@ async def back_transfer_status(callback: CallbackQuery, state: FSMContext):
     if not _base_data_ready(data):
         await _recover_stale_step(callback, state)
         return
+    if not _legal_data_ready(data):
+        await _resume_draft(callback, state)
+        return
     await state.set_state(CalculatorStates.waiting_object_transfer_status)
     await callback.message.edit_text(
         _transfer_prompt(),
@@ -1204,6 +1221,9 @@ async def yes(callback: CallbackQuery, state: FSMContext):
         return
     if not _base_data_ready(data):
         await _recover_stale_step(callback, state)
+        return
+    if not _legal_data_ready(data):
+        await _resume_draft(callback, state)
         return
     await state.update_data(object_transferred=True)
     await state.set_state(CalculatorStates.waiting_actual_transfer_date)
@@ -1261,14 +1281,23 @@ async def no(callback: CallbackQuery, state: FSMContext, db):
     if not _base_data_ready(data):
         await _recover_stale_step(callback, state)
         return
+    if not _legal_data_ready(data):
+        await _resume_draft(callback, state)
+        return
     await state.update_data(object_transferred=False, actual_transfer_date=None)
     await calculate_show_callback(callback, state, db)
 
 
 async def calc_result(state, db, case):
     data = await state.get_data()
-    if not _base_data_ready(data) or "object_transferred" not in data:
-        raise ValueError("Данные расчёта устарели. Начните расчёт заново.")
+    if (
+        not _base_data_ready(data)
+        or not _legal_data_ready(data)
+        or "object_transferred" not in data
+    ):
+        raise CalculationRuleError(
+            "Юридические факты расчёта неполны; требуется продолжить опрос или проверку юристом"
+        )
     return await CalculatorService(db).calculate_and_save(
         case=case,
         contract_price=Decimal(data["contract_price"]),
