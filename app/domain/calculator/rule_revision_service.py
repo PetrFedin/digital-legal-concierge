@@ -138,7 +138,6 @@ def validate_draft_payload(rules: dict[str, Any]) -> None:
     canonical_rule_json(rules)
     if version == 2:
         try:
-            validate_required_source_bindings(rules)
             validate_source_registry(rules, reject_orphans=True)
         except RuleSourceError as error:
             raise CalculationRuleRevisionError(str(error)) from error
@@ -167,6 +166,7 @@ def validate_rule_payload(rules: dict[str, Any]) -> None:
         if not isinstance(participant_types, dict) or not participant_types:
             raise CalculationRuleRevisionError("Не заданы типы участников")
         try:
+            validate_required_source_bindings(rules)
             validate_source_registry(rules, reject_orphans=True)
         except RuleSourceError as error:
             raise CalculationRuleRevisionError(str(error)) from error
