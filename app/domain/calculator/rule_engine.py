@@ -466,6 +466,18 @@ def _parse_v2_rule_payload(
         sources=sources,
         title="Источник базовой ставки",
     )
+    coverage_from = _iso_date(
+        rate_policy.get("coverage_from"),
+        "Справочник ставок: coverage_from",
+    )
+    coverage_through = _iso_date(
+        rate_policy.get("coverage_through"),
+        "Справочник ставок: coverage_through",
+    )
+    if coverage_through < coverage_from:
+        raise CalculationRuleError(
+            "Справочник ставок: coverage_through раньше coverage_from"
+        )
 
     raw_rates = rules.get("rate_directory")
     if not isinstance(raw_rates, list) or not raw_rates:
@@ -501,6 +513,36 @@ def _parse_v2_rule_payload(
         previous_end = previous["end"] or date.max
         if current["start"] <= previous_end:
             raise CalculationRuleError("Периоды справочника ставок ЦБ пересекаются")
+
+    # The directory must explicitly prove contiguous known coverage. An
+    # open-ended last rate may exist in DRAFT, but LEGAL_REVIEWED/PRODUCTION
+    # validation still uses the declared coverage_through rather than silently
+    # assuming a rate remains unchanged forever.
+    cursor = coverage_from
+    for item in rates:
+        item_end = item["end"] or coverage_through
+        if item_end < coverage_from or item["start"] > coverage_through:
+            continue
+        start = max(item["start"], coverage_from)
+        end = min(item_end, coverage_through)
+        if start > cursor:
+            raise CalculationRuleError(
+                "Справочник ставок ЦБ содержит разрыв: "
+                f"{cursor.isoformat()}–{(start - timedelta(days=1)).isoformat()}"
+            )
+        if start < cursor:
+            # Overlap was already rejected globally; this only permits an entry
+            # to begin before declared coverage_from.
+            start = cursor
+        if end >= cursor:
+            cursor = end + timedelta(days=1)
+        if cursor > coverage_through:
+            break
+    if cursor <= coverage_through:
+        raise CalculationRuleError(
+            "Справочник ставок ЦБ не покрывает заявленный период до "
+            f"{coverage_through.isoformat()}"
+        )
 
     client_types = rules.get("client_types")
     if not isinstance(client_types, dict) or client_type not in client_types:
@@ -597,6 +639,8 @@ def _parse_v2_rule_payload(
         "sources": sources,
         "formula_source_refs": formula_refs,
         "rate_policy_source_refs": rate_policy_refs,
+        "rate_coverage_from": coverage_from,
+        "rate_coverage_through": coverage_through,
         "client_source_refs": client_refs,
         "unique_source_refs": unique_refs,
         "start_offset": start_offset,
@@ -634,7 +678,19 @@ def _parse_rule_payload(rules: dict[str, Any], *, client_type: str) -> dict[str,
 def _rate_at_due_date(
     rates: list[dict[str, Any]],
     due_date: date,
+    *,
+    coverage_from: date | None = None,
+    coverage_through: date | None = None,
 ) -> dict[str, Any]:
+    if (
+        coverage_from is not None
+        and coverage_through is not None
+        and not (coverage_from <= due_date <= coverage_through)
+    ):
+        raise CalculationRuleError(
+            "Дата исполнения обязательства находится вне подтверждённого "
+            "периода справочника ставок ЦБ"
+        )
     matches = [
         item
         for item in rates
@@ -917,7 +973,12 @@ class CalculationRuleEngine:
         moratorium_days = sum(item.days for item in merged_excluded)
         chargeable_days = sum(item.days for item in chargeable)
 
-        rate_rule = _rate_at_due_date(parsed["rates"], data.planned_transfer_date)
+        rate_rule = _rate_at_due_date(
+            parsed["rates"],
+            data.planned_transfer_date,
+            coverage_from=parsed["rate_coverage_from"],
+            coverage_through=parsed["rate_coverage_through"],
+        )
         base_rate = rate_rule["rate"]
         multiplier = (
             parsed["unique_rule"]["multiplier"]
