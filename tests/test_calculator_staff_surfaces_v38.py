@@ -2,7 +2,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.api.workdesk_calculator_projection import _source_projection
-from app.api.calculator_builder import router as calculator_builder_router
+from app.api.calculator_builder import (
+    _load_review_template,
+    router as calculator_builder_router,
+)
 from app.api.workdesk_product import router as workdesk_router
 from app.api.workdesk_runtime_ui import render_workdesk_runtime_html
 
@@ -121,3 +124,12 @@ def test_client_can_reopen_calculation_legal_details_from_my_case_and_archive():
     assert 'startswith("calc_details:v2:")' in calculator
     assert "get_case_for_user(" in calculator
     assert "format_calculation_details(calculation)" in calculator
+
+
+def test_reviewed_pm016_template_is_loadable_but_remains_draft_input_only():
+    template = _load_review_template()
+
+    assert template["schema_version"] == 2
+    assert template["rate_policy"]["mode"] == "due_date"
+    assert template["control_examples"]
+    assert template["sources"]
