@@ -24,6 +24,10 @@ class Calculation(Base, TimestampMixin):
     calculation_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     actual_transfer_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     object_transferred: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    deadline_confirmed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    unique_object: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    acceptance_evasion: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    ddu_signing_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     # Legacy delay_days remains readable for existing rows and route guards.
     # New rule-based calculations also persist the explicit specification facts.
@@ -59,6 +63,10 @@ class Calculation(Base, TimestampMixin):
     )
     rule_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     applied_segments: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    base_rate_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    calculation_branch: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    penalty_cap_applied: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    applied_source_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     is_preliminary: Mapped[bool] = mapped_column(Boolean, default=True)
 
