@@ -93,6 +93,7 @@ def _synthetic_rules(rate_code: str) -> dict:
         "sources": {
             source: {
                 "title": "Synthetic test source",
+                "locator": "Synthetic provision for concurrency test",
                 "url": "https://example.test/legal-source",
                 "checked_at": "2198-12-31",
             }
