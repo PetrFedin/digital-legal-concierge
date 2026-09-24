@@ -412,6 +412,64 @@ def source_registry(rules: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return result
 
 
+def validate_required_source_bindings(rules: dict[str, Any]) -> None:
+    """Require every legally meaningful v2 value to name its supporting source."""
+
+    if rules.get("schema_version") != 2:
+        return
+
+    def require_ids(value: object, title: str) -> None:
+        if not isinstance(value, dict):
+            raise RuleSourceError(f"{title}: раздел отсутствует")
+        ids = value.get("source_ids")
+        if not isinstance(ids, list) or not any(str(item or "").strip() for item in ids):
+            raise RuleSourceError(f"{title}: не привязан правовой источник")
+
+    period = rules.get("period")
+    require_ids(period, "Период просрочки")
+    require_ids(rules.get("rounding"), "Правило округления")
+
+    standard = rules.get("standard_object")
+    require_ids(standard, "Базовая формула")
+    if not isinstance(standard, dict):
+        return
+    require_ids(standard.get("base_rate"), "Источник ставки")
+
+    for index, row in enumerate(list(standard.get("rate_schedule") or []), start=1):
+        require_ids(row, f"Ставка ЦБ #{index}")
+    for index, row in enumerate(list(standard.get("excluded_periods") or []), start=1):
+        require_ids(row, f"Исключённый период #{index}")
+    for index, row in enumerate(list(standard.get("rate_cap_periods") or []), start=1):
+        require_ids(row, f"Ограничение ставки #{index}")
+
+    participant_types = standard.get("participant_types")
+    if not isinstance(participant_types, dict) or not participant_types:
+        raise RuleSourceError("Типы участников отсутствуют")
+    for key, row in participant_types.items():
+        require_ids(row, f"Тип участника {key}")
+
+    require_ids(rules.get("unique_object"), "Уникальный объект")
+    unique = rules.get("unique_object")
+    if isinstance(unique, dict):
+        for index, row in enumerate(list(unique.get("excluded_periods") or []), start=1):
+            require_ids(row, f"Исключение уникального объекта #{index}")
+
+    manual = rules.get("manual_review_conditions")
+    if not isinstance(manual, list) or not manual:
+        raise RuleSourceError("Не заданы условия ручной юридической проверки")
+    for index, row in enumerate(manual, start=1):
+        require_ids(row, f"Стоп-фактор #{index}")
+
+    for index, row in enumerate(list(rules.get("judicial_adjustments") or []), start=1):
+        require_ids(row, f"Судебная корректировка #{index}")
+
+    examples = rules.get("control_examples")
+    if not isinstance(examples, list) or not examples:
+        raise RuleSourceError("Перед APPROVED нужен хотя бы один контрольный пример")
+    for index, row in enumerate(examples, start=1):
+        require_ids(row, f"Контрольный пример #{index}")
+
+
 def validate_source_registry(rules: dict[str, Any], *, reject_orphans: bool = True) -> None:
     registry = source_registry(rules)
     referenced = referenced_source_ids(rules)
@@ -484,5 +542,6 @@ __all__ = [
     "prune_unused_sources",
     "referenced_source_ids",
     "source_registry",
+    "validate_required_source_bindings",
     "validate_source_registry",
 ]
