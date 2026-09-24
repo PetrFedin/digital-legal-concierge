@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 from datetime import date
-from pathlib import Path
 from html import escape
+from pathlib import Path
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, Header, HTTPException, Query, Request
