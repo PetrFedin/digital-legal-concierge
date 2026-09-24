@@ -31,6 +31,7 @@ from app.domain.calculator.rule_catalog_v2 import client_sources
 from app.domain.calculator.calculator_service import (
     CalculatorRouteEligibilityError,
     CalculatorService,
+    _result_from_persisted,
 )
 from app.domain.calculator.penalty_calculator import parse_money
 from app.domain.calculator.rule_engine import CalculationRuleError
@@ -1443,9 +1444,9 @@ def result_kb(case_id: int, *, allow_m1: bool = True):
 )
 async def calculation_legal_details(callback: CallbackQuery, state: FSMContext, db):
     try:
-        case_id = parse_bound_case_callback(
+        case_id = _parse_case_callback(
             callback.data,
-            prefix="calc_legal_details",
+            "calc_legal_details",
         )
     except Exception:
         await callback.answer("Детализация устарела", show_alert=True)
@@ -1573,7 +1574,7 @@ async def calculation_legal_details(callback: CallbackQuery, state: FSMContext, 
 )
 async def return_to_calculation_result(callback: CallbackQuery, state: FSMContext, db):
     try:
-        case_id = parse_bound_case_callback(callback.data, prefix="calc_result_view")
+        case_id = _parse_case_callback(callback.data, "calc_result_view")
     except Exception:
         await callback.answer("Результат устарел", show_alert=True)
         return
