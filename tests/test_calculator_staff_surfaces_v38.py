@@ -19,7 +19,12 @@ def test_calculation_rule_admin_surface_has_controlled_lifecycle_routes():
     assert ("GET", "/calculator-builder/ui") in routes
     assert ("POST", "/calculator-builder/draft") in routes
     assert ("POST", "/calculator-builder/{revision_id}/edit") in routes
+    assert ("POST", "/calculator-builder/{revision_id}/clear-section") in routes
+    assert ("POST", "/calculator-builder/{revision_id}/validate") in routes
+    assert ("POST", "/calculator-builder/{revision_id}/legal-review") in routes
+    assert ("POST", "/calculator-builder/{revision_id}/return-draft") in routes
     assert ("POST", "/calculator-builder/{revision_id}/approve") in routes
+    assert ("POST", "/calculator-builder/{revision_id}/publish") in routes
     assert ("POST", "/calculator-builder/{revision_id}/retire") in routes
 
 
