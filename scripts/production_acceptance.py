@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import date
 import json
 
 from sqlalchemy import text
 
 from app.config import settings
 from app.db.session import AsyncSessionLocal
+from app.domain.calculator.rule_revision_service import (
+    CalculationRuleRevisionError,
+    CalculationRuleRevisionService,
+)
 from app.domain.payments.mode import payment_mode_valid, payment_provider_name
 from app.release import APPLICATION_VERSION, expected_migration_heads, release_metadata
 from app.security.audit_integrity import verify_audit_chain
@@ -32,6 +37,18 @@ async def _database_evidence() -> dict[str, object]:
             ).scalar_one()
             counts[table] = int(value)
 
+        calculator_rule_ready = True
+        calculator_rule_error = None
+        calculator_rule_revision = None
+        try:
+            revision = await CalculationRuleRevisionService(db).resolve(
+                calculation_date=date.today()
+            )
+            calculator_rule_revision = str(revision.revision_key)
+        except CalculationRuleRevisionError as error:
+            calculator_rule_ready = False
+            calculator_rule_error = type(error).__name__
+
     expected = set(expected_migration_heads())
     return {
         "migration_heads": sorted(versions),
@@ -39,6 +56,9 @@ async def _database_evidence() -> dict[str, object]:
         "migration_heads_match": versions == expected,
         "audit_ok": bool(audit.get("ok")),
         "audit_event_count": int(audit.get("event_count") or 0),
+        "calculator_rule_ready": calculator_rule_ready,
+        "calculator_rule_revision": calculator_rule_revision,
+        "calculator_rule_error": calculator_rule_error,
         "counts": counts,
     }
 
@@ -58,6 +78,7 @@ async def build_acceptance_report() -> dict[str, object]:
         "redis_reachable": bool(redis_wait.get("ok")),
         "migration_heads_match": bool(database["migration_heads_match"]),
         "audit_chain_valid": bool(database["audit_ok"]),
+        "calculator_rule_ready": bool(database["calculator_rule_ready"]),
         "security_keys_ready": bool(keys.get("ok")),
         "verified_backup_fresh": bool(backup.ok),
         "payment_mode_valid": bool(payment_mode_valid()),
