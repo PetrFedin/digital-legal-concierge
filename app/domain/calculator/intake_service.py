@@ -105,6 +105,11 @@ class CalculationIntakeService:
         intake.planned_transfer_date = None
         intake.object_transferred = None
         intake.actual_transfer_date = None
+        intake.client_type = None
+        intake.deadline_confirmed = None
+        intake.unique_object = None
+        intake.acceptance_evasion = None
+        intake.ddu_signing_date = None
         intake.current_step = "price"
         await self.db.flush()
         return intake
@@ -136,8 +141,137 @@ class CalculationIntakeService:
         # A changed upstream contractual date invalidates transfer answers.
         intake.object_transferred = None
         intake.actual_transfer_date = None
+        intake.client_type = None
+        intake.deadline_confirmed = None
+        intake.unique_object = None
+        intake.acceptance_evasion = None
+        intake.ddu_signing_date = None
         intake.current_step = (
-            "future_date" if planned_transfer_date > today else "transfer_status"
+            "future_date" if planned_transfer_date > today else "participant_type"
+        )
+        await self.db.flush()
+        return intake
+
+    async def save_client_type(
+        self,
+        *,
+        case_id: int,
+        client_type: str,
+    ) -> CalculationIntake:
+        normalized = str(client_type or "").strip()
+        if normalized not in {"consumer", "business"}:
+            raise CalculationIntakeError("Неизвестный тип участника")
+        intake = await self._mutable(case_id=case_id)
+        if intake.contract_price is None or intake.planned_transfer_date is None:
+            raise CalculationIntakeError(
+                "Нельзя сохранить тип участника до стоимости и договорной даты"
+            )
+        self._reopen(intake)
+        intake.client_type = normalized
+        intake.deadline_confirmed = None
+        intake.unique_object = None
+        intake.acceptance_evasion = None
+        intake.ddu_signing_date = None
+        intake.object_transferred = None
+        intake.actual_transfer_date = None
+        intake.current_step = "deadline_confirmation"
+        await self.db.flush()
+        return intake
+
+    async def save_deadline_confirmation(
+        self,
+        *,
+        case_id: int,
+        confirmed: bool,
+    ) -> CalculationIntake:
+        intake = await self._mutable(case_id=case_id)
+        if not intake.client_type:
+            raise CalculationIntakeError(
+                "Сначала нужно сохранить тип участника"
+            )
+        self._reopen(intake)
+        intake.deadline_confirmed = bool(confirmed)
+        intake.unique_object = None
+        intake.acceptance_evasion = None
+        intake.ddu_signing_date = None
+        intake.object_transferred = None
+        intake.actual_transfer_date = None
+        intake.current_step = (
+            "unique_object" if confirmed else "manual_review"
+        )
+        await self.db.flush()
+        return intake
+
+    async def save_unique_object(
+        self,
+        *,
+        case_id: int,
+        unique_object: bool,
+    ) -> CalculationIntake:
+        intake = await self._mutable(case_id=case_id)
+        if intake.deadline_confirmed is not True:
+            raise CalculationIntakeError(
+                "Сначала должен быть подтверждён действующий срок передачи"
+            )
+        self._reopen(intake)
+        intake.unique_object = bool(unique_object)
+        intake.acceptance_evasion = None
+        intake.ddu_signing_date = None
+        intake.object_transferred = None
+        intake.actual_transfer_date = None
+        intake.current_step = (
+            "ddu_signing_date" if unique_object else "acceptance_evasion"
+        )
+        await self.db.flush()
+        return intake
+
+    async def save_ddu_signing_date(
+        self,
+        *,
+        case_id: int,
+        ddu_signing_date: date,
+        today: date,
+    ) -> CalculationIntake:
+        if ddu_signing_date > today:
+            raise CalculationIntakeError(
+                "Дата заключения ДДУ не может быть в будущем"
+            )
+        intake = await self._mutable(case_id=case_id)
+        if intake.unique_object is not True:
+            raise CalculationIntakeError(
+                "Дата заключения ДДУ нужна только для ветки уникального объекта"
+            )
+        self._reopen(intake)
+        intake.ddu_signing_date = ddu_signing_date
+        intake.acceptance_evasion = None
+        intake.object_transferred = None
+        intake.actual_transfer_date = None
+        intake.current_step = "acceptance_evasion"
+        await self.db.flush()
+        return intake
+
+    async def save_acceptance_evasion(
+        self,
+        *,
+        case_id: int,
+        value: str,
+    ) -> CalculationIntake:
+        normalized = str(value or "").strip().lower()
+        if normalized not in {"no", "yes", "unknown"}:
+            raise CalculationIntakeError(
+                "Некорректный ответ об обстоятельствах приёмки"
+            )
+        intake = await self._mutable(case_id=case_id)
+        if intake.unique_object is None:
+            raise CalculationIntakeError(
+                "Сначала нужно определить тип объекта"
+            )
+        self._reopen(intake)
+        intake.acceptance_evasion = normalized
+        intake.object_transferred = None
+        intake.actual_transfer_date = None
+        intake.current_step = (
+            "transfer_status" if normalized == "no" else "manual_review"
         )
         await self.db.flush()
         return intake
@@ -225,9 +359,86 @@ class CalculationIntakeService:
         intake.planned_transfer_date = planned
 
         if planned > today:
+            intake.client_type = None
+            intake.deadline_confirmed = None
+            intake.unique_object = None
+            intake.acceptance_evasion = None
+            intake.ddu_signing_date = None
             intake.object_transferred = None
             intake.actual_transfer_date = None
             intake.current_step = "future_date"
+            await self.db.flush()
+            return intake
+
+        client_type = str(data.get("client_type") or "").strip()
+        if client_type not in {"consumer", "business"}:
+            intake.client_type = None
+            intake.deadline_confirmed = None
+            intake.unique_object = None
+            intake.acceptance_evasion = None
+            intake.ddu_signing_date = None
+            intake.object_transferred = None
+            intake.actual_transfer_date = None
+            intake.current_step = "participant_type"
+            await self.db.flush()
+            return intake
+        intake.client_type = client_type
+
+        if data.get("deadline_confirmed") is not True:
+            intake.deadline_confirmed = None
+            intake.unique_object = None
+            intake.acceptance_evasion = None
+            intake.ddu_signing_date = None
+            intake.object_transferred = None
+            intake.actual_transfer_date = None
+            intake.current_step = "deadline_confirmation"
+            await self.db.flush()
+            return intake
+        intake.deadline_confirmed = True
+
+        if "unique_object" not in data:
+            intake.unique_object = None
+            intake.acceptance_evasion = None
+            intake.ddu_signing_date = None
+            intake.object_transferred = None
+            intake.actual_transfer_date = None
+            intake.current_step = "unique_object"
+            await self.db.flush()
+            return intake
+        intake.unique_object = bool(data.get("unique_object"))
+
+        if intake.unique_object:
+            raw_signed = data.get("ddu_signing_date")
+            if raw_signed in (None, ""):
+                intake.ddu_signing_date = None
+                intake.acceptance_evasion = None
+                intake.object_transferred = None
+                intake.actual_transfer_date = None
+                intake.current_step = "ddu_signing_date"
+                await self.db.flush()
+                return intake
+            signed = _draft_date(raw_signed, "Дата заключения ДДУ")
+            if signed > today:
+                raise CalculationIntakeError(
+                    "Дата заключения ДДУ не может быть в будущем"
+                )
+            intake.ddu_signing_date = signed
+        else:
+            intake.ddu_signing_date = None
+
+        evasion = str(data.get("acceptance_evasion") or "").strip().lower()
+        if evasion not in {"no", "yes", "unknown"}:
+            intake.acceptance_evasion = None
+            intake.object_transferred = None
+            intake.actual_transfer_date = None
+            intake.current_step = "acceptance_evasion"
+            await self.db.flush()
+            return intake
+        intake.acceptance_evasion = evasion
+        if evasion != "no":
+            intake.object_transferred = None
+            intake.actual_transfer_date = None
+            intake.current_step = "manual_review"
             await self.db.flush()
             return intake
 
@@ -328,6 +539,16 @@ class CalculationIntakeService:
             data["object_transferred"] = bool(intake.object_transferred)
         if intake.actual_transfer_date is not None:
             data["actual_transfer_date"] = intake.actual_transfer_date.isoformat()
+        if intake.client_type is not None:
+            data["client_type"] = str(intake.client_type)
+        if intake.deadline_confirmed is not None:
+            data["deadline_confirmed"] = bool(intake.deadline_confirmed)
+        if intake.unique_object is not None:
+            data["unique_object"] = bool(intake.unique_object)
+        if intake.acceptance_evasion is not None:
+            data["acceptance_evasion"] = str(intake.acceptance_evasion)
+        if intake.ddu_signing_date is not None:
+            data["ddu_signing_date"] = intake.ddu_signing_date.isoformat()
         return data
 
     async def draft_data(
