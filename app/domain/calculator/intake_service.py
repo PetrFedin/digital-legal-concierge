@@ -269,6 +269,9 @@ class CalculationIntakeService:
 
         intake = await self._mutable(case_id=case_id)
         self._reopen(intake)
+        intake.client_type = None
+        intake.unique_object = None
+        intake.manual_review_flags = None
 
         raw_price = data.get("contract_price")
         if raw_price in (None, ""):
@@ -310,27 +313,40 @@ class CalculationIntakeService:
 
         transferred = bool(data.get("object_transferred"))
         intake.object_transferred = transferred
-        if not transferred:
+        if transferred:
+            raw_actual = data.get("actual_transfer_date")
+            if raw_actual in (None, ""):
+                intake.actual_transfer_date = None
+                intake.current_step = "actual_date"
+                await self.db.flush()
+                return intake
+            actual = _draft_date(raw_actual, "Фактическая дата передачи")
+            if actual > today:
+                raise CalculationIntakeError(
+                    "Фактическая дата передачи не может быть в будущем"
+                )
+            intake.actual_transfer_date = actual
+        else:
             intake.actual_transfer_date = None
-            intake.current_step = "ready"
+
+        raw_client_type = str(data.get("client_type") or "").strip().lower()
+        if raw_client_type not in {"consumer", "other"}:
+            intake.current_step = "client_type"
             await self.db.flush()
             return intake
+        intake.client_type = raw_client_type
 
-        raw_actual = data.get("actual_transfer_date")
-        if raw_actual in (None, ""):
-            intake.actual_transfer_date = None
-            intake.current_step = "actual_date"
+        if "unique_object" not in data:
+            intake.current_step = "unique_object"
             await self.db.flush()
             return intake
-
-        actual = _draft_date(raw_actual, "Фактическая дата передачи")
-        if actual > today:
-            raise CalculationIntakeError(
-                "Фактическая дата передачи не может быть в будущем"
-            )
-        # actual < planned is deliberately valid: it is an early factual
-        # transfer and later produces zero delay under the functional spec.
-        intake.actual_transfer_date = actual
+        intake.unique_object = bool(data.get("unique_object"))
+        flags = data.get("manual_review_flags") or []
+        if not isinstance(flags, (list, tuple)):
+            raise CalculationIntakeError("manual_review_flags должен быть списком")
+        intake.manual_review_flags = sorted(
+            {str(item).strip() for item in flags if str(item).strip()}
+        )
         intake.current_step = "ready"
         await self.db.flush()
         return intake
