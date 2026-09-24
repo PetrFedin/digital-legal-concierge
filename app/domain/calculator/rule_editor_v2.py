@@ -71,6 +71,72 @@ def _source_ids(source_id: str) -> list[str]:
     return [_clean_source_id(source_id)]
 
 
+def set_core_section(
+    rules: dict[str, Any],
+    *,
+    section: str,
+    values: dict[str, str],
+    source_id: str,
+    source_title: str,
+    source_authority: str,
+    source_url: str = "",
+    source_document_ref: str = "",
+) -> dict[str, Any]:
+    result = _require_v2(rules)
+    sid = _upsert_source(
+        result,
+        source_id=source_id,
+        title=source_title,
+        authority=source_authority,
+        url=source_url,
+        document_ref=source_document_ref,
+    )
+    if section == "period":
+        required = ("start", "end_if_transferred", "end_if_not_transferred")
+        if any(not str(values.get(key) or "").strip() for key in required):
+            raise RuleEditorV2Error("Все правила периода обязательны")
+        result["period"] = {
+            key: str(values[key]).strip()
+            for key in required
+        }
+        result["period"]["source_ids"] = [sid]
+    elif section == "standard_formula":
+        divisor = str(values.get("divisor") or "").strip()
+        if not divisor:
+            raise RuleEditorV2Error("Делитель формулы обязателен")
+        standard = result.setdefault("standard_object", {})
+        standard["divisor"] = divisor
+        standard["source_ids"] = [sid]
+    elif section == "base_rate":
+        basis = str(values.get("basis") or "").strip()
+        before_2016 = str(values.get("before_2016") or "").strip()
+        from_2016 = str(values.get("from_2016") or "").strip()
+        if not basis or not before_2016 or not from_2016:
+            raise RuleEditorV2Error("Все параметры источника ставки обязательны")
+        standard = result.setdefault("standard_object", {})
+        standard["base_rate"] = {
+            "basis": basis,
+            "before_2016": before_2016,
+            "from_2016": from_2016,
+            "source_ids": [sid],
+        }
+    elif section == "rounding":
+        money_quant = str(values.get("money_quant") or "").strip()
+        mode = str(values.get("mode") or "").strip()
+        stage = str(values.get("stage") or "").strip()
+        if not money_quant or not mode or not stage:
+            raise RuleEditorV2Error("Все параметры округления обязательны")
+        result["rounding"] = {
+            "money_quant": money_quant,
+            "mode": mode,
+            "stage": stage,
+            "source_ids": [sid],
+        }
+    else:
+        raise RuleEditorV2Error("Неизвестный базовый раздел")
+    return prune_unused_sources(result)
+
+
 def upsert_rate(
     rules: dict[str, Any],
     *,
@@ -290,7 +356,17 @@ def delete_item(
     """Clear one legal value and garbage-collect its now-unused source cards."""
 
     result = _require_v2(rules)
-    if section == "rate":
+    if section == "period":
+        result.pop("period", None)
+    elif section == "rounding":
+        result.pop("rounding", None)
+    elif section == "base_rate":
+        result.setdefault("standard_object", {}).pop("base_rate", None)
+    elif section == "standard_formula":
+        standard = result.setdefault("standard_object", {})
+        standard.pop("divisor", None)
+        standard.pop("source_ids", None)
+    elif section == "rate":
         parent = result.setdefault("standard_object", {})
         parent["rate_schedule"] = [
             item
@@ -365,6 +441,7 @@ def update_source_card(
 __all__ = [
     "RuleEditorV2Error",
     "delete_item",
+    "set_core_section",
     "set_participant_multiplier",
     "set_unique_object_rule",
     "update_source_card",
