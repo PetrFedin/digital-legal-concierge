@@ -85,6 +85,15 @@ Payment is a financial lifecycle, not a UI button.
 
 Each Payment stores current projection/status plus business timestamps (`paid_at`, `failed_at`, `cancelled_at`, `refunded_at`, `expired_at`). Payment status transitions are also appended to the normalized `payment_events` ledger. Provider webhook payload/evidence remains in `payment_webhook_events`; actor/business context remains in Case/Audit history.
 
+The current release supports two deliberate production payment modes:
+
+- `offline` — a real financial obligation is persisted without manufacturing an external payment link. The client pays outside the bot using team-approved requisites. An authenticated administrator may confirm receipt only after independent bank/accounting reconciliation; the same canonical payment lifecycle then advances M1 or confirms the exact M2 reservation.
+- `yookassa` — an online provider mode enabled only when its release-specific provider evidence and credentials are deliberately approved.
+
+`disabled` is a fail-closed maintenance/development switch, not a production-ready payment mode and not permission to auto-mark money as received. `fake` remains local/test only.
+
+M2 remains a paid consultation in `offline` mode: slot selection may create a payment obligation, but the slot becomes finally booked only after the administrator confirms actual receipt against the exact consultation/reservation context.
+
 No late provider failure may overwrite money already received. Stale M1/M2 money must go to the defined review/refund path instead of resurrecting an obsolete legal stage.
 
 ## Closure, archive and retention

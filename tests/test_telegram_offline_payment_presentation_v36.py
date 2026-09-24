@@ -54,7 +54,7 @@ def test_offline_m1_waiting_payment_points_to_existing_payment_status(
     label_fragment,
     next_fragment,
 ):
-    monkeypatch.setattr(payment_presentation, "payments_disabled", lambda: True)
+    monkeypatch.setattr(payment_presentation, "payments_offline", lambda: True)
 
     result = payment_presentation.offline_m1_payment_presentation(
         view(status=status)
@@ -68,7 +68,7 @@ def test_offline_m1_waiting_payment_points_to_existing_payment_status(
 
 
 def test_online_mode_keeps_normal_guarded_case_action(monkeypatch):
-    monkeypatch.setattr(payment_presentation, "payments_disabled", lambda: False)
+    monkeypatch.setattr(payment_presentation, "payments_offline", lambda: False)
 
     assert (
         payment_presentation.offline_m1_payment_presentation(
@@ -79,7 +79,7 @@ def test_online_mode_keeps_normal_guarded_case_action(monkeypatch):
 
 
 def test_offline_presentation_does_not_override_m2(monkeypatch):
-    monkeypatch.setattr(payment_presentation, "payments_disabled", lambda: True)
+    monkeypatch.setattr(payment_presentation, "payments_offline", lambda: True)
 
     assert (
         payment_presentation.offline_m1_payment_presentation(
@@ -90,19 +90,19 @@ def test_offline_presentation_does_not_override_m2(monkeypatch):
 
 
 def test_offline_m1_payment_row_says_team_confirmation_not_pay_again(monkeypatch):
-    monkeypatch.setattr(payments_screen, "payments_disabled", lambda: True)
+    monkeypatch.setattr(payments_screen, "payments_offline", lambda: True)
     row = payment()
 
     assert payments_screen.client_payment_status_label(row) == (
         "Ожидает подтверждения командой"
     )
     note = payments_screen.client_payment_status_note(row)
-    assert "Новый платёж через бот создавать не нужно" in note
-    assert "проверки фактического поступления" in note
+    assert "после перевода новый платёж создавать не нужно" in note.lower()
+    assert "фактическое поступление" in note.lower()
 
 
 def test_provider_toggle_does_not_relabel_existing_online_payment_as_offline(monkeypatch):
-    monkeypatch.setattr(payments_screen, "payments_disabled", lambda: True)
+    monkeypatch.setattr(payments_screen, "payments_offline", lambda: True)
     row = payment(
         status=PaymentStatus.WAITING_CONFIRMATION,
         payment_url="https://provider.example/pay/123",
@@ -113,13 +113,18 @@ def test_provider_toggle_does_not_relabel_existing_online_payment_as_offline(mon
     assert payments_screen.client_payment_status_note(row) == ""
 
 
-def test_offline_label_is_scoped_to_m1_financial_obligations(monkeypatch):
-    monkeypatch.setattr(payments_screen, "payments_disabled", lambda: True)
-    m2 = payment(code=PaymentCode.M2_CONSULTATION_PAYMENT)
+def test_offline_label_covers_m1_and_m2_real_obligations(monkeypatch):
+    monkeypatch.setattr(payments_screen, "payments_offline", lambda: True)
+    m2 = payment(
+        code=PaymentCode.M2_CONSULTATION_PAYMENT,
+        provider="offline",
+    )
     paid_m1 = payment(status=PaymentStatus.PAID)
 
-    assert payments_screen.client_payment_status_label(m2) == "Ожидает оплаты"
-    assert payments_screen.client_payment_status_note(m2) == ""
+    assert payments_screen.client_payment_status_label(m2) == (
+        "Ожидает подтверждения командой"
+    )
+    assert "после перевода" in payments_screen.client_payment_status_note(m2).lower()
     assert payments_screen.client_payment_status_label(paid_m1) == "Оплачено"
     assert payments_screen.client_payment_status_note(paid_m1) == ""
 
@@ -140,9 +145,10 @@ def test_telegram_home_my_case_and_status_share_offline_payment_presentation():
     assert "client_payment_status_label(payment)" in payments_source
     assert "client_payment_status_note(payment)" in payments_source
     assert "not payment.payment_url" in payments_source
-    assert "not payment.provider" in payments_source
+    assert 'payment.provider in {None, "offline"}' in payments_source
 
     # Provider availability belongs to presentation/payment execution, not the
     # durable case projection. This keeps persisted history stable across a
     # runtime provider toggle.
+    assert "payments_offline" not in client_view_source
     assert "payments_disabled" not in client_view_source

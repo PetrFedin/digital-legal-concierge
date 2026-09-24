@@ -59,6 +59,37 @@ class DisabledPaymentProvider(BasePaymentProvider):
         raise RuntimeError("Онлайн-оплата временно отключена")
 
 
+
+class OfflinePaymentProvider(BasePaymentProvider):
+    """Explicit manual bank/offline reconciliation mode.
+
+    No external payment link is created. The obligation remains in the database
+    and can become paid only through the authenticated administrator confirmation
+    path after independent bank/accounting verification.
+    """
+
+    async def create_payment(
+        self,
+        *,
+        payment_id: int,
+        amount: Decimal,
+        currency: str,
+        title: str,
+        metadata: dict,
+    ) -> PaymentProviderResult:
+        return PaymentProviderResult(
+            provider="offline",
+            provider_payment_id=f"offline-{payment_id}",
+            payment_url="",
+            raw={"mode": "offline", "metadata": metadata},
+        )
+
+    async def retrieve_payment(self, provider_payment_id: str) -> dict:
+        raise RuntimeError(
+            "Офлайн-платёж подтверждается администратором после проверки поступления"
+        )
+
+
 class FakePaymentProvider(BasePaymentProvider):
     async def create_payment(
         self,
@@ -175,6 +206,8 @@ def get_payment_provider() -> BasePaymentProvider:
     provider = str(settings.payment_provider or "").strip().lower()
     if provider == "disabled":
         return DisabledPaymentProvider()
+    if provider == "offline":
+        return OfflinePaymentProvider()
     if provider == "yookassa":
         return YooKassaPaymentProvider()
     if provider == "fake":
@@ -186,5 +219,5 @@ def get_payment_provider() -> BasePaymentProvider:
         return FakePaymentProvider()
     raise RuntimeError(
         f"Неизвестный платёжный провайдер: {provider or '<empty>'}. "
-        "Поддерживаются disabled, fake (только local/test) и yookassa."
+        "Поддерживаются disabled, offline, fake (только local/test) и yookassa."
     )

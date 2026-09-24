@@ -2,11 +2,17 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-compose_file="${COMPOSE_FILE:-docker-compose.yml}"
+compose_files_raw="${COMPOSE_FILES:-${COMPOSE_FILE:-docker-compose.yml}}"
+IFS=':' read -r -a compose_files <<< "$compose_files_raw"
+compose_args=()
+for compose_file in "${compose_files[@]}"; do
+  [ -n "$compose_file" ] || continue
+  compose_args+=(-f "$compose_file")
+done
+dc() { docker compose "${compose_args[@]}" "$@"; }
 state_dir="${RELEASE_STATE_DIR:-.release}"
 current_state="$state_dir/current.env"
 previous_state="$state_dir/previous.env"
-dc() { docker compose -f "$compose_file" "$@"; }
 
 fail() {
   echo "ОШИБКА: $*" >&2
@@ -55,11 +61,28 @@ raise SystemExit(
 PY
 }
 
+verify_telegram_worker() {
+  if ! dc config --services | grep -qx bot; then
+    return 0
+  fi
+  dc exec -T bot python scripts/telegram_worker_probe.py
+}
+
+rollback_services() {
+  local services=(app)
+  if dc config --services | grep -qx bot; then
+    services+=(bot)
+  fi
+  printf '%s\n' "${services[@]}"
+}
+
 command -v docker >/dev/null 2>&1 || fail "Docker не установлен"
 docker compose version >/dev/null 2>&1 || fail "Docker Compose plugin не установлен"
 [ -f "$current_state" ] || fail "Нет текущего release state: $current_state"
 [ -f "$previous_state" ] || fail "Нет предыдущего release state: $previous_state"
-[ -f "$compose_file" ] || fail "Не найден compose-файл: $compose_file"
+for compose_file in "${compose_files[@]}"; do
+  [ -f "$compose_file" ] || fail "Не найден compose-файл: $compose_file"
+done
 
 current_heads="$(state_value "$current_state" MIGRATION_HEADS)"
 previous_heads="$(state_value "$previous_state" MIGRATION_HEADS)"
@@ -87,9 +110,11 @@ if ! (
   # shellcheck disable=SC1090
   . "$previous_state"
   set +a
-  dc up -d --no-deps --no-build --force-recreate app
+  mapfile -t services < <(rollback_services)
+  dc up -d --no-deps --no-build --force-recreate "${services[@]}"
   wait_for_health
   verify_release_and_readiness "$GIT_COMMIT_SHA"
+  verify_telegram_worker
 ); then
   echo "Rollback image не прошёл проверки. Возвращаю исходный current image..." >&2
   (
@@ -97,9 +122,11 @@ if ! (
     # shellcheck disable=SC1090
     . "$current_state"
     set +a
-    dc up -d --no-deps --no-build --force-recreate app
+    mapfile -t services < <(rollback_services)
+    dc up -d --no-deps --no-build --force-recreate "${services[@]}"
     wait_for_health
     verify_release_and_readiness "$GIT_COMMIT_SHA"
+    verify_telegram_worker
   ) || fail "Не удалось восстановить исходный image; требуется аварийная процедура"
   fail "Rollback отменён, исходный release восстановлен"
 fi

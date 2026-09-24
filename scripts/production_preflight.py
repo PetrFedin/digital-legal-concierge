@@ -108,15 +108,26 @@ def build_report() -> dict[str, object]:
             "sqlite+aiosqlite:////app/data/"
         )
         payment_provider = settings.payment_provider.strip().lower()
-        payment_ready = payment_provider == "disabled" or (
+        payment_ready = payment_provider == "offline" or (
             payment_provider == "yookassa"
             and bool(settings.yookassa_shop_id)
             and _secret_ready(settings.yookassa_secret_key, minimum=8)
         )
+        runtime_role = str(settings.runtime_role or "all").strip().lower()
+        role_valid = runtime_role in {"all", "web", "bot"}
+        bot_expected = runtime_role in {"all", "bot"}
+        scheduler_expected = runtime_role in {"all", "bot"}
         checks.update(
             {
-                "bot_enabled": bool(settings.run_bot),
-                "scheduler_enabled": bool(settings.run_scheduler),
+                "runtime_role_valid": role_valid,
+                "bot_mode_matches_runtime_role": (
+                    bool(settings.run_bot) == bot_expected if role_valid else False
+                ),
+                "scheduler_mode_matches_runtime_role": (
+                    bool(settings.run_scheduler) == scheduler_expected
+                    if role_valid
+                    else False
+                ),
                 "bot_token_ready": bool(
                     BOT_TOKEN_PATTERN.fullmatch(str(settings.bot_token or ""))
                 ),
@@ -133,8 +144,9 @@ def build_report() -> dict[str, object]:
                     _secret_ready(value) for value in key_values
                 ),
                 "security_keys_are_unique": len(set(key_values)) == len(key_values),
-                "payment_webhook_secret_ready": _secret_ready(
-                    settings.payment_webhook_secret
+                "payment_webhook_secret_ready": (
+                    payment_provider != "yookassa"
+                    or _secret_ready(settings.payment_webhook_secret)
                 ),
                 "public_base_url_ready": _public_url_ready(
                     str(settings.public_base_url or "")
@@ -173,9 +185,15 @@ def build_report() -> dict[str, object]:
                 <= 30,
             }
         )
-        if payment_provider == "disabled":
+        if payment_provider == "offline":
             warnings.append(
-                "Онлайн-оплата отключена: бот и кабинеты работают без создания платёжных ссылок"
+                "Оплата работает в офлайн-режиме: обязательства сохраняются, "
+                "поступление подтверждает администратор после независимой сверки"
+            )
+        elif payment_provider == "disabled":
+            warnings.append(
+                "Платёжный контур отключён fail-closed: внешние ссылки и "
+                "production no-payment bypass недоступны"
             )
         if persistent_sqlite:
             warnings.append(

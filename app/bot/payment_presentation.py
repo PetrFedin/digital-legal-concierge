@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.domain.payments.mode import payments_disabled
+from app.domain.payments.mode import payments_offline
 
 
 @dataclass(frozen=True)
@@ -38,7 +38,7 @@ OFFLINE_M1_PAYMENT_PRESENTATIONS: dict[str, OfflinePaymentPresentation] = {
 
 
 def offline_m1_payment_presentation(view) -> OfflinePaymentPresentation | None:
-    """Return safe client copy for an M1 obligation when online pay is disabled.
+    """Return safe client copy for an M1 obligation in explicit offline mode.
 
     Provider mode changes how a payment can be completed, not whether the
     payment exists. Client screens therefore point to persisted payment status
@@ -46,7 +46,7 @@ def offline_m1_payment_presentation(view) -> OfflinePaymentPresentation | None:
     pending.
     """
 
-    if not payments_disabled():
+    if not payments_offline():
         return None
     if str(getattr(view, "route", "") or "") != "M1":
         return None

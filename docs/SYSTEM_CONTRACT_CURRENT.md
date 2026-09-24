@@ -89,9 +89,18 @@ Application payment status transitions go through `PaymentLifecycleService`. A m
 
 `payment_events` records the initial Payment snapshot and each persisted status transition in the same database transaction. Existing pre-ledger payments receive one `LEGACY_BASELINE` event rather than a fabricated historical sequence. Application ORM update/delete of an existing `PaymentEvent` is rejected; corrections are represented by later financial events. Database-level permissions remain a separate deployment control.
 
-`payment_webhook_events` remains the provider-event evidence/idempotency ledger. Case/Audit history remains the actor/business-context ledger. These are complementary layers.
+`payment_webhook_events` remains the provider-event evidence/idempotency ledger when an external provider exists. Case/Audit history remains the actor/business-context ledger. These are complementary layers.
 
-Received money is protected from late failure overwrites. M2 payment remains bound to the exact consultation/slot reservation key. Stale money enters review/refund flow; it cannot silently reserve or reopen another stage.
+Production payment modes are explicit and non-equivalent:
+
+- `offline` is a valid deployed manual-reconciliation mode. Creating the obligation records provider identity `offline` and no external URL. It does not mark the Payment paid.
+- receipt confirmation is an authenticated administrator mutation requiring an expected current status plus a bank/accounting reference and explanatory comment. It uses the same `PaymentWebhookService.process_successful_payment` application boundary as verified provider success so Payment, PaymentEvent, Case transition, consultation booking, notification and Audit evidence stay coherent;
+- M2 offline receipt remains bound to the exact consultation/reservation key. Confirmation of stale or inconsistent money follows the existing review/refund safety semantics instead of silently booking another slot;
+- `disabled` is fail-closed in staging/production and is not release-ready. The historical no-payment bypass remains local/test only;
+- `fake` is local/test only;
+- `yookassa` requires the provider-specific credentials and evidence defined by acceptance/runbook.
+
+Received money is protected from late failure overwrites. Stale money enters review/refund flow; it cannot silently reserve or reopen another stage.
 
 ## 8. Client activity and reminders
 

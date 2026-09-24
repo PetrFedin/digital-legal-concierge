@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from app.config import settings
 
-VALID_PAYMENT_PROVIDERS = frozenset({"disabled", "fake", "yookassa"})
+VALID_PAYMENT_PROVIDERS = frozenset({"disabled", "offline", "fake", "yookassa"})
 LOCAL_PAYMENT_BYPASS_ENVS = frozenset({"local", "test"})
 
 
@@ -15,9 +15,20 @@ def payment_provider_name() -> str:
 
 
 def payment_provider_is_disabled() -> bool:
-    """Return the configured switch without implying a successful payment."""
+    """Return the fail-closed provider switch without implying a successful payment."""
 
     return payment_provider_name() == "disabled"
+
+
+def payments_offline() -> bool:
+    """Return whether real money is reconciled manually by staff.
+
+    Offline mode is an explicit deployed operating mode: obligations are persisted,
+    clients never receive a fabricated provider link, and only an administrator may
+    confirm verified receipt through the canonical payment lifecycle.
+    """
+
+    return payment_provider_name() == "offline"
 
 
 def payments_disabled() -> bool:
@@ -48,6 +59,8 @@ def payments_enabled() -> bool:
 
 def payment_mode_valid() -> bool:
     provider = payment_provider_name()
+    if provider == "offline":
+        return True
     if provider == "disabled":
         # "disabled" means auto-paid only for local/test fixtures. A deployed
         # service must configure a real provider rather than silently bypassing

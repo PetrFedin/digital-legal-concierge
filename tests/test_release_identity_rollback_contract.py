@@ -26,7 +26,7 @@ def test_release_metadata_exposes_only_non_sensitive_build_identity(monkeypatch)
     payload = release_metadata()
 
     assert payload == {
-        "application_version": "1.0.0-v46",
+        "application_version": "1.0.0-v47",
         "release": "release-20260803",
         "git_commit": "a" * 40,
         "build_timestamp": "2026-08-03T16:00:00Z",
@@ -104,7 +104,8 @@ def test_automatic_rollback_requires_the_same_migration_head():
     assert '[ "$old_heads" = "unknown" ]' in source
     assert '[ "$old_heads" != "$new_migration_heads" ]' in source
     assert "Автоматический rollback заблокирован" in source
-    assert "--no-build --force-recreate app" in source
+    assert '--no-build --force-recreate "${rollback_services[@]}"' in source
+    assert "verify_telegram_worker 30" in source
     assert "Предыдущий image восстановлен" in source
 
 
@@ -113,8 +114,9 @@ def test_manual_rollback_is_backup_first_schema_guarded_and_reversible():
 
     assert '[ "$current_heads" != "$previous_heads" ]' in source
     assert "Rollback заблокирован: Alembic-head отличается" in source
-    assert source.index("backup_cli create") < source.index("--no-build --force-recreate app")
-    assert source.count("--no-build --force-recreate app") == 2
+    assert source.index("backup_cli create") < source.index("--no-build --force-recreate")
+    assert source.count("--no-build --force-recreate") == 2
+    assert "verify_telegram_worker" in source
     assert "Возвращаю исходный current image" in source
     assert "state-swap.env" in source
     assert "docker compose down -v" not in source

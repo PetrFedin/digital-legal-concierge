@@ -139,19 +139,36 @@ For every persisted financial transition verify:
 
 `PaymentEvent` is append-only evidence. Corrections are later events, never history rewrites.
 
+### Offline/manual production mode
+
+A release using `PAYMENT_PROVIDER=offline` is accepted only when all of the following pass on the same candidate/runtime:
+
+- no Telegram or browser action manufactures an external payment URL;
+- the obligation is persisted with exact Case/payment code/amount and remains unpaid before staff confirmation;
+- client presentation says that payment is reconciled by the team and never implies that a click itself proves receipt;
+- administrator confirmation requires a current-state snapshot, independent bank/accounting reference and comment;
+- confirmation passes through the canonical payment-success application boundary and creates PaymentEvent + Case/Audit evidence;
+- M1 initial/court/success-fee confirmations open only their legal next stages;
+- M2 confirmation books only the exact still-valid reservation and consultation; stale money enters review/refund rather than booking another slot;
+- duplicate/stale confirmation returns the authoritative current result/conflict without creating duplicate money or transitions.
+
+`PAYMENT_PROVIDER=disabled` is not an accepted production-ready substitute for this gate.
+
 ### Automated LIVE_REQUIRED provider baseline
 
-The provider component of LIVE_REQUIRED is intentionally limited to a safe YooKassa **test-shop** preflight + create + exact idempotent retry + retrieve. Every object must prove `test=true`; the payment remains unpaid/pending and the smoke does not open/complete confirmation.
+This provider-specific gate applies when the candidate enables YooKassa. It is intentionally limited to a safe YooKassa **test-shop** preflight + create + exact idempotent retry + retrieve. Every object must prove `test=true`; the payment remains unpaid/pending and the smoke does not open/complete confirmation.
 
-This baseline proves provider connectivity/idempotent creation only. It does **not** prove provider-side paid/refund lifecycle.
+For an `offline` release, the provider-connectivity step is **not applicable** and must not be simulated. The offline/manual acceptance matrix above replaces it for the payment mechanism actually deployed.
+
+The YooKassa baseline proves provider connectivity/idempotent creation only. It does **not** prove provider-side paid/refund lifecycle.
 
 ### Application/PostgreSQL financial semantics
 
-Before provider-side paid/refund expansion, application/PostgreSQL gates must already prove duplicate success, webhook↔admin Payment Review convergence, stale reservation payment, refund confirmation/retry and hold-expiry/payment races. Those are application semantics, not provider-side sandbox proof.
+Before any provider-side paid/refund expansion, application/PostgreSQL gates must already prove duplicate success, admin Payment Review convergence, stale reservation payment, refund confirmation/retry and hold-expiry/payment races. Those are application semantics independent of whether the release currently uses offline or YooKassa.
 
 ### Provider-side paid/refund sandbox matrix
 
-Only after Telegram persona acceptance **and** encrypted backup→restore acceptance pass may the test-shop run be expanded to safe provider-side paid/refund scenarios. Target scenarios include, where YooKassa test-shop behavior deterministically supports them: confirmation→paid, duplicate/retried success evidence, refundable paid object, refund creation/retrieve/terminal result and provider failure/review states.
+Only after Telegram persona acceptance **and** encrypted backup→restore acceptance pass may a YooKassa test-shop candidate be expanded to safe provider-side paid/refund scenarios. Target scenarios include, where YooKassa test-shop behavior deterministically supports them: confirmation→paid, duplicate/retried success evidence, refundable paid object, refund creation/retrieve/terminal result and provider failure/review states.
 
 Hard requirements:
 
@@ -162,7 +179,7 @@ Hard requirements:
 - unsupported or ambiguous sandbox behavior is recorded as **NOT PROVEN**, never fabricated;
 - application-only tests cannot satisfy provider-side proof.
 
-State before Gate 7: baseline **LIVE_REQUIRED** through LIVE_REQUIRED; paid/refund provider-side expansion **BLOCKED_BY_SEQUENCE / LIVE_REQUIRED AFTER RESTORE**.
+For an offline-only release this provider-side matrix remains **NOT APPLICABLE / NOT ENABLED**, not a blocker fabricated from an unused provider.
 
 ## Consent and service-contract evidence
 

@@ -13,7 +13,7 @@ def test_each_live_required_component_uploads_success_evidence() -> None:
         "redis",
         "telegram",
         "browser",
-        "provider-sandbox",
+        "payment-mode",
     ):
         assert f"--component {component}" in text
         assert f"live-required-evidence-{component}-${{{{ github.run_attempt }}}}" in text
@@ -33,7 +33,7 @@ def test_aggregate_gate_downloads_same_attempt_evidence_and_uploads_exact_sha_ma
     assert "merge-multiple: true" in aggregate
     assert "python scripts/live_required_evidence.py aggregate" in aggregate
     assert '--sha "$GITHUB_SHA"' in aggregate
-    assert "--require postgres redis telegram browser provider-sandbox" in aggregate
+    assert "--require postgres redis telegram browser payment-mode" in aggregate
     assert "LIVE_REQUIRED_MANIFEST.json" in aggregate
     assert (
         "live-required-release-evidence-${{ github.sha }}-attempt-${{ github.run_attempt }}"

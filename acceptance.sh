@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
-compose_file="${COMPOSE_FILE:-docker-compose.yml}"
-docker compose -f "$compose_file" run --rm --no-deps \
-  --entrypoint python app scripts/production_acceptance.py
+
+compose_files_raw="${COMPOSE_FILES:-${COMPOSE_FILE:-docker-compose.yml}}"
+IFS=':' read -r -a compose_files <<< "$compose_files_raw"
+compose_args=()
+for compose_file in "${compose_files[@]}"; do
+  [ -n "$compose_file" ] || continue
+  compose_args+=(-f "$compose_file")
+done
+dc() { docker compose "${compose_args[@]}" "$@"; }
+
+COMPOSE_FILES="$compose_files_raw" bash ./status.sh
+
+dc exec -T app python scripts/production_acceptance.py

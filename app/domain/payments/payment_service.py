@@ -351,6 +351,8 @@ class PaymentService:
         return (await self.success_fee_quote_for_case(case_id)).amount
 
     async def create_payment_link(self, payment: Payment):
+        if payment.provider == "offline" and payment.provider_payment_id:
+            return payment
         if not payment.payment_url:
             provider = get_payment_provider()
             result = await provider.create_payment(

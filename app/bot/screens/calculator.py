@@ -27,6 +27,7 @@ from app.domain.calculator.calculator_service import (
     CalculatorService,
 )
 from app.domain.calculator.penalty_calculator import parse_money
+from app.domain.calculator.rule_engine import CalculationRuleError
 from app.domain.statuses.case_statuses import CaseStatus
 
 logger = logging.getLogger(__name__)
@@ -838,14 +839,38 @@ async def calculate_show_message(message: Message, state: FSMContext, db):
         case_id = int(case.id)
         result = await calc_result(state, db, case)
         await db.commit()
+    except CalculationRuleError:
+        await db.rollback()
+        logger.warning(
+            "Calculator result blocked: no valid approved rule revision for current calculation date"
+        )
+        data = await state.get_data()
+        case_id = _current_case_id(data)
+        await message.answer(
+            "⚠️ Автоматический расчёт сейчас временно недоступен. "
+            "Ваши ответы, включая последнюю дату, сохранены — повторно вводить её не нужно. "
+            "Система не подставляет юридические ставки автоматически без утверждённых правил. "
+            "Сохраните обращение и вернитесь к расчёту после обновления правил.",
+            reply_markup=(
+                one(
+                    ("⬅️ Назад к статусу передачи", bound_case_callback("calc_back_transfer_status", case_id)),
+                    ("💾 Сохранить и выйти", "nav_home"),
+                    ("📁 Моё дело", "my_case_open"),
+                )
+                if case_id > 0
+                else _result_recovery_keyboard()
+            ),
+        )
+        return
     except Exception:
         await db.rollback()
         logger.exception("Calculator result could not be saved from message flow")
         data = await state.get_data()
         case_id = _current_case_id(data)
         await message.answer(
-            "⚠️ Расчёт временно не сохранён. Введённые данные остаются в текущем шаге. "
-            "Повторите дату или вернитесь назад.",
+            "⚠️ Расчёт не удалось завершить из-за технической ошибки. "
+            "Введённые данные сохранены. Повторять ту же дату не нужно. "
+            "Сохраните обращение и попробуйте позже.",
             reply_markup=(
                 _actual_keyboard(case_id)
                 if case_id > 0
@@ -872,6 +897,31 @@ async def calculate_show_callback(callback: CallbackQuery, state: FSMContext, db
         case_id = int(case.id)
         result = await calc_result(state, db, case)
         await db.commit()
+    except CalculationRuleError:
+        await db.rollback()
+        logger.warning(
+            "Calculator result blocked: no valid approved rule revision for current calculation date"
+        )
+        data = await state.get_data()
+        case_id = _current_case_id(data)
+        if case_id <= 0:
+            await _recover_stale_step(callback, state)
+            return
+        await callback.message.edit_text(
+            "⚠️ Автоматический расчёт сейчас временно недоступен. "
+            "Ваши ответы сохранены. Система не подставляет юридические ставки "
+            "автоматически без утверждённых правил. Сохраните обращение и "
+            "вернитесь к расчёту после обновления правил.",
+            reply_markup=one(
+                (
+                    "⬅️ Изменить дату по ДДУ",
+                    bound_case_callback("calc_back_planned", case_id),
+                ),
+                ("💾 Сохранить и выйти", "nav_home"),
+                ("📁 Моё дело", "my_case_open"),
+            ),
+        )
+        return
     except Exception:
         await db.rollback()
         logger.exception("Calculator result could not be saved from callback flow")
@@ -881,17 +931,16 @@ async def calculate_show_callback(callback: CallbackQuery, state: FSMContext, db
             await _recover_stale_step(callback, state)
             return
         await callback.message.edit_text(
-            "⚠️ Расчёт временно не сохранён. Введённые данные сохранены. Повторите действие.",
+            "⚠️ Расчёт не удалось завершить из-за технической ошибки. "
+            "Введённые данные сохранены. Повторять действие не нужно — "
+            "сохраните обращение и попробуйте позже.",
             reply_markup=one(
-                (
-                    "🔄 Повторить расчёт",
-                    bound_case_callback("calc_object_transferred_no", case_id),
-                ),
                 (
                     "⬅️ Изменить дату по ДДУ",
                     bound_case_callback("calc_back_planned", case_id),
                 ),
                 ("💾 Сохранить и выйти", "nav_home"),
+                ("📁 Моё дело", "my_case_open"),
             ),
         )
         return

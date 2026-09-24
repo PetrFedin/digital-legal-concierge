@@ -1,0 +1,66 @@
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  redis:
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  app:
+    container_name: legal-concierge
+    environment:
+      RUNTIME_ROLE: web
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+    volumes:
+      - "${PRODUCTION_RUNTIME_DIR:-/home/deploy/dlc-production-v46}/data:/app/data"
+      - "${PRODUCTION_RUNTIME_DIR:-/home/deploy/dlc-production-v46}/storage:/app/storage"
+      - "${PRODUCTION_RUNTIME_DIR:-/home/deploy/dlc-production-v46}/logs:/app/logs"
+      - "${PRODUCTION_RUNTIME_DIR:-/home/deploy/dlc-production-v46}/backups:/app/backups"
+    networks:
+      - default
+      - proxy
+
+  bot:
+    image: "${APP_IMAGE_REPOSITORY:-digital-legal-concierge}:${APP_IMAGE_TAG:-timeweb}"
+    container_name: legal-concierge-bot
+    env_file:
+      - .env
+    environment:
+      RUNTIME_ROLE: bot
+      RUN_BOT: "true"
+      RUN_SCHEDULER: "true"
+      DATABASE_URL: "${BOT_DATABASE_URL:?BOT_DATABASE_URL is required for the host-network Telegram worker}"
+      REDIS_URL: "${BOT_REDIS_URL:?BOT_REDIS_URL is required for the host-network Telegram worker}"
+    network_mode: host
+    extra_hosts:
+      api.telegram.org: "${TELEGRAM_API_IPV6:?TELEGRAM_API_IPV6 is required on Timeweb while Telegram IPv4 is unreachable}"
+    volumes:
+      - "${PRODUCTION_RUNTIME_DIR:-/home/deploy/dlc-production-v46}/data:/app/data"
+      - "${PRODUCTION_RUNTIME_DIR:-/home/deploy/dlc-production-v46}/storage:/app/storage"
+      - "${PRODUCTION_RUNTIME_DIR:-/home/deploy/dlc-production-v46}/logs:/app/logs"
+      - "${PRODUCTION_RUNTIME_DIR:-/home/deploy/dlc-production-v46}/backups:/app/backups"
+    restart: unless-stopped
+    stop_grace_period: 45s
+    entrypoint:
+      - python
+      - -m
+      - app.bot.worker
+    command: []
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "5"
+
+networks:
+  proxy:
+    external: true
