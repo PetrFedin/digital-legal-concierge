@@ -101,6 +101,21 @@ def _result_from_persisted(calculation: Calculation) -> RuleBasedCalculationResu
         applied_segments=list(calculation.applied_segments or []),
         is_preliminary=bool(calculation.is_preliminary),
         warning=warning,
+        base_rate_date=getattr(calculation, "base_rate_date", None),
+        base_rate=(
+            Decimal(calculation.key_rate)
+            if calculation.key_rate is not None
+            else None
+        ),
+        calculation_branch=str(
+            getattr(calculation, "calculation_branch", None) or "standard"
+        ),
+        penalty_cap_applied=bool(
+            getattr(calculation, "penalty_cap_applied", False)
+        ),
+        applied_source_ids=tuple(
+            getattr(calculation, "applied_source_ids", None) or []
+        ),
     )
 
 
@@ -152,6 +167,10 @@ class CalculatorService:
         object_transferred: bool,
         actual_transfer_date: date | None = None,
         client_type: str = "consumer",
+        deadline_confirmed: bool | None = None,
+        unique_object: bool | None = None,
+        acceptance_evasion: str | None = None,
+        ddu_signing_date: date | None = None,
     ) -> RuleBasedCalculationResult:
         """Create one immutable Calculation or return the already completed one.
 
@@ -186,6 +205,10 @@ class CalculatorService:
                 object_transferred=object_transferred,
                 actual_transfer_date=actual_transfer_date,
                 client_type=client_type,
+                deadline_confirmed=deadline_confirmed,
+                unique_object=unique_object,
+                acceptance_evasion=acceptance_evasion,
+                ddu_signing_date=ddu_signing_date,
             ),
             rule_revision_id=int(revision.id),
             rule_revision_key=str(revision.revision_key),
@@ -200,6 +223,10 @@ class CalculatorService:
             calculation_date=result.calculation_date,
             actual_transfer_date=result.actual_transfer_date,
             object_transferred=result.object_transferred,
+            deadline_confirmed=deadline_confirmed,
+            unique_object=unique_object,
+            acceptance_evasion=acceptance_evasion,
+            ddu_signing_date=ddu_signing_date,
             delay_days=result.delay_days_chargeable,
             delay_days_total=result.delay_days_total,
             delay_days_chargeable=result.delay_days_chargeable,
@@ -214,6 +241,10 @@ class CalculatorService:
             rule_snapshot_sha256=result.rule_snapshot_sha256,
             rule_snapshot=result.rule_snapshot,
             applied_segments=result.applied_segments,
+            base_rate_date=result.base_rate_date,
+            calculation_branch=result.calculation_branch,
+            penalty_cap_applied=result.penalty_cap_applied,
+            applied_source_ids=list(result.applied_source_ids),
             is_preliminary=True,
         )
         self.db.add(calculation)
@@ -252,6 +283,20 @@ class CalculatorService:
             "rule_revision_id": result.rule_revision_id,
             "rule_revision_key": result.rule_revision_key,
             "rule_snapshot_sha256": result.rule_snapshot_sha256,
+            "deadline_confirmed": bool(deadline_confirmed),
+            "unique_object": bool(unique_object),
+            "acceptance_evasion": acceptance_evasion,
+            "ddu_signing_date": (
+                ddu_signing_date.isoformat() if ddu_signing_date else None
+            ),
+            "base_rate_date": (
+                result.base_rate_date.isoformat()
+                if result.base_rate_date
+                else None
+            ),
+            "calculation_branch": result.calculation_branch,
+            "penalty_cap_applied": result.penalty_cap_applied,
+            "applied_source_ids": list(result.applied_source_ids),
         }
         if result.key_rate is not None:
             history_value["key_rate"] = str(result.key_rate)
