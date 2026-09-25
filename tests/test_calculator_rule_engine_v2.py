@@ -255,16 +255,16 @@ def test_source_without_exact_locator_is_rejected_before_legal_review():
         validate_rule_payload(broken)
 
 
-def test_current_verified_cbr_directory_covers_24_september_2026_at_14_percent():
+def test_current_verified_cbr_directory_covers_25_september_2026_at_14_percent():
     rules = _rules()
 
     result = _calculate(
         rules,
         contract_price=Decimal("3000000"),
-        planned_transfer_date=date(2026, 9, 24),
-        calculation_date=date(2026, 9, 25),
+        planned_transfer_date=date(2026, 9, 25),
+        calculation_date=date(2026, 9, 26),
         object_transferred=True,
-        actual_transfer_date=date(2026, 9, 25),
+        actual_transfer_date=date(2026, 9, 26),
     )
 
     assert result.key_rate == Decimal("0.14")
