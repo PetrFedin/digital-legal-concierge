@@ -56,6 +56,7 @@ class SelfFilingPackage(Base, TimestampMixin):
     court_name: Mapped[str | None] = mapped_column(String(500), nullable=True)
     court_address: Mapped[str | None] = mapped_column(Text, nullable=True)
     jurisdiction_basis: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    jurisdiction_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     jurisdiction_confirmed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
