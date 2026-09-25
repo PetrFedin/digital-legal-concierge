@@ -14,7 +14,7 @@
   "rate_policy": {
     "mode": "due_date",
     "coverage_from": "2016-01-01",
-    "coverage_through": "2026-09-24",
+    "coverage_through": "2026-09-25",
     "source_refs": [
       "214FZ-ART6",
       "CBR-REFI-EQUALS-KEY",
@@ -512,7 +512,7 @@
     {
       "code": "CBR-55",
       "start": "2026-07-27",
-      "end": "2026-09-24",
+      "end": "2026-09-25",
       "rate": "0.14",
       "source_refs": [
         "CBR-2021-2026"
@@ -797,10 +797,10 @@
       "locator": "Таблица «Ключевая ставка Банка России», период 01.01.2016–11.02.2022"
     },
     "CBR-2021-2026": {
-      "title": "Банк России — история ключевой ставки 01.04.2021–24.09.2026",
-      "url": "https://www.cbr.ru/hd_base/KeyRate/?UniDbQuery.From=01.04.2021&UniDbQuery.Posted=True&UniDbQuery.To=24.09.2026",
+      "title": "Банк России — история ключевой ставки 01.04.2021–25.09.2026",
+      "url": "https://www.cbr.ru/hd_base/KeyRate/?UniDbQuery.From=01.04.2021&UniDbQuery.Posted=True&UniDbQuery.To=25.09.2026",
       "checked_at": "2026-09-25",
-      "locator": "Таблица «Ключевая ставка Банка России», период 01.04.2021–24.09.2026"
+      "locator": "Таблица «Ключевая ставка Банка России», период 01.04.2021–25.09.2026"
     },
     "PP423": {
       "title": "Постановление Правительства РФ от 02.04.2020 № 423",
