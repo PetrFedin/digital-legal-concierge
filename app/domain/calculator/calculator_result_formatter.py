@@ -13,6 +13,46 @@ def format_percent(value: Decimal) -> str:
     return f"{value * Decimal('100'):.3f}".rstrip("0").rstrip(".") + "%"
 
 
+
+
+def split_telegram_text(text: str, *, max_chars: int = 3500) -> list[str]:
+    """Split long client-safe details below Telegram's message size ceiling."""
+
+    if max_chars <= 0:
+        raise ValueError("max_chars must be positive")
+    value = str(text or "")
+    if len(value) <= max_chars:
+        return [value]
+
+    pages: list[str] = []
+    current: list[str] = []
+    current_len = 0
+
+    def flush() -> None:
+        nonlocal current, current_len
+        page = "\n".join(current).rstrip()
+        if page:
+            pages.append(page)
+        current = []
+        current_len = 0
+
+    for raw_line in value.splitlines():
+        line = raw_line
+        while len(line) > max_chars:
+            if current:
+                flush()
+            pages.append(line[:max_chars])
+            line = line[max_chars:]
+        added = len(line) + (1 if current else 0)
+        if current and current_len + added > max_chars:
+            flush()
+        current.append(line)
+        current_len += len(line) + (1 if len(current) > 1 else 0)
+
+    if current:
+        flush()
+    return pages or [""]
+
 def _rate_line(result) -> str:
     key_rate = getattr(result, "key_rate", None)
     if key_rate is not None:
@@ -229,4 +269,5 @@ __all__ = [
     "format_calculation_result",
     "format_money",
     "format_percent",
+    "split_telegram_text",
 ]
