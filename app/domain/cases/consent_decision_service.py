@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
 from app.domain.cases.consent_contract import resolve_consent_contract
+from app.domain.cases.self_filing_service import SelfFilingService
+from app.domain.cases.service_modes import M1ServiceMode
 from app.domain.statuses.case_statuses import CaseStatus
 from app.models.case import Case
 from app.models.consent_acceptance import ConsentAcceptance
@@ -149,6 +151,18 @@ class ConsentDecisionService:
             raise LookupError("Дело из этого экрана не найдено или недоступно")
 
         status = self._status(case)
+        actual_mode = str(case.service_mode or "")
+        expected_mode = str(contract.get("service_mode") or "")
+        if expected_mode == M1ServiceMode.SELF_FILING_PACKAGE.value:
+            if actual_mode != M1ServiceMode.SELF_FILING_PACKAGE.value:
+                raise ConsentDecisionError(
+                    "Этот текст согласия относится к другой услуге. Откройте актуальный экран."
+                )
+        elif actual_mode == M1ServiceMode.SELF_FILING_PACKAGE.value:
+            raise ConsentDecisionError(
+                "Для пакета самостоятельной подачи требуется отдельный актуальный текст согласия."
+            )
+
         if status.value.startswith("M1_"):
             return ConsentDecisionResult(case, normalized, "stale_m1", False)
         if status.value.startswith("M2_"):
@@ -166,17 +180,27 @@ class ConsentDecisionService:
             return ConsentDecisionResult(case, normalized, "stale_other", False)
 
         if normalized == CONSENT_ACCEPT:
-            await self.cases.transfer_to_m1(
-                case=case,
-                actor_type="client",
-                actor_id=int(client_id),
-                comment=(
-                    "Клиент отдельно и явно подтвердил согласие на обработку персональных данных "
-                    f"для M1; версия {contract['consent_version']}; SHA-256 {contract['text_sha256']}"
-                ),
-            )
+            if actual_mode == M1ServiceMode.SELF_FILING_PACKAGE.value:
+                await SelfFilingService(self.db).start(
+                    case=case,
+                    client_id=int(client_id),
+                )
+            else:
+                case.service_mode = M1ServiceMode.FULL_REPRESENTATION.value
+                await self.cases.transfer_to_m1(
+                    case=case,
+                    actor_type="client",
+                    actor_id=int(client_id),
+                    comment=(
+                        "Клиент отдельно и явно подтвердил согласие на обработку "
+                        "персональных данных для полного ведения M1; "
+                        f"версия {contract['consent_version']}; "
+                        f"SHA-256 {contract['text_sha256']}"
+                    ),
+                )
             outcome = "accepted"
         else:
+            case.service_mode = None
             await self.cases.change_status(
                 case=case,
                 next_status=CaseStatus.CALCULATED,
