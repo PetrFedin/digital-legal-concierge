@@ -12,6 +12,7 @@ class CaseTransitionError(ValueError):
 TERMINAL_STATUSES = frozenset(
     {
         CaseStatus.M1_CLOSED,
+        CaseStatus.M1_SELF_FILING_CLOSED,
         CaseStatus.M2_CLOSED,
         CaseStatus.ARCHIVED,
     }
@@ -37,6 +38,15 @@ ERROR_RECOVERY_TARGETS = frozenset(
         CaseStatus.M1_WAITING_30_DAYS,
         CaseStatus.M1_COURT_STAGE,
         CaseStatus.M1_ENFORCEMENT,
+        CaseStatus.M1_SELF_FILING_PROFILE_PENDING,
+        CaseStatus.M1_SELF_FILING_DOCUMENTS_PENDING,
+        CaseStatus.M1_SELF_FILING_DOCUMENTS_RECEIVED,
+        CaseStatus.M1_SELF_FILING_LAWYER_REVIEW,
+        CaseStatus.M1_SELF_FILING_DOCS_REQUESTED,
+        CaseStatus.M1_SELF_FILING_PAYMENT_PENDING,
+        CaseStatus.M1_SELF_FILING_PREPARATION,
+        CaseStatus.M1_SELF_FILING_READY,
+        CaseStatus.M1_SELF_FILING_DELIVERED,
         CaseStatus.M2_DESCRIPTION_PENDING,
         CaseStatus.M2_DOCUMENTS_OPTIONAL,
         CaseStatus.M2_SLOT_PENDING,
@@ -58,6 +68,7 @@ _TRANSITIONS: dict[CaseStatus, frozenset[CaseStatus]] = {
             CaseStatus.CALCULATED,
             CaseStatus.CLIENT_DECISION,
             CaseStatus.M1_DOCUMENTS_PENDING,
+            CaseStatus.M1_SELF_FILING_PROFILE_PENDING,
             CaseStatus.M2_DESCRIPTION_PENDING,
         }
     ),
@@ -156,6 +167,55 @@ _TRANSITIONS: dict[CaseStatus, frozenset[CaseStatus]] = {
     ),
     CaseStatus.M1_SUCCESS_FEE_RECEIVED: frozenset({CaseStatus.M1_CLOSED}),
     CaseStatus.M1_CLOSED: frozenset({CaseStatus.ARCHIVED}),
+    CaseStatus.M1_SELF_FILING_PROFILE_PENDING: frozenset(
+        {
+            CaseStatus.M1_SELF_FILING_DOCUMENTS_PENDING,
+            CaseStatus.CALCULATED,
+            CaseStatus.M2_DESCRIPTION_PENDING,
+        }
+    ),
+    CaseStatus.M1_SELF_FILING_DOCUMENTS_PENDING: frozenset(
+        {
+            CaseStatus.M1_SELF_FILING_DOCUMENTS_RECEIVED,
+            CaseStatus.M1_SELF_FILING_LAWYER_REVIEW,
+            CaseStatus.M1_SELF_FILING_DOCS_REQUESTED,
+            CaseStatus.M2_DESCRIPTION_PENDING,
+        }
+    ),
+    CaseStatus.M1_SELF_FILING_DOCUMENTS_RECEIVED: frozenset(
+        {
+            CaseStatus.M1_SELF_FILING_LAWYER_REVIEW,
+            CaseStatus.M1_SELF_FILING_DOCS_REQUESTED,
+            CaseStatus.M2_DESCRIPTION_PENDING,
+        }
+    ),
+    CaseStatus.M1_SELF_FILING_LAWYER_REVIEW: frozenset(
+        {
+            CaseStatus.M1_SELF_FILING_DOCS_REQUESTED,
+            CaseStatus.M1_SELF_FILING_PAYMENT_PENDING,
+            CaseStatus.M2_DESCRIPTION_PENDING,
+        }
+    ),
+    CaseStatus.M1_SELF_FILING_DOCS_REQUESTED: frozenset(
+        {
+            CaseStatus.M1_SELF_FILING_DOCUMENTS_RECEIVED,
+            CaseStatus.M1_SELF_FILING_LAWYER_REVIEW,
+            CaseStatus.M2_DESCRIPTION_PENDING,
+        }
+    ),
+    CaseStatus.M1_SELF_FILING_PAYMENT_PENDING: frozenset(
+        {CaseStatus.M1_SELF_FILING_PREPARATION}
+    ),
+    CaseStatus.M1_SELF_FILING_PREPARATION: frozenset(
+        {CaseStatus.M1_SELF_FILING_READY}
+    ),
+    CaseStatus.M1_SELF_FILING_READY: frozenset(
+        {CaseStatus.M1_SELF_FILING_DELIVERED}
+    ),
+    CaseStatus.M1_SELF_FILING_DELIVERED: frozenset(
+        {CaseStatus.M1_SELF_FILING_CLOSED}
+    ),
+    CaseStatus.M1_SELF_FILING_CLOSED: frozenset({CaseStatus.ARCHIVED}),
     CaseStatus.M2_CONSULTATION_ROUTE: frozenset(
         {CaseStatus.M2_DESCRIPTION_PENDING}
     ),
