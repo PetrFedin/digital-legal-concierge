@@ -203,6 +203,51 @@ CLIENT_ACTIONS: dict[str, ClientAction] = {
         "payments_open",
         "Финальный платёж получен. Откройте историю оплат; закрытие дела выполняется системой после подтверждённого финансового события.",
     ),
+    "M1_SELF_FILING_DOCUMENTS_PENDING": ClientAction(
+        "Загрузить документы",
+        "documents_open",
+        "Загрузите ДДУ, паспорт/удостоверение личности, приложения и остальные материалы по спору.",
+    ),
+    "M1_SELF_FILING_DOCUMENTS_RECEIVED": ClientAction(
+        "Открыть документы",
+        "documents_open",
+        "Комплект передан юристу. Проверьте статусы файлов и замечания, если они появятся.",
+    ),
+    "M1_SELF_FILING_LAWYER_REVIEW": ClientAction(
+        "Открыть документы",
+        "documents_open",
+        "Юрист проверяет полноту комплекта и конкретную подсудность. Новая оплата пока не требуется.",
+    ),
+    "M1_SELF_FILING_DOCS_REQUESTED": ClientAction(
+        "Дополнить комплект",
+        "documents_open",
+        "Юрист запросил дополнительный или исправленный документ. Откройте документы и добавьте нужную версию.",
+    ),
+    "M1_SELF_FILING_PAYMENT_PENDING": ClientAction(
+        "Открыть оплату 15 000 ₽",
+        "payments_open",
+        "Юрист подтвердил полный комплект и подсудность. Откройте созданный платёж за подготовку пакета.",
+    ),
+    "M1_SELF_FILING_PREPARATION": ClientAction(
+        "Посмотреть ход подготовки",
+        "case_history_open",
+        "Оплата подтверждена. Идёт срок подготовки пакета; подтверждённые события доступны в истории обращения.",
+    ),
+    "M1_SELF_FILING_READY": ClientAction(
+        "Открыть готовый пакет",
+        "documents_open",
+        "Итоговая версия пакета готова и поставлена на доставку. Откройте документы, чтобы увидеть защищённую версию.",
+    ),
+    "M1_SELF_FILING_DELIVERED": ClientAction(
+        "Открыть документы",
+        "documents_open",
+        "Пакет отправлен на подтверждённый email и остаётся доступен в документах обращения.",
+    ),
+    "M1_SELF_FILING_CLOSED": ClientAction(
+        "Открыть итог и документы",
+        "documents_open",
+        "Подготовка пакета завершена. Представительство в суде в эту услугу не входило.",
+    ),
     "M1_REJECTED": ClientAction(
         "Выбрать, что делать дальше",
         "contact_lawyer",
@@ -291,6 +336,46 @@ CLIENT_STAGE_COPY: dict[str, tuple[str, str]] = {
     "M1_ACCEPTED": (
         "Юрист подтвердил возможность стандартного ведения дела.",
         "От вас сейчас дополнительных действий не требуется; ожидайте открытия договорного этапа.",
+    ),
+    "M1_SELF_FILING_PROFILE_PENDING": (
+        "Вы выбрали подготовку пакета документов для самостоятельной подачи в суд.",
+        "Подтвердите регион, адрес и email для выдачи пакета. Эти данные не выбирают суд автоматически.",
+    ),
+    "M1_SELF_FILING_DOCUMENTS_PENDING": (
+        "Для подготовки пакета нужен полный комплект исходных документов.",
+        "Загрузите минимум ДДУ и паспорт/удостоверение личности, а также все приложения, дополнительные соглашения и иные материалы по спору.",
+    ),
+    "M1_SELF_FILING_DOCUMENTS_RECEIVED": (
+        "Документы переданы юридической команде.",
+        "От вас сейчас ничего не требуется, если юрист не запросит дополнительный материал.",
+    ),
+    "M1_SELF_FILING_LAWYER_REVIEW": (
+        "Юрист проверяет полноту документов и подтверждает конкретную подсудность.",
+        "Оплата 15 000 ₽ откроется только после юридического подтверждения полного комплекта и суда.",
+    ),
+    "M1_SELF_FILING_DOCS_REQUESTED": (
+        "Для подготовки пакета не хватает документа или требуется новая версия.",
+        "Откройте документы и выполните точный запрос юриста.",
+    ),
+    "M1_SELF_FILING_PAYMENT_PENDING": (
+        "Юрист подтвердил полный комплект документов и конкретную подсудность; создано обязательство 15 000 ₽.",
+        "Откройте оплату. Двухдневный рабочий срок начнётся после подтверждённого поступления денег, при уже подтверждённом полном комплекте.",
+    ),
+    "M1_SELF_FILING_PREPARATION": (
+        "Оплата подтверждена, полный комплект принят юристом; пакет находится в подготовке.",
+        "Дополнительных действий сейчас не требуется. Следите за подтверждённым сроком и историей обращения.",
+    ),
+    "M1_SELF_FILING_READY": (
+        "Юрист утвердил итоговую версию пакета. Она доступна в защищённых документах и поставлена на email-доставку.",
+        "Откройте документы и проверьте готовый пакет. Если email не пришёл, напишите команде, не создавая новую оплату.",
+    ),
+    "M1_SELF_FILING_DELIVERED": (
+        "Готовый пакет отправлен на подтверждённый email.",
+        "Сохраните пакет и используйте его для самостоятельной подачи. Представительство в суде этой услугой не предусмотрено.",
+    ),
+    "M1_SELF_FILING_CLOSED": (
+        "Услуга подготовки пакета завершена; итоговые документы и история сохранены.",
+        "Дальнейшую подачу и участие в суде вы осуществляете самостоятельно, если отдельно не согласована другая услуга.",
     ),
     "M1_REJECTED": (
         "Стандартное ведение по результатам юридической проверки не продолжено.",
@@ -412,6 +497,10 @@ _DOCUMENT_PRIMARY_STATUSES = frozenset(
         "M1_DOCUMENTS_RECEIVED",
         "M1_LAWYER_REVIEW",
         "M1_DOCS_REQUESTED",
+        "M1_SELF_FILING_DOCUMENTS_PENDING",
+        "M1_SELF_FILING_DOCUMENTS_RECEIVED",
+        "M1_SELF_FILING_LAWYER_REVIEW",
+        "M1_SELF_FILING_DOCS_REQUESTED",
     }
 )
 
@@ -576,6 +665,13 @@ def _document_overview(documents: list[Document]) -> DocumentOverview:
 
 def _priority_action(case, documents: DocumentOverview) -> ClientAction | None:
     status = str(case.status)
+
+    if status == "M1_SELF_FILING_PROFILE_PENDING":
+        return ClientAction(
+            "Указать данные для пакета",
+            f"self_filing_profile_start:v2:{int(case.id)}",
+            "Подтвердите регион, адрес и email для выдачи готового пакета.",
+        )
 
     # Document facts may own the primary action only while the Case itself is
     # inside the M1 document collection/review contour. An old/rejected file
@@ -752,6 +848,7 @@ def _action_key(
     parts = [
         str(case.id),
         str(case.status),
+        str(getattr(case, "service_mode", "") or ""),
         str(getattr(case, "version", "") or ""),
         case.updated_at.isoformat() if case.updated_at else "",
         action.callback if action else "wait",
@@ -874,7 +971,11 @@ async def load_client_case_view(
         case_number=case.case_number,
         case_status=str(case.status),
         route=effective_route,
-        route_label=route_label(effective_route),
+        route_label=(
+            "Пакет для самостоятельной подачи"
+            if str(getattr(case, "service_mode", "") or "") == "SELF_FILING_PACKAGE"
+            else route_label(effective_route)
+        ),
         status_label=projection.status_label,
         progress_percent=get_case_progress_percent(case.status),
         now_text=projection.now_text,
