@@ -5,6 +5,7 @@ from sqlalchemy import select
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
 from app.domain.cases.self_filing_business_calendar import BusinessCalendarError
+from app.domain.cases.self_filing_email_sender import SelfFilingEmailConfigurationError
 from app.domain.cases.self_filing_service import SelfFilingError, SelfFilingService
 from app.domain.cases.service_modes import M1ServiceMode
 from app.domain.consultations.consultation_service import ConsultationService
@@ -454,6 +455,7 @@ class PaymentWebhookService:
                 except (
                     SelfFilingError,
                     BusinessCalendarError,
+                    SelfFilingEmailConfigurationError,
                     KeyError,
                     ValueError,
                 ) as error:
