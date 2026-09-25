@@ -197,6 +197,7 @@ jobs:
             app/domain/calculator/intake_service.py \
             app/domain/calculator/calculator_result_formatter.py \
             app/api/calculator_builder.py \
+            app/api/calculator_rule_editor_script.py \
             app/api/workdesk_calculator_projection.py \
             app/api/workdesk_calculator_ui_patch.py \
             app/bot/screens/calculator.py \
