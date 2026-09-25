@@ -2,6 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.api.workdesk_calculator_projection import _source_projection
+from app.domain.calculator.calculator_result_formatter import split_telegram_text
 from app.api.calculator_builder import (
     _load_review_template,
     router as calculator_builder_router,
@@ -148,3 +149,18 @@ def test_rule_editor_uses_guided_fields_with_json_kept_as_advanced_audit_surface
     assert "renderControlExamples" in script
     assert "renderSources" in script
     assert "Точное основание: статья / пункт / раздел / таблица" in script
+
+
+def test_long_client_legal_detail_is_paginated_below_telegram_limit_without_losing_links():
+    links = [f"https://example.test/legal/{index}" for index in range(300)]
+    text = "\n".join(
+        f"• Основание {index}\n  Точный пункт {index}\n  {url}"
+        for index, url in enumerate(links)
+    )
+
+    pages = split_telegram_text(text, max_chars=3500)
+
+    assert len(pages) > 1
+    assert max(len(page) for page in pages) <= 3500
+    combined = "\n".join(pages)
+    assert all(url in combined for url in links)
