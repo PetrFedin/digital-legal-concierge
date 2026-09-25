@@ -457,7 +457,6 @@ async def _present_saved(callback: CallbackQuery, state: FSMContext, db, case, r
         + format_calculation_result(result),
         reply_markup=one(
             ("⚖️ Продолжить с ведением дела", f"calc_continue_m1:v2:{case_id}"),
-            ("📄 Документы для самостоятельного суда", f"calc_self_filing:v2:{case_id}"),
             ("💬 Перейти к консультации", f"calc_to_m2:v2:{case_id}"),
             ("🔎 Основания и детализация", f"calc_details:v2:{case_id}"),
             ("📁 Моё дело", "my_case_open"),
