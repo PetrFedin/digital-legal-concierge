@@ -115,7 +115,7 @@ def test_completed_archive_buttons_use_only_guarded_navigation_callbacks():
         '"documents_open"',
         '"payments_open"',
         '"case_history_open"',
-        '"calc_start"',
+        '"preview_calc_start"',
         '"nav_home"',
     }
     for callback_literal in required:
