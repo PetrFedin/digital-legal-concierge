@@ -19,6 +19,10 @@ from app.domain.cases.consent_contract import (
     consent_contract_for_service_mode,
     resolve_consent_contract,
 )
+from app.domain.cases.case_transition_policy import (
+    ERROR_RECOVERY_TARGETS,
+    transition_allowed,
+)
 from app.domain.cases.self_filing_business_calendar import (
     BusinessCalendarError,
     BusinessCalendarSnapshot,
@@ -58,6 +62,21 @@ def test_self_filing_is_m1_service_mode_not_third_route():
     assert 'route: Mapped[str | None] = mapped_column(String(10)' in case_model
     assert "service_mode: Mapped[str | None]" in case_model
     assert '"M3"' not in source
+
+
+
+
+def test_consent_can_start_self_filing_but_error_recovery_cannot_fake_financial_delivery_states():
+    assert transition_allowed(
+        CaseStatus.CLIENT_DECISION,
+        CaseStatus.M1_SELF_FILING_PROFILE_PENDING,
+    )
+    assert CaseStatus.M1_SELF_FILING_PROFILE_PENDING in ERROR_RECOVERY_TARGETS
+    assert CaseStatus.M1_SELF_FILING_DOCUMENTS_PENDING in ERROR_RECOVERY_TARGETS
+    assert CaseStatus.M1_SELF_FILING_PAYMENT_PENDING not in ERROR_RECOVERY_TARGETS
+    assert CaseStatus.M1_SELF_FILING_PREPARATION not in ERROR_RECOVERY_TARGETS
+    assert CaseStatus.M1_SELF_FILING_READY not in ERROR_RECOVERY_TARGETS
+    assert CaseStatus.M1_SELF_FILING_DELIVERED not in ERROR_RECOVERY_TARGETS
 
 
 def test_commercial_contract_is_15k_and_two_business_days():
