@@ -11,6 +11,7 @@ from app.domain.payments.orphan_payment_review_service import (
     OrphanPaymentReviewResolutionError,
     OrphanPaymentReviewService,
 )
+from app.domain.payments.payment_types import PaymentCode
 from app.domain.payments.payment_review_service import (
     PaymentReviewResolutionError,
     PaymentReviewService,
@@ -291,7 +292,10 @@ async def list_payment_reviews(
     payments = (
         await db.execute(
             select(Payment)
-            .where(Payment.status == PaymentStatus.PAID_REVIEW)
+            .where(
+                Payment.status == PaymentStatus.PAID_REVIEW,
+                Payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT,
+            )
             .order_by(Payment.updated_at.asc(), Payment.id.asc())
         )
     ).scalars().all()
@@ -442,6 +446,19 @@ async def resolve_payment_review(
     x_admin_token: str | None = Header(default=None),
 ):
     actor = require_admin(x_admin_token)
+    payment_scope = await db.get(Payment, int(payment_id))
+    if (
+        payment_scope is not None
+        and str(payment_scope.payment_code)
+        != PaymentCode.M2_CONSULTATION_PAYMENT.value
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Этот платёж не относится к консультационной сверке. "
+                "Откройте профильный финансовый экран обращения."
+            ),
+        )
     decision = str(payload.get("decision") or "").strip().lower()
     consultation = None
     try:
