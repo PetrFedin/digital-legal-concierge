@@ -24,6 +24,7 @@ from app.bot.states import CalculatorStates
 from app.domain.calculator.calculator_result_formatter import (
     format_calculation_details,
     format_calculation_result,
+    split_telegram_text,
 )
 from app.domain.calculator.calculator_service import (
     CalculatorRouteEligibilityError,
@@ -1268,13 +1269,25 @@ async def calculation_details(callback: CallbackQuery, db):
         )
         return
 
-    await callback.message.answer(
-        format_calculation_details(calculation),
-        reply_markup=one(
-            ("📁 Моё дело", "my_case_open"),
-            ("🏠 Главная", "nav_home"),
-        ),
-    )
+    detail_pages = split_telegram_text(format_calculation_details(calculation))
+    total_pages = len(detail_pages)
+    for page_number, detail_text in enumerate(detail_pages, start=1):
+        shown = (
+            f"Страница {page_number}/{total_pages}\n\n{detail_text}"
+            if total_pages > 1
+            else detail_text
+        )
+        await callback.message.answer(
+            shown,
+            reply_markup=(
+                one(
+                    ("📁 Моё дело", "my_case_open"),
+                    ("🏠 Главная", "nav_home"),
+                )
+                if page_number == total_pages
+                else None
+            ),
+        )
     await callback.answer("Открыта сохранённая детализация расчёта.")
 
 
