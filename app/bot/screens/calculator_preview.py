@@ -25,6 +25,7 @@ from app.domain.calculator.rule_engine import (
 )
 from app.domain.calculator.rule_revision_service import CalculationRuleRevisionService
 from app.domain.statuses.case_statuses import CaseStatus
+from app.models.case import Case
 from app.models.case_creation_request import CaseCreationRequest
 
 router = Router()
@@ -443,7 +444,7 @@ async def _existing_materialized_case(db, *, client_id: int, callback_id: str):
     ).scalar_one_or_none()
     if request is None:
         return None
-    return await db.get(__import__("app.models.case", fromlist=["Case"]).Case, int(request.case_id))
+    return await db.get(Case, int(request.case_id))
 
 
 async def _present_saved(callback: CallbackQuery, state: FSMContext, db, case, result) -> None:
