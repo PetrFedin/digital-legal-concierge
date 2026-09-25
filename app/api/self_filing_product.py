@@ -13,6 +13,7 @@ from app.domain.cases.case_responsibility import lawyer_can_access_case
 from app.domain.cases.self_filing_documents import publish_self_filing_package
 from app.domain.cases.self_filing_email_sender import (
     SelfFilingEmailSender,
+    email_delivery_configuration_error,
     email_delivery_configured,
 )
 from app.domain.cases.self_filing_service import (
@@ -263,6 +264,9 @@ async def self_filing_context(
         },
         "capabilities": {
             "email_delivery_configured": email_delivery_configured(),
+            "email_delivery_configuration_error": (
+                email_delivery_configuration_error()
+            ),
             "jurisdiction_bases": sorted(JURISDICTION_BASES),
         },
     }
@@ -588,7 +592,7 @@ function render(){
  if(p.court_address)document.getElementById('courtAddress').value=p.court_address;
  if(p.jurisdiction_basis)basis.value=p.jurisdiction_basis;
  if(p.jurisdiction_note)document.getElementById('note').value=p.jurisdiction_note;
- document.getElementById('delivery').innerHTML='Статус: <b>'+esc(p.email_delivery_status)+'</b><br>Попыток: '+p.email_delivery_attempts+'<br>Message-ID: '+esc(p.email_message_id||'—')+'<br>Последняя ошибка: '+esc(p.email_last_error||'—')+'<br>Email provider: '+(data.capabilities.email_delivery_configured?'готов':'НЕ НАСТРОЕН');
+ document.getElementById('delivery').innerHTML='Статус: <b>'+esc(p.email_delivery_status)+'</b><br>Попыток: '+p.email_delivery_attempts+'<br>Message-ID: '+esc(p.email_message_id||'—')+'<br>Последняя ошибка: '+esc(p.email_last_error||'—')+'<br>Email provider: '+(data.capabilities.email_delivery_configured?'готов':'НЕ НАСТРОЕН')+(data.capabilities.email_delivery_configuration_error?'<br><span class="bad">'+esc(data.capabilities.email_delivery_configuration_error)+'</span>':'');
  [...document.querySelectorAll('button,input,textarea,select')].forEach(el=>{if(el.id==='file'||el.tagName!=='BUTTON')return;el.disabled=!a.can_mutate});
  document.getElementById('uploadCard').style.display=(c.status==='M1_SELF_FILING_PREPARATION'&&a.can_mutate)?'block':'none';
 }
