@@ -14,6 +14,7 @@ from app.config import settings
 from app.db.session import get_db
 from app.domain.cases.assignment_policy import automatic_assignment_required
 from app.domain.cases.case_timeline import get_client_visible_status
+from app.domain.cases.service_modes import M1ServiceMode
 from app.domain.documents.document_workflow import (
     DocumentAttentionState,
     DocumentWorkflowDescriptor,
@@ -199,6 +200,15 @@ def _primary_action(
     refund_ids = payment_attention.get("refund_ids") or []
     if "payment_review" in reason_codes and review_ids:
         payment_id = int(review_ids[0])
+        if (
+            str(getattr(case, "service_mode", "") or "")
+            == M1ServiceMode.SELF_FILING_PACKAGE.value
+        ):
+            return {
+                "kind": "link",
+                "label": "Сверить оплату пакета 15 000 ₽",
+                "href": f"/self-filing/ui?case_id={case.id}",
+            }
         return {
             "kind": "link",
             "label": "Сверить полученный платёж",
@@ -318,7 +328,12 @@ def _attention_item(
         "id": case.id,
         "number": case.case_number,
         "route": case.route,
-        "route_label": _route_label(case.route),
+        "route_label": (
+            "Пакет для самостоятельной подачи"
+            if str(getattr(case, "service_mode", "") or "")
+            == M1ServiceMode.SELF_FILING_PACKAGE.value
+            else _route_label(case.route)
+        ),
         "status": str(case.status),
         "status_label": get_client_visible_status(case.status),
         "lawyer_id": case.assigned_lawyer_id,
