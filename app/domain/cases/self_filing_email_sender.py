@@ -31,22 +31,51 @@ class SelfFilingEmailConfigurationError(RuntimeError):
     pass
 
 
-def email_delivery_configured() -> bool:
+def email_delivery_configuration_error() -> str | None:
     provider = str(settings.self_filing_email_provider or "").strip().lower()
     if provider != "smtp":
-        return False
-    return bool(
-        str(settings.self_filing_smtp_host or "").strip()
-        and int(settings.self_filing_smtp_port or 0) > 0
-        and str(settings.self_filing_smtp_from_email or "").strip()
-    )
+        return "SELF_FILING_EMAIL_PROVIDER должен быть smtp"
+
+    host = str(settings.self_filing_smtp_host or "").strip()
+    from_email = str(settings.self_filing_smtp_from_email or "").strip().lower()
+    username = str(settings.self_filing_smtp_username or "").strip()
+    password = str(settings.self_filing_smtp_password or "")
+    try:
+        port = int(settings.self_filing_smtp_port or 0)
+    except (TypeError, ValueError):
+        port = 0
+
+    if not host:
+        return "SELF_FILING_SMTP_HOST не задан"
+    if not 1 <= port <= 65535:
+        return "SELF_FILING_SMTP_PORT должен быть в диапазоне 1..65535"
+    if not from_email or "@" not in from_email or from_email.startswith("@") or from_email.endswith("@"):
+        return "SELF_FILING_SMTP_FROM_EMAIL задан некорректно"
+    if bool(username) != bool(password):
+        return (
+            "SELF_FILING_SMTP_USERNAME и SELF_FILING_SMTP_PASSWORD должны быть "
+            "заданы вместе либо оба отсутствовать"
+        )
+    if int(settings.self_filing_email_max_attempts or 0) < 1:
+        return "SELF_FILING_EMAIL_MAX_ATTEMPTS должен быть больше 0"
+    if int(settings.self_filing_email_timeout_seconds or 0) < 5:
+        return "SELF_FILING_EMAIL_TIMEOUT_SECONDS должен быть не меньше 5"
+
+    return None
+
+
+def email_delivery_configured() -> bool:
+    return email_delivery_configuration_error() is None
 
 
 def require_email_delivery_configured() -> None:
-    if not email_delivery_configured():
+    error = email_delivery_configuration_error()
+    if error is not None:
         raise SelfFilingEmailConfigurationError(
-            "Email-доставка пакета не настроена. Нельзя принимать оплату за услугу "
-            "до настройки и проверки SMTP."
+            "Email-доставка пакета не готова: "
+            + error
+            + ". Нельзя открывать оплату 15 000 ₽ до исправления конфигурации "
+            "и контрольной проверки доставки."
         )
 
 
@@ -306,6 +335,7 @@ class SelfFilingEmailSender:
 __all__ = [
     "SelfFilingEmailConfigurationError",
     "SelfFilingEmailSender",
+    "email_delivery_configuration_error",
     "email_delivery_configured",
     "require_email_delivery_configured",
 ]
