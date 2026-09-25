@@ -133,3 +133,18 @@ def test_reviewed_pm016_template_is_loadable_but_remains_draft_input_only():
     assert template["rate_policy"]["mode"] == "due_date"
     assert template["control_examples"]
     assert template["sources"]
+
+
+def test_rule_editor_uses_guided_fields_with_json_kept_as_advanced_audit_surface():
+    builder = read("app/api/calculator_builder.py")
+    script = read("app/api/calculator_rule_editor_script.py")
+
+    assert 'data-rule-section=' in builder
+    assert 'data-guided-editor' in builder
+    assert "Расширенный JSON — для точной проверки и диагностики" in builder
+    assert "CALCULATOR_RULE_EDITOR_SCRIPT" in builder
+    assert "renderFormula" in script
+    assert "renderRatePolicy" in script
+    assert "renderControlExamples" in script
+    assert "renderSources" in script
+    assert "Точное основание: статья / пункт / раздел / таблица" in script
