@@ -173,6 +173,8 @@ class CalculatorService:
         client_type: str = "consumer",
         unique_object: bool = False,
         manual_review_flags: tuple[str, ...] = (),
+        expected_rule_revision_key: str | None = None,
+        expected_rule_snapshot_sha256: str | None = None,
     ) -> RuleBasedCalculationResult:
         """Create one immutable Calculation or return the already completed one.
 
@@ -199,6 +201,22 @@ class CalculatorService:
         # lawyer-approved rule directory is absent, overlapping or corrupted,
         # calculation fails closed before any historical result is appended.
         revision = await self.rule_revisions.resolve(calculation_date=calculation_date)
+        if (
+            expected_rule_revision_key is not None
+            and str(revision.revision_key) != str(expected_rule_revision_key)
+        ):
+            raise CalculatorRouteEligibilityError(
+                "Версия юридических правил изменилась после предварительного просмотра. "
+                "Повторите расчёт перед сохранением."
+            )
+        if (
+            expected_rule_snapshot_sha256 is not None
+            and str(revision.rules_sha256) != str(expected_rule_snapshot_sha256)
+        ):
+            raise CalculatorRouteEligibilityError(
+                "Содержимое юридических правил изменилось после предварительного просмотра. "
+                "Повторите расчёт перед сохранением."
+            )
         result = self.calculator.calculate(
             RuleBasedCalculationInput(
                 contract_price=contract_price,
