@@ -108,20 +108,21 @@ CALCULATOR_RULE_EDITOR_SCRIPT = r"""
   function renderFormula(host, textarea) {
     renderObjectSection(host, textarea, function (root, value, commit) {
       var grid = create("div", "guided-grid");
-      var code = makeInput("Код формулы", value.code || "ddu_delay_penalty_v2");
+      var code = makeInput("Код формулы", value.code || "");
       var offset = makeInput(
         "Просрочка начинается через, дней",
-        value.delay_start_offset_days === undefined ? 1 : value.delay_start_offset_days,
+        value.delay_start_offset_days === undefined ? "" : value.delay_start_offset_days,
         { type: "number", min: "0", step: "1" }
       );
-      var divisor = makeInput("Делитель", value.divisor || "300");
-      var quant = makeInput("Шаг денежного округления", value.money_quant || "0.01");
+      var divisor = makeInput("Делитель", value.divisor || "");
+      var quant = makeInput("Шаг денежного округления", value.money_quant || "");
       var rounding = makeInput(
         "Режим округления",
-        value.rounding_mode || "ROUND_HALF_UP",
+        value.rounding_mode || "",
         {
           type: "select",
           choices: [
+            ["", "Не выбрано"],
             ["ROUND_HALF_UP", "ROUND_HALF_UP"],
             ["ROUND_HALF_EVEN", "ROUND_HALF_EVEN"],
             ["ROUND_DOWN", "ROUND_DOWN"],
@@ -131,10 +132,10 @@ CALCULATOR_RULE_EDITOR_SCRIPT = r"""
       );
       var stage = makeInput(
         "Когда округлять",
-        value.rounding_stage || "total",
+        value.rounding_stage || "",
         {
           type: "select",
-          choices: [["total", "Только итог"], ["segment", "Каждый сегмент"]]
+          choices: [["", "Не выбрано"], ["total", "Только итог"], ["segment", "Каждый сегмент"]]
         }
       );
       var refs = makeInput("Источники (ID через запятую)", refsText(value.source_refs));
@@ -162,8 +163,8 @@ CALCULATOR_RULE_EDITOR_SCRIPT = r"""
       var grid = create("div", "guided-grid");
       var mode = makeInput(
         "Принцип ставки",
-        value.mode || "due_date",
-        { type: "select", choices: [["due_date", "Ставка на дату исполнения обязательства"]] }
+        value.mode || "",
+        { type: "select", choices: [["", "Не выбрано"], ["due_date", "Ставка на дату исполнения обязательства"]] }
       );
       var from = makeInput("Справочник подтверждён с", value.coverage_from || "", { type: "date" });
       var through = makeInput("Справочник подтверждён по", value.coverage_through || "", { type: "date" });
@@ -299,8 +300,8 @@ CALCULATOR_RULE_EDITOR_SCRIPT = r"""
     renderObjectSection(host, textarea, function (root, value, commit) {
       var grid = create("div", "guided-two");
       var groups = [
-        ["consumer", "Гражданин для личных нужд", "2"],
-        ["other", "Иной участник", "1"]
+        ["consumer", "Гражданин для личных нужд"],
+        ["other", "Иной участник"]
       ];
       var controls = {};
       groups.forEach(function (group) {
@@ -309,7 +310,7 @@ CALCULATOR_RULE_EDITOR_SCRIPT = r"""
         card.appendChild(create("h4", "", group[1]));
         var inner = create("div", "guided-grid");
         var current = value[code] || {};
-        var multiplier = makeInput("Коэффициент", current.multiplier || group[2]);
+        var multiplier = makeInput("Коэффициент", current.multiplier || "");
         var refs = makeInput("Источники (ID)", refsText(current.source_refs));
         inner.appendChild(multiplier.wrapper);
         inner.appendChild(refs.wrapper);
@@ -342,14 +343,14 @@ CALCULATOR_RULE_EDITOR_SCRIPT = r"""
       var grid = create("div", "guided-grid");
       var enabled = makeInput(
         "Автоматическая ветка разрешена",
-        value.enabled === false ? "false" : "true",
-        { type: "select", choices: [["true", "Да"], ["false", "Нет — только юрист"]] }
+        value.enabled === true ? "true" : value.enabled === false ? "false" : "",
+        { type: "select", choices: [["", "Не выбрано"], ["true", "Да"], ["false", "Нет — только юрист"]] }
       );
-      var multiplier = makeInput("Коэффициент", value.multiplier || "1");
-      var cap = makeInput("Предельная сумма от цены ДДУ, доля", value.amount_cap_percent || "0.05");
+      var multiplier = makeInput("Коэффициент", value.multiplier || "");
+      var cap = makeInput("Предельная сумма от цены ДДУ, доля", value.amount_cap_percent || "");
       var months = makeInput(
         "Ручная проверка после, месяцев",
-        value.manual_review_after_months === undefined ? 30 : value.manual_review_after_months,
+        value.manual_review_after_months === undefined ? "" : value.manual_review_after_months,
         { type: "number", min: "1", step: "1" }
       );
       var refs = makeInput("Источники (ID)", refsText(value.source_refs));
@@ -357,7 +358,7 @@ CALCULATOR_RULE_EDITOR_SCRIPT = r"""
       root.appendChild(grid);
       bindInputs([enabled.input, multiplier.input, cap.input, months.input, refs.input], function () {
         commit({
-          enabled: enabled.input.value === "true",
+          enabled: enabled.input.value === "true" ? true : enabled.input.value === "false" ? false : null,
           multiplier: multiplier.input.value.trim(),
           amount_cap_percent: cap.input.value.trim(),
           manual_review_after_months: Number(months.input.value),
