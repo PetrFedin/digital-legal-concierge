@@ -386,6 +386,7 @@ class SelfFilingService:
         court_address: str,
         jurisdiction_basis: str,
         jurisdiction_note: str,
+        completeness_confirmed: bool,
     ):
         case = await self._lock_case(case_id)
         if self._case_status(case) not in {
@@ -396,7 +397,16 @@ class SelfFilingService:
         package = await self.require_package(case_id=case.id, for_update=True)
         if not package.email_confirmed_at or not package.delivery_email:
             raise SelfFilingError("Клиент ещё не подтвердил email для выдачи пакета")
+        if completeness_confirmed is not True:
+            raise SelfFilingError(
+                "Юрист должен явно подтвердить, что по материалам обращения проверены "
+                "ДДУ, документ личности, все имеющиеся приложения и дополнительные "
+                "соглашения, а также все иные документы, необходимые для подготовки пакета"
+            )
 
+        # Machine checks can prove that known files are approved; they cannot
+        # prove that an appendix which was never uploaded does not exist. The
+        # explicit lawyer attestation above owns that legal completeness fact.
         await self._approved_document_gate(case_id=case.id)
 
         basis = str(jurisdiction_basis or "").strip().upper()
@@ -469,6 +479,11 @@ class SelfFilingService:
                 "court_name": clean_court,
                 "court_address": clean_address,
                 "jurisdiction_basis": basis,
+                "lawyer_completeness_attested": True,
+                "completeness_scope": (
+                    "DDU + identity + all known appendices/additional agreements "
+                    "+ other materials required by lawyer"
+                ),
                 "payment_id": int(payment.id),
                 "payment_amount": str(payment.amount),
             },
