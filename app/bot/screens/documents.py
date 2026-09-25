@@ -9,6 +9,8 @@ from aiogram.types import CallbackQuery, Message
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.states import DocumentUploadStates
+from app.domain.cases.self_filing_service import SelfFilingService
+from app.domain.cases.service_modes import M1ServiceMode
 from app.domain.cases.client_case_scope import (
     active_or_latest_completed_m1_case_for_user,
     latest_completed_m1_case_for_user,
@@ -34,6 +36,7 @@ TYPES = [
     ("Акт", "TRANSFER_ACT"),
     ("Платёжные документы", "PAYMENT_PROOF"),
     ("Переписка", "CORRESPONDENCE"),
+    ("Паспорт / удостоверение личности", "PASSPORT"),
     ("Другой документ", "OTHER"),
 ]
 _DOCUMENT_TYPE_CODES = {code for _, code in TYPES}
@@ -45,9 +48,15 @@ DOC_UPLOAD_ALIASES = {
     "doc_upload_act": "TRANSFER_ACT",
     "doc_upload_payment": "PAYMENT_PROOF",
     "doc_upload_correspondence": "CORRESPONDENCE",
+    "doc_upload_passport": "PASSPORT",
     "doc_upload_other": "OTHER",
 }
 
+_SELF_FILING_COLLECTION_STATUSES = {
+    CaseStatus.M1_SELF_FILING_DOCUMENTS_PENDING,
+    CaseStatus.M1_SELF_FILING_DOCUMENTS_RECEIVED,
+    CaseStatus.M1_SELF_FILING_DOCS_REQUESTED,
+}
 _M1_COLLECTION_STATUSES = {
     CaseStatus.M1_DOCUMENTS_PENDING,
     CaseStatus.M1_DOCUMENTS_RECEIVED,
@@ -297,6 +306,13 @@ def _recommended_step(case, documents: list) -> tuple[str, list[tuple[str, str]]
             ],
         )
     if not documents:
+        if str(case.service_mode or "") == M1ServiceMode.SELF_FILING_PACKAGE.value:
+            return (
+                "Загрузите минимум ДДУ и паспорт/удостоверение личности, а также "
+                "все приложения и дополнительные соглашения к ДДУ. Полноту "
+                "комплекта перед оплатой отдельно подтверждает юрист.",
+                [("➕ Загрузить документ", "documents_upload_open")],
+            )
         return (
             "Загрузите ДДУ — без него дело нельзя передать юристу.",
             [("➕ Загрузить документ", "documents_upload_open")],
@@ -460,11 +476,17 @@ async def upload_menu(callback: CallbackQuery, state: FSMContext, db):
         ]
     )
 
-    requirement = (
-        "Для передачи дела на проверку обязательно загрузите актуальный ДДУ."
-        if case.route == "M1"
-        else "Для консультации документы необязательны, но помогут юристу подготовиться."
-    )
+    if str(case.service_mode or "") == M1ServiceMode.SELF_FILING_PACKAGE.value:
+        requirement = (
+            "Для пакета самостоятельной подачи минимум обязательны ДДУ и паспорт/"
+            "удостоверение личности. Также загрузите все приложения, дополнительные "
+            "соглашения и относящиеся к спору материалы. Юрист отдельно подтверждает "
+            "полноту: бот не считает отсутствие приложения доказательством, что его нет."
+        )
+    elif case.route == "M1":
+        requirement = "Для передачи дела на проверку обязательно загрузите актуальный ДДУ."
+    else:
+        requirement = "Для консультации документы необязательны, но помогут юристу подготовиться."
     await callback.message.edit_text(
         "➕ Добавить документ\n\n"
         "Выберите тип, затем прикрепите PDF, DOCX, JPG или PNG. Каждый файл "
@@ -930,19 +952,41 @@ async def finish(callback: CallbackQuery, db):
         await callback.message.edit_text(text, reply_markup=one(*buttons))
         return
 
-    required_types = {"DDU"} if case.route == "M1" else set()
+    is_self_filing = (
+        str(case.service_mode or "") == M1ServiceMode.SELF_FILING_PACKAGE.value
+        and _case_status(case) in _SELF_FILING_COLLECTION_STATUSES
+    )
+    required_types = (
+        {"DDU", "PASSPORT"}
+        if is_self_filing
+        else {"DDU"} if case.route == "M1" else set()
+    )
     try:
         await callback.answer("Передаём документы юристу…")
     except Exception:
         logger.warning("Document review submission callback acknowledgement failed")
     try:
-        new_count = await document_service.send_documents_to_review(
-            case=case,
-            actor_id=user.id,
-            required_types=required_types,
-        )
+        if is_self_filing:
+            new_count = await SelfFilingService(db).submit_documents(
+                case_id=int(case.id),
+                client_id=int(user.id),
+            )
+        else:
+            new_count = await document_service.send_documents_to_review(
+                case=case,
+                actor_id=user.id,
+                required_types=required_types,
+            )
         status = _case_status(case)
-        if case.route == "M1" and status in _M1_COLLECTION_STATUSES:
+        if is_self_filing:
+            response_text = (
+                "✅ Документы переданы юристу на проверку.\n\n"
+                f"Передано файлов: {new_count}.\n"
+                "Минимум ДДУ + паспорт принят к проверке. Юрист проверит все "
+                "приложения, дополнительные соглашения и отдельно подтвердит "
+                "конкретный суд/подсудность до выставления 15 000 ₽."
+            )
+        elif case.route == "M1" and status in _M1_COLLECTION_STATUSES:
             await ctx.case_service.change_status(
                 case=case,
                 next_status=CaseStatus.M1_LAWYER_REVIEW,
