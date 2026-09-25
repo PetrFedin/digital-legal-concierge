@@ -439,38 +439,25 @@ async def start(message: Message, db, state: FSMContext):
 
 @router.message(lambda m: m.text == "🧮 Рассчитать неустойку")
 async def menu_calc(message: Message, state: FSMContext, db):
-    """Compatibility handler: calculator remains available with active Cases.
-
-    reply_menu_direct owns the canonical persistent-menu path and is registered
-    before this router. Keeping this historical handler behavior-identical makes
-    correctness independent from router order while old deployments/messages are
-    still being retired.
-    """
+    """Compatibility entry with the same non-persistent preview contract."""
 
     if await _guard_message_draft(message, state):
         return
     await state.clear()
-    ctx = BotContextService(db)
-    user = await ctx.get_user_from_message(message)
-    active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
-    await db.commit()
-    if active_cases:
-        await message.answer(
-            "🧮 НОВЫЙ РАСЧЁТ\n\n"
-            "Расчёт доступен независимо от уже открытых дел. Если вы продолжите, будет создано отдельное обращение; существующие M1/M2 дела, документы и статусы не изменятся.\n\n"
-            f"Сейчас активных обращений: {len(active_cases)}.",
-            reply_markup=one(
-                ("▶️ Начать новый расчёт", "calc_start"),
-                ("📁 Выбрать текущее дело", "my_cases_open"),
-                ("🏠 Главная", "nav_home"),
-            ),
-        )
-        return
+    active_count, _completed_case = await _fresh_start_state(db, message)
+    await db.rollback()
+    note = (
+        f"\n\nСохранённых активных обращений: {active_count}. Они не изменятся."
+        if active_count
+        else ""
+    )
     await message.answer(
-        "🧮 ПРЕДВАРИТЕЛЬНЫЙ РАСЧЁТ\n\n"
-        "Ответьте на несколько вопросов о ДДУ. Расчёт предварительный и не является юридическим заключением.",
+        "🧮 БЫСТРЫЙ РАСЧЁТ БЕЗ СОХРАНЕНИЯ\n\n"
+        "Пока вы не нажмёте «Сохранить расчёт и продолжить», бот не создаёт новое дело "
+        "и не записывает ответы в историю."
+        + note,
         reply_markup=one(
-            ("▶️ Начать расчёт", "calc_start"),
+            ("▶️ Начать быстрый расчёт", "preview_calc_start"),
             ("🏠 Главная", "nav_home"),
         ),
     )
