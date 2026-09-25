@@ -141,7 +141,7 @@ async def test_rule_lifecycle_requires_legal_sha_before_approval_and_production(
                 effective_to=approved.effective_to,
                 rules=approved.rules,
                 note=approved.note,
-                expected_updated_at=approved.updated_at,
+                expected_updated_at=None,
                 actor_type="admin",
                 actor_id=101,
             )
