@@ -449,19 +449,26 @@ async def _existing_materialized_case(db, *, client_id: int, callback_id: str):
 
 async def _present_saved(callback: CallbackQuery, state: FSMContext, db, case, result) -> None:
     case_id = int(case.id)
+    buttons: list[tuple[str, str]] = []
+    if int(result.delay_days or 0) > 0 and Decimal(result.penalty_amount or 0) > 0:
+        buttons.append(
+            ("⚖️ Продолжить с ведением дела", f"calc_continue_m1:v2:{case_id}")
+        )
+    buttons.extend(
+        [
+            ("💬 Перейти к консультации", f"calc_to_m2:v2:{case_id}"),
+            ("🔎 Основания и детализация", f"calc_details:v2:{case_id}"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ]
+    )
     await state.clear()
     await db.commit()
     await _safe_edit(
         callback,
         "✅ Расчёт сохранён в отдельное обращение. Теперь он доступен в «Моём деле».\n\n"
         + format_calculation_result(result),
-        reply_markup=one(
-            ("⚖️ Продолжить с ведением дела", f"calc_continue_m1:v2:{case_id}"),
-            ("💬 Перейти к консультации", f"calc_to_m2:v2:{case_id}"),
-            ("🔎 Основания и детализация", f"calc_details:v2:{case_id}"),
-            ("📁 Моё дело", "my_case_open"),
-            ("🏠 Главная", "nav_home"),
-        ),
+        reply_markup=one(*buttons),
     )
 
 
