@@ -10,6 +10,7 @@ from app.models.case import Case
 CLIENT_COMPLETED_CASE_STATUSES = frozenset(
     {
         CaseStatus.M1_CLOSED,
+        CaseStatus.M1_SELF_FILING_CLOSED,
         CaseStatus.M2_CLOSED,
         CaseStatus.ARCHIVED,
     }
@@ -141,7 +142,14 @@ async def latest_completed_strict_m1_case_for_user(
     result = await db.execute(
         select(Case)
         .where(Case.client_id == user_id)
-        .where(Case.status == CaseStatus.M1_CLOSED)
+        .where(
+            Case.status.in_(
+                {
+                    CaseStatus.M1_CLOSED,
+                    CaseStatus.M1_SELF_FILING_CLOSED,
+                }
+            )
+        )
         .order_by(*_completed_ordering())
         .limit(1)
     )
