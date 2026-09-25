@@ -32,6 +32,7 @@ M1_EXPECTED_PAYMENT_CASE_STATUSES = {
     PaymentCode.M1_INITIAL_PAYMENT: CaseStatus.M1_WAITING_PAYMENT_30000,
     PaymentCode.M1_COURT_PAYMENT: CaseStatus.M1_WAITING_PAYMENT_70000,
     PaymentCode.M1_SUCCESS_FEE: CaseStatus.M1_WAITING_SUCCESS_FEE,
+    PaymentCode.M1_SELF_FILING_PACKAGE: CaseStatus.M1_SELF_FILING_PAYMENT_PENDING,
 }
 
 
@@ -356,41 +357,73 @@ class PaymentWebhookService:
                 actor_id=actor_id,
                 occurred_at=occurred_at,
             )
-            mapping = {
-                PaymentCode.M1_INITIAL_PAYMENT: [
-                    CaseStatus.M1_PAYMENT_30000_RECEIVED,
-                    CaseStatus.M1_POWER_OF_ATTORNEY,
-                ],
-                PaymentCode.M1_COURT_PAYMENT: [
-                    CaseStatus.M1_PAYMENT_70000_RECEIVED,
-                    CaseStatus.M1_ENFORCEMENT,
-                ],
-                PaymentCode.M1_SUCCESS_FEE: [
-                    CaseStatus.M1_SUCCESS_FEE_RECEIVED,
-                    CaseStatus.M1_CLOSED,
-                ],
-            }
-            if payment.payment_code == PaymentCode.M1_SUCCESS_FEE:
-                case.close_reason = "M1_SUCCESS_FEE_PAID"
-            for status in mapping.get(payment.payment_code, []):
-                await self.cases.change_status(
+            if payment.payment_code == PaymentCode.M1_SELF_FILING_PACKAGE:
+                # This payment opens a time-bound deliverable, not the ordinary
+                # M1 POA/court sequence. SLA authority lives in the dedicated
+                # self-filing service and fails closed when the controlled
+                # business calendar is not configured far enough.
+                from app.domain.cases.self_filing_service import SelfFilingService
+
+                package = await SelfFilingService(
+                    self.db
+                ).start_preparation_after_payment(
                     case=case,
-                    next_status=status,
-                    actor_type="system",
-                    actor_id=None,
-                    comment=f"Автопереход после оплаты {payment.payment_code}",
+                    payment=payment,
+                    actor_type=actor_type,
+                    actor_id=actor_id,
+                    occurred_at=occurred_at,
                 )
-            await self._emit_m1_paid_next_step(payment=payment, case=case)
-            if (
-                payment.payment_code == PaymentCode.M1_SUCCESS_FEE
-                and case.status == CaseStatus.M1_CLOSED
-            ):
                 await self.notifications.emit(
-                    event_code="M1_CLOSED",
+                    event_code="SELF_FILING_PAYMENT_CONFIRMED",
                     case_id=case.id,
-                    payload={"case_number": case.case_number},
-                    dedupe_key=f"payment:{payment.id}:m1-closed",
+                    user_id=case.client_id,
+                    payload={
+                        "case_number": case.case_number,
+                        "payment_id": payment.id,
+                        "sla_due_at": (
+                            package.sla_due_at.isoformat()
+                            if package.sla_due_at
+                            else None
+                        ),
+                    },
+                    dedupe_key=f"payment:{payment.id}:self-filing-confirmed",
                 )
+            else:
+                mapping = {
+                    PaymentCode.M1_INITIAL_PAYMENT: [
+                        CaseStatus.M1_PAYMENT_30000_RECEIVED,
+                        CaseStatus.M1_POWER_OF_ATTORNEY,
+                    ],
+                    PaymentCode.M1_COURT_PAYMENT: [
+                        CaseStatus.M1_PAYMENT_70000_RECEIVED,
+                        CaseStatus.M1_ENFORCEMENT,
+                    ],
+                    PaymentCode.M1_SUCCESS_FEE: [
+                        CaseStatus.M1_SUCCESS_FEE_RECEIVED,
+                        CaseStatus.M1_CLOSED,
+                    ],
+                }
+                if payment.payment_code == PaymentCode.M1_SUCCESS_FEE:
+                    case.close_reason = "M1_SUCCESS_FEE_PAID"
+                for status in mapping.get(payment.payment_code, []):
+                    await self.cases.change_status(
+                        case=case,
+                        next_status=status,
+                        actor_type="system",
+                        actor_id=None,
+                        comment=f"Автопереход после оплаты {payment.payment_code}",
+                    )
+                await self._emit_m1_paid_next_step(payment=payment, case=case)
+                if (
+                    payment.payment_code == PaymentCode.M1_SUCCESS_FEE
+                    and case.status == CaseStatus.M1_CLOSED
+                ):
+                    await self.notifications.emit(
+                        event_code="M1_CLOSED",
+                        case_id=case.id,
+                        payload={"case_number": case.case_number},
+                        dedupe_key=f"payment:{payment.id}:m1-closed",
+                    )
 
         await add_case_history_event(
             self.db,
