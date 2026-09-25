@@ -26,6 +26,7 @@ from app.domain.calculator.calculator_result_formatter import (
     format_calculation_result,
     split_telegram_text,
 )
+from app.domain.cases.service_modes import M1ServiceMode
 from app.domain.calculator.calculator_service import (
     CalculatorRouteEligibilityError,
     CalculatorService,
@@ -1231,7 +1232,15 @@ async def calculate_show_callback(callback: CallbackQuery, state: FSMContext, db
 def result_kb(case_id: int, *, allow_m1: bool = True):
     items: list[tuple[str, str]] = []
     if allow_m1:
-        items.append(("Продолжить ведение дела", f"calc_continue_m1:v2:{case_id}"))
+        items.extend(
+            [
+                ("⚖️ Полное ведение дела", f"calc_continue_m1:v2:{case_id}"),
+                (
+                    "📄 Подготовить пакет — в суд пойду сам",
+                    f"calc_self_filing:v2:{case_id}",
+                ),
+            ]
+        )
     items.extend(
         [
             ("🔎 Основания и детализация", f"calc_details:v2:{case_id}"),
@@ -1384,6 +1393,7 @@ async def to_m1(callback: CallbackQuery, db):
             case_id=case_id,
         )
         await CalculatorService(db).require_m1_eligible_calculation(case_id=case_id)
+        case.service_mode = M1ServiceMode.FULL_REPRESENTATION.value
         await ctx.case_service.change_status(
             case=case,
             next_status=CaseStatus.CLIENT_DECISION,
