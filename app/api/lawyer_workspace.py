@@ -30,6 +30,7 @@ router = APIRouter(prefix="/lawyer/workspace", tags=["lawyer-workspace"])
 CLOSED_CASE_STATUSES = {
     CaseStatus.M1_REJECTED,
     CaseStatus.M1_CLOSED,
+    CaseStatus.M1_SELF_FILING_CLOSED,
     CaseStatus.M2_CLOSED,
     CaseStatus.ARCHIVED,
 }
