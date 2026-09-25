@@ -5,15 +5,24 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.calculator.calculator_service import CalculatorService
+from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
+from app.domain.cases.service_modes import M1ServiceMode
 from app.domain.statuses.case_statuses import CaseStatus, RouteCode
 from app.models.case import Case
 
 
 CHOICE_M1 = "m1"
+CHOICE_SELF_FILING = "self_filing"
 CHOICE_M2 = "m2"
 CHOICE_POSTPONE = "postpone"
-_ALLOWED_CHOICES = {CHOICE_M1, CHOICE_M2, CHOICE_POSTPONE}
+_ALLOWED_CHOICES = {
+    CHOICE_M1,
+    CHOICE_SELF_FILING,
+    CHOICE_M2,
+    CHOICE_POSTPONE,
+}
 
 
 class PostCalculationDecisionError(ValueError):
@@ -41,6 +50,7 @@ class PostCalculationDecisionService:
     def __init__(self, db: AsyncSession):
         self.db = db
         self.cases = CaseService(db)
+        self.calculator = CalculatorService(db)
 
     async def _lock_case(self, *, client_id: int, case_id: int) -> Case | None:
         return (
@@ -110,13 +120,40 @@ class PostCalculationDecisionService:
                 changed=False,
             )
 
-        if normalized_choice == CHOICE_M1:
+        if normalized_choice in {CHOICE_M1, CHOICE_SELF_FILING}:
+            # A stale/zero result must never open either paid M1 service. The
+            # latest immutable calculation is the route-eligibility authority.
+            await self.calculator.require_m1_eligible_calculation(case_id=int(case.id))
+            requested_mode = (
+                M1ServiceMode.SELF_FILING_PACKAGE.value
+                if normalized_choice == CHOICE_SELF_FILING
+                else M1ServiceMode.FULL_REPRESENTATION.value
+            )
+            mode_changed = str(case.service_mode or "") != requested_mode
+            if mode_changed:
+                old_mode = case.service_mode
+                case.service_mode = requested_mode
+                await add_case_history_event(
+                    self.db,
+                    actor_type="client",
+                    actor_id=int(client_id),
+                    case_id=int(case.id),
+                    action="M1_SERVICE_MODE_SELECTED",
+                    old_value={"service_mode": old_mode},
+                    new_value={"service_mode": requested_mode},
+                )
+            outcome = (
+                "self_filing_consent_required"
+                if normalized_choice == CHOICE_SELF_FILING
+                else "m1_consent_required"
+            )
             if status == CaseStatus.CLIENT_DECISION:
+                await self.db.flush()
                 return PostCalculationDecisionResult(
                     case=case,
                     choice=normalized_choice,
-                    outcome="m1_consent_required",
-                    changed=False,
+                    outcome=outcome,
+                    changed=mode_changed,
                 )
             await self.cases.change_status(
                 case=case,
@@ -124,18 +161,23 @@ class PostCalculationDecisionService:
                 actor_type="client",
                 actor_id=int(client_id),
                 comment=(
-                    "Клиент выбрал ведение дела после расчёта. "
+                    "Клиент выбрал подготовку пакета для самостоятельной подачи. "
+                    "Маршрут M1 ещё не начат: требуется отдельное подтверждение согласия."
+                    if normalized_choice == CHOICE_SELF_FILING
+                    else
+                    "Клиент выбрал полное ведение дела после расчёта. "
                     "Маршрут M1 ещё не начат: требуется отдельное подтверждение согласия."
                 ),
             )
             return PostCalculationDecisionResult(
                 case=case,
                 choice=normalized_choice,
-                outcome="m1_consent_required",
+                outcome=outcome,
                 changed=True,
             )
 
         if normalized_choice == CHOICE_M2:
+            case.service_mode = None
             await self.cases.transfer_to_m2(
                 case=case,
                 actor_type="client",
@@ -153,6 +195,7 @@ class PostCalculationDecisionService:
         # only opened the M1 consent step, return to the neutral calculated
         # state; the calculation itself remains stored.
         if status == CaseStatus.CLIENT_DECISION:
+            case.service_mode = None
             await self.cases.change_status(
                 case=case,
                 next_status=CaseStatus.CALCULATED,
@@ -180,6 +223,7 @@ class PostCalculationDecisionService:
 
 __all__ = [
     "CHOICE_M1",
+    "CHOICE_SELF_FILING",
     "CHOICE_M2",
     "CHOICE_POSTPONE",
     "PostCalculationDecisionError",
