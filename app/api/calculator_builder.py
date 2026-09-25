@@ -458,6 +458,14 @@ async def calculator_ui(
         effective_to = item.effective_to.isoformat() if item.effective_to else ""
         lifecycle_actions: list[str] = []
 
+        if status == "DRAFT" and is_legal_reviewer and not is_admin:
+            lifecycle_actions.append(
+                f"""
+                <form class="inline" method="post" action="/calculator-builder/{item.id}/validate">
+                  <button class="validate" type="submit">Проверить контрольные примеры</button>
+                </form>
+                """
+            )
         if status == "DRAFT" and is_legal_reviewer:
             lifecycle_actions.append(
                 f"""
@@ -782,8 +790,11 @@ async def validate_rule_revision(
         if recovery is not None:
             return recovery
         raise
+    example_codes = ", ".join(str(item.get("code") or "—") for item in outcomes)
     return _redirect_notice(
-        f"Проверка пройдена: схема валидна, контрольных примеров успешно {len(outcomes)}."
+        "Проверка пройдена: схема валидна, "
+        f"контрольных примеров успешно {len(outcomes)}"
+        + (f" ({example_codes})." if example_codes else ".")
     )
 
 
