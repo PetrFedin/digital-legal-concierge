@@ -11,6 +11,36 @@ DEFAULT_SETTINGS = {
         "type": "money",
         "editable": True,
     },
+    "payments.m1_self_filing_package": {
+        "title": "Подготовка пакета документов для самостоятельной подачи",
+        "value": 15000,
+        "type": "money",
+        "editable": True,
+    },
+    "self_filing.sla_business_days": {
+        "title": "Срок подготовки пакета, рабочих дней",
+        "value": 2,
+        "type": "integer",
+        "editable": True,
+    },
+    "self_filing.business_calendar_coverage_through": {
+        "title": "Календарь рабочих дней подтверждён по",
+        "value": "",
+        "type": "text",
+        "editable": True,
+    },
+    "self_filing.non_working_dates": {
+        "title": "Дополнительные нерабочие даты YYYY-MM-DD",
+        "value": [],
+        "type": "list",
+        "editable": True,
+    },
+    "self_filing.additional_working_dates": {
+        "title": "Дополнительные рабочие даты YYYY-MM-DD",
+        "value": [],
+        "type": "list",
+        "editable": True,
+    },
     "payments.m1_success_fee_percent": {
         "title": "Success fee %",
         "value": 10,
