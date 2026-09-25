@@ -6,7 +6,6 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
-from fastapi.routing import iter_route_contexts
 
 from app.config import settings
 from app.domain.cases.consent_contract import (
@@ -277,13 +276,18 @@ def test_staff_surface_and_workdesk_are_registered_and_case_bound():
     app = create_app()
     routes = {
         (route.path, method)
-        for route in iter_route_contexts(app.routes)
+        for route in app.routes
+        if hasattr(route, "path") and hasattr(route, "methods")
         for method in (route.methods or set())
     }
     assert ("/self-filing/cases/{case_id}", "GET") in routes
     assert ("/self-filing/cases/{case_id}/review/start", "POST") in routes
     assert ("/self-filing/cases/{case_id}/request-documents", "POST") in routes
     assert ("/self-filing/cases/{case_id}/approve-for-payment", "POST") in routes
+    assert (
+        "/self-filing/cases/{case_id}/payment-review/{payment_id}/resolve",
+        "POST",
+    ) in routes
     assert ("/self-filing/cases/{case_id}/package", "POST") in routes
     assert ("/self-filing/cases/{case_id}/email/retry", "POST") in routes
     assert ("/self-filing/ui", "GET") in routes
