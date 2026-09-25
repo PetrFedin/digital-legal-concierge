@@ -99,6 +99,25 @@ def _result_from_persisted(calculation: Calculation) -> RuleBasedCalculationResu
         rule_snapshot_sha256=str(calculation.rule_snapshot_sha256),
         rule_snapshot=dict(calculation.rule_snapshot),
         applied_segments=list(calculation.applied_segments or []),
+        unique_object=bool(getattr(calculation, "unique_object", False)),
+        gross_penalty_amount=(
+            Decimal(calculation.gross_penalty_amount)
+            if getattr(calculation, "gross_penalty_amount", None) is not None
+            else amount
+        ),
+        amount_cap=(
+            Decimal(calculation.amount_cap)
+            if getattr(calculation, "amount_cap", None) is not None
+            else None
+        ),
+        amount_cap_applied=bool(getattr(calculation, "amount_cap_applied", False)),
+        manual_review_required=bool(
+            getattr(calculation, "manual_review_required", False)
+        ),
+        manual_review_reasons=list(
+            getattr(calculation, "manual_review_reasons", None) or []
+        ),
+        excluded_segments=list(getattr(calculation, "excluded_segments", None) or []),
         is_preliminary=bool(calculation.is_preliminary),
         warning=warning,
     )
@@ -152,6 +171,8 @@ class CalculatorService:
         object_transferred: bool,
         actual_transfer_date: date | None = None,
         client_type: str = "consumer",
+        unique_object: bool = False,
+        manual_review_flags: tuple[str, ...] = (),
     ) -> RuleBasedCalculationResult:
         """Create one immutable Calculation or return the already completed one.
 
@@ -186,6 +207,8 @@ class CalculatorService:
                 object_transferred=object_transferred,
                 actual_transfer_date=actual_transfer_date,
                 client_type=client_type,
+                unique_object=bool(unique_object),
+                manual_review_flags=tuple(manual_review_flags),
             ),
             rule_revision_id=int(revision.id),
             rule_revision_key=str(revision.revision_key),
@@ -207,13 +230,20 @@ class CalculatorService:
             key_rate=result.key_rate,
             consumer_multiplier=result.consumer_multiplier,
             client_type=result.client_type,
+            unique_object=result.unique_object,
             penalty_amount=result.penalty_amount,
+            gross_penalty_amount=result.gross_penalty_amount,
+            amount_cap=result.amount_cap,
+            amount_cap_applied=result.amount_cap_applied,
+            manual_review_required=result.manual_review_required,
+            manual_review_reasons=result.manual_review_reasons,
             formula_version=result.formula_version,
             rule_revision_id=result.rule_revision_id,
             rule_revision_key=result.rule_revision_key,
             rule_snapshot_sha256=result.rule_snapshot_sha256,
             rule_snapshot=result.rule_snapshot,
             applied_segments=result.applied_segments,
+            excluded_segments=result.excluded_segments,
             is_preliminary=True,
         )
         self.db.add(calculation)
@@ -248,10 +278,13 @@ class CalculatorService:
             "calculation_date": result.calculation_date.isoformat(),
             "consumer_multiplier": str(result.consumer_multiplier),
             "client_type": result.client_type,
+            "unique_object": result.unique_object,
             "formula_version": result.formula_version,
             "rule_revision_id": result.rule_revision_id,
             "rule_revision_key": result.rule_revision_key,
             "rule_snapshot_sha256": result.rule_snapshot_sha256,
+            "amount_cap_applied": result.amount_cap_applied,
+            "manual_review_required": result.manual_review_required,
         }
         if result.key_rate is not None:
             history_value["key_rate"] = str(result.key_rate)

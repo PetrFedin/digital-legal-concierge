@@ -160,6 +160,72 @@ jobs:
       - name: Run PM-019 deterministic projection proof
         run: pytest -q tests/test_pm019_my_case_projection.py
 
+  pm016-rule-editor-proof:
+    name: PM-016 v2 legal rule editor proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      APP_ENV: test
+      DATABASE_URL: sqlite+aiosqlite:///./pm016_ci.db
+      BOT_TOKEN: CHANGE_ME
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: admin-change-me
+      ADMIN_API_TOKEN: ci-admin-token-change-me
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[test]"
+
+      - name: Compile PM-016 v2 sources and proofs
+        run: |
+          python -m compileall -q \
+            app/domain/calculator/rule_engine.py \
+            app/domain/calculator/rule_revision_service.py \
+            app/domain/calculator/calculator_service.py \
+            app/domain/calculator/intake_service.py \
+            app/domain/calculator/calculator_result_formatter.py \
+            app/api/calculator_builder.py \
+            app/api/calculator_rule_editor_script.py \
+            app/api/workdesk_calculator_projection.py \
+            app/api/workdesk_calculator_ui_patch.py \
+            app/bot/screens/calculator.py \
+            migrations/versions/20260924_0025_calculator_rule_v2_legal_review.py \
+            tests/test_calculator_rule_engine_v2.py \
+            tests/test_calculator_rule_lifecycle_v2.py \
+            tests/test_calculator_staff_surfaces_v38.py \
+            tests/test_calculator_durable_intake_v38.py \
+            tests/test_telegram_calculator_recovery_flow.py
+
+      - name: Prove migration 0025 and ORM parity
+        run: |
+          rm -f pm016_ci.db
+          alembic upgrade head
+          alembic current
+          alembic check
+
+      - name: Run PM-016 v2 bounded regression proof
+        run: |
+          pytest -q \
+            tests/test_calculator_rule_engine_v2.py \
+            tests/test_calculator_rule_lifecycle_v2.py \
+            tests/test_calculator_rule_engine_v38.py \
+            tests/test_calculator_staff_surfaces_v38.py \
+            tests/test_calculator_durable_intake_v38.py \
+            tests/test_calculator_durable_write_order_v38.py \
+            tests/test_calculator_finalize_idempotency_v38.py \
+            tests/test_telegram_calculator_recovery_flow.py
   sqlite-tests:
     name: SQLite application tests
     runs-on: ubuntu-24.04

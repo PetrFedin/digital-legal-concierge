@@ -28,6 +28,9 @@ _CALCULATOR_FIELDS = (
     "planned_transfer_date",
     "object_transferred",
     "actual_transfer_date",
+    "client_type",
+    "unique_object",
+    "manual_review_flags",
 )
 _CALLBACK_PREFIXES = {
     "calc_object_transferred_yes:v2:": "transfer_yes",
@@ -37,6 +40,12 @@ _CALLBACK_PREFIXES = {
     # action still carries an exact Case id and is the authority to reopen only
     # that Case's intake before the canonical handler starts a fresh working set.
     "calc_repeat:v2:": "restart_explicit",
+    "calc_client_consumer:v2:": "client_consumer",
+    "calc_client_other:v2:": "client_other",
+    "calc_client_unknown:v2:": "client_unknown",
+    "calc_unique_yes:v2:": "unique_yes",
+    "calc_unique_no:v2:": "unique_no",
+    "calc_unique_unknown:v2:": "unique_unknown",
 }
 
 
@@ -239,6 +248,30 @@ class DurableCalculatorIntakeMiddleware:
                     actual_transfer_date=value,
                     today=date.today(),
                 )
+            elif action == "client_consumer":
+                await service.save_client_type(
+                    case_id=case_id,
+                    client_type="consumer",
+                )
+            elif action == "client_other":
+                await service.save_client_type(
+                    case_id=case_id,
+                    client_type="other",
+                )
+            elif action == "client_unknown":
+                await service.mark_client_type_unknown(case_id=case_id)
+            elif action == "unique_yes":
+                await service.save_unique_object(
+                    case_id=case_id,
+                    unique_object=True,
+                )
+            elif action == "unique_no":
+                await service.save_unique_object(
+                    case_id=case_id,
+                    unique_object=False,
+                )
+            elif action == "unique_unknown":
+                await service.mark_unique_object_unknown(case_id=case_id)
             elif action in {"restart", "restart_explicit"}:
                 await service.reset(case_id=case_id)
             else:  # pragma: no cover - defensive closed world

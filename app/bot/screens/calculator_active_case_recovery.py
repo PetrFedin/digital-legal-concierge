@@ -35,6 +35,9 @@ _CALCULATOR_FIELDS = (
     "planned_transfer_date",
     "object_transferred",
     "actual_transfer_date",
+    "client_type",
+    "unique_object",
+    "manual_review_flags",
 )
 
 

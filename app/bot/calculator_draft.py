@@ -36,6 +36,9 @@ _CALCULATOR_FIELDS = frozenset(
         "planned_transfer_date",
         "object_transferred",
         "actual_transfer_date",
+        "client_type",
+        "unique_object",
+        "manual_review_flags",
     }
 )
 _NAV_DATA_PREFIX = "_client_nav_"
@@ -82,10 +85,15 @@ def draft_step(data: dict, *, today: date | None = None) -> str:
         return "transfer_status"
     if bool(data.get("object_transferred")) and not data.get("actual_transfer_date"):
         return "actual_date"
-    # A complete value set normally gets committed immediately. If the UI was
-    # interrupted between the last answer and calculation, return to the final
-    # safe confirmation/input boundary rather than silently creating a case.
-    return "actual_date" if bool(data.get("object_transferred")) else "transfer_status"
+    if str(data.get("client_type") or "") not in {"consumer", "other"}:
+        return "client_type"
+    if "unique_object" not in data:
+        return "unique_object"
+    # A complete value set normally gets committed immediately. If Telegram was
+    # interrupted between the final legal-fact answer and calculation, return to
+    # that exact confirmation boundary rather than guessing or silently
+    # finalising with hidden defaults.
+    return "unique_object"
 
 
 def draft_step_label(data: dict, *, today: date | None = None) -> str:
@@ -95,6 +103,8 @@ def draft_step_label(data: dict, *, today: date | None = None) -> str:
         "future_date": "наступление срока передачи по ДДУ",
         "transfer_status": "статус передачи объекта",
         "actual_date": "дата фактической передачи",
+        "client_type": "тип участника ДДУ",
+        "unique_object": "признак уникального объекта",
     }[draft_step(data, today=today)]
 
 

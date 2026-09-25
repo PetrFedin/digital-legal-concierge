@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 
 from app.config import settings
 from app.db.session import AsyncSessionLocal
+from app.domain.calculator.rule_revision_service import rule_payload_sha256
 from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
@@ -22,6 +23,7 @@ from app.models.audit_log import AuditLog
 from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
+from app.models.calculation_rule_revision import CalculationRuleRevision
 from app.models.lawyer import Lawyer
 from app.models.payment import Payment
 from app.models.user import User
@@ -130,6 +132,31 @@ async def _upsert_staff() -> None:
         else:
             lawyer.full_name = "Browser E2E Lawyer"
             lawyer.is_active = True
+
+        browser_rule = await db.scalar(
+            select(CalculationRuleRevision).where(
+                CalculationRuleRevision.revision_key == "BROWSER-PM016-DRAFT"
+            )
+        )
+        browser_rules = {"schema_version": 2, "sources": {}}
+        if browser_rule is None:
+            browser_rule = CalculationRuleRevision(
+                revision_key="BROWSER-PM016-DRAFT",
+                status="DRAFT",
+                effective_from=date(2199, 1, 1),
+                effective_to=date(2199, 12, 31),
+                rules=browser_rules,
+                rules_sha256=rule_payload_sha256(browser_rules),
+                note="Browser E2E guided rule editor fixture",
+            )
+            db.add(browser_rule)
+        else:
+            browser_rule.status = "DRAFT"
+            browser_rule.effective_from = date(2199, 1, 1)
+            browser_rule.effective_to = date(2199, 12, 31)
+            browser_rule.rules = browser_rules
+            browser_rule.rules_sha256 = rule_payload_sha256(browser_rules)
+            browser_rule.note = "Browser E2E guided rule editor fixture"
 
         await db.commit()
 
@@ -337,6 +364,24 @@ def test_admin_browser_login_staff_surfaces_and_logout_revoke() -> None:
         expect(page).to_have_title("Digital Legal Concierge — рабочий стол")
         expect(page.get_by_role("heading", name="⚖ Единый рабочий стол")).to_be_visible()
 
+        _assert_html_surface(page, "/calculator-builder/ui")
+        expect(
+            page.get_by_role("heading", name="⚖️ Редактор юридических правил расчёта")
+        ).to_be_visible()
+        expect(page.get_by_text("BROWSER-PM016-DRAFT")).to_be_visible()
+        expect(page.get_by_text("Код формулы")).to_be_visible()
+        expect(page.get_by_role("button", name="+ Добавить источник")).to_be_visible()
+
+        formula_code = page.get_by_label("Код формулы")
+        formula_code.fill("ddu_delay_penalty_v2")
+        formula_json = page.locator('textarea[name="formula_json"]').input_value()
+        assert '"code": "ddu_delay_penalty_v2"' in formula_json
+        assert '"delay_start_offset_days": null' in formula_json
+
+        page.get_by_role("button", name="+ Добавить источник").click()
+        expect(page.get_by_label("ID источника")).to_be_visible()
+        expect(page.get_by_label("Точное основание: статья / пункт / раздел / таблица")).to_be_visible()
+
         page.goto(f"{BASE_URL}/operator", wait_until="domcontentloaded")
         expect(page.get_by_role("link", name="Расписание консультаций")).to_be_visible()
         assert page.get_by_role("link", name="SLA и просрочки").count() == 1
@@ -380,6 +425,10 @@ def test_lawyer_browser_is_role_scoped_and_cannot_enter_admin_workdesk() -> None
         _assert_html_surface(page, "/lawyer/consultation-desk/ui")
         _assert_html_surface(page, "/message-center/ui")
         _assert_html_surface(page, "/document-access/review/ui")
+        _assert_html_surface(page, "/calculator-builder/ui")
+        expect(page.get_by_role("button", name="Проверить контрольные примеры")).to_be_visible()
+        expect(page.get_by_role("button", name="Юридически подтвердить SHA")).to_be_visible()
+        assert page.get_by_role("button", name="Сохранить DRAFT").count() == 0
 
         # Lawyer is a staff user, but not an admin. The canonical Workdesk must
         # redirect away rather than relying on a hidden earlier guard route.
@@ -406,6 +455,7 @@ def test_staff_landing_and_primary_surfaces_are_mobile_safe() -> None:
             "/admin/refunds/ui",
             "/admin/sla/ui",
             "/admin/consultation-outcomes/ui",
+            "/calculator-builder/ui",
         ):
             _assert_html_surface(admin_page, path)
             _assert_no_horizontal_overflow(admin_page)

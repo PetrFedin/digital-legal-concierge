@@ -105,6 +105,9 @@ class CalculationIntakeService:
         intake.planned_transfer_date = None
         intake.object_transferred = None
         intake.actual_transfer_date = None
+        intake.client_type = None
+        intake.unique_object = None
+        intake.manual_review_flags = None
         intake.current_step = "price"
         await self.db.flush()
         return intake
@@ -136,6 +139,9 @@ class CalculationIntakeService:
         # A changed upstream contractual date invalidates transfer answers.
         intake.object_transferred = None
         intake.actual_transfer_date = None
+        intake.client_type = None
+        intake.unique_object = None
+        intake.manual_review_flags = None
         intake.current_step = (
             "future_date" if planned_transfer_date > today else "transfer_status"
         )
@@ -156,7 +162,10 @@ class CalculationIntakeService:
         self._reopen(intake)
         intake.object_transferred = bool(object_transferred)
         intake.actual_transfer_date = None
-        intake.current_step = "actual_date" if object_transferred else "ready"
+        intake.client_type = None
+        intake.unique_object = None
+        intake.manual_review_flags = None
+        intake.current_step = "actual_date" if object_transferred else "client_type"
         await self.db.flush()
         return intake
 
@@ -178,7 +187,108 @@ class CalculationIntakeService:
             )
         self._reopen(intake)
         intake.actual_transfer_date = actual_transfer_date
+        intake.client_type = None
+        intake.unique_object = None
+        intake.manual_review_flags = None
+        intake.current_step = "client_type"
+        await self.db.flush()
+        return intake
+
+    async def save_client_type(
+        self,
+        *,
+        case_id: int,
+        client_type: str,
+    ) -> CalculationIntake:
+        value = str(client_type or "").strip().lower()
+        if value not in {"consumer", "other"}:
+            raise CalculationIntakeError("Неизвестный тип участника расчёта")
+        intake = await self._mutable(case_id=case_id)
+        if (
+            intake.contract_price is None
+            or intake.planned_transfer_date is None
+            or intake.object_transferred is None
+            or (intake.object_transferred and intake.actual_transfer_date is None)
+        ):
+            raise CalculationIntakeError(
+                "Тип участника нельзя сохранить до основных фактов передачи"
+            )
+        self._reopen(intake)
+        intake.client_type = value
+        intake.unique_object = None
+        intake.manual_review_flags = None
+        intake.current_step = "unique_object"
+        await self.db.flush()
+        return intake
+
+    async def save_unique_object(
+        self,
+        *,
+        case_id: int,
+        unique_object: bool,
+    ) -> CalculationIntake:
+        intake = await self._mutable(case_id=case_id)
+        if intake.client_type not in {"consumer", "other"}:
+            raise CalculationIntakeError(
+                "Признак уникального объекта нельзя сохранить до типа участника"
+            )
+        self._reopen(intake)
+        intake.unique_object = bool(unique_object)
         intake.current_step = "ready"
+        await self.db.flush()
+        return intake
+
+    async def mark_client_type_unknown(
+        self,
+        *,
+        case_id: int,
+    ) -> CalculationIntake:
+        intake = await self._mutable(case_id=case_id)
+        if (
+            intake.contract_price is None
+            or intake.planned_transfer_date is None
+            or intake.object_transferred is None
+            or (intake.object_transferred and intake.actual_transfer_date is None)
+        ):
+            raise CalculationIntakeError(
+                "Неопределённый тип участника нельзя сохранить до основных фактов"
+            )
+        self._reopen(intake)
+        intake.client_type = None
+        intake.unique_object = None
+        intake.manual_review_flags = ["client_type_unknown"]
+        intake.current_step = "manual_review"
+        await self.db.flush()
+        return intake
+
+    async def mark_unique_object_unknown(
+        self,
+        *,
+        case_id: int,
+    ) -> CalculationIntake:
+        intake = await self._mutable(case_id=case_id)
+        if intake.client_type not in {"consumer", "other"}:
+            raise CalculationIntakeError(
+                "Неопределённый статус объекта нельзя сохранить до типа участника"
+            )
+        self._reopen(intake)
+        intake.unique_object = None
+        intake.manual_review_flags = ["unique_object_unknown"]
+        intake.current_step = "manual_review"
+        await self.db.flush()
+        return intake
+
+    async def set_manual_review_flags(
+        self,
+        *,
+        case_id: int,
+        flags: list[str] | tuple[str, ...],
+    ) -> CalculationIntake:
+        intake = await self._mutable(case_id=case_id)
+        self._reopen(intake)
+        intake.manual_review_flags = sorted(
+            {str(item).strip() for item in flags if str(item).strip()}
+        )
         await self.db.flush()
         return intake
 
@@ -199,6 +309,9 @@ class CalculationIntakeService:
 
         intake = await self._mutable(case_id=case_id)
         self._reopen(intake)
+        intake.client_type = None
+        intake.unique_object = None
+        intake.manual_review_flags = None
 
         raw_price = data.get("contract_price")
         if raw_price in (None, ""):
@@ -240,27 +353,40 @@ class CalculationIntakeService:
 
         transferred = bool(data.get("object_transferred"))
         intake.object_transferred = transferred
-        if not transferred:
+        if transferred:
+            raw_actual = data.get("actual_transfer_date")
+            if raw_actual in (None, ""):
+                intake.actual_transfer_date = None
+                intake.current_step = "actual_date"
+                await self.db.flush()
+                return intake
+            actual = _draft_date(raw_actual, "Фактическая дата передачи")
+            if actual > today:
+                raise CalculationIntakeError(
+                    "Фактическая дата передачи не может быть в будущем"
+                )
+            intake.actual_transfer_date = actual
+        else:
             intake.actual_transfer_date = None
-            intake.current_step = "ready"
+
+        raw_client_type = str(data.get("client_type") or "").strip().lower()
+        if raw_client_type not in {"consumer", "other"}:
+            intake.current_step = "client_type"
             await self.db.flush()
             return intake
+        intake.client_type = raw_client_type
 
-        raw_actual = data.get("actual_transfer_date")
-        if raw_actual in (None, ""):
-            intake.actual_transfer_date = None
-            intake.current_step = "actual_date"
+        if "unique_object" not in data:
+            intake.current_step = "unique_object"
             await self.db.flush()
             return intake
-
-        actual = _draft_date(raw_actual, "Фактическая дата передачи")
-        if actual > today:
-            raise CalculationIntakeError(
-                "Фактическая дата передачи не может быть в будущем"
-            )
-        # actual < planned is deliberately valid: it is an early factual
-        # transfer and later produces zero delay under the functional spec.
-        intake.actual_transfer_date = actual
+        intake.unique_object = bool(data.get("unique_object"))
+        flags = data.get("manual_review_flags") or []
+        if not isinstance(flags, (list, tuple)):
+            raise CalculationIntakeError("manual_review_flags должен быть списком")
+        intake.manual_review_flags = sorted(
+            {str(item).strip() for item in flags if str(item).strip()}
+        )
         intake.current_step = "ready"
         await self.db.flush()
         return intake
@@ -289,6 +415,9 @@ class CalculationIntakeService:
         intake.planned_transfer_date = result.planned_transfer_date
         intake.object_transferred = bool(result.object_transferred)
         intake.actual_transfer_date = result.actual_transfer_date
+        intake.client_type = str(result.client_type)
+        intake.unique_object = bool(result.unique_object)
+        intake.manual_review_flags = list(result.manual_review_reasons or [])
         intake.calculation_date = result.calculation_date
         intake.completed_calculation_id = normalized_calculation_id
         intake.completed_at = datetime.now(timezone.utc)
@@ -328,6 +457,12 @@ class CalculationIntakeService:
             data["object_transferred"] = bool(intake.object_transferred)
         if intake.actual_transfer_date is not None:
             data["actual_transfer_date"] = intake.actual_transfer_date.isoformat()
+        if intake.client_type:
+            data["client_type"] = str(intake.client_type)
+        if intake.unique_object is not None:
+            data["unique_object"] = bool(intake.unique_object)
+        if intake.manual_review_flags:
+            data["manual_review_flags"] = list(intake.manual_review_flags)
         return data
 
     async def draft_data(

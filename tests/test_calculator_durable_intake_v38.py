@@ -41,6 +41,8 @@ async def test_draft_snapshot_persists_each_accepted_fact(service_and_intake):
             "planned_transfer_date": "2026-01-15",
             "object_transferred": True,
             "actual_transfer_date": "2026-01-10",
+            "client_type": "consumer",
+            "unique_object": False,
         },
         today=date(2026, 9, 15),
     )
@@ -50,6 +52,8 @@ async def test_draft_snapshot_persists_each_accepted_fact(service_and_intake):
     assert intake.object_transferred is True
     # Early transfer is factual data, not a validation error.
     assert intake.actual_transfer_date == date(2026, 1, 10)
+    assert intake.client_type == "consumer"
+    assert intake.unique_object is False
     assert intake.current_step == "ready"
     assert intake.completed_at is None
     assert intake.status == INTAKE_IN_PROGRESS
@@ -118,6 +122,9 @@ async def test_restart_snapshot_resets_only_active_intake(service_and_intake):
     assert intake.planned_transfer_date is None
     assert intake.object_transferred is None
     assert intake.actual_transfer_date is None
+    assert intake.client_type is None
+    assert intake.unique_object is None
+    assert intake.manual_review_flags is None
     assert intake.current_step == "price"
     assert intake.status == INTAKE_IN_PROGRESS
     assert intake.completed_calculation_id is None
@@ -132,6 +139,9 @@ async def test_completed_result_copies_exact_input_facts_and_seals_calculation(s
         object_transferred=False,
         actual_transfer_date=None,
         calculation_date=date(2026, 9, 15),
+        client_type="consumer",
+        unique_object=False,
+        manual_review_reasons=[],
     )
 
     await service.complete_from_result(
@@ -144,6 +154,9 @@ async def test_completed_result_copies_exact_input_facts_and_seals_calculation(s
     assert intake.planned_transfer_date == date(2026, 1, 15)
     assert intake.object_transferred is False
     assert intake.actual_transfer_date is None
+    assert intake.client_type == "consumer"
+    assert intake.unique_object is False
+    assert intake.manual_review_flags == []
     assert intake.calculation_date == date(2026, 9, 15)
     assert intake.completed_at is not None
     assert intake.current_step == "completed"
@@ -164,6 +177,9 @@ async def test_completed_intake_cannot_be_rebound_to_different_calculation(servi
         object_transferred=False,
         actual_transfer_date=None,
         calculation_date=date(2026, 9, 15),
+        client_type="consumer",
+        unique_object=False,
+        manual_review_reasons=[],
     )
 
     with pytest.raises(CalculationIntakeError, match="уже завершён другим расчётом"):
@@ -198,6 +214,8 @@ def test_intake_reconstructs_fsm_without_redis(service_and_intake):
     intake.planned_transfer_date = date(2026, 1, 15)
     intake.object_transferred = True
     intake.actual_transfer_date = date(2026, 1, 10)
+    intake.client_type = "consumer"
+    intake.unique_object = False
 
     assert service.as_draft_data(intake) == {
         "calculator_case_id": 42,
@@ -205,4 +223,6 @@ def test_intake_reconstructs_fsm_without_redis(service_and_intake):
         "planned_transfer_date": "2026-01-15",
         "object_transferred": True,
         "actual_transfer_date": "2026-01-10",
+        "client_type": "consumer",
+        "unique_object": False,
     }

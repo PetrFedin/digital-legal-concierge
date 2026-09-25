@@ -2,19 +2,42 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.calculator.rule_engine import CalculationRuleError, _parse_rule_payload
+from app.domain.calculator.rule_engine import (
+    CalculationManualReviewRequired,
+    CalculationRuleEngine,
+    CalculationRuleError,
+    RuleBasedCalculationInput,
+    _parse_rule_payload,
+)
 from app.models.audit_log import AuditLog
 from app.models.calculation_rule_revision import CalculationRuleRevision
 
 
 class CalculationRuleRevisionError(CalculationRuleError):
     """Rule revision is absent, ambiguous, unapproved or tampered."""
+
+
+_EDITABLE_SECTIONS = frozenset(
+    {
+        "formula",
+        "rate_policy",
+        "rate_directory",
+        "rate_caps",
+        "moratoria",
+        "client_types",
+        "unique_object",
+        "stop_factors",
+        "control_examples",
+    }
+)
 
 
 def canonical_rule_json(rules: dict[str, Any]) -> str:
@@ -36,7 +59,35 @@ def rule_payload_sha256(rules: dict[str, Any]) -> str:
     return hashlib.sha256(canonical_rule_json(rules).encode("utf-8")).hexdigest()
 
 
+def _validate_draft_payload(rules: dict[str, Any]) -> None:
+    if not isinstance(rules, dict):
+        raise CalculationRuleRevisionError("Набор правил должен быть JSON-объектом")
+    if rules.get("schema_version") not in {1, 2}:
+        raise CalculationRuleRevisionError(
+            "DRAFT должен явно указывать поддерживаемый schema_version"
+        )
+    refs = _collect_source_refs(rules)
+    if refs:
+        sources = rules.get("sources")
+        if not isinstance(sources, dict):
+            raise CalculationRuleRevisionError(
+                "DRAFT содержит source_refs, но реестр sources отсутствует"
+            )
+        missing = sorted(ref for ref in refs if ref not in sources)
+        if missing:
+            raise CalculationRuleRevisionError(
+                "DRAFT ссылается на отсутствующие источники: " + ", ".join(missing)
+            )
+    canonical_rule_json(rules)
+
+
 def validate_rule_payload(rules: dict[str, Any]) -> None:
+    """Validate a complete rule payload.
+
+    Legacy schema v1 remains readable for historical/tests compatibility. New
+    legal review/publication is restricted separately to schema v2.
+    """
+
     if not isinstance(rules, dict):
         raise CalculationRuleRevisionError("Набор правил должен быть JSON-объектом")
     client_types = rules.get("client_types")
@@ -46,9 +97,169 @@ def validate_rule_payload(rules: dict[str, Any]) -> None:
         )
     for client_type in client_types:
         _parse_rule_payload(rules, client_type=str(client_type))
-    # Canonicalization is part of approval: a revision that cannot be hashed
-    # reproducibly cannot become legal calculation authority.
     canonical_rule_json(rules)
+
+
+def _control_example_input(raw: dict[str, Any]) -> RuleBasedCalculationInput:
+    try:
+        contract_price = Decimal(str(raw["contract_price"]))
+        planned_transfer_date = date.fromisoformat(str(raw["planned_transfer_date"]))
+        calculation_date = date.fromisoformat(str(raw["calculation_date"]))
+        object_transferred = bool(raw["object_transferred"])
+        actual_raw = raw.get("actual_transfer_date")
+        actual_transfer_date = (
+            date.fromisoformat(str(actual_raw)) if actual_raw not in (None, "") else None
+        )
+    except (KeyError, ValueError, TypeError) as error:
+        raise CalculationRuleRevisionError(
+            "Контрольный пример содержит некорректные входные данные"
+        ) from error
+    flags_raw = raw.get("manual_review_flags", [])
+    if not isinstance(flags_raw, list):
+        raise CalculationRuleRevisionError(
+            "manual_review_flags контрольного примера должен быть списком"
+        )
+    return RuleBasedCalculationInput(
+        contract_price=contract_price,
+        planned_transfer_date=planned_transfer_date,
+        calculation_date=calculation_date,
+        object_transferred=object_transferred,
+        actual_transfer_date=actual_transfer_date,
+        client_type=str(raw.get("client_type") or "consumer"),
+        unique_object=bool(raw.get("unique_object", False)),
+        manual_review_flags=tuple(str(item) for item in flags_raw),
+    )
+
+
+def run_control_examples(rules: dict[str, Any]) -> list[dict[str, Any]]:
+    """Execute deterministic legal examples before legal review/publication."""
+
+    if rules.get("schema_version") != 2:
+        raise CalculationRuleRevisionError(
+            "Юридическое подтверждение доступно только для schema_version=2"
+        )
+    validate_rule_payload(rules)
+    sources = rules.get("sources")
+    raw_examples = rules.get("control_examples")
+    if not isinstance(raw_examples, list) or not raw_examples:
+        raise CalculationRuleRevisionError(
+            "Для юридического подтверждения нужен хотя бы один контрольный пример"
+        )
+
+    engine = CalculationRuleEngine()
+    outcomes: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_examples):
+        if not isinstance(raw, dict):
+            raise CalculationRuleRevisionError(
+                f"Контрольный пример #{index + 1}: ожидается объект"
+            )
+        code = str(raw.get("code") or f"example-{index + 1}")
+        source_refs = raw.get("source_refs")
+        if not isinstance(source_refs, list) or not source_refs:
+            raise CalculationRuleRevisionError(
+                f"Контрольный пример {code}: нужны source_refs"
+            )
+        for ref in source_refs:
+            if not isinstance(sources, dict) or str(ref) not in sources:
+                raise CalculationRuleRevisionError(
+                    f"Контрольный пример {code}: неизвестный источник {ref!r}"
+                )
+        expected = raw.get("expected")
+        if not isinstance(expected, dict):
+            raise CalculationRuleRevisionError(
+                f"Контрольный пример {code}: не задан expected"
+            )
+
+        data = _control_example_input(raw.get("input") or {})
+        expects_manual = bool(expected.get("manual_review_required", False))
+        try:
+            result = engine.calculate(
+                data,
+                rule_revision_id=0,
+                rule_revision_key="CONTROL",
+                rule_snapshot_sha256=rule_payload_sha256(rules),
+                rule_snapshot=rules,
+            )
+        except CalculationManualReviewRequired as error:
+            if not expects_manual:
+                raise CalculationRuleRevisionError(
+                    f"Контрольный пример {code}: неожиданно требует ручной проверки"
+                ) from error
+            outcomes.append(
+                {
+                    "code": code,
+                    "passed": True,
+                    "manual_review_required": True,
+                    "manual_review_reasons": list(error.reasons),
+                }
+            )
+            continue
+
+        if expects_manual:
+            raise CalculationRuleRevisionError(
+                f"Контрольный пример {code}: ожидалась ручная проверка"
+            )
+
+        checks: dict[str, Any] = {
+            "penalty_amount": str(result.penalty_amount),
+            "delay_days_total": int(result.delay_days_total),
+            "delay_days_chargeable": int(result.delay_days_chargeable),
+            "moratorium_days": int(result.moratorium_days),
+            "base_rate": str(result.key_rate) if result.key_rate is not None else None,
+            "amount_cap_applied": bool(result.amount_cap_applied),
+        }
+        for key, actual in checks.items():
+            if key not in expected:
+                continue
+            wanted = expected[key]
+            if key in {"penalty_amount", "base_rate"}:
+                if wanted is None and actual is None:
+                    continue
+                if Decimal(str(wanted)) != Decimal(str(actual)):
+                    raise CalculationRuleRevisionError(
+                        f"Контрольный пример {code}: {key}={actual}, ожидалось {wanted}"
+                    )
+            elif key in {"delay_days_total", "delay_days_chargeable", "moratorium_days"}:
+                if int(wanted) != int(actual):
+                    raise CalculationRuleRevisionError(
+                        f"Контрольный пример {code}: {key}={actual}, ожидалось {wanted}"
+                    )
+            elif bool(wanted) != bool(actual):
+                raise CalculationRuleRevisionError(
+                    f"Контрольный пример {code}: {key}={actual}, ожидалось {wanted}"
+                )
+        outcomes.append({"code": code, "passed": True, **checks})
+    return outcomes
+
+
+def _collect_source_refs(value: object) -> set[str]:
+    refs: set[str] = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == "sources":
+                continue
+            if key == "source_refs" and isinstance(item, list):
+                refs.update(str(ref) for ref in item if str(ref).strip())
+            else:
+                refs.update(_collect_source_refs(item))
+    elif isinstance(value, list):
+        for item in value:
+            refs.update(_collect_source_refs(item))
+    return refs
+
+
+def _prune_orphan_sources(rules: dict[str, Any]) -> dict[str, Any]:
+    next_rules = deepcopy(rules)
+    sources = next_rules.get("sources")
+    if not isinstance(sources, dict):
+        return next_rules
+    used = _collect_source_refs(next_rules)
+    next_rules["sources"] = {
+        key: value
+        for key, value in sources.items()
+        if str(key) in used
+    }
+    return next_rules
 
 
 def _audit_value(revision: CalculationRuleRevision) -> dict[str, Any]:
@@ -60,10 +271,23 @@ def _audit_value(revision: CalculationRuleRevision) -> dict[str, Any]:
             revision.effective_to.isoformat() if revision.effective_to else None
         ),
         "rules_sha256": revision.rules_sha256,
+        "legal_reviewed_by_actor_type": revision.legal_reviewed_by_actor_type,
+        "legal_reviewed_by_actor_id": revision.legal_reviewed_by_actor_id,
+        "legal_reviewed_at": (
+            revision.legal_reviewed_at.isoformat()
+            if revision.legal_reviewed_at
+            else None
+        ),
+        "legal_review_sha256": revision.legal_review_sha256,
         "approved_by_actor_type": revision.approved_by_actor_type,
         "approved_by_actor_id": revision.approved_by_actor_id,
         "approved_at": (
             revision.approved_at.isoformat() if revision.approved_at else None
+        ),
+        "published_by_actor_type": revision.published_by_actor_type,
+        "published_by_actor_id": revision.published_by_actor_id,
+        "published_at": (
+            revision.published_at.isoformat() if revision.published_at else None
         ),
         "note": revision.note,
     }
@@ -85,9 +309,6 @@ def _parse_expected_updated_at(value: str | datetime | None) -> datetime | None:
 def _same_moment(left: datetime | None, right: datetime | None) -> bool:
     if left is None or right is None:
         return left is right
-    # SQLite often round-trips timezone-naive timestamps while PostgreSQL keeps
-    # timezone information. Compare normalized wall-clock UTC-compatible values
-    # rather than making optimistic concurrency backend-specific.
     if left.tzinfo is not None:
         left = left.astimezone(timezone.utc).replace(tzinfo=None)
     if right.tzinfo is not None:
@@ -137,8 +358,11 @@ class CalculationRuleRevisionService:
         if not key:
             raise CalculationRuleRevisionError("revision_key обязателен")
         if effective_to is not None and effective_to < effective_from:
-            raise CalculationRuleRevisionError("effective_to не может быть раньше effective_from")
-        validate_rule_payload(rules)
+            raise CalculationRuleRevisionError(
+                "effective_to не может быть раньше effective_from"
+            )
+        rules = _prune_orphan_sources(rules)
+        _validate_draft_payload(rules)
         revision = CalculationRuleRevision(
             revision_key=key,
             status="DRAFT",
@@ -186,12 +410,6 @@ class CalculationRuleRevisionService:
         actor_type: str,
         actor_id: int,
     ) -> CalculationRuleRevision:
-        """Edit only DRAFT content with optimistic conflict detection.
-
-        ``revision_key`` is intentionally immutable. An approved revision is
-        never edited; a legal change is represented by another revision.
-        """
-
         revision = await self.get_for_update(revision_id=revision_id)
         if str(revision.status).upper() != "DRAFT":
             raise CalculationRuleRevisionError(
@@ -203,8 +421,11 @@ class CalculationRuleRevisionService:
                 "Черновик уже изменён другим пользователем; обновите страницу"
             )
         if effective_to is not None and effective_to < effective_from:
-            raise CalculationRuleRevisionError("effective_to не может быть раньше effective_from")
-        validate_rule_payload(rules)
+            raise CalculationRuleRevisionError(
+                "effective_to не может быть раньше effective_from"
+            )
+        rules = _prune_orphan_sources(rules)
+        _validate_draft_payload(rules)
 
         before = _audit_value(revision)
         revision.effective_from = effective_from
@@ -224,11 +445,49 @@ class CalculationRuleRevisionService:
         await self.db.flush()
         return revision
 
+    async def clear_draft_section(
+        self,
+        *,
+        revision_id: int,
+        section: str,
+        expected_updated_at: str | datetime | None,
+        actor_type: str,
+        actor_id: int,
+    ) -> CalculationRuleRevision:
+        key = str(section or "").strip()
+        if key not in _EDITABLE_SECTIONS:
+            raise CalculationRuleRevisionError("Этот раздел нельзя очищать отдельно")
+        revision = await self.get_for_update(revision_id=revision_id)
+        if str(revision.status).upper() != "DRAFT":
+            raise CalculationRuleRevisionError("Очищать можно только DRAFT-ревизию")
+        expected = _parse_expected_updated_at(expected_updated_at)
+        if expected is not None and not _same_moment(revision.updated_at, expected):
+            raise CalculationRuleRevisionError(
+                "Черновик уже изменён другим пользователем; обновите страницу"
+            )
+
+        before = _audit_value(revision)
+        next_rules = deepcopy(revision.rules)
+        next_rules.pop(key, None)
+        next_rules = _prune_orphan_sources(next_rules)
+        _validate_draft_payload(next_rules)
+        revision.rules = next_rules
+        revision.rules_sha256 = rule_payload_sha256(next_rules)
+        await self.db.flush()
+        self._audit(
+            revision=revision,
+            action="CALCULATION_RULE_DRAFT_SECTION_CLEARED",
+            actor_type=actor_type,
+            actor_id=int(actor_id),
+            old_value=before,
+            comment=(
+                f"Очищен раздел {key}; неиспользуемые связанные источники удалены из DRAFT"
+            ),
+        )
+        await self.db.flush()
+        return revision
+
     async def _lock_all_revisions(self) -> list[CalculationRuleRevision]:
-        # Approval is a very low-volume staff operation. Serializing the small
-        # directory is preferable to allowing two concurrent transactions to
-        # both observe no overlapping APPROVED row and create ambiguous legal
-        # authority. Stable ordering avoids lock-order deadlocks.
         statement = (
             select(CalculationRuleRevision)
             .order_by(CalculationRuleRevision.id.asc())
@@ -237,7 +496,135 @@ class CalculationRuleRevisionService:
         )
         return list((await self.db.execute(statement)).scalars().all())
 
+    async def confirm_legal_review(
+        self,
+        *,
+        revision: CalculationRuleRevision,
+        actor_type: str,
+        actor_id: int,
+        comment: str,
+    ) -> CalculationRuleRevision:
+        current = await self.get_for_update(revision_id=int(revision.id))
+        if str(current.status).upper() != "DRAFT":
+            raise CalculationRuleRevisionError(
+                "Юридически подтверждать можно только DRAFT-ревизию"
+            )
+        if current.rules.get("schema_version") != 2:
+            raise CalculationRuleRevisionError(
+                "Юридическое подтверждение доступно только для schema_version=2"
+            )
+        validate_rule_payload(current.rules)
+        run_control_examples(current.rules)
+        current_hash = rule_payload_sha256(current.rules)
+        if current_hash != str(current.rules_sha256 or ""):
+            raise CalculationRuleRevisionError(
+                "Хеш набора правил не совпадает: DRAFT изменён после фиксации"
+            )
+
+        before = _audit_value(current)
+        current.status = "LEGAL_REVIEWED"
+        current.legal_reviewed_by_actor_type = str(actor_type or "").strip() or "lawyer"
+        current.legal_reviewed_by_actor_id = int(actor_id)
+        current.legal_reviewed_at = datetime.now(timezone.utc)
+        current.legal_review_sha256 = current_hash
+        current.legal_review_comment = str(comment or "").strip() or None
+        await self.db.flush()
+        self._audit(
+            revision=current,
+            action="CALCULATION_RULE_LEGAL_REVIEW_CONFIRMED",
+            actor_type=actor_type,
+            actor_id=int(actor_id),
+            old_value=before,
+            comment="Юрист подтвердил точную SHA-256 редакцию правил и контрольные примеры",
+        )
+        await self.db.flush()
+        return current
+
+    async def return_to_draft(
+        self,
+        *,
+        revision: CalculationRuleRevision,
+        actor_type: str,
+        actor_id: int,
+        comment: str,
+    ) -> CalculationRuleRevision:
+        current = await self.get_for_update(revision_id=int(revision.id))
+        status = str(current.status).upper()
+        if status not in {"LEGAL_REVIEWED", "APPROVED"}:
+            raise CalculationRuleRevisionError(
+                "Вернуть в DRAFT можно только LEGAL_REVIEWED или APPROVED до публикации"
+            )
+        if current.published_at is not None:
+            raise CalculationRuleRevisionError(
+                "Опубликованную редакцию нельзя менять; создайте новую ревизию"
+            )
+
+        before = _audit_value(current)
+        current.status = "DRAFT"
+        current.legal_reviewed_by_actor_type = None
+        current.legal_reviewed_by_actor_id = None
+        current.legal_reviewed_at = None
+        current.legal_review_sha256 = None
+        current.legal_review_comment = None
+        current.approved_by_actor_type = None
+        current.approved_by_actor_id = None
+        current.approved_at = None
+        await self.db.flush()
+        self._audit(
+            revision=current,
+            action="CALCULATION_RULE_RETURNED_TO_DRAFT",
+            actor_type=actor_type,
+            actor_id=int(actor_id),
+            old_value=before,
+            comment=str(comment or "").strip() or "Редакция возвращена в DRAFT",
+        )
+        await self.db.flush()
+        return current
+
     async def approve(
+        self,
+        *,
+        revision: CalculationRuleRevision,
+        actor_type: str,
+        actor_id: int,
+    ) -> CalculationRuleRevision:
+        current = await self.get_for_update(revision_id=int(revision.id))
+        if str(current.status).upper() != "LEGAL_REVIEWED":
+            raise CalculationRuleRevisionError(
+                "APPROVED возможен только после юридического подтверждения"
+            )
+        validate_rule_payload(current.rules)
+        run_control_examples(current.rules)
+        current_hash = rule_payload_sha256(current.rules)
+        if current_hash != str(current.rules_sha256 or ""):
+            raise CalculationRuleRevisionError(
+                "Хеш набора правил не совпадает: редакция изменена после фиксации"
+            )
+        if current_hash != str(current.legal_review_sha256 or ""):
+            raise CalculationRuleRevisionError(
+                "Юридическое подтверждение относится к другой SHA-256 редакции"
+            )
+        if current.effective_to is not None and current.effective_to < current.effective_from:
+            raise CalculationRuleRevisionError("Некорректный период действия ревизии")
+
+        before = _audit_value(current)
+        current.status = "APPROVED"
+        current.approved_by_actor_type = str(actor_type or "").strip() or "staff"
+        current.approved_by_actor_id = int(actor_id)
+        current.approved_at = datetime.now(timezone.utc)
+        await self.db.flush()
+        self._audit(
+            revision=current,
+            action="CALCULATION_RULE_APPROVED",
+            actor_type=actor_type,
+            actor_id=int(actor_id),
+            old_value=before,
+            comment="Редакция административно утверждена, но ещё не опубликована в production",
+        )
+        await self.db.flush()
+        return current
+
+    async def publish(
         self,
         *,
         revision: CalculationRuleRevision,
@@ -248,53 +635,53 @@ class CalculationRuleRevisionService:
         current = next((item for item in locked if item.id == revision.id), None)
         if current is None:
             raise CalculationRuleRevisionError("Ревизия правил не найдена")
-        revision = current
-
-        if str(revision.status).upper() != "DRAFT":
+        if str(current.status).upper() != "APPROVED":
             raise CalculationRuleRevisionError(
-                "Утверждать можно только DRAFT-ревизию; утверждённая ревизия не редактируется"
+                "В production можно публиковать только APPROVED-ревизию"
             )
-        validate_rule_payload(revision.rules)
-        current_hash = rule_payload_sha256(revision.rules)
-        if current_hash != str(revision.rules_sha256 or ""):
+        validate_rule_payload(current.rules)
+        run_control_examples(current.rules)
+        current_hash = rule_payload_sha256(current.rules)
+        if (
+            current_hash != str(current.rules_sha256 or "")
+            or current_hash != str(current.legal_review_sha256 or "")
+        ):
             raise CalculationRuleRevisionError(
-                "Хеш набора правил не совпадает: ревизия изменена после фиксации"
+                "Публикация остановлена: SHA-256 не совпадает с юридически подтверждённой редакцией"
             )
-        if revision.effective_to is not None and revision.effective_to < revision.effective_from:
-            raise CalculationRuleRevisionError("Некорректный период действия ревизии")
 
         for existing in locked:
-            if existing.id == revision.id or str(existing.status).upper() != "APPROVED":
+            if existing.id == current.id or str(existing.status).upper() != "PRODUCTION":
                 continue
             starts_before_target_ends = (
-                revision.effective_to is None
-                or existing.effective_from <= revision.effective_to
+                current.effective_to is None
+                or existing.effective_from <= current.effective_to
             )
             target_starts_before_existing_ends = (
                 existing.effective_to is None
-                or existing.effective_to >= revision.effective_from
+                or existing.effective_to >= current.effective_from
             )
             if starts_before_target_ends and target_starts_before_existing_ends:
                 raise CalculationRuleRevisionError(
-                    "Период действия пересекается с другой APPROVED-ревизией"
+                    "Период действия пересекается с другой PRODUCTION-ревизией"
                 )
 
-        before = _audit_value(revision)
-        revision.status = "APPROVED"
-        revision.approved_by_actor_type = str(actor_type or "").strip() or "staff"
-        revision.approved_by_actor_id = int(actor_id)
-        revision.approved_at = datetime.now(timezone.utc)
+        before = _audit_value(current)
+        current.status = "PRODUCTION"
+        current.published_by_actor_type = str(actor_type or "").strip() or "staff"
+        current.published_by_actor_id = int(actor_id)
+        current.published_at = datetime.now(timezone.utc)
         await self.db.flush()
         self._audit(
-            revision=revision,
-            action="CALCULATION_RULE_APPROVED",
+            revision=current,
+            action="CALCULATION_RULE_PUBLISHED",
             actor_type=actor_type,
             actor_id=int(actor_id),
             old_value=before,
-            comment="Утверждена редакция юридических правил предварительного расчёта",
+            comment="Утверждённая редакция опубликована как production authority",
         )
         await self.db.flush()
-        return revision
+        return current
 
     async def retire(
         self,
@@ -303,35 +690,31 @@ class CalculationRuleRevisionService:
         actor_type: str,
         actor_id: int,
     ) -> CalculationRuleRevision:
-        locked = await self._lock_all_revisions()
-        current = next((item for item in locked if item.id == revision.id), None)
-        if current is None:
-            raise CalculationRuleRevisionError("Ревизия правил не найдена")
-        revision = current
-        if str(revision.status).upper() != "APPROVED":
+        current = await self.get_for_update(revision_id=int(revision.id))
+        if str(current.status).upper() != "PRODUCTION":
             raise CalculationRuleRevisionError(
-                "В архив можно перевести только APPROVED-ревизию"
+                "В архив можно перевести только PRODUCTION-ревизию"
             )
-        before = _audit_value(revision)
-        revision.status = "RETIRED"
+        before = _audit_value(current)
+        current.status = "RETIRED"
         await self.db.flush()
         self._audit(
-            revision=revision,
+            revision=current,
             action="CALCULATION_RULE_RETIRED",
             actor_type=actor_type,
             actor_id=int(actor_id),
             old_value=before,
-            comment="Редакция правил исключена из новых расчётов; исторические расчёты не изменены",
+            comment="Редакция исключена из новых расчётов; исторические расчёты не изменены",
         )
         await self.db.flush()
-        return revision
+        return current
 
     async def resolve(self, *, calculation_date: date) -> CalculationRuleRevision:
         statement = (
             select(CalculationRuleRevision)
             .where(
-                CalculationRuleRevision.status == "APPROVED",
-                CalculationRuleRevision.approved_at.is_not(None),
+                CalculationRuleRevision.status == "PRODUCTION",
+                CalculationRuleRevision.published_at.is_not(None),
                 CalculationRuleRevision.effective_from <= calculation_date,
                 or_(
                     CalculationRuleRevision.effective_to.is_(None),
@@ -347,18 +730,25 @@ class CalculationRuleRevisionService:
         revisions = list((await self.db.execute(statement)).scalars().all())
         if not revisions:
             raise CalculationRuleRevisionError(
-                "Для даты расчёта нет утверждённой ревизии юридических правил"
+                "Для даты расчёта нет опубликованной production-ревизии юридических правил"
             )
         if len(revisions) > 1:
             raise CalculationRuleRevisionError(
-                "Для даты расчёта найдено несколько утверждённых ревизий; расчёт остановлен"
+                "Для даты расчёта найдено несколько production-ревизий; расчёт остановлен"
             )
         revision = revisions[0]
+        if revision.rules.get("schema_version") != 2:
+            raise CalculationRuleRevisionError(
+                "Production-ревизия использует устаревшую схему правил"
+            )
         validate_rule_payload(revision.rules)
         current_hash = rule_payload_sha256(revision.rules)
-        if current_hash != str(revision.rules_sha256 or ""):
+        if (
+            current_hash != str(revision.rules_sha256 or "")
+            or current_hash != str(revision.legal_review_sha256 or "")
+        ):
             raise CalculationRuleRevisionError(
-                "Утверждённая ревизия правил не прошла проверку целостности"
+                "Production-ревизия не прошла проверку целостности и юридического SHA-256"
             )
         return revision
 
@@ -368,5 +758,6 @@ __all__ = [
     "CalculationRuleRevisionService",
     "canonical_rule_json",
     "rule_payload_sha256",
+    "run_control_examples",
     "validate_rule_payload",
 ]

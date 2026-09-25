@@ -21,13 +21,20 @@ from app.bot.case_callback_scope import bound_case_callback
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.states import CalculatorStates
-from app.domain.calculator.calculator_result_formatter import format_calculation_result
+from app.domain.calculator.calculator_result_formatter import (
+    format_calculation_details,
+    format_calculation_result,
+    split_telegram_text,
+)
 from app.domain.calculator.calculator_service import (
     CalculatorRouteEligibilityError,
     CalculatorService,
 )
 from app.domain.calculator.penalty_calculator import parse_money
-from app.domain.calculator.rule_engine import CalculationRuleError
+from app.domain.calculator.rule_engine import (
+    CalculationManualReviewRequired,
+    CalculationRuleError,
+)
 from app.domain.statuses.case_statuses import CaseStatus
 
 logger = logging.getLogger(__name__)
@@ -51,7 +58,7 @@ _LEGACY_UNBOUND_CALCULATOR_ACTIONS = frozenset(
 def _price_prompt(current: str | None = None) -> str:
     current_note = f"\nСейчас сохранено: {current} ₽. Введите новую сумму." if current else ""
     return (
-        "🧮 Расчёт неустойки · шаг 1 из 4\n\n"
+        "🧮 Расчёт неустойки · шаг 1 из 6\n\n"
         "Ответьте на несколько вопросов. Расчёт будет предварительным и не является юридическим заключением.\n\n"
         "💰 Введите стоимость объекта по ДДУ в рублях.\n"
         f"Например: 8500000{current_note}"
@@ -61,7 +68,7 @@ def _price_prompt(current: str | None = None) -> str:
 def _planned_prompt(current: str | None = None) -> str:
     current_note = f"\nСейчас сохранена дата: {current}." if current else ""
     return (
-        "🧮 Расчёт неустойки · шаг 2 из 4\n\n"
+        "🧮 Расчёт неустойки · шаг 2 из 6\n\n"
         "📅 Укажите дату передачи объекта по ДДУ. Формат ДД.ММ.ГГГГ."
         f"{current_note}"
     )
@@ -78,13 +85,32 @@ def _future_date_prompt(planned_date: date) -> str:
 
 
 def _transfer_prompt() -> str:
-    return "🧮 Расчёт неустойки · шаг 3 из 4\n\n🏗 Объект уже передан по акту?"
+    return "🧮 Расчёт неустойки · шаг 3 из 6\n\n🏗 Объект уже передан по акту?"
 
 
 def _actual_prompt() -> str:
     return (
-        "🧮 Расчёт неустойки · шаг 4 из 4\n\n"
+        "🧮 Расчёт неустойки · шаг 4 из 6\n\n"
         "📅 Укажите дату фактической передачи по акту. Формат ДД.ММ.ГГГГ"
+    )
+
+
+def _client_type_prompt() -> str:
+    return (
+        "🧮 Расчёт неустойки · шаг 5 из 6\n\n"
+        "👤 Уточните статус участника ДДУ.\n\n"
+        "Вы являетесь гражданином и заключали ДДУ для личных, семейных, "
+        "домашних или иных нужд, не связанных с предпринимательской деятельностью?"
+    )
+
+
+def _unique_object_prompt() -> str:
+    return (
+        "🧮 Расчёт неустойки · шаг 6 из 6\n\n"
+        "🏢 Отнесён ли дом или иной объект недвижимости по проектной документации "
+        "к уникальным объектам?\n\n"
+        "Если вы не уверены, автоматический расчёт не будет угадывать этот факт — "
+        "мы передадим вопрос юристу."
     )
 
 
@@ -145,6 +171,36 @@ def _actual_keyboard(case_id: int):
     )
 
 
+def _client_type_keyboard(case_id: int):
+    return one(
+        (
+            "Да, гражданин для личных нужд",
+            bound_case_callback("calc_client_consumer", case_id),
+        ),
+        (
+            "Нет, иной участник",
+            bound_case_callback("calc_client_other", case_id),
+        ),
+        (
+            "Не уверен — нужна проверка",
+            bound_case_callback("calc_client_unknown", case_id),
+        ),
+        ("💾 Сохранить и выйти", "nav_home"),
+    )
+
+
+def _unique_object_keyboard(case_id: int):
+    return one(
+        ("Да, уникальный объект", bound_case_callback("calc_unique_yes", case_id)),
+        ("Нет", bound_case_callback("calc_unique_no", case_id)),
+        (
+            "Не знаю — проверить документы",
+            bound_case_callback("calc_unique_unknown", case_id),
+        ),
+        ("💾 Сохранить и выйти", "nav_home"),
+    )
+
+
 def _result_recovery_keyboard():
     return one(
         ("🧮 Новый расчёт", "calc_start"),
@@ -173,6 +229,20 @@ def _draft_summary(data: dict) -> str:
         except (TypeError, ValueError):
             shown_actual = str(data["actual_transfer_date"])
         rows.append(f"🗓 Фактическая передача: {shown_actual}")
+    if str(data.get("client_type") or "") in {"consumer", "other"}:
+        rows.append(
+            "👤 Тип участника: "
+            + (
+                "гражданин для личных нужд"
+                if data["client_type"] == "consumer"
+                else "иной участник"
+            )
+        )
+    if "unique_object" in data:
+        rows.append(
+            "🏢 Уникальный объект: "
+            + ("да" if bool(data.get("unique_object")) else "нет")
+        )
     return "\n".join(rows) or "Расчёт начат, ответы пока не введены."
 
 
@@ -332,10 +402,24 @@ async def _resume_draft(callback: CallbackQuery, state: FSMContext) -> None:
     if not _base_data_ready(data):
         await _start_fresh(callback, state, case_id=case_id)
         return
-    await state.set_state(CalculatorStates.waiting_actual_transfer_date)
+    if step == "actual_date":
+        await state.set_state(CalculatorStates.waiting_actual_transfer_date)
+        await callback.message.edit_text(
+            _actual_prompt(),
+            reply_markup=_actual_keyboard(case_id),
+        )
+        return
+    if step == "client_type":
+        await state.set_state(CalculatorStates.waiting_client_type)
+        await callback.message.edit_text(
+            _client_type_prompt(),
+            reply_markup=_client_type_keyboard(case_id),
+        )
+        return
+    await state.set_state(CalculatorStates.waiting_unique_object)
     await callback.message.edit_text(
-        _actual_prompt(),
-        reply_markup=_actual_keyboard(case_id),
+        _unique_object_prompt(),
+        reply_markup=_unique_object_keyboard(case_id),
     )
 
 
@@ -785,7 +869,11 @@ async def actual(message: Message, state: FSMContext, db):
         )
         return
     await state.update_data(actual_transfer_date=actual_date.isoformat())
-    await calculate_show_message(message, state, db)
+    await state.set_state(CalculatorStates.waiting_client_type)
+    await message.answer(
+        _client_type_prompt(),
+        reply_markup=_client_type_keyboard(case_id),
+    )
 
 
 @router.callback_query(
@@ -806,13 +894,134 @@ async def no(callback: CallbackQuery, state: FSMContext, db):
         await _recover_stale_step(callback, state)
         return
     await state.update_data(object_transferred=False, actual_transfer_date=None)
+    await state.set_state(CalculatorStates.waiting_client_type)
+    await callback.message.edit_text(
+        _client_type_prompt(),
+        reply_markup=_client_type_keyboard(_current_case_id(await state.get_data())),
+    )
+
+
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_client_consumer:v2:")
+    or str(c.data or "").startswith("calc_client_other:v2:")
+)
+async def choose_client_type(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    action = (
+        "calc_client_consumer"
+        if str(callback.data or "").startswith("calc_client_consumer:v2:")
+        else "calc_client_other"
+    )
+    try:
+        case_id = _require_current_case_callback(
+            callback.data,
+            prefix=action,
+            state_data=data,
+        )
+    except Exception:
+        await _recover_stale_step(callback, state)
+        return
+    client_type = "consumer" if action == "calc_client_consumer" else "other"
+    await state.update_data(client_type=client_type)
+    await state.set_state(CalculatorStates.waiting_unique_object)
+    await callback.message.edit_text(
+        _unique_object_prompt(),
+        reply_markup=_unique_object_keyboard(case_id),
+    )
+
+
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_unique_yes:v2:")
+    or str(c.data or "").startswith("calc_unique_no:v2:")
+)
+async def choose_unique_object(callback: CallbackQuery, state: FSMContext, db):
+    data = await state.get_data()
+    action = (
+        "calc_unique_yes"
+        if str(callback.data or "").startswith("calc_unique_yes:v2:")
+        else "calc_unique_no"
+    )
+    try:
+        _require_current_case_callback(
+            callback.data,
+            prefix=action,
+            state_data=data,
+        )
+    except Exception:
+        await _recover_stale_step(callback, state)
+        return
+    await state.update_data(unique_object=(action == "calc_unique_yes"))
     await calculate_show_callback(callback, state, db)
+
+
+@router.callback_query(
+    lambda c: str(c.data or "").startswith("calc_client_unknown:v2:")
+    or str(c.data or "").startswith("calc_unique_unknown:v2:")
+)
+async def legal_fact_unknown(callback: CallbackQuery, state: FSMContext, db):
+    data = await state.get_data()
+    if str(callback.data or "").startswith("calc_client_unknown:v2:"):
+        action = "calc_client_unknown"
+        reason = "Не подтверждён тип участника ДДУ"
+    else:
+        action = "calc_unique_unknown"
+        reason = "Не подтверждён статус уникального объекта"
+    try:
+        case_id = _require_current_case_callback(
+            callback.data,
+            prefix=action,
+            state_data=data,
+        )
+    except Exception:
+        await _recover_stale_step(callback, state)
+        return
+
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    try:
+        case = await _bound_case(ctx, user, state)
+        await ctx.case_service.transfer_to_m2(
+            case=case,
+            actor_type="client",
+            actor_id=user.id,
+            reason=reason,
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        logger.exception("Legal fact uncertainty could not be routed to lawyer")
+        await callback.message.edit_text(
+            "Не удалось сохранить переход к ручной проверке. Ваши ответы сохранены.",
+            reply_markup=one(
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+    await finish_calculator_case(state, case_id=case_id)
+    await _present_committed_callback(
+        callback,
+        "⚖️ Для этого расчёта нужен подтверждённый юридический факт. "
+        "Система не будет угадывать его или подставлять значение по умолчанию. "
+        "Обращение передано в консультационный маршрут.",
+        reply_markup=one(
+            ("Описать ситуацию", "consult_description_start"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ),
+        saved_notice="Ручная проверка уже зафиксирована.",
+    )
 
 
 async def calc_result(state, db, case):
     data = await state.get_data()
-    if not _base_data_ready(data) or "object_transferred" not in data:
-        raise ValueError("Данные расчёта устарели. Начните расчёт заново.")
+    if (
+        not _base_data_ready(data)
+        or "object_transferred" not in data
+        or str(data.get("client_type") or "") not in {"consumer", "other"}
+        or "unique_object" not in data
+    ):
+        raise ValueError("Данные расчёта неполны. Продолжите с сохранённого шага.")
     return await CalculatorService(db).calculate_and_save(
         case=case,
         contract_price=Decimal(data["contract_price"]),
@@ -824,6 +1033,9 @@ async def calc_result(state, db, case):
             if data.get("actual_transfer_date")
             else None
         ),
+        client_type=str(data["client_type"]),
+        unique_object=bool(data["unique_object"]),
+        manual_review_flags=tuple(data.get("manual_review_flags") or ()),
     )
 
 
@@ -839,17 +1051,32 @@ async def calculate_show_message(message: Message, state: FSMContext, db):
         case_id = int(case.id)
         result = await calc_result(state, db, case)
         await db.commit()
+    except CalculationManualReviewRequired as error:
+        await db.rollback()
+        data = await state.get_data()
+        case_id = _current_case_id(data)
+        await message.answer(
+            "⚖️ Автоматический расчёт остановлен: требуется ручная юридическая проверка.\n\n"
+            + "\n".join(f"• {reason}" for reason in error.reasons)
+            + "\n\nВведённые данные сохранены; система не подставляет спорное значение.",
+            reply_markup=one(
+                ("💬 Связаться с юристом", "contact_lawyer"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
     except CalculationRuleError:
         await db.rollback()
         logger.warning(
-            "Calculator result blocked: no valid approved rule revision for current calculation date"
+            "Calculator result blocked: no valid production rule revision for current calculation date"
         )
         data = await state.get_data()
         case_id = _current_case_id(data)
         await message.answer(
             "⚠️ Автоматический расчёт сейчас временно недоступен. "
             "Ваши ответы, включая последнюю дату, сохранены — повторно вводить её не нужно. "
-            "Система не подставляет юридические ставки автоматически без утверждённых правил. "
+            "Система не подставляет юридические ставки автоматически без опубликованной production-редакции правил. "
             "Сохраните обращение и вернитесь к расчёту после обновления правил.",
             reply_markup=(
                 one(
@@ -897,10 +1124,57 @@ async def calculate_show_callback(callback: CallbackQuery, state: FSMContext, db
         case_id = int(case.id)
         result = await calc_result(state, db, case)
         await db.commit()
+    except CalculationManualReviewRequired as error:
+        await db.rollback()
+        data = await state.get_data()
+        case_id = _current_case_id(data)
+        if case_id <= 0:
+            await _recover_stale_step(callback, state)
+            return
+        try:
+            ctx = BotContextService(db)
+            user = await ctx.get_user_from_callback(callback)
+            case = await ctx.case_service.select_case_for_user(
+                user_id=int(user.id),
+                case_id=case_id,
+            )
+            await ctx.case_service.transfer_to_m2(
+                case=case,
+                actor_type="client",
+                actor_id=user.id,
+                reason="Стоп-фактор автоматического расчёта: " + "; ".join(error.reasons),
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            logger.exception("Manual-review calculator stop could not be persisted")
+            await callback.message.edit_text(
+                "⚖️ Расчёт требует ручной юридической проверки, но переход к юристу "
+                "сейчас не удалось сохранить. Ваши ответы не удалены.",
+                reply_markup=one(
+                    ("📁 Моё дело", "my_case_open"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+            )
+            return
+        await finish_calculator_case(state, case_id=case_id)
+        await _present_committed_callback(
+            callback,
+            "⚖️ Автоматический расчёт остановлен: требуется ручная юридическая проверка.\n\n"
+            + "\n".join(f"• {reason}" for reason in error.reasons)
+            + "\n\nОбращение передано юристу. Система не подставляла спорное значение.",
+            reply_markup=one(
+                ("Описать ситуацию", "consult_description_start"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+            saved_notice="Ручная проверка уже зафиксирована.",
+        )
+        return
     except CalculationRuleError:
         await db.rollback()
         logger.warning(
-            "Calculator result blocked: no valid approved rule revision for current calculation date"
+            "Calculator result blocked: no valid production rule revision for current calculation date"
         )
         data = await state.get_data()
         case_id = _current_case_id(data)
@@ -910,7 +1184,7 @@ async def calculate_show_callback(callback: CallbackQuery, state: FSMContext, db
         await callback.message.edit_text(
             "⚠️ Автоматический расчёт сейчас временно недоступен. "
             "Ваши ответы сохранены. Система не подставляет юридические ставки "
-            "автоматически без утверждённых правил. Сохраните обращение и "
+            "автоматически без опубликованной production-редакции правил. Сохраните обращение и "
             "вернитесь к расчёту после обновления правил.",
             reply_markup=one(
                 (
@@ -960,6 +1234,7 @@ def result_kb(case_id: int, *, allow_m1: bool = True):
         items.append(("Продолжить ведение дела", f"calc_continue_m1:v2:{case_id}"))
     items.extend(
         [
+            ("🔎 Основания и детализация", f"calc_details:v2:{case_id}"),
             ("💬 Перейти к консультации", f"calc_to_m2:v2:{case_id}"),
             ("Пока изучаю вопрос", f"calc_postpone:v2:{case_id}"),
             ("🧮 Изменить данные и пересчитать", f"calc_repeat:v2:{case_id}"),
@@ -967,6 +1242,53 @@ def result_kb(case_id: int, *, allow_m1: bool = True):
         ]
     )
     return one(*items)
+
+
+@router.callback_query(lambda c: str(c.data or "").startswith("calc_details:v2:"))
+async def calculation_details(callback: CallbackQuery, db):
+    try:
+        case_id = _parse_case_callback(callback.data, "calc_details")
+        ctx = BotContextService(db)
+        user = await ctx.get_user_from_callback(callback)
+        owned_case = await ctx.case_service.get_case_for_user(
+            user_id=int(user.id),
+            case_id=case_id,
+        )
+        if owned_case is None:
+            raise LookupError("Обращение недоступно")
+        calculation = await CalculatorService(db).latest_calculation_for_case(
+            case_id=case_id
+        )
+        if calculation is None:
+            raise LookupError("Расчёт не найден")
+    except Exception:
+        await db.rollback()
+        await callback.answer(
+            "Детализация недоступна или эта кнопка устарела.",
+            show_alert=True,
+        )
+        return
+
+    detail_pages = split_telegram_text(format_calculation_details(calculation))
+    total_pages = len(detail_pages)
+    for page_number, detail_text in enumerate(detail_pages, start=1):
+        shown = (
+            f"Страница {page_number}/{total_pages}\n\n{detail_text}"
+            if total_pages > 1
+            else detail_text
+        )
+        await callback.message.answer(
+            shown,
+            reply_markup=(
+                one(
+                    ("📁 Моё дело", "my_case_open"),
+                    ("🏠 Главная", "nav_home"),
+                )
+                if page_number == total_pages
+                else None
+            ),
+        )
+    await callback.answer("Открыта сохранённая детализация расчёта.")
 
 
 @router.callback_query(

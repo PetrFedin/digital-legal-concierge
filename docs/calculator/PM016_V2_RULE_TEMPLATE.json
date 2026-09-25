@@ -1,0 +1,842 @@
+{
+  "schema_version": 2,
+  "formula": {
+    "code": "ddu_delay_penalty_v2",
+    "delay_start_offset_days": 1,
+    "divisor": "300",
+    "money_quant": "0.01",
+    "rounding_mode": "ROUND_HALF_UP",
+    "rounding_stage": "total",
+    "source_refs": [
+      "214FZ-ART6"
+    ]
+  },
+  "rate_policy": {
+    "mode": "due_date",
+    "coverage_from": "2016-01-01",
+    "coverage_through": "2026-09-25",
+    "source_refs": [
+      "214FZ-ART6",
+      "CBR-REFI-EQUALS-KEY",
+      "CBR-2016-2022",
+      "CBR-2021-2026"
+    ]
+  },
+  "rate_directory": [
+    {
+      "code": "CBR-01",
+      "start": "2016-01-01",
+      "end": "2016-06-13",
+      "rate": "0.11",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-02",
+      "start": "2016-06-14",
+      "end": "2016-09-18",
+      "rate": "0.105",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-03",
+      "start": "2016-09-19",
+      "end": "2017-03-26",
+      "rate": "0.10",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-04",
+      "start": "2017-03-27",
+      "end": "2017-05-01",
+      "rate": "0.0975",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-05",
+      "start": "2017-05-02",
+      "end": "2017-06-18",
+      "rate": "0.0925",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-06",
+      "start": "2017-06-19",
+      "end": "2017-09-17",
+      "rate": "0.09",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-07",
+      "start": "2017-09-18",
+      "end": "2017-10-29",
+      "rate": "0.085",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-08",
+      "start": "2017-10-30",
+      "end": "2017-12-17",
+      "rate": "0.0825",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-09",
+      "start": "2017-12-18",
+      "end": "2018-02-11",
+      "rate": "0.0775",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-10",
+      "start": "2018-02-12",
+      "end": "2018-03-25",
+      "rate": "0.075",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-11",
+      "start": "2018-03-26",
+      "end": "2018-09-16",
+      "rate": "0.0725",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-12",
+      "start": "2018-09-17",
+      "end": "2018-12-16",
+      "rate": "0.075",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-13",
+      "start": "2018-12-17",
+      "end": "2019-06-16",
+      "rate": "0.0775",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-14",
+      "start": "2019-06-17",
+      "end": "2019-07-28",
+      "rate": "0.075",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-15",
+      "start": "2019-07-29",
+      "end": "2019-09-08",
+      "rate": "0.0725",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-16",
+      "start": "2019-09-09",
+      "end": "2019-10-27",
+      "rate": "0.07",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-17",
+      "start": "2019-10-28",
+      "end": "2019-12-15",
+      "rate": "0.065",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-18",
+      "start": "2019-12-16",
+      "end": "2020-02-09",
+      "rate": "0.0625",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-19",
+      "start": "2020-02-10",
+      "end": "2020-04-26",
+      "rate": "0.06",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-20",
+      "start": "2020-04-27",
+      "end": "2020-06-21",
+      "rate": "0.055",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-21",
+      "start": "2020-06-22",
+      "end": "2020-07-26",
+      "rate": "0.045",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-22",
+      "start": "2020-07-27",
+      "end": "2021-03-21",
+      "rate": "0.0425",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-23",
+      "start": "2021-03-22",
+      "end": "2021-04-25",
+      "rate": "0.045",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-24",
+      "start": "2021-04-26",
+      "end": "2021-06-14",
+      "rate": "0.05",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-25",
+      "start": "2021-06-15",
+      "end": "2021-07-25",
+      "rate": "0.055",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-26",
+      "start": "2021-07-26",
+      "end": "2021-09-12",
+      "rate": "0.065",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-27",
+      "start": "2021-09-13",
+      "end": "2021-10-24",
+      "rate": "0.0675",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-28",
+      "start": "2021-10-25",
+      "end": "2021-12-19",
+      "rate": "0.075",
+      "source_refs": [
+        "CBR-2016-2022"
+      ]
+    },
+    {
+      "code": "CBR-29",
+      "start": "2021-12-20",
+      "end": "2022-02-13",
+      "rate": "0.085",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-30",
+      "start": "2022-02-14",
+      "end": "2022-02-27",
+      "rate": "0.095",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-31",
+      "start": "2022-02-28",
+      "end": "2022-04-10",
+      "rate": "0.20",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-32",
+      "start": "2022-04-11",
+      "end": "2022-05-03",
+      "rate": "0.17",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-33",
+      "start": "2022-05-04",
+      "end": "2022-05-26",
+      "rate": "0.14",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-34",
+      "start": "2022-05-27",
+      "end": "2022-06-13",
+      "rate": "0.11",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-35",
+      "start": "2022-06-14",
+      "end": "2022-07-24",
+      "rate": "0.095",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-36",
+      "start": "2022-07-25",
+      "end": "2022-09-18",
+      "rate": "0.08",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-37",
+      "start": "2022-09-19",
+      "end": "2023-07-23",
+      "rate": "0.075",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-38",
+      "start": "2023-07-24",
+      "end": "2023-08-14",
+      "rate": "0.085",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-39",
+      "start": "2023-08-15",
+      "end": "2023-09-17",
+      "rate": "0.12",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-40",
+      "start": "2023-09-18",
+      "end": "2023-10-29",
+      "rate": "0.13",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-41",
+      "start": "2023-10-30",
+      "end": "2023-12-17",
+      "rate": "0.15",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-42",
+      "start": "2023-12-18",
+      "end": "2024-07-28",
+      "rate": "0.16",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-43",
+      "start": "2024-07-29",
+      "end": "2024-09-15",
+      "rate": "0.18",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-44",
+      "start": "2024-09-16",
+      "end": "2024-10-27",
+      "rate": "0.19",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-45",
+      "start": "2024-10-28",
+      "end": "2025-06-08",
+      "rate": "0.21",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-46",
+      "start": "2025-06-09",
+      "end": "2025-07-27",
+      "rate": "0.20",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-47",
+      "start": "2025-07-28",
+      "end": "2025-09-14",
+      "rate": "0.18",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-48",
+      "start": "2025-09-15",
+      "end": "2025-10-26",
+      "rate": "0.17",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-49",
+      "start": "2025-10-27",
+      "end": "2025-12-21",
+      "rate": "0.165",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-50",
+      "start": "2025-12-22",
+      "end": "2026-02-15",
+      "rate": "0.16",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-51",
+      "start": "2026-02-16",
+      "end": "2026-03-22",
+      "rate": "0.155",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-52",
+      "start": "2026-03-23",
+      "end": "2026-04-26",
+      "rate": "0.15",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-53",
+      "start": "2026-04-27",
+      "end": "2026-06-21",
+      "rate": "0.145",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-54",
+      "start": "2026-06-22",
+      "end": "2026-07-26",
+      "rate": "0.1425",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "CBR-55",
+      "start": "2026-07-27",
+      "end": "2026-09-25",
+      "rate": "0.14",
+      "source_refs": [
+        "CBR-2021-2026"
+      ]
+    }
+  ],
+  "moratoria": [
+    {
+      "code": "PP423-STANDARD",
+      "start": "2020-04-03",
+      "end": "2020-12-31",
+      "client_types": "*",
+      "unique_object": false,
+      "source_refs": [
+        "PP423"
+      ]
+    },
+    {
+      "code": "PP479-STANDARD",
+      "start": "2022-03-29",
+      "end": "2023-06-30",
+      "client_types": "*",
+      "unique_object": false,
+      "source_refs": [
+        "PP479"
+      ]
+    },
+    {
+      "code": "PP326-P2-STANDARD",
+      "start": "2024-03-22",
+      "end": "2025-12-31",
+      "client_types": "*",
+      "unique_object": false,
+      "source_refs": [
+        "PP326",
+        "KSRF-24P-2026"
+      ]
+    },
+    {
+      "code": "PP326-P21-UNIQUE",
+      "start": "2025-01-01",
+      "end": "2025-12-31",
+      "client_types": "*",
+      "unique_object": true,
+      "source_refs": [
+        "PP326",
+        "KSRF-24P-2026"
+      ]
+    }
+  ],
+  "rate_caps": [
+    {
+      "code": "PP479-CAP-9_5",
+      "start": "2022-02-25",
+      "end": "2023-06-30",
+      "cap": "0.095",
+      "client_types": "*",
+      "unique_object": false,
+      "source_refs": [
+        "PP479",
+        "CBR-2021-2026"
+      ]
+    },
+    {
+      "code": "PP326-CAP-7_5",
+      "start": "2023-07-01",
+      "end": "2025-12-31",
+      "cap": "0.075",
+      "client_types": "*",
+      "unique_object": false,
+      "source_refs": [
+        "PP326",
+        "CBR-2021-2026",
+        "KSRF-24P-2026"
+      ]
+    }
+  ],
+  "client_types": {
+    "consumer": {
+      "multiplier": "2",
+      "source_refs": [
+        "214FZ-ART6"
+      ]
+    },
+    "other": {
+      "multiplier": "1",
+      "source_refs": [
+        "214FZ-ART6"
+      ]
+    }
+  },
+  "unique_object": {
+    "enabled": true,
+    "multiplier": "1",
+    "amount_cap_percent": "0.05",
+    "manual_review_after_months": 30,
+    "source_refs": [
+      "214FZ-ART6",
+      "421FZ"
+    ]
+  },
+  "stop_factors": [
+    {
+      "code": "DUE-DATE-UNCERTAIN",
+      "flag": "due_date_uncertain",
+      "message": "Срок передачи требует отдельного толкования договора/дополнительного соглашения или применения правила о нерабочем дне.",
+      "source_refs": [
+        "214FZ-ART6",
+        "GK-ART193"
+      ]
+    },
+    {
+      "code": "TRANSFER-DATE-DISPUTED",
+      "flag": "transfer_date_disputed",
+      "message": "Фактическая дата передачи или документ о передаче спорны/не подтверждены.",
+      "source_refs": [
+        "214FZ-ART6"
+      ]
+    },
+    {
+      "code": "ACCEPTANCE-EVASION",
+      "flag": "acceptance_evasion",
+      "message": "Есть признаки уклонения участника от подписания передаточного документа; автоматический расчёт прекращается.",
+      "source_refs": [
+        "214FZ-ART6"
+      ]
+    },
+    {
+      "code": "CLIENT-TYPE-UNKNOWN",
+      "flag": "client_type_unknown",
+      "message": "Не подтверждён тип участника для выбора коэффициента.",
+      "source_refs": [
+        "214FZ-ART6"
+      ]
+    },
+    {
+      "code": "UNIQUE-OBJECT-UNKNOWN",
+      "flag": "unique_object_unknown",
+      "message": "Не подтверждён статус объекта как уникального по проектной документации.",
+      "source_refs": [
+        "214FZ-ART6",
+        "421FZ"
+      ]
+    },
+    {
+      "code": "SPECIAL-PERIOD-UNKNOWN",
+      "flag": "special_period_unknown",
+      "message": "Период может подпадать под специальный мораторий/ограничение, отсутствующее в подтверждённой редакции.",
+      "source_refs": [
+        "PP423",
+        "PP479",
+        "PP326"
+      ]
+    },
+    {
+      "code": "LAW-CHANGE-PENDING",
+      "flag": "law_change_pending",
+      "message": "Выявлено изменение законодательства или позиции высшего суда, ещё не включённое в утверждённую редакцию.",
+      "source_refs": [
+        "KSRF-24P-2026"
+      ]
+    }
+  ],
+  "control_examples": [
+    {
+      "code": "A-ORDINARY-CONSUMER-2026",
+      "source_refs": [
+        "214FZ-ART6",
+        "CBR-2021-2026"
+      ],
+      "input": {
+        "contract_price": "10000000",
+        "planned_transfer_date": "2026-03-31",
+        "calculation_date": "2026-05-25",
+        "object_transferred": true,
+        "actual_transfer_date": "2026-05-25",
+        "client_type": "consumer",
+        "unique_object": false
+      },
+      "expected": {
+        "penalty_amount": "550000.00",
+        "delay_days_total": 55,
+        "delay_days_chargeable": 55,
+        "moratorium_days": 0,
+        "base_rate": "0.15",
+        "amount_cap_applied": false
+      }
+    },
+    {
+      "code": "B-PP479-PP326-SEGMENTS",
+      "source_refs": [
+        "214FZ-ART6",
+        "PP479",
+        "PP326",
+        "CBR-2021-2026"
+      ],
+      "input": {
+        "contract_price": "10000000",
+        "planned_transfer_date": "2022-02-11",
+        "calculation_date": "2023-07-10",
+        "object_transferred": true,
+        "actual_transfer_date": "2023-07-10",
+        "client_type": "consumer",
+        "unique_object": false
+      },
+      "expected": {
+        "penalty_amount": "305000.00",
+        "delay_days_total": 514,
+        "delay_days_chargeable": 55,
+        "moratorium_days": 459,
+        "base_rate": "0.085",
+        "amount_cap_applied": false
+      }
+    },
+    {
+      "code": "C-UNIQUE-OBJECT-5PCT",
+      "source_refs": [
+        "214FZ-ART6",
+        "421FZ",
+        "CBR-2021-2026"
+      ],
+      "input": {
+        "contract_price": "20000000",
+        "planned_transfer_date": "2026-01-13",
+        "calculation_date": "2026-05-08",
+        "object_transferred": true,
+        "actual_transfer_date": "2026-05-08",
+        "client_type": "consumer",
+        "unique_object": true
+      },
+      "expected": {
+        "penalty_amount": "1000000.00",
+        "delay_days_total": 115,
+        "delay_days_chargeable": 115,
+        "moratorium_days": 0,
+        "base_rate": "0.16",
+        "amount_cap_applied": true
+      }
+    },
+    {
+      "code": "D-CURRENT-CBR-14PCT-2026",
+      "source_refs": [
+        "214FZ-ART6",
+        "CBR-2021-2026"
+      ],
+      "input": {
+        "contract_price": "10000000",
+        "planned_transfer_date": "2026-08-01",
+        "calculation_date": "2026-08-10",
+        "object_transferred": true,
+        "actual_transfer_date": "2026-08-10",
+        "client_type": "consumer",
+        "unique_object": false
+      },
+      "expected": {
+        "penalty_amount": "84000.00",
+        "delay_days_total": 9,
+        "delay_days_chargeable": 9,
+        "moratorium_days": 0,
+        "base_rate": "0.14",
+        "amount_cap_applied": false
+      }
+    }
+  ],
+  "sources": {
+    "214FZ-ART6": {
+      "title": "Федеральный закон № 214-ФЗ, статья 6 — срок передачи и неустойка",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_51038/817620cd3c49f19912fc1ac0f98b10d17f65b75b/",
+      "checked_at": "2026-09-24",
+      "locator": "ч. 2 и ч. 2.1 ст. 6 Федерального закона № 214-ФЗ"
+    },
+    "CBR-REFI-EQUALS-KEY": {
+      "title": "Банк России — ставка рефинансирования с 01.01.2016 соответствует ключевой ставке",
+      "url": "https://www.cbr.ru/statistics/idkp_br/refinancing_rates1/",
+      "checked_at": "2026-09-24",
+      "locator": "Справочная таблица Банка России: с 01.01.2016 ставка рефинансирования соответствует ключевой ставке"
+    },
+    "CBR-2016-2022": {
+      "title": "Банк России — история ключевой ставки 01.01.2016–11.02.2022",
+      "url": "https://www.cbr.ru/hd_base/KeyRate/?UniDbQuery.From=01.01.2016&UniDbQuery.Posted=True&UniDbQuery.To=11.02.2022",
+      "checked_at": "2026-09-24",
+      "locator": "Таблица «Ключевая ставка Банка России», период 01.01.2016–11.02.2022"
+    },
+    "CBR-2021-2026": {
+      "title": "Банк России — история ключевой ставки 01.04.2021–25.09.2026",
+      "url": "https://www.cbr.ru/hd_base/KeyRate/?UniDbQuery.From=01.04.2021&UniDbQuery.Posted=True&UniDbQuery.To=25.09.2026",
+      "checked_at": "2026-09-25",
+      "locator": "Таблица «Ключевая ставка Банка России», период 01.04.2021–25.09.2026"
+    },
+    "PP423": {
+      "title": "Постановление Правительства РФ от 02.04.2020 № 423",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_349308/",
+      "checked_at": "2026-09-24",
+      "locator": "п. 1 Постановления Правительства РФ № 423: период не включается в начисление"
+    },
+    "PP479": {
+      "title": "Постановление Правительства РФ от 26.03.2022 № 479",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_413069/",
+      "checked_at": "2026-09-24",
+      "locator": "п. 1 Постановления Правительства РФ № 479: мораторий и ограничение применяемой ставки"
+    },
+    "PP326": {
+      "title": "Постановление Правительства РФ от 18.03.2024 № 326",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_472727/",
+      "checked_at": "2026-09-24",
+      "locator": "п. 1–2.1 Постановления Правительства РФ № 326: специальные периоды, caps и уникальные объекты"
+    },
+    "KSRF-24P-2026": {
+      "title": "Постановление Конституционного Суда РФ от 14.04.2026 № 24-П",
+      "url": "https://www.ksrf.ru/doc/KSRFDecision902504.pdf",
+      "checked_at": "2026-09-24",
+      "locator": "резолютивная часть и правовые позиции Постановления КС РФ № 24-П/2026 по применению п. 2 Постановления № 326"
+    },
+    "GK-ART193": {
+      "title": "ГК РФ, статья 193 — окончание срока в нерабочий день",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_5142/8aaa310a192d916fce0327f6226a59ffe5b49b9b/",
+      "checked_at": "2026-09-24",
+      "locator": "ст. 193 ГК РФ: окончание срока в нерабочий день"
+    },
+    "421FZ": {
+      "title": "Федеральный закон от 04.08.2023 № 421-ФЗ",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_453876/",
+      "checked_at": "2026-09-24",
+      "locator": "положения Федерального закона № 421-ФЗ, изменившие ст. 6 № 214-ФЗ в части уникальных объектов"
+    }
+  }
+}

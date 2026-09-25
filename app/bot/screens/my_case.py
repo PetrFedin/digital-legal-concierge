@@ -127,6 +127,13 @@ def _case_buttons(
         buttons.append(("💳 Оплаты", "payments_open"))
     if not (view.action and view.action.callback == "case_history_open"):
         buttons.append(("🕘 История дела", "case_history_open"))
+    if str(getattr(view, "calculation_summary", "") or "").strip():
+        buttons.append(
+            (
+                "🔎 Основания и детализация расчёта",
+                f"calc_details:v2:{int(view.case_id)}",
+            )
+        )
     if not (view.action and view.action.callback == "contact_lawyer"):
         buttons.append(("💬 Связаться с юристом", "contact_lawyer"))
     if has_multiple_active_cases:
@@ -229,6 +236,13 @@ async def _render_completed_case(
     buttons: list[tuple[str, str]] = []
     if is_m2 and has_consultation_result:
         buttons.append(("👨‍⚖ Итог консультации", "consultation_result_open"))
+    if str(getattr(view, "calculation_summary", "") or "").strip():
+        buttons.append(
+            (
+                "🔎 Основания и детализация расчёта",
+                f"calc_details:v2:{int(view.case_id)}",
+            )
+        )
     buttons.extend(
         [
             ("📄 Документы обращения", "documents_open"),

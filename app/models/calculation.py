@@ -39,9 +39,19 @@ class Calculation(Base, TimestampMixin):
         Numeric(8, 4), nullable=True
     )
     client_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    unique_object: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     penalty_amount: Mapped[Decimal | None] = mapped_column(
         Numeric(14, 2), nullable=True
     )
+    gross_penalty_amount: Mapped[Decimal | None] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
+    amount_cap: Mapped[Decimal | None] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
+    amount_cap_applied: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    manual_review_required: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    manual_review_reasons: Mapped[list | None] = mapped_column(JSON, nullable=True)
     formula_version: Mapped[str | None] = mapped_column(
         String(100), nullable=True
     )
@@ -59,6 +69,7 @@ class Calculation(Base, TimestampMixin):
     )
     rule_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     applied_segments: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    excluded_segments: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     is_preliminary: Mapped[bool] = mapped_column(Boolean, default=True)
 

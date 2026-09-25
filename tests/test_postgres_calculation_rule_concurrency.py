@@ -20,34 +20,88 @@ from app.models.calculation_rule_revision import CalculationRuleRevision
 _DATABASE_URL = str(settings.database_url)
 pytestmark = pytest.mark.skipif(
     not _DATABASE_URL.startswith(("postgresql", "postgres")),
-    reason="PostgreSQL calculation rule approval row-lock contract",
+    reason="PostgreSQL calculation rule production row-lock contract",
 )
 
 
 def _synthetic_rules(rate_code: str) -> dict:
     # Synthetic concurrency fixture only. Not legal/release data.
+    source = "SYNTHETIC-SOURCE"
     return {
-        "schema_version": 1,
-        "formula_code": "price_rate_divisor_days_multiplier",
-        "delay_start_offset_days": 1,
-        "divisor": "300",
-        "client_types": {"consumer": {"multiplier": "2"}},
-        "money_quant": "0.01",
-        "rounding_mode": "ROUND_HALF_UP",
-        "rounding_stage": "total",
-        "rates": [
+        "schema_version": 2,
+        "formula": {
+            "code": "ddu_delay_penalty_v2",
+            "delay_start_offset_days": 1,
+            "divisor": "300",
+            "money_quant": "0.01",
+            "rounding_mode": "ROUND_HALF_UP",
+            "rounding_stage": "total",
+            "source_refs": [source],
+        },
+        "rate_policy": {
+            "mode": "due_date",
+            "coverage_from": "2199-01-01",
+            "coverage_through": "2199-12-31",
+            "source_refs": [source],
+        },
+        "rate_directory": [
             {
                 "code": rate_code,
                 "start": "2199-01-01",
-                "end": None,
+                "end": "2199-12-31",
                 "rate": "0.10",
+                "source_refs": [source],
             }
         ],
-        "excluded_periods": [],
+        "moratoria": [],
+        "rate_caps": [],
+        "client_types": {
+            "consumer": {"multiplier": "2", "source_refs": [source]},
+            "other": {"multiplier": "1", "source_refs": [source]},
+        },
+        "unique_object": {
+            "enabled": True,
+            "multiplier": "1",
+            "amount_cap_percent": "0.05",
+            "manual_review_after_months": 30,
+            "source_refs": [source],
+        },
+        "stop_factors": [],
+        "control_examples": [
+            {
+                "code": "SYNTHETIC-GREEN",
+                "source_refs": [source],
+                "input": {
+                    "contract_price": "300000",
+                    "planned_transfer_date": "2199-01-01",
+                    "calculation_date": "2199-01-02",
+                    "object_transferred": True,
+                    "actual_transfer_date": "2199-01-02",
+                    "client_type": "consumer",
+                    "unique_object": False,
+                },
+                "expected": {
+                    "penalty_amount": "200.00",
+                    "delay_days_total": 1,
+                    "delay_days_chargeable": 1,
+                    "moratorium_days": 0,
+                    "base_rate": "0.10",
+                    "amount_cap_applied": False,
+                },
+            }
+        ],
+        "sources": {
+            source: {
+                "title": "Synthetic test source",
+                "locator": "Synthetic provision for concurrency test",
+                "url": "https://example.test/legal-source",
+                "checked_at": "2198-12-31",
+            }
+        },
     }
 
 
-async def _seed_overlapping_drafts() -> tuple[int, int]:
+async def _seed_overlapping_approved() -> tuple[int, int]:
     suffix = uuid.uuid4().hex[:12]
     async with AsyncSessionLocal() as db:
         service = CalculationRuleRevisionService(db)
@@ -69,18 +123,33 @@ async def _seed_overlapping_drafts() -> tuple[int, int]:
             actor_type="superadmin",
             actor_id=9102,
         )
+        await db.flush()
+
+        for revision, actor_id in ((first, 9101), (second, 9102)):
+            reviewed = await service.confirm_legal_review(
+                revision=revision,
+                actor_type="lawyer",
+                actor_id=actor_id,
+                comment="synthetic legal-review gate",
+            )
+            await service.approve(
+                revision=reviewed,
+                actor_type="superadmin",
+                actor_id=actor_id,
+            )
+
         result = int(first.id), int(second.id)
         await db.commit()
         return result
 
 
-async def _approve(*, revision_id: int, actor_id: int, barrier: asyncio.Barrier):
+async def _publish(*, revision_id: int, actor_id: int, barrier: asyncio.Barrier):
     async with AsyncSessionLocal() as db:
         revision = await db.get(CalculationRuleRevision, revision_id)
         assert revision is not None
         await barrier.wait()
         try:
-            result = await CalculationRuleRevisionService(db).approve(
+            result = await CalculationRuleRevisionService(db).publish(
                 revision=revision,
                 actor_type="superadmin",
                 actor_id=actor_id,
@@ -93,13 +162,13 @@ async def _approve(*, revision_id: int, actor_id: int, barrier: asyncio.Barrier)
             raise
 
 
-async def _scenario_overlapping_approvals_have_one_winner() -> None:
-    first_id, second_id = await _seed_overlapping_drafts()
+async def _scenario_overlapping_publications_have_one_winner() -> None:
+    first_id, second_id = await _seed_overlapping_approved()
     barrier = asyncio.Barrier(2)
 
     results = await asyncio.gather(
-        _approve(revision_id=first_id, actor_id=9101, barrier=barrier),
-        _approve(revision_id=second_id, actor_id=9102, barrier=barrier),
+        _publish(revision_id=first_id, actor_id=9101, barrier=barrier),
+        _publish(revision_id=second_id, actor_id=9102, barrier=barrier),
         return_exceptions=True,
     )
 
@@ -120,20 +189,24 @@ async def _scenario_overlapping_approvals_have_one_winner() -> None:
                 )
             ).scalars().all()
         )
-        assert sorted(str(item.status) for item in revisions) == ["APPROVED", "DRAFT"]
-        approved = next(item for item in revisions if str(item.status) == "APPROVED")
-        assert approved.approved_at is not None
-        assert approved.approved_by_actor_id in {9101, 9102}
+        assert sorted(str(item.status) for item in revisions) == ["APPROVED", "PRODUCTION"]
+        production = next(
+            item for item in revisions if str(item.status) == "PRODUCTION"
+        )
+        assert production.approved_at is not None
+        assert production.legal_reviewed_at is not None
+        assert production.published_at is not None
+        assert production.published_by_actor_id in {9101, 9102}
 
-        approval_events = await db.scalar(
+        publication_events = await db.scalar(
             select(func.count(AuditLog.id)).where(
                 AuditLog.entity_type == "calculation_rule_revision",
                 AuditLog.entity_id.in_([first_id, second_id]),
-                AuditLog.action == "CALCULATION_RULE_APPROVED",
+                AuditLog.action == "CALCULATION_RULE_PUBLISHED",
             )
         )
-        assert int(approval_events or 0) == 1
+        assert int(publication_events or 0) == 1
 
 
-def test_overlapping_rule_approvals_have_one_winner_under_postgres() -> None:
-    asyncio.run(_scenario_overlapping_approvals_have_one_winner())
+def test_overlapping_rule_publications_have_one_winner_under_postgres() -> None:
+    asyncio.run(_scenario_overlapping_publications_have_one_winner())

@@ -106,7 +106,7 @@ async def test_back_navigation_preserves_calculator_values_and_exact_case_bindin
     assert state.data["contract_price"] == "8500000"
     assert state.data["planned_transfer_date"] == "2026-07-01"
     assert state.current == CalculatorStates.waiting_object_transfer_status.state
-    assert "шаг 3 из 4" in transfer.message.edits[-1][0]
+    assert "шаг 3 из 6" in transfer.message.edits[-1][0]
 
     planned_callback = FakeCallback("calc_back_planned:v2:77")
     await back_planned(planned_callback, state)
@@ -173,7 +173,7 @@ async def test_future_contractual_date_is_saved_before_information_exit_and_clea
 
 
 @pytest.mark.asyncio
-async def test_early_actual_transfer_reaches_calculation_instead_of_input_error(monkeypatch):
+async def test_early_actual_transfer_moves_to_explicit_participant_fact_instead_of_guessing():
     state = FakeState(
         {
             CALCULATOR_CASE_ID: 77,
@@ -184,23 +184,20 @@ async def test_early_actual_transfer_reaches_calculation_instead_of_input_error(
         current=CalculatorStates.waiting_actual_transfer_date.state,
     )
     message = FakeMessage(text="05.07.2026")
-    calls = []
 
-    async def fake_calculate_show_message(message_arg, state_arg, db_arg):
-        calls.append((message_arg, state_arg, db_arg))
-
-    monkeypatch.setattr(
-        calculator,
-        "calculate_show_message",
-        fake_calculate_show_message,
-    )
-
-    db = object()
-    await calculator.actual(message, state, db)
+    await calculator.actual(message, state, db=object())
 
     assert state.data["actual_transfer_date"] == "2026-07-05"
-    assert message.answers == []
-    assert calls == [(message, state, db)]
+    assert state.current == CalculatorStates.waiting_client_type.state
+    text, markup = message.answers[-1]
+    assert "шаг 5 из 6" in text
+    assert "статус участника ДДУ" in text
+    assert _callbacks(markup) == [
+        "calc_client_consumer:v2:77",
+        "calc_client_other:v2:77",
+        "calc_client_unknown:v2:77",
+        "nav_home",
+    ]
 
 
 @pytest.mark.asyncio
@@ -274,7 +271,7 @@ async def test_actual_date_rule_blocker_keeps_saved_input_and_does_not_ask_to_re
     assert state.data["actual_transfer_date"] == "2026-05-25"
     text, markup = message.answers[-1]
     assert "повторно вводить её не нужно" in text
-    assert "утверждённых правил" in text
+    assert "опубликованной production-редакции правил" in text
     assert "Повторите дату" not in text
     assert _callbacks(markup) == [
         "calc_back_transfer_status:v2:77",
@@ -310,6 +307,7 @@ def test_positive_calculation_result_exposes_case_bound_m1_m2_postpone_and_recal
 
     assert texts == [
         "Продолжить ведение дела",
+        "🔎 Основания и детализация",
         "💬 Перейти к консультации",
         "Пока изучаю вопрос",
         "🧮 Изменить данные и пересчитать",
@@ -317,6 +315,7 @@ def test_positive_calculation_result_exposes_case_bound_m1_m2_postpone_and_recal
     ]
     assert callbacks == [
         "calc_continue_m1:v2:77",
+        "calc_details:v2:77",
         "calc_to_m2:v2:77",
         "calc_postpone:v2:77",
         "calc_repeat:v2:77",
@@ -332,6 +331,7 @@ def test_zero_delay_result_does_not_offer_m1_but_keeps_safe_outcomes():
     assert "Продолжить ведение дела" not in texts
     assert "calc_continue_m1:v2:77" not in callbacks
     assert callbacks == [
+        "calc_details:v2:77",
         "calc_to_m2:v2:77",
         "calc_postpone:v2:77",
         "calc_repeat:v2:77",
