@@ -261,6 +261,7 @@ async def self_filing_context(
             "role": actor.role,
             "lawyer_id": actor.lawyer_id,
             "can_mutate": can_mutate,
+            "can_financial_reconcile": actor.role in {ROLE_ADMIN, ROLE_SUPERADMIN},
         },
         "capabilities": {
             "email_delivery_configured": email_delivery_configured(),
@@ -376,6 +377,68 @@ async def approve_self_filing_for_payment(
         "payment_id": int(payment.id),
         "amount": str(payment.amount),
         "status": str(payment.status),
+    }
+
+
+@router.post("/cases/{case_id}/payment-review/{payment_id}/resolve")
+async def resolve_self_filing_payment_review(
+    case_id: int,
+    payment_id: int,
+    payload: dict,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    actor = await _actor(request, db, x_admin_token)
+    if actor.role not in {ROLE_ADMIN, ROLE_SUPERADMIN}:
+        raise HTTPException(
+            status_code=403,
+            detail="Финансовая сверка доступна только администратору",
+        )
+    case, _user = await _case_for_staff(
+        db,
+        actor=actor,
+        case_id=case_id,
+    )
+    service = SelfFilingService(db)
+    try:
+        package = await service.require_package(
+            case_id=case.id,
+            for_update=True,
+        )
+        _expect_version(package, payload)
+        package, payment = await service.resolve_received_payment_review(
+            case_id=int(case.id),
+            payment_id=int(payment_id),
+            actor_id=int(actor.account_id),
+            decision=str(payload.get("decision") or ""),
+            comment=str(payload.get("comment") or ""),
+        )
+        await db.commit()
+    except HTTPException:
+        await db.rollback()
+        raise
+    except (SelfFilingError, ValueError, RuntimeError, LookupError) as error:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+    return {
+        "ok": True,
+        "case_id": int(case.id),
+        "package_version": int(package.version or 1),
+        "payment_id": int(payment.id),
+        "payment_status": str(payment.status),
+        "case_status": str(case.status),
+        "sla_started_at": (
+            package.sla_started_at.isoformat()
+            if package.sla_started_at
+            else None
+        ),
+        "sla_due_at": (
+            package.sla_due_at.isoformat()
+            if package.sla_due_at
+            else None
+        ),
     }
 
 
@@ -561,6 +624,7 @@ button,.button{border:0;border-radius:9px;background:var(--blue);color:#fff;padd
 <label>Юридическое обоснование</label><textarea id="note" placeholder="Почему выбран именно этот суд и на каком основании"></textarea>
 <div class="actions"><button onclick="approve()">Подтвердить комплект и открыть 15 000 ₽</button></div>
 </div>
+<div class="card" id="paymentReviewCard"><div class="eyebrow">Финансовая сверка</div><div id="paymentReview" class="muted"></div><label>Комментарий администратора</label><textarea id="financialComment" placeholder="Причина возобновления либо возврата, минимум 10 символов"></textarea><div class="actions"><button class="finance-action" onclick="resolvePayment('resume')">Запустить подготовку по полученным деньгам</button><button class="danger finance-action" onclick="resolvePayment('refund_pending')">Направить на контролируемый возврат</button></div></div>
 <div class="card"><div class="eyebrow">Доставка</div><div id="delivery" class="muted"></div><div class="actions"><button class="secondary" onclick="retryEmail()">Повторить email-доставку</button><button class="secondary" onclick="load()">Обновить</button></div></div>
 </aside></div></main>
 <script>
@@ -593,12 +657,25 @@ function render(){
  if(p.jurisdiction_basis)basis.value=p.jurisdiction_basis;
  if(p.jurisdiction_note)document.getElementById('note').value=p.jurisdiction_note;
  document.getElementById('delivery').innerHTML='Статус: <b>'+esc(p.email_delivery_status)+'</b><br>Попыток: '+p.email_delivery_attempts+'<br>Message-ID: '+esc(p.email_message_id||'—')+'<br>Последняя ошибка: '+esc(p.email_last_error||'—')+'<br>Email provider: '+(data.capabilities.email_delivery_configured?'готов':'НЕ НАСТРОЕН')+(data.capabilities.email_delivery_configuration_error?'<br><span class="bad">'+esc(data.capabilities.email_delivery_configuration_error)+'</span>':'');
- [...document.querySelectorAll('button,input,textarea,select')].forEach(el=>{if(el.id==='file'||el.tagName!=='BUTTON')return;el.disabled=!a.can_mutate});
+ const reviewPayment=[...data.payments].reverse().find(x=>x.code==='M1_SELF_FILING_PACKAGE'&&['PAID_REVIEW','REFUND_PENDING','REFUND_DECLINED'].includes(String(x.status)));
+ const reviewCard=document.getElementById('paymentReviewCard');
+ if(reviewPayment){
+   reviewCard.style.display='block';
+   document.getElementById('paymentReview').innerHTML='Платёж #'+reviewPayment.id+' · '+esc(reviewPayment.amount)+' RUB · <b>'+esc(reviewPayment.status)+'</b><br>'+(reviewPayment.status==='PAID_REVIEW'?'Деньги получены, но SLA не запущен. Повторно брать оплату нельзя: администратор должен либо восстановить запуск по исходному времени поступления, либо направить деньги на возврат.':'Повторная оплата заблокирована до завершения финансовой сверки/возврата.');
+   reviewCard.dataset.paymentId=String(reviewPayment.id);
+ }else{
+   reviewCard.style.display='none';
+   reviewCard.dataset.paymentId='';
+ }
+ document.querySelectorAll('button').forEach(el=>{el.disabled=!a.can_mutate});
+ document.querySelectorAll('.finance-action').forEach(el=>{el.disabled=!(a.can_financial_reconcile&&reviewPayment&&reviewPayment.status==='PAID_REVIEW')});
+ document.getElementById('file').disabled=!(c.status==='M1_SELF_FILING_PREPARATION'&&a.can_mutate);
  document.getElementById('uploadCard').style.display=(c.status==='M1_SELF_FILING_PREPARATION'&&a.can_mutate)?'block':'none';
 }
 async function startReview(){try{await post('/self-filing/cases/'+caseId+'/review/start',payload())}catch(e){feedback(e.message,true)}}
 async function requestDocs(){try{await post('/self-filing/cases/'+caseId+'/request-documents',payload({reason:document.getElementById('reason').value}))}catch(e){feedback(e.message,true)}}
 async function approve(){try{await post('/self-filing/cases/'+caseId+'/approve-for-payment',payload({court_name:document.getElementById('court').value,court_address:document.getElementById('courtAddress').value,jurisdiction_basis:document.getElementById('basis').value,jurisdiction_note:document.getElementById('note').value}))}catch(e){feedback(e.message,true)}}
+async function resolvePayment(decision){const card=document.getElementById('paymentReviewCard'),paymentId=Number(card.dataset.paymentId||0),comment=document.getElementById('financialComment').value;if(!paymentId){feedback('Платёж для сверки не найден',true);return}try{await post('/self-filing/cases/'+caseId+'/payment-review/'+paymentId+'/resolve',payload({decision,comment}));document.getElementById('financialComment').value=''}catch(e){feedback(e.message,true)}}
 async function uploadPackage(){const f=document.getElementById('file').files[0];if(!f){feedback('Выберите файл',true);return}try{const out=await api('/self-filing/cases/'+caseId+'/package',{method:'POST',headers:{'x-file-name':f.name,'x-file-type':f.type||'application/octet-stream','x-package-version':String(data.package.version)},body:f});feedback('Итоговый пакет утверждён. SHA '+String(out.sha256||'').slice(0,12));await load()}catch(e){feedback(e.message,true)}}
 async function retryEmail(){try{await post('/self-filing/cases/'+caseId+'/email/retry',payload())}catch(e){feedback(e.message,true)}}
 load();
