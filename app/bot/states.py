@@ -27,6 +27,15 @@ class PreviewCalculatorStates(StatesGroup):
     result_ready = State()
 
 
+class SelfFilingIntakeStates(StatesGroup):
+    """Ephemeral profile collection before exact Case-bound confirmation."""
+
+    waiting_region = State()
+    waiting_address = State()
+    waiting_email = State()
+    reviewing_profile = State()
+
+
 class DocumentUploadStates(StatesGroup):
     choosing_type = State()
     waiting_file = State()
