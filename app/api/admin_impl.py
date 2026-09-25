@@ -34,6 +34,7 @@ M1_OFFLINE_CONFIRMABLE_CODES = frozenset(
         PaymentCode.M1_INITIAL_PAYMENT,
         PaymentCode.M1_COURT_PAYMENT,
         PaymentCode.M1_SUCCESS_FEE,
+        PaymentCode.M1_SELF_FILING_PACKAGE,
     }
 )
 OFFLINE_CONFIRMABLE_CODES = frozenset(
