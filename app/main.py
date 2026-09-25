@@ -57,6 +57,7 @@ from app.api.scenario_map import router as scenario_map_router
 from app.api.search_center import router as search_center_router
 from app.api.security import router as security_router
 from app.api.security_event_center import router as security_event_center_router
+from app.api.self_filing_product import router as self_filing_product_router
 from app.api.settings_ui import router as settings_ui_router
 from app.api.sla_product import router as sla_product_router
 from app.api.task_center import router as task_center_router
@@ -166,6 +167,7 @@ def create_app():
         ("admin", admin_router),
         ("payment_safety_guard", payment_safety_guard_router),
         ("payment_webhooks", payment_router),
+        ("self_filing_product", self_filing_product_router),
         ("contract_center", contract_center_router),
         ("lawyer_product", lawyer_product_router),
         ("lawyer", lawyer_router),
