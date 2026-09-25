@@ -4,6 +4,9 @@ from sqlalchemy import select
 
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
+from app.domain.cases.self_filing_business_calendar import BusinessCalendarError
+from app.domain.cases.self_filing_service import SelfFilingError, SelfFilingService
+from app.domain.cases.service_modes import M1ServiceMode
 from app.domain.consultations.consultation_service import ConsultationService
 from app.domain.consultations.slot_service import SlotUnavailableError
 from app.domain.notifications.notification_engine import NotificationEngine
@@ -100,6 +103,74 @@ class PaymentWebhookService:
                 "payment_id": payment.id,
                 "reason": reason,
             },
+        )
+        await self.db.flush()
+        return payment
+
+    async def _mark_self_filing_payment_review(
+        self,
+        *,
+        payment: Payment,
+        case,
+        reason: str,
+        provider_payload: dict | None,
+        actor_type: str,
+        actor_id: int | None,
+        occurred_at: datetime | None = None,
+    ) -> Payment:
+        """Preserve received-money truth when package activation cannot complete.
+
+        The provider-confirmed money fact must survive even if the legal/package
+        side cannot start its SLA atomically (for example because the controlled
+        business calendar no longer covers the due date). The Case deliberately
+        remains on PAYMENT_PENDING until an administrator reconciles the exact
+        received payment through the self-filing product.
+        """
+
+        transition = PaymentLifecycleService.transition(
+            payment,
+            to_status=PaymentStatus.PAID_REVIEW,
+            occurred_at=payment.paid_at or occurred_at,
+        )
+        await add_case_history_event(
+            self.db,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            case_id=case.id,
+            action="SELF_FILING_PAYMENT_REVIEW_REQUIRED",
+            old_value={
+                "payment_id": payment.id,
+                "payment_status": transition.old_status.value,
+                "case_status": str(case.status),
+            },
+            new_value={
+                "payment_id": payment.id,
+                "payment_code": payment.payment_code,
+                "payment_status": transition.new_status.value,
+                "money_received_at": (
+                    payment.paid_at.isoformat() if payment.paid_at else None
+                ),
+                "case_status_preserved": str(case.status),
+                "reason": reason,
+                "payload": provider_payload or {},
+            },
+            comment=(
+                "Деньги получены, но автоматический запуск подготовки пакета и "
+                "двухдневного SLA остановлен безопасностью. Повторная оплата "
+                "заблокирована; требуется финансовая сверка администратора."
+            ),
+        )
+        await self.notifications.emit(
+            event_code="SELF_FILING_PAYMENT_REVIEW_REQUIRED",
+            case_id=case.id,
+            user_id=case.client_id,
+            payload={
+                "case_number": case.case_number,
+                "payment_id": payment.id,
+                "amount": str(payment.amount),
+                "reason": reason,
+            },
+            dedupe_key=f"payment:{payment.id}:self-filing-review",
         )
         await self.db.flush()
         return payment
@@ -336,9 +407,15 @@ class PaymentWebhookService:
                 return payment
 
             expected_status = M1_EXPECTED_PAYMENT_CASE_STATUSES.get(payment.payment_code)
+            self_filing_mode_mismatch = bool(
+                payment.payment_code == PaymentCode.M1_SELF_FILING_PACKAGE
+                and str(getattr(case, "service_mode", "") or "")
+                != M1ServiceMode.SELF_FILING_PACKAGE.value
+            )
             if expected_status is not None and (
                 str(case.route or "") != "M1"
                 or str(case.status) != expected_status.value
+                or self_filing_mode_mismatch
             ):
                 return await self._mark_stale_m1_payment_refund(
                     payment=payment,
@@ -358,36 +435,53 @@ class PaymentWebhookService:
                 occurred_at=occurred_at,
             )
             if payment.payment_code == PaymentCode.M1_SELF_FILING_PACKAGE:
-                # This payment opens a time-bound deliverable, not the ordinary
-                # M1 POA/court sequence. SLA authority lives in the dedicated
-                # self-filing service and fails closed when the controlled
-                # business calendar is not configured far enough.
-                from app.domain.cases.self_filing_service import SelfFilingService
-
-                package = await SelfFilingService(
-                    self.db
-                ).start_preparation_after_payment(
-                    case=case,
-                    payment=payment,
-                    actor_type=actor_type,
-                    actor_id=actor_id,
-                    occurred_at=occurred_at,
-                )
-                await self.notifications.emit(
-                    event_code="SELF_FILING_PAYMENT_CONFIRMED",
-                    case_id=case.id,
-                    user_id=case.client_id,
-                    payload={
-                        "case_number": case.case_number,
-                        "payment_id": payment.id,
-                        "sla_due_at": (
-                            package.sla_due_at.isoformat()
-                            if package.sla_due_at
-                            else None
-                        ),
-                    },
-                    dedupe_key=f"payment:{payment.id}:self-filing-confirmed",
-                )
+                # The provider-confirmed money fact is outside the savepoint.
+                # Package/SLA activation is inside it. If a legal/operational
+                # precondition changed after link creation, only package state
+                # rolls back; received money becomes PAID_REVIEW and remains
+                # visible for controlled reconciliation.
+                try:
+                    async with self.db.begin_nested():
+                        package = await SelfFilingService(
+                            self.db
+                        ).start_preparation_after_payment(
+                            case=case,
+                            payment=payment,
+                            actor_type=actor_type,
+                            actor_id=actor_id,
+                            occurred_at=occurred_at,
+                        )
+                except (
+                    SelfFilingError,
+                    BusinessCalendarError,
+                    KeyError,
+                    ValueError,
+                ) as error:
+                    await self._mark_self_filing_payment_review(
+                        payment=payment,
+                        case=case,
+                        reason=str(error),
+                        provider_payload=provider_payload,
+                        actor_type=actor_type,
+                        actor_id=actor_id,
+                        occurred_at=occurred_at,
+                    )
+                else:
+                    await self.notifications.emit(
+                        event_code="SELF_FILING_PAYMENT_CONFIRMED",
+                        case_id=case.id,
+                        user_id=case.client_id,
+                        payload={
+                            "case_number": case.case_number,
+                            "payment_id": payment.id,
+                            "sla_due_at": (
+                                package.sla_due_at.isoformat()
+                                if package.sla_due_at
+                                else None
+                            ),
+                        },
+                        dedupe_key=f"payment:{payment.id}:self-filing-confirmed",
+                    )
             else:
                 mapping = {
                     PaymentCode.M1_INITIAL_PAYMENT: [
