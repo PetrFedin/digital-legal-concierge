@@ -61,6 +61,7 @@ def test_lawyer_reviewed_template_is_complete_and_control_examples_are_green():
         "A-ORDINARY-CONSUMER-2026",
         "B-PP479-PP326-SEGMENTS",
         "C-UNIQUE-OBJECT-5PCT",
+        "D-CURRENT-CBR-14PCT-2026",
     ]
     assert all(item["passed"] for item in outcomes)
 
@@ -252,3 +253,20 @@ def test_source_without_exact_locator_is_rejected_before_legal_review():
 
     with pytest.raises(CalculationRuleError, match="точный пункт|раздел|таблица"):
         validate_rule_payload(broken)
+
+
+def test_current_verified_cbr_directory_covers_24_september_2026_at_14_percent():
+    rules = _rules()
+
+    result = _calculate(
+        rules,
+        contract_price=Decimal("3000000"),
+        planned_transfer_date=date(2026, 9, 24),
+        calculation_date=date(2026, 9, 25),
+        object_transferred=True,
+        actual_transfer_date=date(2026, 9, 25),
+    )
+
+    assert result.key_rate == Decimal("0.14")
+    assert result.delay_days_chargeable == 1
+    assert result.penalty_amount == Decimal("2800.00")
