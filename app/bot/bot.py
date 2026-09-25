@@ -38,6 +38,7 @@ from app.bot.lease import TelegramPollingLease
 from app.bot.screens import (
     calculator,
     calculator_active_case_recovery,
+    calculator_preview,
     calculator_unknown_data_guard,
     client_archive,
     client_archive_payment_guard,
@@ -222,6 +223,7 @@ def build_dispatcher() -> Dispatcher:
         client_archive.router,
         client_archive_payment_guard.router,
         reply_menu_direct.router,
+        calculator_preview.router,
         common.router,
         post_calculation.router,
         calculator_active_case_recovery.router,
