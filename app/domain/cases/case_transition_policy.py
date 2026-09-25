@@ -43,10 +43,6 @@ ERROR_RECOVERY_TARGETS = frozenset(
         CaseStatus.M1_SELF_FILING_DOCUMENTS_RECEIVED,
         CaseStatus.M1_SELF_FILING_LAWYER_REVIEW,
         CaseStatus.M1_SELF_FILING_DOCS_REQUESTED,
-        CaseStatus.M1_SELF_FILING_PAYMENT_PENDING,
-        CaseStatus.M1_SELF_FILING_PREPARATION,
-        CaseStatus.M1_SELF_FILING_READY,
-        CaseStatus.M1_SELF_FILING_DELIVERED,
         CaseStatus.M2_DESCRIPTION_PENDING,
         CaseStatus.M2_DOCUMENTS_OPTIONAL,
         CaseStatus.M2_SLOT_PENDING,
@@ -89,6 +85,7 @@ _TRANSITIONS: dict[CaseStatus, frozenset[CaseStatus]] = {
         {
             CaseStatus.CALCULATED,
             CaseStatus.M1_DOCUMENTS_PENDING,
+            CaseStatus.M1_SELF_FILING_PROFILE_PENDING,
             CaseStatus.M2_DESCRIPTION_PENDING,
         }
     ),
