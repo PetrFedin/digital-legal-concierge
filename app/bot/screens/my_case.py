@@ -153,7 +153,11 @@ def _case_selector(active_cases) -> tuple[str, list[tuple[str, str]]]:
     ]
     buttons: list[tuple[str, str]] = []
     for case in active_cases:
-        service = route_label(case.route)
+        service = (
+            "Пакет для самостоятельной подачи"
+            if str(getattr(case, "service_mode", "") or "") == "SELF_FILING_PACKAGE"
+            else route_label(case.route)
+        )
         lines.append(f"• {case.case_number} · {service}")
         buttons.append(
             (
@@ -163,7 +167,7 @@ def _case_selector(active_cases) -> tuple[str, list[tuple[str, str]]]:
         )
     buttons.extend(
         [
-            ("🧮 Новый расчёт / новое обращение", "calc_start"),
+            ("🧮 Новый расчёт / новое обращение", "preview_calc_start"),
             ("🏠 Главная", "nav_home"),
         ]
     )
@@ -186,6 +190,9 @@ async def _render_completed_case(
     if notice:
         lines.extend([f"ℹ️ {notice}", ""])
 
+    is_self_filing = (
+        str(getattr(case, "service_mode", "") or "") == "SELF_FILING_PACKAGE"
+    )
     if is_m2:
         lines.extend(
             [
@@ -202,6 +209,27 @@ async def _render_completed_case(
                 "",
                 "АРХИВ ОБРАЩЕНИЯ",
                 f"🗓 Консультация: {view.consultation_summary}",
+                f"📄 Документы: {_document_detail(view)}",
+            ]
+        )
+    elif is_self_filing:
+        lines.extend(
+            [
+                "📁 ИТОГ УСЛУГИ",
+                f"№ {view.case_number}",
+                view.route_label,
+                "",
+                "СЕЙЧАС",
+                "✅ Пакет документов подготовлен и выдан",
+                progress_bar(100),
+                "",
+                "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ",
+                (
+                    "Сохраните итоговые документы и подайте их в суд самостоятельно. "
+                    "Представительство в суде в эту услугу не входило."
+                ),
+                "",
+                "АРХИВ ОБРАЩЕНИЯ",
                 f"📄 Документы: {_document_detail(view)}",
             ]
         )
@@ -248,7 +276,7 @@ async def _render_completed_case(
             ("📄 Документы обращения", "documents_open"),
             ("💳 Оплаты по обращению", "payments_open"),
             ("🕘 История обращения", "case_history_open"),
-            ("🧮 Новое обращение", "calc_start"),
+            ("🧮 Новое обращение", "preview_calc_start"),
             ("🏠 Главная", "nav_home"),
         ]
     )
@@ -305,7 +333,7 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
             )
         buttons.extend(
             [
-                ("🧮 Рассчитать неустойку", "calc_start"),
+                ("🧮 Рассчитать неустойку", "preview_calc_start"),
                 ("💬 Связаться с юристом", "contact_lawyer"),
                 ("🏠 Главная", "nav_home"),
             ]
