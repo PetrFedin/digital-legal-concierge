@@ -41,6 +41,10 @@ class PaymentService:
             return Decimal(str(await settings.get_value("payments.m1_initial_payment")))
         if code == PaymentCode.M1_COURT_PAYMENT:
             return Decimal(str(await settings.get_value("payments.m1_court_payment")))
+        if code == PaymentCode.M1_SELF_FILING_PACKAGE:
+            return Decimal(
+                str(await settings.get_value("payments.m1_self_filing_package"))
+            )
         if code == PaymentCode.M2_CONSULTATION_PAYMENT:
             return Decimal(str(await settings.get_value("payments.m2_consultation_payment")))
         return Decimal("0")
@@ -50,6 +54,9 @@ class PaymentService:
             PaymentCode.M1_INITIAL_PAYMENT: "Первый платеж М1",
             PaymentCode.M1_COURT_PAYMENT: "Второй платеж М1",
             PaymentCode.M1_SUCCESS_FEE: "Success fee",
+            PaymentCode.M1_SELF_FILING_PACKAGE: (
+                "Подготовка пакета документов для самостоятельной подачи"
+            ),
             PaymentCode.M2_CONSULTATION_PAYMENT: "Оплата консультации",
         }.get(code, "Платеж")
 
