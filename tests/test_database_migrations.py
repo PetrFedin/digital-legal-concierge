@@ -5,7 +5,7 @@ from pathlib import Path
 
 from app.db.migrations import run_database_migrations
 
-HEAD_REVISION = "20260806_0013"
+HEAD_REVISION = "20260925_0026"
 RETENTION_TRIGGER = "trg_retention_destroy_document_keys"
 MESSAGE_SOURCE_INDEX = "uq_messages_sender_source_message"
 DOCUMENT_REVIEW_STARTED_INDEX = "ix_documents_review_started_at"
@@ -76,6 +76,7 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "revoked_access_tokens",
         "document_access_grants",
         "case_retention_records",
+        "self_filing_packages",
         "alembic_version",
     }.issubset(tables)
     assert current_revision(database_path) == HEAD_REVISION
@@ -88,6 +89,7 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "escalation_level",
         "closed_at",
         "content_deleted_at",
+        "service_mode",
     }.issubset(column_names(database_path, "cases"))
     assert {
         "sha256",
@@ -108,6 +110,8 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
     }.issubset(column_names(database_path, "documents"))
     assert "source_message_id" in column_names(database_path, "messages")
     assert MESSAGE_SOURCE_INDEX in index_names(database_path, "messages")
+    assert "service_mode" in column_names(database_path, "cases")
+    assert "self_filing_packages" in table_names(database_path)
     assert {
         "case_id",
         "policy_version",
@@ -122,6 +126,36 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "documents_deleted",
         "content_digest",
     }.issubset(column_names(database_path, "case_retention_records"))
+    assert {
+        "case_id",
+        "status",
+        "version",
+        "client_region",
+        "client_address",
+        "delivery_email",
+        "email_confirmed_at",
+        "documents_complete_at",
+        "documents_complete_by_lawyer_id",
+        "court_name",
+        "court_address",
+        "jurisdiction_basis",
+        "jurisdiction_note",
+        "jurisdiction_confirmed_at",
+        "jurisdiction_confirmed_by_lawyer_id",
+        "payment_confirmed_at",
+        "sla_started_at",
+        "sla_due_at",
+        "package_document_id",
+        "ready_at",
+        "delivered_at",
+        "email_delivery_status",
+        "email_delivery_attempts",
+        "email_message_id",
+        "email_sent_at",
+        "email_last_error",
+    }.issubset(column_names(database_path, "self_filing_packages"))
+    assert "ix_cases_service_mode" in index_names(database_path, "cases")
+
     assert {
         "provider",
         "event_key",
