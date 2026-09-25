@@ -12,9 +12,11 @@ from app.domain.cases.post_calculation_decision_service import (
     CHOICE_M1,
     CHOICE_M2,
     CHOICE_POSTPONE,
+    CHOICE_SELF_FILING,
     PostCalculationDecisionError,
     PostCalculationDecisionService,
 )
+from app.domain.cases.service_modes import M1ServiceMode
 from app.domain.consultations.consultation_intake import (
     ActiveCaseRouteConflict,
     ConsultationIntakeService,
@@ -156,10 +158,17 @@ async def decision_open(callback: CallbackQuery, db):
             callback,
             "🧭 Что делать после расчёта\n\n"
             "Расчёт сохранён. Выберите дальнейший путь — решение можно не принимать прямо сейчас.\n\n"
-            "⚖️ Ведение дела — передача документов юристу и дальнейшее сопровождение.\n"
+            "⚖️ Полное ведение — документы, претензия, суд и дальнейшее сопровождение.\n"
+            "📄 Пакет для самостоятельного суда — мы готовим комплект за 15 000 ₽, "
+            "а подаёте документы и участвуете в деле вы сами. Срок подготовки — "
+            "2 рабочих дня после подтверждения оплаты и полного комплекта документов.\n"
             "💬 Консультация — описать вопрос, при желании добавить документы и выбрать время.",
             reply_markup=one(
-                ("⚖️ Продолжить ведение дела", _bound("calc_continue_m1", case_id)),
+                ("⚖️ Полное ведение дела", _bound("calc_continue_m1", case_id)),
+                (
+                    "📄 Подготовить пакет — в суд пойду сам",
+                    _bound("calc_self_filing", case_id),
+                ),
                 ("💬 Перейти к консультации", _bound("calc_to_m2", case_id)),
                 ("Пока ничего не менять", _bound("calc_postpone", case_id)),
                 ("📁 Моё дело", "my_case_open"),
@@ -169,14 +178,37 @@ async def decision_open(callback: CallbackQuery, db):
         return
 
     if status == CaseStatus.CLIENT_DECISION:
+        self_filing = (
+            str(case.service_mode or "")
+            == M1ServiceMode.SELF_FILING_PACKAGE.value
+        )
+        heading = (
+            "🧭 Вы выбрали пакет для самостоятельной подачи"
+            if self_filing
+            else "🧭 Вы выбрали полное ведение дела"
+        )
+        explanation = (
+            "Юридическая команда подготовит комплект документов, но не будет "
+            "представлять вас в суде по этой услуге."
+            if self_filing
+            else "Юридическая команда будет сопровождать дело по полному M1-маршруту."
+        )
         await _safe_edit(
             callback,
-            "🧭 Вы выбрали ведение дела\n\n"
-            "Следующий обязательный шаг — подтвердить согласие на обработку персональных данных. "
-            "До подтверждения документы юристу не передаются.\n\n"
-            "Решение ещё можно изменить и перейти к консультации.",
+            heading
+            + "\n\n"
+            + explanation
+            + "\n\nСледующий обязательный шаг — подтвердить согласие на обработку "
+            "персональных данных. До подтверждения документы юристу не передаются.",
             reply_markup=one(
                 ("📄 Перейти к согласию", _bound("consent_open", case_id)),
+                (
+                    "📄 Пакет для самостоятельной подачи",
+                    _bound("calc_self_filing", case_id),
+                ) if not self_filing else (
+                    "⚖️ Вместо этого — полное ведение",
+                    _bound("calc_continue_m1", case_id),
+                ),
                 ("💬 Вместо этого — консультация", _bound("calc_to_m2", case_id)),
                 ("Пока ничего не менять", _bound("calc_postpone", case_id)),
                 ("📁 Моё дело", "my_case_open"),
@@ -261,6 +293,50 @@ async def continue_m1_after_calculation(callback: CallbackQuery, db):
         "Только после этого откроется загрузка документов.",
         reply_markup=one(
             ("📄 Перейти к согласию", _bound("consent_open", result_case_id)),
+            ("💬 Вместо этого — консультация", _bound("calc_to_m2", result_case_id)),
+            ("Пока ничего не менять", _bound("calc_postpone", result_case_id)),
+            ("🏠 Главная", "nav_home"),
+        ),
+    )
+
+
+@router.callback_query(
+    lambda c: bool(c.data) and c.data.startswith("calc_self_filing:v2:")
+)
+async def continue_self_filing_after_calculation(callback: CallbackQuery, db):
+    case_id = _case_id_from_bound(callback, "calc_self_filing")
+    if case_id is None:
+        await decision_open(callback, db)
+        return
+    _user, result = await _apply_choice(
+        callback,
+        db,
+        choice=CHOICE_SELF_FILING,
+        expected_case_id=case_id,
+    )
+    if result is None:
+        return
+    result_status = _status(result.case)
+    result_case_id = int(result.case.id)
+    if result.outcome != "self_filing_consent_required":
+        await db.rollback()
+        await _current_case_recovery(callback, result_status)
+        return
+
+    await db.commit()
+    await _safe_edit(
+        callback,
+        "📄 Пакет для самостоятельной подачи выбран\n\n"
+        "Стоимость подготовки — 15 000 ₽. Срок 2 рабочих дня начнётся только "
+        "после двух подтверждённых фактов: юрист принял полный комплект документов "
+        "и оплата получена. Конкретный суд и подсудность проверяет юрист; бот их "
+        "по адресу не угадывает.\n\n"
+        "Услуга доступна клиентам по России. Представительство в суде не включено.\n\n"
+        "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+        "Откройте отдельный текст согласия для этой услуги.",
+        reply_markup=one(
+            ("📄 Перейти к согласию", _bound("consent_open", result_case_id)),
+            ("⚖️ Вместо этого — полное ведение", _bound("calc_continue_m1", result_case_id)),
             ("💬 Вместо этого — консультация", _bound("calc_to_m2", result_case_id)),
             ("Пока ничего не менять", _bound("calc_postpone", result_case_id)),
             ("🏠 Главная", "nav_home"),
