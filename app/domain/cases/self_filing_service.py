@@ -14,10 +14,12 @@ from app.domain.cases.self_filing_business_calendar import (
     load_business_calendar,
 )
 from app.domain.cases.service_modes import M1ServiceMode
+from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.documents.document_service import (
     DocumentService,
     document_is_usable,
 )
+from app.domain.payments.payment_lifecycle import PaymentLifecycleService
 from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
@@ -25,6 +27,7 @@ from app.domain.statuses.document_statuses import DocumentStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models.case import Case
 from app.models.document import Document
+from app.models.payment import Payment
 from app.models.self_filing_package import SelfFilingPackage
 from app.system.settings_service import SettingsService
 
@@ -70,6 +73,7 @@ class SelfFilingService:
         self.cases = CaseService(db)
         self.documents = DocumentService(db)
         self.payments = PaymentService(db)
+        self.notifications = NotificationEngine(db)
 
     @staticmethod
     def _case_status(case: Case) -> CaseStatus:
@@ -103,6 +107,19 @@ class SelfFilingService:
         if case is None:
             raise LookupError("Обращение не найдено")
         return case
+
+    async def _lock_payment(self, payment_id: int) -> Payment:
+        payment = (
+            await self.db.execute(
+                select(Payment)
+                .where(Payment.id == int(payment_id))
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if payment is None:
+            raise LookupError("Платёж не найден")
+        return payment
 
     async def _package_for_case(
         self,
@@ -480,6 +497,13 @@ class SelfFilingService:
             raise SelfFilingError("Платёж ещё не подтверждён как полученный")
 
         package = await self.require_package(case_id=case.id, for_update=True)
+        # Re-check delivery capability at the exact money-confirmation boundary.
+        # It may have changed after the lawyer opened the payment obligation.
+        from app.domain.cases.self_filing_email_sender import (
+            require_email_delivery_configured,
+        )
+
+        require_email_delivery_configured()
         if not package.documents_complete_at:
             raise SelfFilingError("Полнота документов не подтверждена юристом")
         if not package.jurisdiction_confirmed_at or not package.court_name:
@@ -541,6 +565,183 @@ class SelfFilingService:
         )
         await self.db.flush()
         return package
+
+    async def resolve_received_payment_review(
+        self,
+        *,
+        case_id: int,
+        payment_id: int,
+        actor_id: int,
+        decision: str,
+        comment: str,
+    ) -> tuple[SelfFilingPackage, Payment]:
+        """Resolve received money that could not atomically start package work.
+
+        Only an administrator should call this method. It never invents money
+        truth: PAID_REVIEW already proves that the provider/offline authority
+        recorded received funds. A resume reuses the immutable paid_at timestamp;
+        a refund decision moves only the financial record to REFUND_PENDING.
+        """
+
+        clean_comment = " ".join(str(comment or "").split())
+        if len(clean_comment) < 10:
+            raise SelfFilingError(
+                "Для финансовой сверки нужен содержательный комментарий минимум 10 символов"
+            )
+
+        normalized = str(decision or "").strip().lower()
+        if normalized not in {"resume", "refund_pending"}:
+            raise SelfFilingError(
+                "Решение должно быть resume или refund_pending"
+            )
+
+        case = await self._lock_case(case_id)
+        if str(case.service_mode or "") != M1ServiceMode.SELF_FILING_PACKAGE.value:
+            raise SelfFilingError("Обращение относится к другому режиму услуги")
+        if self._case_status(case) not in {
+            CaseStatus.M1_SELF_FILING_PAYMENT_PENDING,
+            CaseStatus.M1_SELF_FILING_PREPARATION,
+        }:
+            raise SelfFilingError(
+                "Финансовая сверка не соответствует текущему этапу пакета"
+            )
+
+        package = await self.require_package(case_id=case.id, for_update=True)
+        payment = await self._lock_payment(payment_id)
+        if int(payment.case_id) != int(case.id):
+            raise SelfFilingError("Платёж относится к другому обращению")
+        if str(payment.payment_code) != PaymentCode.M1_SELF_FILING_PACKAGE.value:
+            raise SelfFilingError("Это не платёж за пакет самостоятельной подачи")
+
+        current_status = PaymentStatus(str(payment.status))
+        if normalized == "resume":
+            if (
+                current_status == PaymentStatus.PAID
+                and self._case_status(case)
+                == CaseStatus.M1_SELF_FILING_PREPARATION
+                and package.sla_started_at is not None
+            ):
+                return package, payment
+            if current_status != PaymentStatus.PAID_REVIEW:
+                raise SelfFilingError(
+                    "Платёж не находится в статусе PAID_REVIEW"
+                )
+            if self._case_status(case) != CaseStatus.M1_SELF_FILING_PAYMENT_PENDING:
+                raise SelfFilingError(
+                    "Возобновление возможно только пока пакет ожидает финансовую сверку"
+                )
+
+            money_received_at = payment.paid_at
+            if money_received_at is None:
+                raise SelfFilingError(
+                    "Для PAID_REVIEW отсутствует подтверждённое время получения денег"
+                )
+            transition = PaymentLifecycleService.transition(
+                payment,
+                to_status=PaymentStatus.PAID,
+                occurred_at=money_received_at,
+            )
+            package = await self.start_preparation_after_payment(
+                case=case,
+                payment=payment,
+                actor_type="admin",
+                actor_id=int(actor_id),
+                occurred_at=money_received_at,
+            )
+            await add_case_history_event(
+                self.db,
+                actor_type="admin",
+                actor_id=int(actor_id),
+                case_id=case.id,
+                action="SELF_FILING_PAYMENT_REVIEW_RESOLVED",
+                old_value={
+                    "payment_id": int(payment.id),
+                    "payment_status": transition.old_status.value,
+                },
+                new_value={
+                    "payment_id": int(payment.id),
+                    "payment_status": transition.new_status.value,
+                    "decision": "resume",
+                    "money_received_at": money_received_at.isoformat(),
+                    "sla_started_at": (
+                        package.sla_started_at.isoformat()
+                        if package.sla_started_at
+                        else None
+                    ),
+                    "sla_due_at": (
+                        package.sla_due_at.isoformat()
+                        if package.sla_due_at
+                        else None
+                    ),
+                },
+                comment=clean_comment,
+            )
+            await self.notifications.emit(
+                event_code="SELF_FILING_PAYMENT_REVIEW_RESOLVED",
+                case_id=case.id,
+                user_id=case.client_id,
+                payload={
+                    "case_number": case.case_number,
+                    "payment_id": int(payment.id),
+                    "decision": "resume",
+                    "sla_due_at": (
+                        package.sla_due_at.isoformat()
+                        if package.sla_due_at
+                        else None
+                    ),
+                },
+                dedupe_key=f"payment:{payment.id}:self-filing-review-resume",
+            )
+            await self.db.flush()
+            return package, payment
+
+        if current_status == PaymentStatus.REFUND_PENDING:
+            return package, payment
+        if current_status != PaymentStatus.PAID_REVIEW:
+            raise SelfFilingError(
+                "На возврат можно направить только платёж PAID_REVIEW"
+            )
+
+        transition = PaymentLifecycleService.transition(
+            payment,
+            to_status=PaymentStatus.REFUND_PENDING,
+            occurred_at=payment.paid_at,
+        )
+        case.next_action = "Ожидать завершения возврата 15 000 ₽"
+        await add_case_history_event(
+            self.db,
+            actor_type="admin",
+            actor_id=int(actor_id),
+            case_id=case.id,
+            action="SELF_FILING_PAYMENT_REVIEW_RESOLVED",
+            old_value={
+                "payment_id": int(payment.id),
+                "payment_status": transition.old_status.value,
+            },
+            new_value={
+                "payment_id": int(payment.id),
+                "payment_status": transition.new_status.value,
+                "decision": "refund_pending",
+                "money_received_at": (
+                    payment.paid_at.isoformat() if payment.paid_at else None
+                ),
+                "case_status_preserved": str(case.status),
+            },
+            comment=clean_comment,
+        )
+        await self.notifications.emit(
+            event_code="SELF_FILING_PAYMENT_REFUND_PENDING",
+            case_id=case.id,
+            user_id=case.client_id,
+            payload={
+                "case_number": case.case_number,
+                "payment_id": int(payment.id),
+                "amount": str(payment.amount),
+            },
+            dedupe_key=f"payment:{payment.id}:self-filing-refund-pending",
+        )
+        await self.db.flush()
+        return package, payment
 
     async def mark_package_ready(
         self,
