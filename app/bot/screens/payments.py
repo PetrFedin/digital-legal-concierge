@@ -58,11 +58,13 @@ PAYMENT_STATUS_LABELS = {
 M1_PAYMENT_EXPECTED_STATUSES = {
     PaymentCode.M1_INITIAL_PAYMENT: CaseStatus.M1_WAITING_PAYMENT_30000,
     PaymentCode.M1_COURT_PAYMENT: CaseStatus.M1_WAITING_PAYMENT_70000,
+    PaymentCode.M1_SELF_FILING_PACKAGE: CaseStatus.M1_SELF_FILING_PAYMENT_PENDING,
 }
 OFFLINE_PAYMENT_CODES = {
     PaymentCode.M1_INITIAL_PAYMENT,
     PaymentCode.M1_COURT_PAYMENT,
     PaymentCode.M1_SUCCESS_FEE,
+    PaymentCode.M1_SELF_FILING_PACKAGE,
     PaymentCode.M2_CONSULTATION_PAYMENT,
 }
 
@@ -313,6 +315,18 @@ async def pay_30000(callback: CallbackQuery, db):
         db,
         PaymentCode.M1_INITIAL_PAYMENT,
         action="pay_start_30000",
+    )
+
+
+@router.callback_query(
+    lambda c: callback_matches_action(c.data, "pay_self_filing")
+)
+async def pay_self_filing(callback: CallbackQuery, db):
+    await start_payment(
+        callback,
+        db,
+        PaymentCode.M1_SELF_FILING_PACKAGE,
+        action="pay_self_filing",
     )
 
 
@@ -638,6 +652,12 @@ async def start_payment(
                 "После подтверждения фактического поступления система откроет "
                 "этап оформления доверенности."
             )
+        elif code == PaymentCode.M1_SELF_FILING_PACKAGE:
+            next_step = (
+                "После подтверждения фактического поступления начнётся срок "
+                "подготовки пакета — 2 рабочих дня от более позднего из двух "
+                "подтверждений: оплаты и полного комплекта документов."
+            )
         elif code == PaymentCode.M1_SUCCESS_FEE:
             next_step = (
                 "После подтверждения фактического поступления финансовый этап "
@@ -663,6 +683,14 @@ async def start_payment(
             f"Сумма: {money(payment_amount)}\n\n"
             "Вопрос и документы сохранены. После подтверждения оплаты выбранный "
             "слот станет окончательно вашим. Не используйте эту ссылку после выбора другого времени."
+        )
+    elif code == PaymentCode.M1_SELF_FILING_PACKAGE:
+        text = (
+            f"💳 {payment_title}\n"
+            f"Обращение № {case_number}\n\n"
+            f"Сумма: {money(payment_amount)}\n\n"
+            "После подтверждения оплаты система начнёт двухдневный рабочий срок "
+            "подготовки пакета. Представительство в суде в эту услугу не входит."
         )
     elif code == PaymentCode.M1_INITIAL_PAYMENT:
         text = (
@@ -829,6 +857,22 @@ async def fake(callback: CallbackQuery, db):
                 ("📄 Документы", "documents_open"),
                 ("✉️ Задать вопрос команде", "message_create"),
                 ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
+    if payment_code == PaymentCode.M1_SELF_FILING_PACKAGE:
+        await _present_committed_callback(
+            callback,
+            "✅ Оплата пакета подтверждена.\n\n"
+            "Подготовка документов начата; срок рассчитан по рабочему календарю. "
+            "Готовая утверждённая версия останется в документах обращения и будет "
+            "отправлена на подтверждённый email.",
+            reply_markup=one(
+                ("📁 Моё дело", "my_case_open"),
+                ("📄 Документы", "documents_open"),
+                ("💳 Все оплаты", "payments_open"),
                 ("🏠 Главная", "nav_home"),
             ),
         )
