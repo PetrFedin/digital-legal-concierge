@@ -372,6 +372,16 @@ def test_admin_browser_login_staff_surfaces_and_logout_revoke() -> None:
         expect(page.get_by_text("Код формулы")).to_be_visible()
         expect(page.get_by_role("button", name="+ Добавить источник")).to_be_visible()
 
+        formula_code = page.get_by_label("Код формулы")
+        formula_code.fill("ddu_delay_penalty_v2")
+        formula_json = page.locator('textarea[name="formula_json"]').input_value()
+        assert '"code": "ddu_delay_penalty_v2"' in formula_json
+        assert '"delay_start_offset_days": null' in formula_json
+
+        page.get_by_role("button", name="+ Добавить источник").click()
+        expect(page.get_by_label("ID источника")).to_be_visible()
+        expect(page.get_by_label("Точное основание: статья / пункт / раздел / таблица")).to_be_visible()
+
         page.goto(f"{BASE_URL}/operator", wait_until="domcontentloaded")
         expect(page.get_by_role("link", name="Расписание консультаций")).to_be_visible()
         assert page.get_by_role("link", name="SLA и просрочки").count() == 1
