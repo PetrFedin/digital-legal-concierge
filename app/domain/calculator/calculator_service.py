@@ -139,6 +139,14 @@ class CalculatorService:
         )
         return (await self.db.execute(statement)).scalar_one_or_none()
 
+    async def result_for_case(self, *, case_id: int) -> RuleBasedCalculationResult | None:
+        """Return the latest immutable result in presentation-safe domain form."""
+
+        calculation = await self.latest_calculation_for_case(case_id=case_id)
+        if calculation is None:
+            return None
+        return _result_from_persisted(calculation)
+
     async def require_m1_eligible_calculation(self, *, case_id: int) -> Calculation:
         """Require the current Case outcome to contain a positive charged delay/amount."""
 
