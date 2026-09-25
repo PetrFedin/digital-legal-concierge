@@ -16,6 +16,7 @@ from app.domain.cases.self_filing_email_sender import (
     email_delivery_configuration_error,
     email_delivery_configured,
 )
+from app.domain.cases.self_filing_readiness import self_filing_readiness
 from app.domain.cases.self_filing_service import (
     EMAIL_FAILED,
     EMAIL_QUEUED,
@@ -145,6 +146,30 @@ def _document_payload(document: Document) -> dict:
         "sha256_prefix": str(document.sha256 or "")[:12],
         "lawyer_comment": document.lawyer_comment,
         "updated_at": document.updated_at.isoformat() if document.updated_at else None,
+    }
+
+
+@router.get("/readiness")
+async def self_filing_runtime_readiness(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    actor = await _actor(request, db, x_admin_token)
+    if actor.role not in {ROLE_ADMIN, ROLE_SUPERADMIN}:
+        raise HTTPException(
+            status_code=403,
+            detail="Проверка готовности услуги доступна только администратору",
+        )
+    result = await self_filing_readiness(db)
+    return {
+        **result,
+        "actor_role": actor.role,
+        "claim_limit": (
+            "Статическая проверка не подтверждает фактическую доставку письма. "
+            "Production-ready остаётся false до отдельного контролируемого "
+            "SMTP-подтверждения."
+        ),
     }
 
 
@@ -612,7 +637,7 @@ button,.button{border:0;border-radius:9px;background:var(--blue);color:#fff;padd
 @media(max-width:760px){.grid{grid-template-columns:1fr}.kv{grid-template-columns:1fr}.top{align-items:flex-start}.actions>*{flex:1;text-align:center}}
 </style></head>
 <body>
-<header><div class="top"><div><h1>📄 Пакет для самостоятельной подачи</h1><div id="sub" class="muted" style="color:#d0d5dd"></div></div><div class="links"><a href="/lawyer/workspace/ui">Кабинет юриста</a><a href="/admin/workdesk/ui">Workdesk</a></div></div></header>
+<header><div class="top"><div><h1>📄 Пакет для самостоятельной подачи</h1><div id="sub" class="muted" style="color:#d0d5dd"></div></div><div class="links"><a href="/lawyer/workspace/ui">Кабинет юриста</a><a href="/admin/workdesk/ui">Workdesk</a><a href="/self-filing/readiness">Готовность услуги</a></div></div></header>
 <main><div id="feedback"></div><div class="grid"><section>
 <div class="card"><div class="eyebrow">Сейчас</div><div id="status" class="status">Загрузка…</div><div id="now" class="muted"></div><div id="facts" class="kv"></div></div>
 <div class="card"><div class="eyebrow">Документы</div><div id="docs"></div><div class="actions"><a id="materials" class="button secondary" href="#">Открыть защищённые материалы</a><a id="messages" class="button secondary" href="#">Переписка</a></div></div>
