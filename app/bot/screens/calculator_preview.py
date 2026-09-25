@@ -451,8 +451,14 @@ async def _present_saved(callback: CallbackQuery, state: FSMContext, db, case, r
     case_id = int(case.id)
     buttons: list[tuple[str, str]] = []
     if int(result.delay_days or 0) > 0 and Decimal(result.penalty_amount or 0) > 0:
-        buttons.append(
-            ("⚖️ Продолжить с ведением дела", f"calc_continue_m1:v2:{case_id}")
+        buttons.extend(
+            [
+                ("⚖️ Полное ведение дела", f"calc_continue_m1:v2:{case_id}"),
+                (
+                    "📄 Подготовить пакет — в суд пойду сам",
+                    f"calc_self_filing:v2:{case_id}",
+                ),
+            ]
         )
     buttons.extend(
         [
