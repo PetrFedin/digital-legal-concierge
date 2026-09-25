@@ -27,6 +27,14 @@ OFFLINE_M1_PAYMENT_PRESENTATIONS: dict[str, OfflinePaymentPresentation] = {
         ),
         button_label="💳 Проверить второй платёж",
     ),
+    "M1_SELF_FILING_PAYMENT_PENDING": OfflinePaymentPresentation(
+        next_action=(
+            "Оплата 15 000 ₽ за подготовку пакета ожидает подтверждения командой. "
+            "Двухдневный рабочий срок начнётся после подтверждённого поступления денег, "
+            "так как полный комплект документов уже принят юристом."
+        ),
+        button_label="💳 Проверить оплату пакета",
+    ),
     "M1_WAITING_SUCCESS_FEE": OfflinePaymentPresentation(
         next_action=(
             "Финальный платёж ожидает подтверждения командой. После подтверждения "
