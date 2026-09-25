@@ -363,6 +363,9 @@ async def approve_self_filing_for_payment(
             court_address=str(payload.get("court_address") or ""),
             jurisdiction_basis=str(payload.get("jurisdiction_basis") or ""),
             jurisdiction_note=str(payload.get("jurisdiction_note") or ""),
+            completeness_confirmed=(
+                payload.get("completeness_confirmed") is True
+            ),
         )
         await db.commit()
     except HTTPException:
@@ -622,6 +625,7 @@ button,.button{border:0;border-radius:9px;background:var(--blue);color:#fff;padd
 <label>Адрес суда</label><textarea id="courtAddress"></textarea>
 <label>Основание подсудности</label><select id="basis"></select>
 <label>Юридическое обоснование</label><textarea id="note" placeholder="Почему выбран именно этот суд и на каком основании"></textarea>
+<label style="display:flex;gap:9px;align-items:flex-start;font-weight:600"><input id="completeConfirm" type="checkbox" style="width:auto;margin-top:3px"> <span>Подтверждаю как ответственный юрист: проверены ДДУ, паспорт/иной документ личности, все имеющиеся приложения и дополнительные соглашения к ДДУ, а также иные материалы, необходимые для подготовки полного пакета. Автоматически определить отсутствие не загруженного приложения система не может.</span></label>
 <div class="actions"><button onclick="approve()">Подтвердить комплект и открыть 15 000 ₽</button></div>
 </div>
 <div class="card" id="paymentReviewCard"><div class="eyebrow">Финансовая сверка</div><div id="paymentReview" class="muted"></div><label>Комментарий администратора</label><textarea id="financialComment" placeholder="Причина возобновления либо возврата, минимум 10 символов"></textarea><div class="actions"><button class="finance-action" onclick="resolvePayment('resume')">Запустить подготовку по полученным деньгам</button><button class="danger finance-action" onclick="resolvePayment('refund_pending')">Направить на контролируемый возврат</button></div></div>
@@ -674,7 +678,7 @@ function render(){
 }
 async function startReview(){try{await post('/self-filing/cases/'+caseId+'/review/start',payload())}catch(e){feedback(e.message,true)}}
 async function requestDocs(){try{await post('/self-filing/cases/'+caseId+'/request-documents',payload({reason:document.getElementById('reason').value}))}catch(e){feedback(e.message,true)}}
-async function approve(){try{await post('/self-filing/cases/'+caseId+'/approve-for-payment',payload({court_name:document.getElementById('court').value,court_address:document.getElementById('courtAddress').value,jurisdiction_basis:document.getElementById('basis').value,jurisdiction_note:document.getElementById('note').value}))}catch(e){feedback(e.message,true)}}
+async function approve(){const confirmed=document.getElementById('completeConfirm').checked;if(!confirmed){feedback('Сначала явно подтвердите полноту комплекта документов.',true);return}try{await post('/self-filing/cases/'+caseId+'/approve-for-payment',payload({court_name:document.getElementById('court').value,court_address:document.getElementById('courtAddress').value,jurisdiction_basis:document.getElementById('basis').value,jurisdiction_note:document.getElementById('note').value,completeness_confirmed:confirmed}))}catch(e){feedback(e.message,true)}}
 async function resolvePayment(decision){const card=document.getElementById('paymentReviewCard'),paymentId=Number(card.dataset.paymentId||0),comment=document.getElementById('financialComment').value;if(!paymentId){feedback('Платёж для сверки не найден',true);return}try{await post('/self-filing/cases/'+caseId+'/payment-review/'+paymentId+'/resolve',payload({decision,comment}));document.getElementById('financialComment').value=''}catch(e){feedback(e.message,true)}}
 async function uploadPackage(){const f=document.getElementById('file').files[0];if(!f){feedback('Выберите файл',true);return}try{const out=await api('/self-filing/cases/'+caseId+'/package',{method:'POST',headers:{'x-file-name':f.name,'x-file-type':f.type||'application/octet-stream','x-package-version':String(data.package.version)},body:f});feedback('Итоговый пакет утверждён. SHA '+String(out.sha256||'').slice(0,12));await load()}catch(e){feedback(e.message,true)}}
 async function retryEmail(){try{await post('/self-filing/cases/'+caseId+'/email/retry',payload())}catch(e){feedback(e.message,true)}}
