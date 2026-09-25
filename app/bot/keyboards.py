@@ -74,8 +74,8 @@ def main_menu(
             kb.button(text=text, callback_data=callback_data)
         secondary("📁 Моё дело", "my_case_open")
         secondary("💳 Оплаты", "payments_open")
-        secondary("🧮 Новое обращение", "calc_start")
-        count = 3 - int(primary_callback in {"my_case_open", "payments_open", "calc_start"})
+        secondary("🧮 Новое обращение", "preview_calc_start")
+        count = 3 - int(primary_callback in {"my_case_open", "payments_open", "preview_calc_start"})
         kb.adjust(*([1] * (count + int(bool(primary_action)))))
         return kb.as_markup()
 
@@ -83,9 +83,9 @@ def main_menu(
         if primary_action:
             text, callback_data = primary_action
             kb.button(text=text, callback_data=callback_data)
-        secondary("🧮 Рассчитать неустойку", "calc_start")
+        secondary("🧮 Рассчитать неустойку", "preview_calc_start")
         secondary("💬 Связаться с юристом", "contact_lawyer")
-        count = 2 - int(primary_callback in {"calc_start", "contact_lawyer"})
+        count = 2 - int(primary_callback in {"preview_calc_start", "contact_lawyer"})
         kb.adjust(*([1] * (count + int(bool(primary_action)))))
         return kb.as_markup()
 
@@ -103,7 +103,7 @@ def main_menu(
     if show_payments:
         secondary("💳 Оплаты", "payments_open")
 
-    secondary("🧮 Новый расчёт", "calc_start")
+    secondary("🧮 Новый расчёт", "preview_calc_start")
 
     secondary_count = 4 + int(show_payments)
     if primary_callback in {
@@ -111,7 +111,7 @@ def main_menu(
         "documents_open",
         "contact_lawyer",
         "payments_open" if show_payments else "",
-        "calc_start",
+        "preview_calc_start",
     }:
         secondary_count -= 1
     row_sizes: list[int] = [1] if primary_action else []
