@@ -17,6 +17,7 @@ from app.config import settings
 from app.db.session import get_db
 from app.domain.cases.assignment_policy import AUTO_ASSIGNMENT_REQUIRED_STATUS_VALUES
 from app.domain.cases.case_responsibility import effective_lawyer_ids_for_cases
+from app.domain.cases.service_modes import M1ServiceMode
 from app.models.case import Case
 from app.models.lawyer import Lawyer
 from app.security.access_control import ROLE_ADMIN, ROLE_SUPERADMIN
@@ -166,6 +167,13 @@ async def guarded_active_work_queue(
                 row["next_action"] = (
                     case.next_action or "Ожидать следующий шаг клиента"
                 )
+        if (
+            str(getattr(case, "service_mode", "") or "")
+            == M1ServiceMode.SELF_FILING_PACKAGE.value
+        ):
+            row["service_mode"] = M1ServiceMode.SELF_FILING_PACKAGE.value
+            row["route_label"] = "Пакет для самостоятельной подачи"
+            row["product_url"] = f"/self-filing/ui?case_id={int(case.id)}"
         items.append(row)
     return {
         "queue": "active",
