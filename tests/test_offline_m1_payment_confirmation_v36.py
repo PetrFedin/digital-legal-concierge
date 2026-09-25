@@ -164,6 +164,7 @@ async def test_admin_offline_success_fee_confirmation_closes_case_atomically(
         (PaymentCode.M1_INITIAL_PAYMENT, PaymentStatus.PENDING, None, None, True),
         (PaymentCode.M1_COURT_PAYMENT, PaymentStatus.PENDING, None, None, True),
         (PaymentCode.M1_SUCCESS_FEE, PaymentStatus.WAITING_CONFIRMATION, None, None, True),
+        (PaymentCode.M1_SELF_FILING_PACKAGE, PaymentStatus.PENDING, None, None, True),
         (PaymentCode.M2_CONSULTATION_PAYMENT, PaymentStatus.PENDING, None, None, True),
         (PaymentCode.M1_SUCCESS_FEE, PaymentStatus.PAID, None, None, False),
         (PaymentCode.M1_SUCCESS_FEE, PaymentStatus.FAILED, None, None, False),
