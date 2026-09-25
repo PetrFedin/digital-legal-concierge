@@ -26,19 +26,19 @@ DEFAULT_SETTINGS = {
     "self_filing.business_calendar_coverage_through": {
         "title": "Календарь рабочих дней подтверждён по",
         "value": "",
-        "type": "text",
+        "type": "date",
         "editable": True,
     },
     "self_filing.non_working_dates": {
         "title": "Дополнительные нерабочие даты YYYY-MM-DD",
         "value": [],
-        "type": "list",
+        "type": "date_list",
         "editable": True,
     },
     "self_filing.additional_working_dates": {
         "title": "Дополнительные рабочие даты YYYY-MM-DD",
         "value": [],
-        "type": "list",
+        "type": "date_list",
         "editable": True,
     },
     "payments.m1_success_fee_percent": {
