@@ -393,7 +393,28 @@ class SelfFilingService:
             jurisdiction_note, title="Обоснование подсудности", limit=4000
         )
 
+        # Do not expose/take the 15k obligation while either delivery or
+        # the promised two-business-day calendar is operationally impossible.
+        from app.domain.cases.self_filing_email_sender import (
+            require_email_delivery_configured,
+        )
+
+        require_email_delivery_configured()
         now = datetime.now(timezone.utc)
+        setting_service = SettingsService(self.db)
+        business_days = int(
+            await setting_service.get_value("self_filing.sla_business_days")
+        )
+        calendar = await load_business_calendar(self.db)
+        # This is a preflight for a payment confirmed now. The authoritative
+        # SLA is recomputed from the actual paid/completeness timestamps when
+        # money is confirmed.
+        add_business_days(
+            now,
+            business_days=business_days,
+            calendar=calendar,
+        )
+
         package.documents_complete_at = now
         package.documents_complete_by_lawyer_id = int(lawyer_id)
         package.court_name = clean_court
