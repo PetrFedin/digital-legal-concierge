@@ -32,7 +32,33 @@ def _telegram_id(event) -> int | None:
     return None
 
 
-async def record_client_activity(event) -> None:
+def context_free_activity(event, *, state_name: str | None = None) -> bool:
+    """True when an update is deliberately outside every saved Case context."""
+
+    message_text = str(getattr(event, "text", "") or "").strip()
+    if message_text in {
+        "/start",
+        "/menu",
+        "🏠 Главная",
+        "🧮 Рассчитать неустойку",
+    }:
+        return True
+
+    callback_data = str(getattr(event, "data", "") or "")
+    if callback_data == "nav_home":
+        return True
+    if callback_data.startswith("preview_") and callback_data != "preview_calc_save":
+        return True
+
+    normalized_state = str(state_name or "")
+    return normalized_state.startswith("PreviewCalculatorStates:")
+
+
+async def record_client_activity(
+    event,
+    *,
+    update_case_activity: bool = True,
+) -> None:
     """Persist Telegram client activity independently from handler transactions.
 
     Handlers deliberately commit/rollback at domain boundaries. Recording
@@ -61,6 +87,10 @@ async def record_client_activity(event) -> None:
                 .where(User.id == int(user_id))
                 .values(last_activity_at=now)
             )
+
+            if not update_case_activity:
+                await db.commit()
+                return
 
             selected_case_id = (
                 await db.execute(
@@ -100,4 +130,4 @@ async def record_client_activity(event) -> None:
         logger.exception("Не удалось сохранить Telegram client activity")
 
 
-__all__ = ["record_client_activity"]
+__all__ = ["context_free_activity", "record_client_activity"]
