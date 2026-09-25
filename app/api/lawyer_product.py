@@ -8,6 +8,7 @@ business actions once; no new legal route is introduced.
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.contract_workspace_ui import (
@@ -25,7 +26,10 @@ from app.api.lawyer_consultation_runtime_ui import lawyer_consultation_runtime_u
 from app.api.lawyer_m1_rejection import router as lawyer_m1_rejection_router
 from app.api.lawyer_poa import router as lawyer_poa_router
 from app.db.session import get_db
+from app.domain.cases.service_modes import M1ServiceMode
 from app.domain.statuses.consultation_statuses import ConsultationStatus
+from app.models.case import Case
+from app.models.self_filing_package import SelfFilingPackage
 from app.presentation_time import format_business_datetime, to_business_timezone
 
 router = APIRouter(tags=["lawyer-product"])
@@ -84,7 +88,139 @@ async def business_timezone_guided_workspace_data(
     cases = list(payload.get("cases") or [])
     now = datetime.now(timezone.utc)
 
+    m1_ids = [
+        int(item.get("case_id"))
+        for item in cases
+        if str(item.get("route") or "").upper() == "M1" and item.get("case_id")
+    ]
+    case_modes: dict[int, str | None] = {}
+    package_by_case: dict[int, SelfFilingPackage] = {}
+    if m1_ids:
+        case_modes = {
+            int(case_id): service_mode
+            for case_id, service_mode in (
+                await db.execute(
+                    select(Case.id, Case.service_mode).where(Case.id.in_(m1_ids))
+                )
+            ).all()
+        }
+        packages = list(
+            (
+                await db.execute(
+                    select(SelfFilingPackage).where(
+                        SelfFilingPackage.case_id.in_(m1_ids)
+                    )
+                )
+            ).scalars().all()
+        )
+        package_by_case = {int(item.case_id): item for item in packages}
+
     for item in cases:
+        if str(item.get("route") or "").upper() == "M1":
+            case_id = int(item.get("case_id") or 0)
+            service_mode = str(case_modes.get(case_id) or "")
+            item["service_mode"] = service_mode or None
+            if service_mode == M1ServiceMode.SELF_FILING_PACKAGE.value:
+                item["route_label"] = "Пакет для самостоятельной подачи"
+                package = package_by_case.get(case_id)
+                if package is not None:
+                    item["self_filing"] = {
+                        "package_id": int(package.id),
+                        "package_version": int(package.version or 1),
+                        "package_status": package.status,
+                        "documents_complete_at": (
+                            package.documents_complete_at.isoformat()
+                            if package.documents_complete_at
+                            else None
+                        ),
+                        "court_name": package.court_name,
+                        "payment_confirmed_at": (
+                            package.payment_confirmed_at.isoformat()
+                            if package.payment_confirmed_at
+                            else None
+                        ),
+                        "sla_started_at": (
+                            package.sla_started_at.isoformat()
+                            if package.sla_started_at
+                            else None
+                        ),
+                        "sla_due_at": (
+                            package.sla_due_at.isoformat()
+                            if package.sla_due_at
+                            else None
+                        ),
+                        "email_delivery_status": package.email_delivery_status,
+                        "email_delivery_attempts": int(
+                            package.email_delivery_attempts or 0
+                        ),
+                    }
+
+                status = str(item.get("status") or "")
+                unread = int(item.get("unread_client_messages") or 0)
+                if status in {
+                    "M1_SELF_FILING_DOCUMENTS_RECEIVED",
+                    "M1_SELF_FILING_LAWYER_REVIEW",
+                } and not unread:
+                    item["priority"] = "high"
+                    item["recommended_action"] = "Проверить комплект и подсудность"
+                    item["action_note"] = (
+                        "Подтвердите все приложения и конкретный суд до открытия 15 000 ₽."
+                    )
+                elif status == "M1_SELF_FILING_DOCS_REQUESTED" and not unread:
+                    item["priority"] = "normal"
+                    item["recommended_action"] = "Ожидать документы клиента"
+                    item["action_note"] = (
+                        "Запрос уже зафиксирован; повторно отправлять его без новых фактов не нужно."
+                    )
+                elif status == "M1_SELF_FILING_PAYMENT_PENDING" and not unread:
+                    item["priority"] = "normal"
+                    item["recommended_action"] = "Ожидать подтверждение 15 000 ₽"
+                    item["action_note"] = (
+                        "Срок 2 рабочих дня ещё не идёт: он начнётся после подтверждения оплаты."
+                    )
+                elif status == "M1_SELF_FILING_PREPARATION":
+                    due = package.sla_due_at if package is not None else None
+                    due_utc = _parse_utc_datetime(due) if due is not None else None
+                    overdue = bool(due_utc and due_utc <= now)
+                    item["priority"] = "critical" if overdue else "high"
+                    item["recommended_action"] = (
+                        "Завершить просроченный пакет"
+                        if overdue
+                        else "Подготовить и утвердить итоговый пакет"
+                    )
+                    item["action_note"] = (
+                        "Двухдневный рабочий SLA истёк."
+                        if overdue
+                        else "Загрузите только финальную проверенную версию с фиксированным SHA-256."
+                    )
+                    item["sla_status"] = (
+                        "SELF_FILING_OVERDUE"
+                        if overdue
+                        else "SELF_FILING_ACTION_PENDING"
+                    )
+                    item["sla_label"] = (
+                        "Просрочен срок подготовки пакета"
+                        if overdue
+                        else "Срок подготовки пакета"
+                    )
+                    item["sla_due_at"] = due_utc.isoformat() if due_utc else None
+                elif status == "M1_SELF_FILING_READY" and not unread:
+                    item["priority"] = "high"
+                    item["recommended_action"] = "Контролировать доставку готового пакета"
+                    item["action_note"] = (
+                        f"Email: {package.email_delivery_status if package else 'статус уточняется'}."
+                    )
+                elif status in {
+                    "M1_SELF_FILING_PROFILE_PENDING",
+                    "M1_SELF_FILING_DOCUMENTS_PENDING",
+                } and not unread:
+                    item["priority"] = "normal"
+                    item["recommended_action"] = "Ожидать действие клиента"
+                    item["action_note"] = (
+                        "Клиенту уже показан точный следующий шаг в «Моём деле»."
+                    )
+            continue
+
         if str(item.get("route") or "").upper() != "M2":
             continue
         if str(item.get("consultation_status") or "") != ConsultationStatus.BOOKED.value:
