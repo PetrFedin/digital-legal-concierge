@@ -46,20 +46,30 @@ _SECTION_SPECS = (
 
 
 
-_REVIEW_TEMPLATE_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "docs"
-    / "calculator"
-    / "PM016_V2_RULE_TEMPLATE.json"
-)
+_REVIEW_TEMPLATE_RELATIVE = Path("docs") / "calculator" / "PM016_V2_RULE_TEMPLATE.json"
+
+
+def _review_template_path() -> Path:
+    """Resolve the canonical reviewed template in source or installed containers."""
+
+    candidates = (
+        Path(__file__).resolve().parents[2] / _REVIEW_TEMPLATE_RELATIVE,
+        Path.cwd() / _REVIEW_TEMPLATE_RELATIVE,
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise CalculationRuleRevisionError(
+        "Согласованный шаблон PM-016 v2 недоступен в составе релиза"
+    )
 
 
 def _load_review_template() -> dict:
     try:
-        payload = json.loads(_REVIEW_TEMPLATE_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        payload = json.loads(_review_template_path().read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
         raise CalculationRuleRevisionError(
-            "Согласованный шаблон PM-016 v2 недоступен или повреждён"
+            "Согласованный шаблон PM-016 v2 повреждён"
         ) from error
     if not isinstance(payload, dict) or payload.get("schema_version") != 2:
         raise CalculationRuleRevisionError(
