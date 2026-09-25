@@ -12,6 +12,7 @@ from app.domain.cases.consent_contract import (
     CONSENT_CALLBACK_TOKEN,
     CONSENT_TEXT,
     CONSENT_VERSION,
+    consent_contract_for_service_mode,
     resolve_consent_contract,
 )
 from app.domain.cases.consent_decision_service import (
@@ -20,6 +21,7 @@ from app.domain.cases.consent_decision_service import (
     ConsentDecisionError,
     ConsentDecisionService,
 )
+from app.domain.cases.service_modes import M1ServiceMode
 from app.domain.statuses.case_statuses import CaseStatus
 from app.models.case import Case
 
@@ -43,9 +45,14 @@ async def _safe_edit(callback: CallbackQuery, text: str, *, reply_markup) -> Non
         logger.warning("Telegram не обновил атомарный экран согласия")
 
 
-def _bound(action: str, case_id: int) -> str:
+def _bound(
+    action: str,
+    case_id: int,
+    *,
+    token: str = CONSENT_CALLBACK_TOKEN,
+) -> str:
     """Bind a mutating consent button to Case + exact legal text token."""
-    return f"{action}:v3:{int(case_id)}:{CONSENT_CALLBACK_TOKEN}"
+    return f"{action}:v3:{int(case_id)}:{str(token)}"
 
 
 def _v3_binding(callback: CallbackQuery, action: str) -> tuple[int, str] | None:
@@ -178,17 +185,28 @@ async def _render_consent_screen(
         )
         return
     if status == CaseStatus.CLIENT_DECISION:
+        contract = consent_contract_for_service_mode(case.service_mode)
+        if contract is None:
+            await _stale(callback, db, "stale_other")
+            return
         notice = (
             "ℹ️ Старая кнопка не использована для юридического решения. Ниже открыт актуальный текст согласия.\n\n"
             if refreshed_version_notice
             else ""
         )
+        token = str(contract["callback_token"])
         await _safe_edit(
             callback,
-            f"{notice}{CONSENT_TEXT}\n\nВерсия текста: {CONSENT_VERSION}",
+            f"{notice}{contract['text']}\n\nВерсия текста: {contract['consent_version']}",
             reply_markup=one(
-                ("✅ Подтвердить согласие", _bound("consent_accept", case_id)),
-                ("Не подтверждать", _bound("consent_decline", case_id)),
+                (
+                    "✅ Подтвердить согласие",
+                    _bound("consent_accept", case_id, token=token),
+                ),
+                (
+                    "Не подтверждать",
+                    _bound("consent_decline", case_id, token=token),
+                ),
                 ("📁 Моё дело", "my_case_open"),
                 ("🏠 Главная", "nav_home"),
             ),
@@ -255,7 +273,8 @@ async def legacy_versioned_consent_refresh(callback: CallbackQuery, db):
 @router.callback_query(lambda c: bool(c.data) and c.data.startswith("consent_decline:v3:"))
 async def guarded_consent_decline_prompt(callback: CallbackQuery, db):
     binding = _v3_binding(callback, "consent_decline")
-    if binding is None or resolve_consent_contract(binding[1]) is None:
+    contract = resolve_consent_contract(binding[1]) if binding is not None else None
+    if binding is None or contract is None:
         await _render_consent_screen(
             callback,
             db,
@@ -263,7 +282,7 @@ async def guarded_consent_decline_prompt(callback: CallbackQuery, db):
             refreshed_version_notice=True,
         )
         return
-    case_id, _token = binding
+    case_id, token = binding
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     case = await ctx.case_service.get_case_for_user(
@@ -288,11 +307,18 @@ async def guarded_consent_decline_prompt(callback: CallbackQuery, db):
     await _safe_edit(
         callback,
         "Подтвердите отказ от согласия для этого обращения.\n\n"
-        f"Версия текста: {CONSENT_VERSION}.\n"
-        "Ведение дела M1 не начнётся, документы не будут переданы юристу. Предварительный расчёт останется сохранённым, и позже можно будет выбрать путь заново.",
+        f"Версия текста: {contract['consent_version']}.\n"
+        "Выбранная M1-услуга не начнётся, документы не будут переданы юристу. "
+        "Предварительный расчёт останется сохранённым, и позже можно будет выбрать путь заново.",
         reply_markup=one(
-            ("Подтвердить: не давать согласие", _bound("consent_decline_confirm", case_id)),
-            ("← Вернуться к согласию", _bound("consent_open", case_id)),
+            (
+                "Подтвердить: не давать согласие",
+                _bound("consent_decline_confirm", case_id, token=token),
+            ),
+            (
+                "← Вернуться к согласию",
+                _bound("consent_open", case_id, token=token),
+            ),
             ("🏠 Главная", "nav_home"),
         ),
     )
@@ -305,6 +331,15 @@ async def guarded_consent_accept(callback: CallbackQuery, db):
         await _render_consent_screen(callback, db, refreshed_version_notice=True)
         return
     case_id, token = binding
+    contract = resolve_consent_contract(token)
+    if contract is None:
+        await _render_consent_screen(
+            callback,
+            db,
+            forced_case_id=case_id,
+            refreshed_version_notice=True,
+        )
+        return
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     try:
@@ -336,6 +371,7 @@ async def guarded_consent_accept(callback: CallbackQuery, db):
             await _stale(callback, db, result.outcome)
             return
         evidence_id = result.evidence_id
+        accepted_service_mode = str(result.case.service_mode or "")
         await db.commit()
     except LookupError:
         await db.rollback()
@@ -376,17 +412,40 @@ async def guarded_consent_accept(callback: CallbackQuery, db):
         )
         return
 
-    await _safe_edit(
-        callback,
-        "✅ Согласие сохранено.\n\n"
-        f"Зафиксирована версия {CONSENT_VERSION}; доказательство №{evidence_id}.\n"
-        "Маршрут ведения дела начат. Следующий шаг — загрузить документы и передать их юридической команде.",
-        reply_markup=one(
+    if accepted_service_mode == M1ServiceMode.SELF_FILING_PACKAGE.value:
+        success_text = (
+            "✅ Согласие сохранено.\n\n"
+            f"Зафиксирована версия {contract['consent_version']}; доказательство №{evidence_id}.\n"
+            "Услуга подготовки пакета начата. Представительство в суде не включено.\n\n"
+            "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
+            "Подтвердите регион, адрес и email, на который нужно отправить готовый пакет."
+        )
+        success_buttons = (
+            (
+                "📍 Указать данные для пакета",
+                f"self_filing_profile_start:v2:{case_id}",
+            ),
+            ("📁 Моё дело", "my_case_open"),
+            ("✉️ Задать вопрос команде", "message_create"),
+            ("🏠 Главная", "nav_home"),
+        )
+    else:
+        success_text = (
+            "✅ Согласие сохранено.\n\n"
+            f"Зафиксирована версия {contract['consent_version']}; доказательство №{evidence_id}.\n"
+            "Маршрут полного ведения дела начат. Следующий шаг — загрузить документы "
+            "и передать их юридической команде."
+        )
+        success_buttons = (
             ("📄 Перейти к документам", "documents_open"),
             ("📁 Моё дело", "my_case_open"),
             ("✉️ Задать вопрос команде", "message_create"),
             ("🏠 Главная", "nav_home"),
-        ),
+        )
+    await _safe_edit(
+        callback,
+        success_text,
+        reply_markup=one(*success_buttons),
     )
 
 
@@ -399,6 +458,15 @@ async def guarded_consent_decline(callback: CallbackQuery, db):
         await _render_consent_screen(callback, db, refreshed_version_notice=True)
         return
     case_id, token = binding
+    contract = resolve_consent_contract(token)
+    if contract is None:
+        await _render_consent_screen(
+            callback,
+            db,
+            forced_case_id=case_id,
+            refreshed_version_notice=True,
+        )
+        return
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     try:
@@ -454,8 +522,9 @@ async def guarded_consent_decline(callback: CallbackQuery, db):
     await _safe_edit(
         callback,
         "Согласие не предоставлено.\n\n"
-        f"Решение по версии {CONSENT_VERSION} зафиксировано. "
-        "Ведение дела не начато, документы юристу не передаются. Предварительный расчёт сохранён, и выбор можно сделать позже.",
+        f"Решение по версии {contract['consent_version']} зафиксировано. "
+        "Выбранная M1-услуга не начата, документы юристу не передаются. "
+        "Предварительный расчёт сохранён, и выбор можно сделать позже.",
         reply_markup=one(
             ("🧭 Вернуться к выбору пути", "calc_decision_open"),
             ("💬 Перейти к консультации", f"calc_to_m2:v2:{case_id}"),
