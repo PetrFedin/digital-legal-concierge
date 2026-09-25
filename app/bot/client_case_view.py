@@ -225,8 +225,8 @@ CLIENT_ACTIONS: dict[str, ClientAction] = {
     ),
     "M1_SELF_FILING_PAYMENT_PENDING": ClientAction(
         "Открыть оплату 15 000 ₽",
-        "payments_open",
-        "Юрист подтвердил полный комплект и подсудность. Откройте созданный платёж за подготовку пакета.",
+        "pay_self_filing",
+        "Юрист подтвердил полный комплект и подсудность. Откройте платёж 15 000 ₽ за подготовку пакета.",
     ),
     "M1_SELF_FILING_PREPARATION": ClientAction(
         "Посмотреть ход подготовки",
