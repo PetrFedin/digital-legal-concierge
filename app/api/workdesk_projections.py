@@ -23,7 +23,7 @@ from app.security.access_control import ROLE_ADMIN, ROLE_SUPERADMIN
 from app.security.document_access import DocumentAccessError, resolve_document_actor
 
 
-_CLOSED_CASE_STATUSES = ("M1_CLOSED", "M2_CLOSED", "ARCHIVED")
+_CLOSED_CASE_STATUSES = ("M1_CLOSED", "M1_SELF_FILING_CLOSED", "M2_CLOSED", "ARCHIVED")
 
 
 def _effective_token(request: Request, header_token: str | None) -> str | None:
