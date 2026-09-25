@@ -75,7 +75,7 @@ async def _matter_selector_text(user, db) -> tuple[str, list[tuple[str, str]]]:
         )
     buttons.extend(
         [
-            ("🧮 Новый расчёт / новое обращение", "calc_start"),
+            ("🧮 Новый расчёт / новое обращение", "preview_calc_start"),
             ("🏠 Главная", "nav_home"),
         ]
     )
@@ -96,31 +96,26 @@ async def _show_selector_if_ambiguous(message: Message, *, ctx, user, case, db) 
 
 @router.message(lambda m: m.text == "🧮 Рассчитать неустойку")
 async def direct_reply_calculator(message: Message, state: FSMContext, db):
-    """Calculator is always available and creates a separate matter explicitly."""
+    """Open an ephemeral preview; no Case is created by this menu action."""
 
     if await common._guard_message_draft(message, state):
         return
     await state.clear()
-    ctx, user, _selected = await _message_context(message, db)
-    active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
-    await db.commit()
-    if active_cases:
-        await message.answer(
-            "🧮 НОВЫЙ РАСЧЁТ\n\n"
-            "Расчёт доступен независимо от уже открытых дел. Если вы продолжите, будет создано отдельное обращение; существующие M1/M2 дела, документы и статусы не изменятся.\n\n"
-            f"Сейчас активных обращений: {len(active_cases)}.",
-            reply_markup=one(
-                ("▶️ Начать новый расчёт", "calc_start"),
-                ("📁 Выбрать текущее дело", "my_cases_open"),
-                ("🏠 Главная", "nav_home"),
-            ),
-        )
-        return
+    active_count, _completed_case = await common._fresh_start_state(db, message)
+    await db.rollback()
+    note = (
+        f"\n\nСохранённых активных обращений: {active_count}. "
+        "Быстрый расчёт их не выбирает и не изменяет."
+        if active_count
+        else ""
+    )
     await message.answer(
-        "🧮 ПРЕДВАРИТЕЛЬНЫЙ РАСЧЁТ\n\n"
-        "Ответьте на несколько вопросов о ДДУ. Расчёт предварительный и не является юридическим заключением.",
+        "🧮 БЫСТРЫЙ РАСЧЁТ БЕЗ СОХРАНЕНИЯ\n\n"
+        "Можно спокойно проверить сценарий. Дело и история появятся только после "
+        "отдельной кнопки сохранения."
+        + note,
         reply_markup=one(
-            ("▶️ Начать расчёт", "calc_start"),
+            ("▶️ Начать быстрый расчёт", "preview_calc_start"),
             ("🏠 Главная", "nav_home"),
         ),
     )
@@ -243,7 +238,7 @@ async def direct_reply_documents(message: Message, state: FSMContext, db):
             "Выбранного активного обращения сейчас нет. Файл не будет автоматически привязан к другому делу.",
             reply_markup=one(
                 ("📁 Моё дело", "my_case_open"),
-                ("🧮 Новое обращение", "calc_start"),
+                ("🧮 Новое обращение", "preview_calc_start"),
                 ("🏠 Главная", "nav_home"),
             ),
         )
@@ -332,7 +327,7 @@ async def direct_reply_message_history(message: Message, state: FSMContext, db):
             "💬 История переписки появится после создания обращения.\n\n"
             "Начните с предварительного расчёта или откройте связь с юридической командой.",
             reply_markup=one(
-                ("🧮 Рассчитать неустойку", "calc_start"),
+                ("🧮 Рассчитать неустойку", "preview_calc_start"),
                 ("💬 Связаться с юристом", "contact_lawyer"),
                 ("🏠 Главная", "nav_home"),
             ),
@@ -423,7 +418,7 @@ async def direct_reply_new_question(message: Message, state: FSMContext, db):
             "Новый вопрос не будет автоматически записан в другое обращение. Подтвердите новый запрос отдельным действием.",
             reply_markup=one(
                 ("🆕 Создать новое обращение", "message_new_request"),
-                ("🧮 Рассчитать неустойку", "calc_start"),
+                ("🧮 Рассчитать неустойку", "preview_calc_start"),
                 ("🏠 Главная", "nav_home"),
             ),
         )
@@ -513,7 +508,7 @@ async def direct_reply_contact_lawyer(message: Message, state: FSMContext, db):
         "Сначала опишите ситуацию и конкретный вопрос. После этого можно добавить документы и выбрать свободное время.",
         reply_markup=one(
             ("▶️ Начать: описать вопрос", "consult_subject_start"),
-            ("🧮 Рассчитать неустойку", "calc_start"),
+            ("🧮 Рассчитать неустойку", "preview_calc_start"),
             ("🏠 Главная", "nav_home"),
         ),
     )
