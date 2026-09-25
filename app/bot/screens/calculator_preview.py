@@ -111,13 +111,13 @@ def _ready(data: dict) -> bool:
     return bool(
         data.get("contract_price")
         and data.get("planned_transfer_date")
-        and "object_transferred" in data
+        and isinstance(data.get("object_transferred"), bool)
         and (
-            not bool(data.get("object_transferred"))
+            data.get("object_transferred") is False
             or bool(data.get("actual_transfer_date"))
         )
         and str(data.get("client_type") or "") in {"consumer", "other"}
-        and "unique_object" in data
+        and isinstance(data.get("unique_object"), bool)
     )
 
 
@@ -456,7 +456,9 @@ async def _present_saved(callback: CallbackQuery, state: FSMContext, db, case, r
         "✅ Расчёт сохранён в отдельное обращение. Теперь он доступен в «Моём деле».\n\n"
         + format_calculation_result(result),
         reply_markup=one(
-            ("🧭 Выбрать услугу", "calc_decision_open"),
+            ("⚖️ Продолжить с ведением дела", f"calc_continue_m1:v2:{case_id}"),
+            ("📄 Документы для самостоятельного суда", f"calc_self_filing:v2:{case_id}"),
+            ("💬 Перейти к консультации", f"calc_to_m2:v2:{case_id}"),
             ("🔎 Основания и детализация", f"calc_details:v2:{case_id}"),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
