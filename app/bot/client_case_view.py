@@ -18,6 +18,7 @@ from app.domain.documents.document_workflow import (
     normalize_document_status,
 )
 from app.domain.messages.message_service import MessageService
+from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models.calculation import Calculation
@@ -834,6 +835,110 @@ def _payments_summary(payments: list[Payment]) -> str:
     return f"Платежей в истории: {len(payments)} · активных действий по оплате нет"
 
 
+def _payment_aware_projection(
+    case,
+    projection: ClientStageProjection,
+    payments: list[Payment],
+) -> ClientStageProjection:
+    """Prevent a second 15k action after money has already been received.
+
+    The Case intentionally remains on SELF_FILING_PAYMENT_PENDING while a
+    provider-confirmed payment is under review/refund handling. Payment ledger
+    truth therefore overrides the generic stage button until reconciliation is
+    finished.
+    """
+
+    if str(case.status) != "M1_SELF_FILING_PAYMENT_PENDING":
+        return projection
+    if str(getattr(case, "service_mode", "") or "") != "SELF_FILING_PACKAGE":
+        return projection
+
+    payment = next(
+        (
+            item
+            for item in payments
+            if str(item.payment_code) == PaymentCode.M1_SELF_FILING_PACKAGE.value
+        ),
+        None,
+    )
+    if payment is None:
+        return projection
+
+    status = PaymentStatus(str(payment.status))
+    if status == PaymentStatus.PAID_REVIEW:
+        return ClientStageProjection(
+            status_label=projection.status_label,
+            now_text=(
+                "Оплата 15 000 ₽ уже получена, но автоматический запуск подготовки "
+                "остановлен для безопасной финансовой сверки."
+            ),
+            client_requirement=(
+                "Повторно не оплачивайте. Команда проверит полученный платёж и "
+                "либо запустит подготовку по исходному времени поступления денег, "
+                "либо оформит контролируемый возврат."
+            ),
+            blocker="Полученный платёж находится на финансовой сверке.",
+            action=ClientAction(
+                "Проверить статус оплаты",
+                "payments_open",
+                "Откройте историю оплаты. Повторная оплата сейчас заблокирована.",
+            ),
+        )
+    if status == PaymentStatus.REFUND_PENDING:
+        return ClientStageProjection(
+            status_label=projection.status_label,
+            now_text=(
+                "Полученные 15 000 ₽ направлены на контролируемый возврат. "
+                "Подготовка пакета по этому платежу не начата."
+            ),
+            client_requirement=(
+                "Повторно не оплачивайте до завершения возврата и обновления "
+                "статуса финансовой операции."
+            ),
+            blocker="Возврат полученного платежа ещё не завершён.",
+            action=ClientAction(
+                "Проверить возврат",
+                "payments_open",
+                "Откройте историю оплаты и дождитесь завершения возврата.",
+            ),
+        )
+    if status == PaymentStatus.REFUND_DECLINED:
+        return ClientStageProjection(
+            status_label=projection.status_label,
+            now_text=(
+                "По возврату 15 000 ₽ требуется дополнительная проверка команды."
+            ),
+            client_requirement=(
+                "Не оплачивайте повторно. Свяжитесь с командой по этому обращению."
+            ),
+            blocker="Финансовая операция требует ручного уточнения.",
+            action=ClientAction(
+                "Написать команде",
+                "message_create",
+                "Уточните статус полученного платежа и возврата по этому обращению.",
+            ),
+        )
+    if status == PaymentStatus.PAID:
+        return ClientStageProjection(
+            status_label=projection.status_label,
+            now_text=(
+                "Оплата 15 000 ₽ уже зафиксирована как полученная. "
+                "Повторный платёж не требуется."
+            ),
+            client_requirement=(
+                "Откройте историю оплаты; если подготовка ещё не началась, "
+                "команда завершает системную обработку полученного платежа."
+            ),
+            blocker="Повторная оплата заблокирована до завершения системной обработки.",
+            action=ClientAction(
+                "Проверить статус оплаты",
+                "payments_open",
+                "Откройте историю полученного платежа.",
+            ),
+        )
+    return projection
+
+
 def _action_key(
     *,
     case,
@@ -937,7 +1042,11 @@ async def load_client_case_view(
     )
 
     document_overview = _document_overview(documents)
-    projection = client_stage_projection(case, document_overview)
+    projection = _payment_aware_projection(
+        case,
+        client_stage_projection(case, document_overview),
+        payments,
+    )
     action = projection.action
     next_action = (
         action.description
