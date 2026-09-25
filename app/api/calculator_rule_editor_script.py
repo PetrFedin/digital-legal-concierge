@@ -147,7 +147,7 @@ CALCULATOR_RULE_EDITOR_SCRIPT = r"""
       bindInputs(inputs, function () {
         commit({
           code: code.input.value.trim(),
-          delay_start_offset_days: Number(offset.input.value),
+          delay_start_offset_days: offset.input.value === "" ? null : Number(offset.input.value),
           divisor: divisor.input.value.trim(),
           money_quant: quant.input.value.trim(),
           rounding_mode: rounding.input.value,
@@ -361,7 +361,7 @@ CALCULATOR_RULE_EDITOR_SCRIPT = r"""
           enabled: enabled.input.value === "true" ? true : enabled.input.value === "false" ? false : null,
           multiplier: multiplier.input.value.trim(),
           amount_cap_percent: cap.input.value.trim(),
-          manual_review_after_months: Number(months.input.value),
+          manual_review_after_months: months.input.value === "" ? null : Number(months.input.value),
           source_refs: splitRefs(refs.input.value)
         });
       });
