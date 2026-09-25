@@ -370,7 +370,7 @@ def test_admin_browser_login_staff_surfaces_and_logout_revoke() -> None:
         ).to_be_visible()
         expect(page.get_by_text("BROWSER-PM016-DRAFT")).to_be_visible()
         expect(page.get_by_text("Код формулы")).to_be_visible()
-        expect(page.get_by_text("ID источника")).to_be_visible()
+        expect(page.get_by_role("button", name="+ Добавить источник")).to_be_visible()
 
         page.goto(f"{BASE_URL}/operator", wait_until="domcontentloaded")
         expect(page.get_by_role("link", name="Расписание консультаций")).to_be_visible()
