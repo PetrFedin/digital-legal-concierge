@@ -426,6 +426,7 @@ def test_lawyer_browser_is_role_scoped_and_cannot_enter_admin_workdesk() -> None
         _assert_html_surface(page, "/message-center/ui")
         _assert_html_surface(page, "/document-access/review/ui")
         _assert_html_surface(page, "/calculator-builder/ui")
+        expect(page.get_by_role("button", name="Проверить контрольные примеры")).to_be_visible()
         expect(page.get_by_role("button", name="Юридически подтвердить SHA")).to_be_visible()
         assert page.get_by_role("button", name="Сохранить DRAFT").count() == 0
 
