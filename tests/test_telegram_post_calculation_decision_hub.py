@@ -98,7 +98,12 @@ def test_saved_calculation_remains_visible_before_route_choice():
 async def test_calculated_case_reopens_all_three_post_calculation_choices(monkeypatch):
     _patch_context(
         monkeypatch,
-        SimpleNamespace(status=CaseStatus.CALCULATED, route=None),
+        SimpleNamespace(
+            id=41,
+            status=CaseStatus.CALCULATED,
+            route=None,
+            service_mode=None,
+        ),
     )
     callback = FakeCallback()
 
@@ -107,9 +112,10 @@ async def test_calculated_case_reopens_all_three_post_calculation_choices(monkey
     text, markup = callback.message.edits[-1]
     assert "Что делать после расчёта" in text
     assert _callbacks(markup) == [
-        "calc_continue_m1",
-        "calc_to_m2",
-        "calc_postpone",
+        "calc_continue_m1:v2:41",
+        "calc_self_filing:v2:41",
+        "calc_to_m2:v2:41",
+        "calc_postpone:v2:41",
         "my_case_open",
         "nav_home",
     ]
@@ -119,7 +125,12 @@ async def test_calculated_case_reopens_all_three_post_calculation_choices(monkey
 async def test_selected_m1_can_continue_to_consent_or_switch_to_consultation(monkeypatch):
     _patch_context(
         monkeypatch,
-        SimpleNamespace(status=CaseStatus.CLIENT_DECISION, route=None),
+        SimpleNamespace(
+            id=42,
+            status=CaseStatus.CLIENT_DECISION,
+            route="M1",
+            service_mode="FULL_REPRESENTATION",
+        ),
     )
     callback = FakeCallback()
 
@@ -128,8 +139,10 @@ async def test_selected_m1_can_continue_to_consent_or_switch_to_consultation(mon
     text, markup = callback.message.edits[-1]
     assert "выбрали ведение дела" in text
     assert _callbacks(markup) == [
-        "consent_open",
-        "calc_to_m2",
+        "consent_open:v2:42",
+        "calc_self_filing:v2:42",
+        "calc_to_m2:v2:42",
+        "calc_postpone:v2:42",
         "my_case_open",
         "nav_home",
     ]
@@ -139,7 +152,12 @@ async def test_selected_m1_can_continue_to_consent_or_switch_to_consultation(mon
 async def test_stale_decision_button_recovers_to_current_m1_case(monkeypatch):
     _patch_context(
         monkeypatch,
-        SimpleNamespace(status=CaseStatus.M1_DOCUMENTS_PENDING, route="M1"),
+        SimpleNamespace(
+            id=43,
+            status=CaseStatus.M1_DOCUMENTS_PENDING,
+            route="M1",
+            service_mode="FULL_REPRESENTATION",
+        ),
     )
     callback = FakeCallback()
 
@@ -157,3 +175,31 @@ async def test_stale_decision_button_recovers_to_current_m1_case(monkeypatch):
 def test_post_calculation_router_is_registered_in_dispatcher():
     source = inspect.getsource(build_dispatcher)
     assert "post_calculation.router" in source
+
+@pytest.mark.asyncio
+async def test_selected_self_filing_reopens_its_own_consent_and_can_switch_mode(monkeypatch):
+    _patch_context(
+        monkeypatch,
+        SimpleNamespace(
+            id=44,
+            status=CaseStatus.CLIENT_DECISION,
+            route="M1",
+            service_mode="SELF_FILING_PACKAGE",
+        ),
+    )
+    callback = FakeCallback()
+
+    await decision_open(callback, db=None)
+
+    text, markup = callback.message.edits[-1]
+    assert "пакет для самостоятельной подачи" in text.lower()
+    assert "не будет представлять вас в суде" in text.lower()
+    assert _callbacks(markup) == [
+        "consent_open:v2:44",
+        "calc_continue_m1:v2:44",
+        "calc_to_m2:v2:44",
+        "calc_postpone:v2:44",
+        "my_case_open",
+        "nav_home",
+    ]
+
