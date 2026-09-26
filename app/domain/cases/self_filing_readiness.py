@@ -8,14 +8,19 @@ from app.domain.cases.self_filing_business_calendar import (
     add_business_days,
     load_business_calendar,
 )
+from app.domain.cases.self_filing_contract import (
+    SELF_FILING_PRICE_RUB,
+    SELF_FILING_SLA_BUSINESS_DAYS,
+)
 from app.domain.cases.self_filing_email_sender import (
     email_delivery_configuration_error,
 )
 from app.system.settings_service import SettingsService
 
 
-SELF_FILING_CONTRACT_PRICE = Decimal("15000")
-SELF_FILING_CONTRACT_SLA_BUSINESS_DAYS = 2
+# Compatibility aliases for existing readiness callers/tests.
+SELF_FILING_CONTRACT_PRICE = SELF_FILING_PRICE_RUB
+SELF_FILING_CONTRACT_SLA_BUSINESS_DAYS = SELF_FILING_SLA_BUSINESS_DAYS
 
 
 async def self_filing_readiness(
