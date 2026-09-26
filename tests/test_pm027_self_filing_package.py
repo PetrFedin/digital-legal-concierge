@@ -110,6 +110,25 @@ def test_commercial_contract_is_15k_and_two_business_days():
     assert "payment=payment" in paid
 
 
+def test_self_filing_new_sales_are_dark_until_controlled_activation():
+    config = read("app/config.py")
+    env_prod = read(".env.production.example")
+    decision = read("app/domain/cases/post_calculation_decision_service.py")
+    post = read("app/bot/screens/post_calculation.py")
+    calculator = read("app/bot/screens/calculator.py")
+    preview = read("app/bot/screens/calculator_preview.py")
+    readiness = read("app/domain/cases/self_filing_readiness.py")
+
+    assert "self_filing_new_sales_enabled: bool = False" in config
+    assert "SELF_FILING_NEW_SALES_ENABLED=false" in env_prod
+    assert "not bool(settings.self_filing_new_sales_enabled)" in decision
+    assert "Пакет для самостоятельной подачи пока не открыт" in decision
+    assert "if bool(settings.self_filing_new_sales_enabled):" in post
+    assert "if bool(settings.self_filing_new_sales_enabled):" in calculator
+    assert "if bool(settings.self_filing_new_sales_enabled):" in preview
+    assert '"new_sales_enabled": new_sales_enabled' in readiness
+
+
 def test_mailbox_verification_contract_is_fail_closed_and_never_stores_plaintext_code():
     assert SELF_FILING_EMAIL_VERIFICATION_TTL_MINUTES == 15
     assert SELF_FILING_EMAIL_VERIFICATION_MAX_ATTEMPTS == 5
