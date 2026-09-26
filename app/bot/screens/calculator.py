@@ -21,6 +21,7 @@ from app.bot.case_callback_scope import bound_case_callback
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.states import CalculatorStates
+from app.config import settings
 from app.domain.calculator.calculator_result_formatter import (
     format_calculation_details,
     format_calculation_result,
@@ -1232,15 +1233,16 @@ async def calculate_show_callback(callback: CallbackQuery, state: FSMContext, db
 def result_kb(case_id: int, *, allow_m1: bool = True):
     items: list[tuple[str, str]] = []
     if allow_m1:
-        items.extend(
-            [
-                ("⚖️ Полное ведение дела", f"calc_continue_m1:v2:{case_id}"),
+        items.append(
+            ("⚖️ Полное ведение дела", f"calc_continue_m1:v2:{case_id}")
+        )
+        if bool(settings.self_filing_new_sales_enabled):
+            items.append(
                 (
                     "📄 Подготовить пакет — в суд пойду сам",
                     f"calc_self_filing:v2:{case_id}",
-                ),
-            ]
-        )
+                )
+            )
     items.extend(
         [
             ("🔎 Основания и детализация", f"calc_details:v2:{case_id}"),
