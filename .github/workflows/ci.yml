@@ -226,6 +226,48 @@ jobs:
             tests/test_calculator_durable_write_order_v38.py \
             tests/test_calculator_finalize_idempotency_v38.py \
             tests/test_telegram_calculator_recovery_flow.py
+  pm028-fresh-start-proof:
+    name: PM-028 fresh start and preview proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      APP_ENV: test
+      DATABASE_URL: sqlite+aiosqlite:///./pm028_ci.db
+      BOT_TOKEN: CHANGE_ME
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: admin-change-me
+      ADMIN_API_TOKEN: ci-admin-token-change-me
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[test]"
+
+      - name: Compile PM-028 sources and proof
+        run: |
+          python -m compileall -q \
+            app/bot/screens/calculator_preview.py \
+            app/bot/screens/common.py \
+            app/bot/screens/reply_menu_direct.py \
+            app/bot/client_activity.py \
+            app/bot/states.py \
+            app/domain/calculator/calculator_service.py \
+            tests/test_pm028_fresh_start_preview.py
+
+      - name: Run PM-028 bounded regression proof
+        run: pytest -q tests/test_pm028_fresh_start_preview.py
+
   sqlite-tests:
     name: SQLite application tests
     runs-on: ubuntu-24.04
