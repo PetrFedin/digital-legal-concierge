@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.domain.calculator.calculator_service import CalculatorService
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
@@ -121,6 +122,19 @@ class PostCalculationDecisionService:
             )
 
         if normalized_choice in {CHOICE_M1, CHOICE_SELF_FILING}:
+            if (
+                normalized_choice == CHOICE_SELF_FILING
+                and not bool(settings.self_filing_new_sales_enabled)
+                and not (
+                    status == CaseStatus.CLIENT_DECISION
+                    and str(case.service_mode or "")
+                    == M1ServiceMode.SELF_FILING_PACKAGE.value
+                )
+            ):
+                raise PostCalculationDecisionError(
+                    "Пакет для самостоятельной подачи пока не открыт для новых обращений"
+                )
+
             # A stale/zero result must never open either paid M1 service. The
             # latest immutable calculation is the route-eligibility authority.
             await self.calculator.require_m1_eligible_calculation(case_id=int(case.id))
