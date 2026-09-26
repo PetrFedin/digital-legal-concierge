@@ -43,6 +43,20 @@ from app.storage import LocalStorageService
 router = APIRouter(prefix="/self-filing", tags=["self-filing"])
 
 
+SELF_FILING_STATUS_LABELS = {
+    CaseStatus.M1_SELF_FILING_PROFILE_PENDING.value: "Нужны данные клиента для пакета",
+    CaseStatus.M1_SELF_FILING_DOCUMENTS_PENDING.value: "Клиент собирает документы",
+    CaseStatus.M1_SELF_FILING_DOCUMENTS_RECEIVED.value: "Документы переданы юридической команде",
+    CaseStatus.M1_SELF_FILING_LAWYER_REVIEW.value: "Юрист проверяет комплект и подсудность",
+    CaseStatus.M1_SELF_FILING_DOCS_REQUESTED.value: "Запрошены дополнительные документы",
+    CaseStatus.M1_SELF_FILING_PAYMENT_PENDING.value: "Комплект подтверждён — ожидается оплата 15 000 ₽",
+    CaseStatus.M1_SELF_FILING_PREPARATION.value: "Идёт подготовка итогового пакета",
+    CaseStatus.M1_SELF_FILING_READY.value: "Итоговый пакет готов к доставке",
+    CaseStatus.M1_SELF_FILING_DELIVERED.value: "Пакет доставлен клиенту",
+    CaseStatus.M1_SELF_FILING_CLOSED.value: "Услуга подготовки пакета завершена",
+}
+
+
 def _token(request: Request, header_token: str | None) -> str | None:
     return header_token or request.cookies.get(settings.admin_session_cookie)
 
@@ -214,6 +228,11 @@ async def self_filing_context(
             "id": int(case.id),
             "number": case.case_number,
             "status": str(case.status),
+            "status_label": SELF_FILING_STATUS_LABELS.get(
+                str(case.status),
+                "Этап требует уточнения",
+            ),
+            "next_action": case.next_action,
             "service_mode": case.service_mode,
             "assigned_lawyer_id": case.assigned_lawyer_id,
             "updated_at": case.updated_at.isoformat() if case.updated_at else None,
@@ -294,6 +313,8 @@ async def self_filing_context(
                 email_delivery_configuration_error()
             ),
             "jurisdiction_bases": sorted(JURISDICTION_BASES),
+            "business_timezone": settings.business_timezone,
+            "business_timezone_label": settings.business_timezone_label,
         },
     }
 
@@ -659,7 +680,15 @@ button,.button{border:0;border-radius:9px;background:var(--blue);color:#fff;padd
 <script>
 const qs=new URLSearchParams(location.search);const caseId=Number(qs.get('case_id'));let data=null;
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-const dt=s=>s?new Date(s).toLocaleString('ru-RU'):'—';
+function dt(s){
+ if(!s)return '—';
+ try{
+   const zone=(data&&data.capabilities&&data.capabilities.business_timezone)||'Europe/Moscow';
+   const label=(data&&data.capabilities&&data.capabilities.business_timezone_label)||'';
+   const shown=new Intl.DateTimeFormat('ru-RU',{dateStyle:'short',timeStyle:'short',timeZone:zone}).format(new Date(s));
+   return label?shown+' '+label:shown;
+ }catch(_){return String(s)}
+}
 function feedback(text,bad=false){document.getElementById('feedback').innerHTML='<div class="card '+(bad?'bad':'ok')+'">'+esc(text)+'</div>'}
 async function api(path,opts={}){const r=await fetch(path,{credentials:'same-origin',...opts});const t=await r.text();let j={};try{j=JSON.parse(t)}catch{}if(!r.ok)throw new Error(j.detail||t||('HTTP '+r.status));return j}
 function payload(extra={}){return {expected_package_version:Number(data.package.version),...extra}}
@@ -671,8 +700,9 @@ async function load(){
 function render(){
  const c=data.case,p=data.package,a=data.actor;
  document.getElementById('sub').textContent='Обращение '+c.number+' · '+data.client.name;
- document.getElementById('status').textContent=c.status;
- document.getElementById('now').textContent=a.can_mutate?'Вы отвечаете за это обращение. Все решения ниже привязаны к текущей версии карточки.':'Режим просмотра: юридические решения доступны только ответственному юристу.';
+ document.getElementById('status').textContent=c.status_label||'Этап требует уточнения';
+ const roleNote=a.can_mutate?'Вы отвечаете за это обращение. Все решения ниже привязаны к текущей версии карточки.':'Режим просмотра: юридические решения доступны только ответственному юристу.';
+ document.getElementById('now').innerHTML='<b>Главный следующий шаг:</b> '+esc(c.next_action||'Уточнить этап')+'<br>'+esc(roleNote);
  document.getElementById('facts').innerHTML=[
   ['Регион',p.region],['Email',p.delivery_email],['Полный комплект',dt(p.documents_complete_at)],['Суд',p.court_name],
   ['Оплата подтверждена',dt(p.payment_confirmed_at)],['SLA до',dt(p.sla_due_at)],['Готово',dt(p.ready_at)],['Доставлено',dt(p.delivered_at)]
