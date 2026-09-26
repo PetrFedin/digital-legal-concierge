@@ -107,6 +107,50 @@ def _smtp_send(message: EmailMessage) -> None:
         smtp.send_message(message)
 
 
+async def send_self_filing_email_verification(
+    *,
+    to_email: str,
+    code: str,
+    case_number: str,
+    package_id: int,
+    challenge_version: int,
+) -> str:
+    """Send a one-time mailbox ownership code without persisting plaintext."""
+
+    require_email_delivery_configured()
+    clean_email = str(to_email or "").strip().lower()
+    clean_code = str(code or "").strip()
+    if not clean_email or "@" not in clean_email:
+        raise ValueError("Email для проверки не задан")
+    if len(clean_code) != 6 or not clean_code.isdigit():
+        raise ValueError("Некорректный одноразовый код")
+
+    from_email = str(settings.self_filing_smtp_from_email or "").strip()
+    domain = (
+        from_email.rsplit("@", 1)[1]
+        if "@" in from_email
+        else "legal-concierge.local"
+    )
+    message_id = (
+        f"<self-filing-verify-{int(package_id)}-"
+        f"v{int(challenge_version)}@{domain}>"
+    )
+    message = EmailMessage(policy=SMTP)
+    message["Subject"] = "Код подтверждения email — Legal Concierge"
+    message["From"] = from_email
+    message["To"] = clean_email
+    message["Message-ID"] = message_id
+    message.set_content(
+        "Подтвердите email для получения юридических документов.\n\n"
+        f"Обращение: {case_number}\n"
+        f"Код подтверждения: {clean_code}\n\n"
+        "Код действует ограниченное время. Если вы не запрашивали подтверждение, "
+        "не сообщайте код третьим лицам и не отвечайте на это письмо."
+    )
+    await asyncio.to_thread(_smtp_send, message)
+    return message_id
+
+
 class SelfFilingEmailSender:
     """Durable outbox-like SMTP delivery for approved self-filing packages.
 
@@ -338,4 +382,5 @@ __all__ = [
     "email_delivery_configuration_error",
     "email_delivery_configured",
     "require_email_delivery_configured",
+    "send_self_filing_email_verification",
 ]
