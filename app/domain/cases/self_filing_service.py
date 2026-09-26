@@ -296,6 +296,18 @@ class SelfFilingService:
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
         if now > expires_at:
+            await add_case_history_event(
+                self.db,
+                actor_type="client",
+                actor_id=int(client_id),
+                case_id=int(case.id),
+                action="SELF_FILING_EMAIL_VERIFICATION_EXPIRED",
+                new_value={
+                    "package_id": int(package.id),
+                    "expires_at": expires_at.isoformat(),
+                    "verification_message_id": package.email_verification_message_id,
+                },
+            )
             _clear_email_verification_challenge(package)
             package.version = int(package.version or 1) + 1
             raise SelfFilingEmailVerificationError(
@@ -314,9 +326,20 @@ class SelfFilingService:
             package.email_verification_attempts = (
                 int(package.email_verification_attempts or 0) + 1
             )
-            remaining = (
-                SELF_FILING_EMAIL_VERIFICATION_MAX_ATTEMPTS
-                - int(package.email_verification_attempts)
+            attempt = int(package.email_verification_attempts)
+            remaining = SELF_FILING_EMAIL_VERIFICATION_MAX_ATTEMPTS - attempt
+            await add_case_history_event(
+                self.db,
+                actor_type="client",
+                actor_id=int(client_id),
+                case_id=int(case.id),
+                action="SELF_FILING_EMAIL_VERIFICATION_FAILED",
+                new_value={
+                    "package_id": int(package.id),
+                    "attempt": attempt,
+                    "remaining_attempts": max(remaining, 0),
+                    "verification_message_id": package.email_verification_message_id,
+                },
             )
             if remaining <= 0:
                 _clear_email_verification_challenge(package)
