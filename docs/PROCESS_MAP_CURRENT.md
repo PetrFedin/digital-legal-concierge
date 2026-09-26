@@ -780,4 +780,5 @@ Whenever anything changes:
 - Corrected write ordering in `_present_saved`: PostgreSQL commit now precedes `state.clear()`. If commit fails, the unsaved preview remains available for retry instead of being erased first.
 - Expanded `tests/test_pm028_fresh_start_preview.py` to lock stable materialization-key ownership, reject callback-id idempotency, prove stale-token comparison and enforce commit-before-FSM-clear ordering.
 - Added dedicated CI job **PM-028 fresh start and preview proof**. Source status remains `SOURCE_IMPLEMENTED / RUNTIME_PENDING`; no green runtime claim is made until Actions allocates a runner and executes the exact-head job.
+- Follow-up activity audit found that the new `preview_calc_save:v2:<token>` callback still matched the generic `preview_*` context-free filter. Corrected `client_activity.context_free_activity`: preview browsing remains context-free, while both legacy and tokenized explicit save are persisted-Case activity. Regression now locks both callback forms.
 
