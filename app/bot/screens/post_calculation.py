@@ -7,6 +7,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery
 
 from app.bot.context import BotContextService
+from app.config import settings
 from app.bot.keyboards import one
 from app.domain.cases.post_calculation_decision_service import (
     CHOICE_M1,
@@ -154,26 +155,38 @@ async def decision_open(callback: CallbackQuery, db):
     status = _status(case)
     case_id = int(case.id)
     if status == CaseStatus.CALCULATED:
+        items = [
+            ("⚖️ Полное ведение дела", _bound("calc_continue_m1", case_id)),
+        ]
+        self_filing_copy = ""
+        if bool(settings.self_filing_new_sales_enabled):
+            self_filing_copy = (
+                "📄 Пакет для самостоятельного суда — мы готовим комплект за 15 000 ₽, "
+                "а подаёте документы и участвуете в деле вы сами. Срок подготовки — "
+                "2 рабочих дня после подтверждения оплаты и полного комплекта документов.\n"
+            )
+            items.append(
+                (
+                    "📄 Подготовить пакет — в суд пойду сам",
+                    _bound("calc_self_filing", case_id),
+                )
+            )
+        items.extend(
+            [
+                ("💬 Перейти к консультации", _bound("calc_to_m2", case_id)),
+                ("Пока ничего не менять", _bound("calc_postpone", case_id)),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ]
+        )
         await _safe_edit(
             callback,
             "🧭 Что делать после расчёта\n\n"
             "Расчёт сохранён. Выберите дальнейший путь — решение можно не принимать прямо сейчас.\n\n"
             "⚖️ Полное ведение — документы, претензия, суд и дальнейшее сопровождение.\n"
-            "📄 Пакет для самостоятельного суда — мы готовим комплект за 15 000 ₽, "
-            "а подаёте документы и участвуете в деле вы сами. Срок подготовки — "
-            "2 рабочих дня после подтверждения оплаты и полного комплекта документов.\n"
-            "💬 Консультация — описать вопрос, при желании добавить документы и выбрать время.",
-            reply_markup=one(
-                ("⚖️ Полное ведение дела", _bound("calc_continue_m1", case_id)),
-                (
-                    "📄 Подготовить пакет — в суд пойду сам",
-                    _bound("calc_self_filing", case_id),
-                ),
-                ("💬 Перейти к консультации", _bound("calc_to_m2", case_id)),
-                ("Пока ничего не менять", _bound("calc_postpone", case_id)),
-                ("📁 Моё дело", "my_case_open"),
-                ("🏠 Главная", "nav_home"),
-            ),
+            + self_filing_copy
+            + "💬 Консультация — описать вопрос, при желании добавить документы и выбрать время.",
+            reply_markup=one(*items),
         )
         return
 
@@ -202,12 +215,25 @@ async def decision_open(callback: CallbackQuery, db):
             "персональных данных. До подтверждения документы юристу не передаются.",
             reply_markup=one(
                 ("📄 Перейти к согласию", _bound("consent_open", case_id)),
-                (
-                    "📄 Пакет для самостоятельной подачи",
-                    _bound("calc_self_filing", case_id),
-                ) if not self_filing else (
-                    "⚖️ Вместо этого — полное ведение",
-                    _bound("calc_continue_m1", case_id),
+                *(
+                    [
+                        (
+                            "📄 Пакет для самостоятельной подачи",
+                            _bound("calc_self_filing", case_id),
+                        )
+                    ]
+                    if (
+                        not self_filing
+                        and bool(settings.self_filing_new_sales_enabled)
+                    )
+                    else [
+                        (
+                            "⚖️ Вместо этого — полное ведение",
+                            _bound("calc_continue_m1", case_id),
+                        )
+                    ]
+                    if self_filing
+                    else []
                 ),
                 ("💬 Вместо этого — консультация", _bound("calc_to_m2", case_id)),
                 ("Пока ничего не менять", _bound("calc_postpone", case_id)),
