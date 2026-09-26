@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, datetime
 from decimal import Decimal
+from uuid import uuid4
 
 from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
@@ -43,6 +45,7 @@ _PREVIEW_FIELDS = {
     "preview_calculation_date",
     "preview_rule_revision_key",
     "preview_rule_snapshot_sha256",
+    "preview_materialization_id",
 }
 
 
@@ -105,6 +108,28 @@ async def _safe_edit(callback: CallbackQuery, text: str, *, reply_markup) -> Non
 
 def _clean_preview_data(data: dict) -> dict:
     return {key: value for key, value in data.items() if key in _PREVIEW_FIELDS}
+
+
+def _valid_preview_id(value: object) -> str | None:
+    clean = str(value or "").strip().lower()
+    return clean if re.fullmatch(r"[0-9a-f]{32}", clean) else None
+
+
+def _preview_operation_key(preview_id: str) -> str:
+    clean = _valid_preview_id(preview_id)
+    if clean is None:
+        raise ValueError("Некорректный идентификатор предварительного расчёта")
+    return f"calculator_preview_save:{clean}"
+
+
+def _preview_id_from_callback(data: str | None) -> str | None:
+    value = str(data or "")
+    prefix = "preview_calc_save:v2:"
+    if value == "preview_calc_save":
+        return None
+    if not value.startswith(prefix):
+        return None
+    return _valid_preview_id(value[len(prefix) :])
 
 
 def _ready(data: dict) -> bool:
@@ -202,10 +227,14 @@ async def _show_result(callback: CallbackQuery, state: FSMContext, db) -> None:
         )
         return
 
+    preview_id = _valid_preview_id(data.get("preview_materialization_id"))
+    if preview_id is None:
+        preview_id = uuid4().hex
     await state.update_data(
         preview_calculation_date=result.calculation_date.isoformat(),
         preview_rule_revision_key=result.rule_revision_key,
         preview_rule_snapshot_sha256=result.rule_snapshot_sha256,
+        preview_materialization_id=preview_id,
         manual_review_flags=[],
     )
     await state.set_state(PreviewCalculatorStates.result_ready)
@@ -218,7 +247,10 @@ async def _show_result(callback: CallbackQuery, state: FSMContext, db) -> None:
         "Если это просто ознакомительный расчёт — можно выйти, и он не появится в «Моём деле». "
         "Для продолжения с документами/услугой сначала сохраните его явно.",
         reply_markup=_exit_buttons(
-            ("💾 Сохранить расчёт и продолжить", "preview_calc_save"),
+            (
+                "💾 Сохранить расчёт и продолжить",
+                f"preview_calc_save:v2:{preview_id}",
+            ),
             ("🔄 Изменить данные", "preview_calc_start"),
         ),
     )
@@ -227,7 +259,10 @@ async def _show_result(callback: CallbackQuery, state: FSMContext, db) -> None:
 @router.callback_query(lambda c: c.data == "preview_calc_start")
 async def preview_start(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    await state.update_data(preview_mode=_PREVIEW_FLAG)
+    await state.update_data(
+        preview_mode=_PREVIEW_FLAG,
+        preview_materialization_id=uuid4().hex,
+    )
     await state.set_state(PreviewCalculatorStates.waiting_contract_price)
     await _safe_edit(
         callback,
@@ -433,12 +468,12 @@ async def preview_recalculate(callback: CallbackQuery, state: FSMContext, db):
     await _show_result(callback, state, db)
 
 
-async def _existing_materialized_case(db, *, client_id: int, callback_id: str):
+async def _existing_materialized_case(db, *, client_id: int, preview_id: str):
     request = (
         await db.execute(
             select(CaseCreationRequest).where(
                 CaseCreationRequest.client_id == int(client_id),
-                CaseCreationRequest.operation_key == f"telegram_callback:{callback_id}",
+                CaseCreationRequest.operation_key == _preview_operation_key(preview_id),
             )
         )
     ).scalar_one_or_none()
@@ -462,8 +497,10 @@ async def _present_saved(callback: CallbackQuery, state: FSMContext, db, case, r
             ("🏠 Главная", "nav_home"),
         ]
     )
-    await state.clear()
+    # Commit first. If PostgreSQL rejects the transaction, the unsaved preview
+    # remains in FSM and the client can retry instead of losing the draft.
     await db.commit()
+    await state.clear()
     await _safe_edit(
         callback,
         "✅ Расчёт сохранён в отдельное обращение. Теперь он доступен в «Моём деле».\n\n"
@@ -472,22 +509,55 @@ async def _present_saved(callback: CallbackQuery, state: FSMContext, db, case, r
     )
 
 
-@router.callback_query(lambda c: c.data == "preview_calc_save")
+@router.callback_query(
+    lambda c: c.data == "preview_calc_save"
+    or str(c.data or "").startswith("preview_calc_save:v2:")
+)
 async def preview_save(callback: CallbackQuery, state: FSMContext, db):
     data = _clean_preview_data(await state.get_data())
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
 
+    callback_preview_id = _preview_id_from_callback(callback.data)
+    state_preview_id = _valid_preview_id(data.get("preview_materialization_id"))
+    preview_id = callback_preview_id or state_preview_id
+    if preview_id is None:
+        await db.rollback()
+        await _safe_edit(
+            callback,
+            "Этот временный расчёт уже завершился или относится к старому экрану. "
+            "Новое дело не создано.",
+            reply_markup=_exit_buttons(
+                ("🧮 Начать быстрый расчёт", "preview_calc_start"),
+            ),
+        )
+        return
+
+    # The stable preview id is carried by the button itself. This makes two
+    # distinct Telegram callback ids from one double tap converge to the same
+    # CaseCreationRequest instead of creating two Cases.
     existing_case = await _existing_materialized_case(
         db,
         client_id=int(user.id),
-        callback_id=str(callback.id),
+        preview_id=preview_id,
     )
     if existing_case is not None:
         result = await CalculatorService(db).result_for_case(case_id=int(existing_case.id))
         if result is not None:
             await _present_saved(callback, state, db, existing_case, result)
             return
+
+    if state_preview_id != preview_id:
+        await db.rollback()
+        await _safe_edit(
+            callback,
+            "Эта кнопка относится к другому предварительному расчёту. "
+            "Действие не выполнено и новое дело не создано.",
+            reply_markup=_exit_buttons(
+                ("🧮 Открыть текущий быстрый расчёт заново", "preview_calc_start"),
+            ),
+        )
+        return
 
     if not _ready(data):
         await db.rollback()
@@ -530,9 +600,9 @@ async def preview_save(callback: CallbackQuery, state: FSMContext, db):
             )
             return
 
-        case = await ctx.create_case_from_callback(
-            user=user,
-            callback=callback,
+        case = await ctx.case_service.create_case_for_operation(
+            client=user,
+            operation_key=_preview_operation_key(preview_id),
             purpose="calculator_preview_save",
             status=CaseStatus.CALCULATOR_STARTED,
             title="Обращение по ДДУ",
