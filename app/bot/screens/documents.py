@@ -300,6 +300,17 @@ def _document_counts(documents: list) -> dict[str, int]:
 def _recommended_step(case, documents: list) -> tuple[str, list[tuple[str, str]]]:
     status = _case_status(case)
     if _self_filing_mode(case) and status not in _SELF_FILING_UPLOAD_OPEN_STATUSES:
+        if status == CaseStatus.M1_SELF_FILING_PROFILE_PENDING:
+            return (
+                "Сначала подтвердите email одноразовым кодом. До подтверждения адреса "
+                "загрузка персональных и юридических документов заблокирована.",
+                [
+                    (
+                        "✉️ Подтвердить email",
+                        f"self_filing_profile_start:v2:{int(case.id)}",
+                    )
+                ],
+            )
         if status == CaseStatus.M1_SELF_FILING_LAWYER_REVIEW:
             return (
                 "Юрист проверяет зафиксированный комплект. Новые файлы сейчас не добавляются; "
@@ -408,17 +419,33 @@ async def _load_case_documents(callback: CallbackQuery, db):
             )
         return None, []
     if _self_filing_mode(case) and not _self_filing_upload_open(case):
-        await callback.message.edit_text(
-            "📄 Комплект документов уже зафиксирован для юридической проверки, "
-            "оплаты или подготовки итогового пакета. Новые файлы на текущем этапе "
-            "не принимаются, чтобы не изменить подтверждённую юридическую базу.",
-            reply_markup=one(
-                ("📄 Открыть документы для просмотра", "documents_open"),
-                ("📁 Моё дело", "my_case_open"),
-                ("✉️ Написать команде", "message_create"),
-                ("🏠 Главная", "nav_home"),
-            ),
-        )
+        if _case_status(case) == CaseStatus.M1_SELF_FILING_PROFILE_PENDING:
+            await callback.message.edit_text(
+                "📄 Документы пока не принимаются.\n\n"
+                "Перед загрузкой ДДУ, паспорта и приложений подтвердите email "
+                "одноразовым кодом. Это защищает готовый юридический пакет от "
+                "отправки на ошибочный адрес.",
+                reply_markup=one(
+                    (
+                        "✉️ Подтвердить email",
+                        f"self_filing_profile_start:v2:{int(case.id)}",
+                    ),
+                    ("📁 Моё дело", "my_case_open"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+            )
+        else:
+            await callback.message.edit_text(
+                "📄 Комплект документов уже зафиксирован для юридической проверки, "
+                "оплаты или подготовки итогового пакета. Новые файлы на текущем этапе "
+                "не принимаются, чтобы не изменить подтверждённую юридическую базу.",
+                reply_markup=one(
+                    ("📄 Открыть документы для просмотра", "documents_open"),
+                    ("📁 Моё дело", "my_case_open"),
+                    ("✉️ Написать команде", "message_create"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+            )
         return None, []
     documents = await DocumentService(db).list_case_documents(case.id)
     return case, documents
