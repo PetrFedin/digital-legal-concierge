@@ -151,6 +151,8 @@ def test_mailbox_verification_contract_is_fail_closed_and_never_stores_plaintext
     assert "secrets.randbelow" in service
     assert "SELF_FILING_EMAIL_VERIFICATION_MAX_ATTEMPTS" in service
     assert "SELF_FILING_EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS" in service
+    assert "SELF_FILING_EMAIL_VERIFICATION_FAILED" in service
+    assert "SELF_FILING_EMAIL_VERIFICATION_EXPIRED" in service
     assert "send_self_filing_email_verification" in sender
     assert "Код подтверждения email" in sender
 
@@ -188,6 +190,17 @@ def test_profile_requires_mailbox_code_before_documents_or_payment():
     assert "await db.commit()" in bot
     assert "готовый пакет" in bot.lower()
     assert "только на подтверждённый адрес" in bot.lower()
+
+
+def test_my_case_projects_pending_mailbox_verification_as_primary_client_step():
+    view = read("app/bot/client_case_view.py")
+
+    assert "def _self_filing_profile_projection" in view
+    assert '"Нужно подтвердить email"' in view
+    assert "До подтверждения email загрузка документов и оплата пакета" in view
+    assert 'f"self_filing_profile_start:v2:{int(case.id)}"' in view
+    assert "SelfFilingPackage.case_id == int(case.id)" in view
+    assert "self_filing_package=self_filing_package" in view
 
 
 def test_staff_surface_exposes_verification_state_but_not_verification_secret():
