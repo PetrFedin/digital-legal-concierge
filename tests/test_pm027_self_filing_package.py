@@ -27,6 +27,10 @@ from app.domain.cases.self_filing_business_calendar import (
     BusinessCalendarSnapshot,
     add_business_days,
 )
+from app.domain.cases.self_filing_contract import (
+    SELF_FILING_PRICE_RUB,
+    SELF_FILING_SLA_BUSINESS_DAYS,
+)
 from app.domain.cases.self_filing_email_sender import (
     email_delivery_configuration_error,
     email_delivery_configured,
@@ -80,10 +84,25 @@ def test_consent_can_start_self_filing_but_error_recovery_cannot_fake_financial_
 
 def test_commercial_contract_is_15k_and_two_business_days():
     assert PaymentCode.M1_SELF_FILING_PACKAGE.value == "M1_SELF_FILING_PACKAGE"
+    assert SELF_FILING_PRICE_RUB == Decimal("15000")
+    assert SELF_FILING_SLA_BUSINESS_DAYS == 2
     assert DEFAULT_SETTINGS["payments.m1_self_filing_package"]["value"] == 15000
     assert DEFAULT_SETTINGS["self_filing.sla_business_days"]["value"] == 2
     assert DEFAULT_SETTINGS["payments.m1_self_filing_package"]["type"] == "money"
     assert DEFAULT_SETTINGS["self_filing.sla_business_days"]["type"] == "integer"
+
+    service = read("app/domain/cases/self_filing_service.py")
+    assert "async def _require_commercial_contract" in service
+    assert "configured_price != SELF_FILING_PRICE_RUB" in service
+    assert "configured_days != SELF_FILING_SLA_BUSINESS_DAYS" in service
+    approve = service.split("async def approve_for_payment", 1)[1].split(
+        "async def start_preparation_after_payment", 1
+    )[0]
+    paid = service.split("async def start_preparation_after_payment", 1)[1].split(
+        "async def resolve_received_payment_review", 1
+    )[0]
+    assert "await self._require_commercial_contract()" in approve
+    assert "payment=payment" in paid
 
 
 def test_client_minimum_documents_and_jurisdiction_are_explicit():
