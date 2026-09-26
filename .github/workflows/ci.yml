@@ -226,6 +226,69 @@ jobs:
             tests/test_calculator_durable_write_order_v38.py \
             tests/test_calculator_finalize_idempotency_v38.py \
             tests/test_telegram_calculator_recovery_flow.py
+  pm027-self-filing-proof:
+    name: PM-027 self-filing package proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      APP_ENV: test
+      DATABASE_URL: sqlite+aiosqlite:///./pm027_ci.db
+      BOT_TOKEN: CHANGE_ME
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: admin-change-me
+      ADMIN_API_TOKEN: ci-admin-token-change-me
+      STORAGE_DIR: /tmp/pm027-storage
+      DOCUMENT_ENCRYPTION_KEY_ID: ci-pm027-documents
+      DOCUMENT_ENCRYPTION_KEY: ci-pm027-document-key-012345678901234567890123456789
+      SELF_FILING_EMAIL_PROVIDER: disabled
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[test]"
+
+      - name: Compile PM-027 sources and proofs
+        run: |
+          python -m compileall -q \
+            app/domain/cases/self_filing_business_calendar.py \
+            app/domain/cases/self_filing_documents.py \
+            app/domain/cases/self_filing_email_sender.py \
+            app/domain/cases/self_filing_readiness.py \
+            app/domain/cases/self_filing_service.py \
+            app/domain/cases/service_modes.py \
+            app/api/self_filing_product.py \
+            app/bot/screens/self_filing.py \
+            app/bot/screens/post_calculation.py \
+            app/bot/screens/payments.py \
+            app/bot/client_case_view.py \
+            migrations/versions/20260925_0026_self_filing_package.py \
+            tests/test_pm027_self_filing_package.py \
+            tests/test_pm027_self_filing_financial_reconciliation.py
+
+      - name: Prove migration 0026 and ORM parity
+        run: |
+          rm -f pm027_ci.db
+          alembic upgrade head
+          alembic current
+          alembic check
+
+      - name: Run PM-027 bounded source and financial proof
+        run: |
+          pytest -q \
+            tests/test_pm027_self_filing_package.py \
+            tests/test_pm027_self_filing_financial_reconciliation.py
+
   sqlite-tests:
     name: SQLite application tests
     runs-on: ubuntu-24.04
