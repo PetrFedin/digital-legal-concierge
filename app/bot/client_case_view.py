@@ -25,6 +25,7 @@ from app.models.calculation import Calculation
 from app.models.consultation import Consultation
 from app.models.document import Document
 from app.models.payment import Payment
+from app.models.self_filing_package import SelfFilingPackage
 from app.presentation_time import format_business_datetime
 
 
@@ -835,6 +836,82 @@ def _payments_summary(payments: list[Payment]) -> str:
     return f"Платежей в истории: {len(payments)} · активных действий по оплате нет"
 
 
+def _self_filing_profile_projection(
+    case,
+    projection: ClientStageProjection,
+    package: SelfFilingPackage | None,
+) -> ClientStageProjection:
+    """Reflect mailbox verification while Case remains on PROFILE_PENDING."""
+
+    if str(case.status) != "M1_SELF_FILING_PROFILE_PENDING":
+        return projection
+    if str(getattr(case, "service_mode", "") or "") != "SELF_FILING_PACKAGE":
+        return projection
+    if package is None or not package.delivery_email:
+        return projection
+
+    callback = f"self_filing_profile_start:v2:{int(case.id)}"
+    if package.email_confirmed_at is not None:
+        return ClientStageProjection(
+            status_label=projection.status_label,
+            now_text=(
+                "Email уже подтверждён, но этап обращения ещё обновляется. "
+                "Повторно вводить данные или код не нужно."
+            ),
+            client_requirement="Обновите карточку обращения.",
+            blocker="Ожидается синхронизация этапа после подтверждения email.",
+            action=ClientAction(
+                "Обновить обращение",
+                "my_case_open",
+                "Откройте актуальное состояние обращения.",
+            ),
+        )
+
+    if (
+        package.email_verification_hash
+        and package.email_verification_expires_at is not None
+    ):
+        return ClientStageProjection(
+            status_label="Нужно подтвердить email",
+            now_text=(
+                "Регион, адрес и email сохранены. Для защиты персональных и "
+                "юридических документов адрес почты ещё не подтверждён."
+            ),
+            client_requirement=(
+                "Введите шестизначный код из письма. Если код истёк или не пришёл, "
+                "на этом же экране можно запросить новый или изменить email."
+            ),
+            blocker=(
+                "До подтверждения email загрузка документов и оплата пакета "
+                "не открываются."
+            ),
+            action=ClientAction(
+                "Подтвердить email",
+                callback,
+                "Откройте проверку email и введите код из письма.",
+            ),
+        )
+
+    return ClientStageProjection(
+        status_label="Нужно подтвердить email",
+        now_text=(
+            "Email для доставки указан, но действующего кода подтверждения сейчас нет."
+        ),
+        client_requirement=(
+            "Откройте проверку email и запросите новый код либо измените адрес."
+        ),
+        blocker=(
+            "До подтверждения email загрузка документов и оплата пакета "
+            "не открываются."
+        ),
+        action=ClientAction(
+            "Подтвердить email",
+            callback,
+            "Запросите новый код подтверждения или измените email.",
+        ),
+    )
+
+
 def _payment_aware_projection(
     case,
     projection: ClientStageProjection,
@@ -946,6 +1023,7 @@ def _action_key(
     documents: DocumentOverview,
     consultation: Consultation | None,
     payments: list[Payment],
+    self_filing_package: SelfFilingPackage | None,
     history_event_id: int | None,
     unread_team_messages: int = 0,
     latest_team_message_at: datetime | None = None,
@@ -972,6 +1050,23 @@ def _action_key(
         str(unread_team_messages),
         latest_team_message_at.isoformat() if latest_team_message_at else "",
         str(history_event_id or ""),
+        str(self_filing_package.version if self_filing_package else ""),
+        (
+            self_filing_package.updated_at.isoformat()
+            if self_filing_package and self_filing_package.updated_at
+            else ""
+        ),
+        (
+            self_filing_package.email_confirmed_at.isoformat()
+            if self_filing_package and self_filing_package.email_confirmed_at
+            else ""
+        ),
+        (
+            self_filing_package.email_verification_expires_at.isoformat()
+            if self_filing_package
+            and self_filing_package.email_verification_expires_at
+            else ""
+        ),
         *[
             ":".join(
                 (
@@ -1040,11 +1135,25 @@ async def load_client_case_view(
     unread_team_messages, latest_team_message_at = (
         await MessageService(db).unread_lawyer_summary(case.id)
     )
+    self_filing_package = None
+    if str(getattr(case, "service_mode", "") or "") == "SELF_FILING_PACKAGE":
+        self_filing_package = (
+            await db.execute(
+                select(SelfFilingPackage).where(
+                    SelfFilingPackage.case_id == int(case.id)
+                )
+            )
+        ).scalar_one_or_none()
 
     document_overview = _document_overview(documents)
-    projection = _payment_aware_projection(
+    projection = _self_filing_profile_projection(
         case,
         client_stage_projection(case, document_overview),
+        self_filing_package,
+    )
+    projection = _payment_aware_projection(
+        case,
+        projection,
         payments,
     )
     action = projection.action
@@ -1072,6 +1181,11 @@ async def load_client_case_view(
         consultation_updated_at,
         latest_team_message_at,
         payment_updated_at,
+        (
+            self_filing_package.updated_at
+            if self_filing_package is not None
+            else None
+        ),
     )
     effective_route = effective_client_route(case)
 
@@ -1098,6 +1212,7 @@ async def load_client_case_view(
             documents=document_overview,
             consultation=consultation,
             payments=payments,
+            self_filing_package=self_filing_package,
             history_event_id=history_event_id,
             unread_team_messages=unread_team_messages,
             latest_team_message_at=latest_team_message_at,
