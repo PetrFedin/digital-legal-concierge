@@ -222,6 +222,20 @@ def test_my_case_projects_pending_mailbox_verification_as_primary_client_step():
     assert "self_filing_package=self_filing_package" in view
 
 
+def test_profile_confirmation_reuses_active_challenge_on_double_tap():
+    service = read("app/domain/cases/self_filing_service.py")
+    profile = service.split("async def save_confirmed_profile", 1)[1].split(
+        "async def submit_documents", 1
+    )[0]
+
+    assert "package row lock serializes them" in profile
+    assert "str(package.client_region or "") == clean_region" in profile
+    assert "str(package.delivery_email or "").lower() == clean_email" in profile
+    assert "bool(package.email_verification_hash)" in profile
+    assert "datetime.now(timezone.utc) <= active_expires" in profile
+    assert "return package" in profile
+
+
 def test_documents_are_blocked_until_delivery_mailbox_is_verified():
     documents = read("app/bot/screens/documents.py")
 
