@@ -272,6 +272,19 @@ def test_telegram_and_client_projection_expose_exact_self_filing_path():
     assert "PaymentCode.M1_SELF_FILING_PACKAGE" in payments
 
 
+def test_self_filing_staff_surface_uses_business_timezone_and_human_stage_copy():
+    surface = read("app/api/self_filing_product.py")
+
+    assert '"business_timezone": settings.business_timezone' in surface
+    assert '"business_timezone_label": settings.business_timezone_label' in surface
+    assert "SELF_FILING_STATUS_LABELS" in surface
+    assert "status_label" in surface
+    assert "Главный следующий шаг" in surface
+    assert "Intl.DateTimeFormat('ru-RU'" in surface
+    assert "timeZone:zone" in surface
+    assert "new Date(s).toLocaleString('ru-RU')" not in surface
+
+
 def test_staff_surface_and_workdesk_are_registered_and_case_bound():
     app = create_app()
     routes = {
