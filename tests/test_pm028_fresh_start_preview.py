@@ -125,6 +125,13 @@ def test_neutral_home_and_preview_do_not_refresh_selected_case_activity():
         SimpleNamespace(text=None, data="preview_calc_save"),
         state_name=None,
     )
+    assert not context_free_activity(
+        SimpleNamespace(
+            text=None,
+            data="preview_calc_save:v2:0123456789abcdef0123456789abcdef",
+        ),
+        state_name=None,
+    )
 
 
 def test_preview_unknown_legal_facts_fail_closed_without_creating_case():
