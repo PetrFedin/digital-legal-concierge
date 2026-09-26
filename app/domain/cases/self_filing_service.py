@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +13,10 @@ from app.domain.cases.case_service import CaseService
 from app.domain.cases.self_filing_business_calendar import (
     add_business_days,
     load_business_calendar,
+)
+from app.domain.cases.self_filing_contract import (
+    SELF_FILING_PRICE_RUB,
+    SELF_FILING_SLA_BUSINESS_DAYS,
 )
 from app.domain.cases.service_modes import M1ServiceMode
 from app.domain.notifications.notification_engine import NotificationEngine
@@ -74,6 +79,36 @@ class SelfFilingService:
         self.documents = DocumentService(db)
         self.payments = PaymentService(db)
         self.notifications = NotificationEngine(db)
+
+    async def _require_commercial_contract(
+        self,
+        *,
+        payment: Payment | None = None,
+    ) -> int:
+        settings_service = SettingsService(self.db)
+        configured_price = Decimal(
+            str(await settings_service.get_value("payments.m1_self_filing_package"))
+        )
+        configured_days = int(
+            await settings_service.get_value("self_filing.sla_business_days")
+        )
+        if configured_price != SELF_FILING_PRICE_RUB:
+            raise SelfFilingError(
+                "Стоимость услуги в настройках не соответствует согласованным "
+                f"{SELF_FILING_PRICE_RUB:.0f} ₽. Открытие или применение оплаты заблокировано."
+            )
+        if configured_days != SELF_FILING_SLA_BUSINESS_DAYS:
+            raise SelfFilingError(
+                "SLA услуги в настройках не соответствует согласованным "
+                f"{SELF_FILING_SLA_BUSINESS_DAYS} рабочим дням. "
+                "Открытие или применение оплаты заблокировано."
+            )
+        if payment is not None and Decimal(str(payment.amount)) != SELF_FILING_PRICE_RUB:
+            raise SelfFilingError(
+                "Сумма полученного платежа не соответствует коммерческому контракту "
+                f"{SELF_FILING_PRICE_RUB:.0f} ₽; требуется финансовая сверка."
+            )
+        return configured_days
 
     @staticmethod
     def _case_status(case: Case) -> CaseStatus:
@@ -428,10 +463,7 @@ class SelfFilingService:
 
         require_email_delivery_configured()
         now = datetime.now(timezone.utc)
-        setting_service = SettingsService(self.db)
-        business_days = int(
-            await setting_service.get_value("self_filing.sla_business_days")
-        )
+        business_days = await self._require_commercial_contract()
         calendar = await load_business_calendar(self.db)
         # This is a preflight for a payment confirmed now. The authoritative
         # SLA is recomputed from the actual paid/completeness timestamps when
@@ -534,9 +566,8 @@ class SelfFilingService:
             payment_at = payment_at.replace(tzinfo=timezone.utc)
         started_at = max(payment_at, completeness_at)
 
-        setting_service = SettingsService(self.db)
-        business_days = int(
-            await setting_service.get_value("self_filing.sla_business_days")
+        business_days = await self._require_commercial_contract(
+            payment=payment,
         )
         calendar = await load_business_calendar(self.db)
         due_at = add_business_days(
