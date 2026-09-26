@@ -16,7 +16,7 @@ from aiogram.types import BotCommand, BotCommandScopeDefault, CallbackQuery, Mes
 
 from app.bot.calculator_draft import CalculatorDraftNavigationMiddleware
 from app.bot.calculator_durable import DurableCalculatorIntakeMiddleware
-from app.bot.client_activity import record_client_activity
+from app.bot.client_activity import context_free_activity, record_client_activity
 from app.bot.client_case_navigation import install_case_bound_navigation
 from app.bot.client_message_provenance import ClientMessageProvenanceMiddleware
 from app.bot.client_wording_patch import install_client_wording
@@ -38,6 +38,7 @@ from app.bot.lease import TelegramPollingLease
 from app.bot.screens import (
     calculator,
     calculator_active_case_recovery,
+    calculator_preview,
     calculator_unknown_data_guard,
     client_archive,
     client_archive_payment_guard,
@@ -97,10 +98,18 @@ class DbMiddleware:
                 return await handler(event, data)
         finally:
             # Activity is deliberately written in its own short transaction after
-            # the handler DB session closes. It therefore cannot accidentally
-            # commit unfinished legal/payment state and survives read-only
-            # handler rollbacks used by presentation screens.
-            await record_client_activity(event)
+            # the handler DB session closes. Neutral Home/preview browsing may
+            # update the existing User activity timestamp for observability, but
+            # must not make a saved Case look freshly acted on.
+            state = data.get("state")
+            state_name = await state.get_state() if state is not None else None
+            await record_client_activity(
+                event,
+                update_case_activity=not context_free_activity(
+                    event,
+                    state_name=state_name,
+                ),
+            )
 
 
 class FloodControlMiddleware:
@@ -222,6 +231,7 @@ def build_dispatcher() -> Dispatcher:
         client_archive.router,
         client_archive_payment_guard.router,
         reply_menu_direct.router,
+        calculator_preview.router,
         common.router,
         post_calculation.router,
         calculator_active_case_recovery.router,

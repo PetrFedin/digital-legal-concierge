@@ -2,6 +2,7 @@ from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from sqlalchemy import select
 
 from app.bot.client_case_view import (
     format_updated_at,
@@ -19,8 +20,10 @@ from app.bot.consultation_result import (
 from app.bot.context import BotContextService
 from app.bot.keyboards import main_menu, one, reply_main_menu
 from app.bot.payment_presentation import offline_m1_payment_presentation
+from app.domain.cases.case_service import CaseService
 from app.domain.cases.client_case_scope import latest_completed_case_for_user
 from app.domain.payments.mode import payments_disabled
+from app.models.user import User
 
 router = Router()
 
@@ -160,27 +163,68 @@ async def _guard_callback_draft(callback: CallbackQuery, state: FSMContext) -> b
     return True
 
 
+async def _existing_user_for_event(db, event) -> User | None:
+    """Read an existing Telegram identity without creating a customer record."""
+
+    telegram_id = int(getattr(getattr(event, "from_user", None), "id", 0) or 0)
+    if telegram_id <= 0:
+        return None
+    return (
+        await db.execute(select(User).where(User.telegram_id == telegram_id))
+    ).scalar_one_or_none()
+
+
+async def _fresh_start_state(db, event) -> tuple[int, bool]:
+    """Return saved-matter availability without selecting or creating anything."""
+
+    user = await _existing_user_for_event(db, event)
+    if user is None:
+        return 0, False
+    cases = CaseService(db)
+    active = await cases.get_active_cases_for_user(int(user.id))
+    completed = await latest_completed_case_for_user(db, user_id=int(user.id))
+    return len(active), completed is not None
+
+
+def _fresh_start_text(*, active_count: int, completed_case: bool) -> str:
+    saved_note = ""
+    if active_count:
+        saved_note = (
+            f"\n\nУ вас есть сохранённые обращения: {active_count}. "
+            "Я не открываю их автоматически — продолжение только по вашей кнопке."
+        )
+    elif completed_case:
+        saved_note = (
+            "\n\nУ вас есть история завершённого обращения. "
+            "Она не открывается автоматически и доступна только по вашей кнопке."
+        )
+    return (
+        "🏠 ГЛАВНАЯ\n\n"
+        "Можно просто посмотреть возможности бота или сделать быстрый предварительный "
+        "расчёт без создания дела и без записи ответов в «Моё дело».\n\n"
+        "Постоянное обращение появится только после явного сохранения расчёта "
+        "или запуска юридической услуги."
+        + saved_note
+    )
+
+
+def _fresh_start_markup(*, active_count: int, completed_case: bool):
+    items: list[tuple[str, str]] = [
+        ("🧮 Быстрый расчёт без сохранения", "preview_calc_start"),
+    ]
+    if active_count > 1:
+        items.append(("▶️ Продолжить общение", "my_cases_open"))
+    elif active_count == 1 or completed_case:
+        items.append(("▶️ Продолжить общение", "my_case_open"))
+    items.append(("💬 Связаться с юристом", "contact_lawyer"))
+    return one(*items)
+
+
 async def _client_case_menu_state(db, message: Message) -> tuple[bool, bool]:
-    """Return (active_case, completed_archive) for the persistent reply menu.
+    """Return menu visibility without creating/selecting a client Case."""
 
-    Several active matters still count as an active client context even if none
-    is currently selected. The menu must not visually downgrade such a client to
-    a completed archive merely because ambiguity is being handled fail-closed.
-    """
-
-    ctx = BotContextService(db)
-    user = await ctx.get_user_from_message(message)
-    case = await ctx.case_service.get_active_case_for_user(user.id)
-    if case is not None:
-        await db.commit()
-        return True, False
-    active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
-    if active_cases:
-        await db.commit()
-        return True, False
-    completed = await latest_completed_case_for_user(db, user_id=user.id)
-    await db.commit()
-    return False, completed is not None
+    active_count, completed = await _fresh_start_state(db, message)
+    return active_count > 0, completed
 
 
 async def _home_text(
@@ -369,60 +413,51 @@ async def _home_text(
 async def start(message: Message, db, state: FSMContext):
     if await _guard_message_draft(message, state):
         return
+    # PM-028: Home is intentionally presentation-only. It neither creates a
+    # User/Case nor selects an old matter. Unsaved preview state is disposable.
     await state.clear()
-    text, case_exists, completed_case, primary_action = await _home_text(db, message)
-    await db.commit()
+    active_count, completed_case = await _fresh_start_state(db, message)
+    await db.rollback()
     await message.answer(
-        text,
+        _fresh_start_text(
+            active_count=active_count,
+            completed_case=completed_case,
+        ),
         reply_markup=reply_main_menu(
-            case_exists,
+            active_count > 0,
             completed_case=completed_case,
         ),
     )
     await message.answer(
         "Выберите действие:",
-        reply_markup=main_menu(
-            case_exists,
+        reply_markup=_fresh_start_markup(
+            active_count=active_count,
             completed_case=completed_case,
-            primary_action=primary_action,
         ),
     )
 
 
 @router.message(lambda m: m.text == "🧮 Рассчитать неустойку")
 async def menu_calc(message: Message, state: FSMContext, db):
-    """Compatibility handler: calculator remains available with active Cases.
-
-    reply_menu_direct owns the canonical persistent-menu path and is registered
-    before this router. Keeping this historical handler behavior-identical makes
-    correctness independent from router order while old deployments/messages are
-    still being retired.
-    """
+    """Compatibility entry with the same non-persistent preview contract."""
 
     if await _guard_message_draft(message, state):
         return
     await state.clear()
-    ctx = BotContextService(db)
-    user = await ctx.get_user_from_message(message)
-    active_cases = await ctx.case_service.get_active_cases_for_user(int(user.id))
-    await db.commit()
-    if active_cases:
-        await message.answer(
-            "🧮 НОВЫЙ РАСЧЁТ\n\n"
-            "Расчёт доступен независимо от уже открытых дел. Если вы продолжите, будет создано отдельное обращение; существующие M1/M2 дела, документы и статусы не изменятся.\n\n"
-            f"Сейчас активных обращений: {len(active_cases)}.",
-            reply_markup=one(
-                ("▶️ Начать новый расчёт", "calc_start"),
-                ("📁 Выбрать текущее дело", "my_cases_open"),
-                ("🏠 Главная", "nav_home"),
-            ),
-        )
-        return
+    active_count, _completed_case = await _fresh_start_state(db, message)
+    await db.rollback()
+    note = (
+        f"\n\nСохранённых активных обращений: {active_count}. Они не изменятся."
+        if active_count
+        else ""
+    )
     await message.answer(
-        "🧮 ПРЕДВАРИТЕЛЬНЫЙ РАСЧЁТ\n\n"
-        "Ответьте на несколько вопросов о ДДУ. Расчёт предварительный и не является юридическим заключением.",
+        "🧮 БЫСТРЫЙ РАСЧЁТ БЕЗ СОХРАНЕНИЯ\n\n"
+        "Пока вы не нажмёте «Сохранить расчёт и продолжить», бот не создаёт новое дело "
+        "и не записывает ответы в историю."
+        + note,
         reply_markup=one(
-            ("▶️ Начать расчёт", "calc_start"),
+            ("▶️ Начать быстрый расчёт", "preview_calc_start"),
             ("🏠 Главная", "nav_home"),
         ),
     )
@@ -690,14 +725,17 @@ async def home(callback: CallbackQuery, db, state: FSMContext):
     if await _guard_callback_draft(callback, state):
         return
     await state.clear()
-    text, case_exists, completed_case, primary_action = await _home_text(db, callback)
+    active_count, completed_case = await _fresh_start_state(db, callback)
+    await db.rollback()
     await _safe_callback_edit(
         callback,
-        text,
-        reply_markup=main_menu(
-            case_exists,
+        _fresh_start_text(
+            active_count=active_count,
             completed_case=completed_case,
-            primary_action=primary_action,
+        ),
+        reply_markup=_fresh_start_markup(
+            active_count=active_count,
+            completed_case=completed_case,
         ),
     )
 
