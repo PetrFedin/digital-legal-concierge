@@ -87,6 +87,29 @@ def upgrade() -> None:
             sa.Column("client_address", sa.Text(), nullable=True),
             sa.Column("delivery_email", sa.String(length=320), nullable=True),
             sa.Column("email_confirmed_at", sa.DateTime(timezone=True), nullable=True),
+            sa.Column("email_verification_salt", sa.String(length=32), nullable=True),
+            sa.Column("email_verification_hash", sa.String(length=64), nullable=True),
+            sa.Column(
+                "email_verification_expires_at",
+                sa.DateTime(timezone=True),
+                nullable=True,
+            ),
+            sa.Column(
+                "email_verification_attempts",
+                sa.Integer(),
+                nullable=False,
+                server_default="0",
+            ),
+            sa.Column(
+                "email_verification_sent_at",
+                sa.DateTime(timezone=True),
+                nullable=True,
+            ),
+            sa.Column(
+                "email_verification_message_id",
+                sa.String(length=255),
+                nullable=True,
+            ),
             sa.Column(
                 "documents_complete_at",
                 sa.DateTime(timezone=True),
@@ -162,6 +185,10 @@ def upgrade() -> None:
         for name, columns in (
             ("ix_self_filing_packages_case_id", ["case_id"]),
             ("ix_self_filing_packages_status", ["status"]),
+            (
+                "ix_self_filing_packages_email_verification_expires_at",
+                ["email_verification_expires_at"],
+            ),
             (
                 "ix_self_filing_packages_documents_complete_at",
                 ["documents_complete_at"],
