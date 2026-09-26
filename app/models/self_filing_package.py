@@ -40,6 +40,34 @@ class SelfFilingPackage(Base, TimestampMixin):
         nullable=True,
     )
 
+    email_verification_salt: Mapped[str | None] = mapped_column(
+        String(32),
+        nullable=True,
+    )
+    email_verification_hash: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    email_verification_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
+    email_verification_attempts: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    email_verification_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    email_verification_message_id: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
     documents_complete_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
