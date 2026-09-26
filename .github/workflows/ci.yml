@@ -313,6 +313,7 @@ jobs:
             app/models/self_filing_package.py \
             app/api/self_filing_product.py \
             app/bot/screens/self_filing.py \
+            app/bot/screens/documents.py \
             app/bot/screens/post_calculation.py \
             app/bot/screens/payments.py \
             app/bot/client_case_view.py \
