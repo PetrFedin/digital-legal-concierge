@@ -47,7 +47,12 @@ def context_free_activity(event, *, state_name: str | None = None) -> bool:
     callback_data = str(getattr(event, "data", "") or "")
     if callback_data == "nav_home":
         return True
-    if callback_data.startswith("preview_") and callback_data != "preview_calc_save":
+    if (
+        callback_data == "preview_calc_save"
+        or callback_data.startswith("preview_calc_save:v2:")
+    ):
+        return False
+    if callback_data.startswith("preview_"):
         return True
 
     normalized_state = str(state_name or "")
