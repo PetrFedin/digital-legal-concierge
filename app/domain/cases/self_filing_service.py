@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import re
-from datetime import datetime, timezone
+import secrets
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -15,6 +18,9 @@ from app.domain.cases.self_filing_business_calendar import (
     load_business_calendar,
 )
 from app.domain.cases.self_filing_contract import (
+    SELF_FILING_EMAIL_VERIFICATION_MAX_ATTEMPTS,
+    SELF_FILING_EMAIL_VERIFICATION_PBKDF2_ROUNDS,
+    SELF_FILING_EMAIL_VERIFICATION_TTL_MINUTES,
     SELF_FILING_PRICE_RUB,
     SELF_FILING_SLA_BUSINESS_DAYS,
 )
@@ -72,6 +78,32 @@ class SelfFilingError(ValueError):
     pass
 
 
+class SelfFilingEmailVerificationError(SelfFilingError):
+    def __init__(self, message: str, *, persist_state: bool = False):
+        super().__init__(message)
+        self.persist_state = bool(persist_state)
+
+
+def _email_code_hash(*, code: str, salt_hex: str) -> str:
+    try:
+        salt = bytes.fromhex(str(salt_hex))
+    except ValueError as error:
+        raise SelfFilingError("Повреждены данные проверки email") from error
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        str(code).encode("utf-8"),
+        salt,
+        SELF_FILING_EMAIL_VERIFICATION_PBKDF2_ROUNDS,
+    ).hex()
+
+
+def _clear_email_verification_challenge(package: SelfFilingPackage) -> None:
+    package.email_verification_salt = None
+    package.email_verification_hash = None
+    package.email_verification_expires_at = None
+    package.email_verification_attempts = 0
+
+
 class SelfFilingService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -109,6 +141,209 @@ class SelfFilingService:
                 f"{SELF_FILING_PRICE_RUB:.0f} ₽; требуется финансовая сверка."
             )
         return configured_days
+
+    async def _issue_email_verification(
+        self,
+        *,
+        case: Case,
+        package: SelfFilingPackage,
+        actor_type: str,
+        actor_id: int | None,
+    ) -> SelfFilingPackage:
+        if not package.delivery_email:
+            raise SelfFilingError("Email для проверки не задан")
+
+        from app.domain.cases.self_filing_email_sender import (
+            SelfFilingEmailConfigurationError,
+            send_self_filing_email_verification,
+        )
+
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        salt_hex = secrets.token_bytes(16).hex()
+        issued_at = datetime.now(timezone.utc)
+        expires_at = issued_at + timedelta(
+            minutes=SELF_FILING_EMAIL_VERIFICATION_TTL_MINUTES
+        )
+
+        package.email_confirmed_at = None
+        package.email_verification_salt = salt_hex
+        package.email_verification_hash = _email_code_hash(
+            code=code,
+            salt_hex=salt_hex,
+        )
+        package.email_verification_expires_at = expires_at
+        package.email_verification_attempts = 0
+        package.email_verification_sent_at = None
+        package.email_verification_message_id = None
+        package.version = int(package.version or 1) + 1
+
+        try:
+            message_id = await send_self_filing_email_verification(
+                to_email=str(package.delivery_email),
+                code=code,
+                case_number=str(case.case_number),
+                package_id=int(package.id),
+                challenge_version=int(package.version),
+            )
+        except SelfFilingEmailConfigurationError as error:
+            raise SelfFilingError(
+                "Проверка email временно недоступна: канал отправки не настроен. "
+                "Данные не сохранены и оплата не открыта."
+            ) from error
+        except Exception as error:
+            raise SelfFilingError(
+                "Не удалось отправить код подтверждения email. "
+                "Данные не сохранены; повторите попытку позже."
+            ) from error
+
+        package.email_verification_sent_at = issued_at
+        package.email_verification_message_id = message_id
+        email = str(package.delivery_email).lower()
+        await add_case_history_event(
+            self.db,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            case_id=int(case.id),
+            action="SELF_FILING_EMAIL_VERIFICATION_SENT",
+            new_value={
+                "package_id": int(package.id),
+                "email_sha256": hashlib.sha256(email.encode("utf-8")).hexdigest(),
+                "email_domain": email.rsplit("@", 1)[-1] if "@" in email else None,
+                "message_id": message_id,
+                "sent_at": issued_at.isoformat(),
+                "expires_at": expires_at.isoformat(),
+                "max_attempts": SELF_FILING_EMAIL_VERIFICATION_MAX_ATTEMPTS,
+            },
+        )
+        await self.db.flush()
+        return package
+
+    async def resend_delivery_email_verification(
+        self,
+        *,
+        case_id: int,
+        client_id: int,
+    ) -> SelfFilingPackage:
+        case = await self._lock_case(case_id)
+        if int(case.client_id) != int(client_id):
+            raise SelfFilingError("Обращение принадлежит другому клиенту")
+        if self._case_status(case) != CaseStatus.M1_SELF_FILING_PROFILE_PENDING:
+            raise SelfFilingError("Проверка email уже завершена или этап изменился")
+        package = await self.require_package(case_id=case.id, for_update=True)
+        if not package.delivery_email:
+            raise SelfFilingError("Сначала укажите email")
+        return await self._issue_email_verification(
+            case=case,
+            package=package,
+            actor_type="client",
+            actor_id=int(client_id),
+        )
+
+    async def verify_delivery_email(
+        self,
+        *,
+        case_id: int,
+        client_id: int,
+        code: str,
+    ) -> SelfFilingPackage:
+        case = await self._lock_case(case_id)
+        if int(case.client_id) != int(client_id):
+            raise SelfFilingError("Обращение принадлежит другому клиенту")
+
+        package = await self.require_package(case_id=case.id, for_update=True)
+        status = self._case_status(case)
+        if (
+            package.email_confirmed_at is not None
+            and status == CaseStatus.M1_SELF_FILING_DOCUMENTS_PENDING
+        ):
+            return package
+        if status != CaseStatus.M1_SELF_FILING_PROFILE_PENDING:
+            raise SelfFilingError("Проверка email недоступна на текущем этапе")
+
+        clean_code = str(code or "").strip()
+        if len(clean_code) != 6 or not clean_code.isdigit():
+            raise SelfFilingEmailVerificationError(
+                "Введите шестизначный код из письма."
+            )
+        if (
+            not package.email_verification_salt
+            or not package.email_verification_hash
+            or package.email_verification_expires_at is None
+        ):
+            raise SelfFilingEmailVerificationError(
+                "Активного кода нет. Запросите новый код."
+            )
+
+        now = datetime.now(timezone.utc)
+        expires_at = package.email_verification_expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if now > expires_at:
+            _clear_email_verification_challenge(package)
+            package.version = int(package.version or 1) + 1
+            raise SelfFilingEmailVerificationError(
+                "Срок действия кода истёк. Запросите новый код.",
+                persist_state=True,
+            )
+
+        expected = _email_code_hash(
+            code=clean_code,
+            salt_hex=str(package.email_verification_salt),
+        )
+        if not hmac.compare_digest(
+            expected,
+            str(package.email_verification_hash),
+        ):
+            package.email_verification_attempts = (
+                int(package.email_verification_attempts or 0) + 1
+            )
+            remaining = (
+                SELF_FILING_EMAIL_VERIFICATION_MAX_ATTEMPTS
+                - int(package.email_verification_attempts)
+            )
+            if remaining <= 0:
+                _clear_email_verification_challenge(package)
+                package.version = int(package.version or 1) + 1
+                raise SelfFilingEmailVerificationError(
+                    "Лимит попыток исчерпан. Запросите новый код.",
+                    persist_state=True,
+                )
+            raise SelfFilingEmailVerificationError(
+                f"Код не подошёл. Осталось попыток: {remaining}.",
+                persist_state=True,
+            )
+
+        package.email_confirmed_at = now
+        _clear_email_verification_challenge(package)
+        package.status = SELF_FILING_STATUS_DOCUMENTS_PENDING
+        package.version = int(package.version or 1) + 1
+        await self.cases.change_status(
+            case=case,
+            next_status=CaseStatus.M1_SELF_FILING_DOCUMENTS_PENDING,
+            actor_type="client",
+            actor_id=int(client_id),
+            comment=(
+                "Клиент подтвердил владение email одноразовым кодом. "
+                "Конкретный суд по адресу автоматически не выбирается."
+            ),
+        )
+        email = str(package.delivery_email or "").lower()
+        await add_case_history_event(
+            self.db,
+            actor_type="client",
+            actor_id=int(client_id),
+            case_id=int(case.id),
+            action="SELF_FILING_EMAIL_VERIFIED",
+            new_value={
+                "package_id": int(package.id),
+                "email_sha256": hashlib.sha256(email.encode("utf-8")).hexdigest(),
+                "email_domain": email.rsplit("@", 1)[-1] if "@" in email else None,
+                "verified_at": now.isoformat(),
+                "verification_message_id": package.email_verification_message_id,
+            },
+        )
+        await self.db.flush()
+        return package
 
     @staticmethod
     def _case_status(case: Case) -> CaseStatus:
@@ -255,36 +490,39 @@ class SelfFilingService:
             address, title="Адрес клиента", limit=2000
         )
         package.delivery_email = self._normalize_email(email)
-        package.email_confirmed_at = datetime.now(timezone.utc)
-        package.status = SELF_FILING_STATUS_DOCUMENTS_PENDING
+        package.email_confirmed_at = None
+        package.status = SELF_FILING_STATUS_PROFILE_PENDING
         package.version = int(package.version or 1) + 1
+        _clear_email_verification_challenge(package)
 
-        await self.cases.change_status(
-            case=case,
-            next_status=CaseStatus.M1_SELF_FILING_DOCUMENTS_PENDING,
-            actor_type="client",
-            actor_id=int(client_id),
-            comment=(
-                "Клиент подтвердил регион, адрес и email для выдачи пакета. "
-                "Конкретный суд по этим данным автоматически не выбирается."
-            ),
-        )
+        normalized_email = str(package.delivery_email).lower()
         await add_case_history_event(
             self.db,
             actor_type="client",
             actor_id=int(client_id),
             case_id=case.id,
-            action="SELF_FILING_PROFILE_CONFIRMED",
+            action="SELF_FILING_PROFILE_SAVED_PENDING_EMAIL_VERIFICATION",
             new_value={
                 "package_id": int(package.id),
                 "client_region": package.client_region,
-                "delivery_email": package.delivery_email,
-                "email_confirmed_at": package.email_confirmed_at.isoformat(),
+                "email_sha256": hashlib.sha256(
+                    normalized_email.encode("utf-8")
+                ).hexdigest(),
+                "email_domain": (
+                    normalized_email.rsplit("@", 1)[-1]
+                    if "@" in normalized_email
+                    else None
+                ),
                 "court_auto_selected": False,
+                "email_verified": False,
             },
         )
-        await self.db.flush()
-        return package
+        return await self._issue_email_verification(
+            case=case,
+            package=package,
+            actor_type="client",
+            actor_id=int(client_id),
+        )
 
     async def submit_documents(
         self,
@@ -919,6 +1157,7 @@ __all__ = [
     "EMAIL_SENT",
     "JURISDICTION_BASES",
     "SELF_FILING_REQUIRED_TYPES",
+    "SelfFilingEmailVerificationError",
     "SelfFilingError",
     "SelfFilingService",
 ]
