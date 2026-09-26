@@ -203,6 +203,16 @@ def test_my_case_projects_pending_mailbox_verification_as_primary_client_step():
     assert "self_filing_package=self_filing_package" in view
 
 
+def test_documents_are_blocked_until_delivery_mailbox_is_verified():
+    documents = read("app/bot/screens/documents.py")
+
+    assert "CaseStatus.M1_SELF_FILING_PROFILE_PENDING" in documents
+    assert "Сначала подтвердите email одноразовым кодом" in documents
+    assert 'f"self_filing_profile_start:v2:{int(case.id)}"' in documents
+    assert "_self_filing_upload_open(case)" in documents
+    assert "Документы пока не принимаются." in documents
+
+
 def test_staff_surface_exposes_verification_state_but_not_verification_secret():
     surface = read("app/api/self_filing_product.py")
 
