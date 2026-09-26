@@ -19,6 +19,7 @@ from app.domain.cases.self_filing_business_calendar import (
 )
 from app.domain.cases.self_filing_contract import (
     SELF_FILING_EMAIL_VERIFICATION_MAX_ATTEMPTS,
+    SELF_FILING_EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS,
     SELF_FILING_EMAIL_VERIFICATION_PBKDF2_ROUNDS,
     SELF_FILING_EMAIL_VERIFICATION_TTL_MINUTES,
     SELF_FILING_PRICE_RUB,
@@ -232,6 +233,22 @@ class SelfFilingService:
         package = await self.require_package(case_id=case.id, for_update=True)
         if not package.delivery_email:
             raise SelfFilingError("Сначала укажите email")
+        if package.email_verification_sent_at is not None:
+            sent_at = package.email_verification_sent_at
+            if sent_at.tzinfo is None:
+                sent_at = sent_at.replace(tzinfo=timezone.utc)
+            elapsed = (datetime.now(timezone.utc) - sent_at).total_seconds()
+            if elapsed < SELF_FILING_EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS:
+                wait_seconds = max(
+                    1,
+                    int(
+                        SELF_FILING_EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS
+                        - elapsed
+                    ),
+                )
+                raise SelfFilingError(
+                    f"Новый код можно запросить через {wait_seconds} сек."
+                )
         return await self._issue_email_verification(
             case=case,
             package=package,
