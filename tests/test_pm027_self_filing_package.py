@@ -232,6 +232,8 @@ def test_profile_confirmation_reuses_active_challenge_on_double_tap():
     assert 'str(package.client_region or "") == clean_region' in profile
     assert 'str(package.delivery_email or "").lower() == clean_email' in profile
     assert "bool(package.email_verification_hash)" in profile
+    assert "package.email_verification_sent_at is not None" in profile
+    assert "bool(package.email_verification_message_id)" in profile
     assert "datetime.now(timezone.utc) <= active_expires" in profile
     assert "return package" in profile
 
