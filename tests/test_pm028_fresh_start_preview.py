@@ -55,12 +55,37 @@ def test_preview_save_is_explicit_idempotent_materialization_bound_to_exact_rule
 
     assert 'purpose="calculator_preview_save"' in preview
     assert "CaseCreationRequest.client_id" in preview
-    assert 'f"telegram_callback:{callback_id}"' in preview
+    assert 'return f"calculator_preview_save:{clean}"' in preview
+    assert 'f"preview_calc_save:v2:{preview_id}"' in preview
+    assert "operation_key=_preview_operation_key(preview_id)" in preview
+    assert 'f"telegram_callback:{callback_id}"' not in preview
     assert "expected_rule_revision_key=preview_key" in preview
     assert "expected_rule_snapshot_sha256=preview_sha" in preview
     assert "Версия юридических правил изменилась после предварительного просмотра" in calculator
     assert "Содержимое юридических правил изменилось после предварительного просмотра" in calculator
     assert "result_for_case" in calculator
+
+
+def test_distinct_callback_ids_from_one_preview_share_one_materialization_key():
+    preview = read("app/bot/screens/calculator_preview.py")
+
+    save = preview.split("async def preview_save", 1)[1]
+    assert "callback.id" not in save
+    assert "callback_preview_id = _preview_id_from_callback(callback.data)" in save
+    assert "state_preview_id = _valid_preview_id" in save
+    assert "preview_id = callback_preview_id or state_preview_id" in save
+    assert "existing_case = await _existing_materialized_case" in save
+    assert "operation_key=_preview_operation_key(preview_id)" in save
+    assert "state_preview_id != preview_id" in save
+
+
+def test_preview_commit_precedes_fsm_clear_so_failed_commit_keeps_unsaved_draft():
+    preview = read("app/bot/screens/calculator_preview.py")
+    present = preview.split("async def _present_saved", 1)[1].split(
+        "@router.callback_query", 1
+    )[0]
+
+    assert present.index("await db.commit()") < present.index("await state.clear()")
 
 
 def test_canonical_new_calculation_buttons_use_preview_not_case_creation():
