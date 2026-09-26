@@ -229,8 +229,8 @@ def test_profile_confirmation_reuses_active_challenge_on_double_tap():
     )[0]
 
     assert "package row lock serializes them" in profile
-    assert "str(package.client_region or "") == clean_region" in profile
-    assert "str(package.delivery_email or "").lower() == clean_email" in profile
+    assert 'str(package.client_region or "") == clean_region' in profile
+    assert 'str(package.delivery_email or "").lower() == clean_email' in profile
     assert "bool(package.email_verification_hash)" in profile
     assert "datetime.now(timezone.utc) <= active_expires" in profile
     assert "return package" in profile
