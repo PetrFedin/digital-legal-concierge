@@ -253,6 +253,25 @@ async def self_filing_context(
                 if package.email_confirmed_at
                 else None
             ),
+            "email_verified": package.email_confirmed_at is not None,
+            "email_verification_pending": bool(
+                package.email_confirmed_at is None
+                and package.email_verification_hash
+                and package.email_verification_expires_at
+            ),
+            "email_verification_sent_at": (
+                package.email_verification_sent_at.isoformat()
+                if package.email_verification_sent_at
+                else None
+            ),
+            "email_verification_expires_at": (
+                package.email_verification_expires_at.isoformat()
+                if package.email_verification_expires_at
+                else None
+            ),
+            "email_verification_attempts": int(
+                package.email_verification_attempts or 0
+            ),
             "documents_complete_at": (
                 package.documents_complete_at.isoformat()
                 if package.documents_complete_at
@@ -704,7 +723,10 @@ function render(){
  const roleNote=a.can_mutate?'Вы отвечаете за это обращение. Все решения ниже привязаны к текущей версии карточки.':'Режим просмотра: юридические решения доступны только ответственному юристу.';
  document.getElementById('now').innerHTML='<b>Главный следующий шаг:</b> '+esc(c.next_action||'Уточнить этап')+'<br>'+esc(roleNote);
  document.getElementById('facts').innerHTML=[
-  ['Регион',p.region],['Email',p.delivery_email],['Полный комплект',dt(p.documents_complete_at)],['Суд',p.court_name],
+  ['Регион',p.region],
+  ['Email',p.delivery_email],
+  ['Email подтверждён',p.email_verified?('Да · '+dt(p.email_confirmed_at)):(p.email_verification_pending?'Ожидается код до '+dt(p.email_verification_expires_at):'Нет')],
+  ['Полный комплект',dt(p.documents_complete_at)],['Суд',p.court_name],
   ['Оплата подтверждена',dt(p.payment_confirmed_at)],['SLA до',dt(p.sla_due_at)],['Готово',dt(p.ready_at)],['Доставлено',dt(p.delivered_at)]
  ].map(([k,v])=>'<div class="cell"><b>'+esc(k)+'</b><span>'+esc(v||'—')+'</span></div>').join('');
  document.getElementById('docs').innerHTML=data.documents.length?data.documents.map(d=>'<div class="doc"><b>'+esc(d.title)+' · v'+d.version+'</b><div class="muted">'+esc(d.status)+' · SHA '+esc(d.sha256_prefix||'—')+(d.lawyer_comment?'<br>'+esc(d.lawyer_comment):'')+'</div></div>').join(''):'<div class="muted">Документов нет.</div>';
@@ -715,7 +737,7 @@ function render(){
  if(p.court_address)document.getElementById('courtAddress').value=p.court_address;
  if(p.jurisdiction_basis)basis.value=p.jurisdiction_basis;
  if(p.jurisdiction_note)document.getElementById('note').value=p.jurisdiction_note;
- document.getElementById('delivery').innerHTML='Статус: <b>'+esc(p.email_delivery_status)+'</b><br>Попыток: '+p.email_delivery_attempts+'<br>Message-ID: '+esc(p.email_message_id||'—')+'<br>Последняя ошибка: '+esc(p.email_last_error||'—')+'<br>Email provider: '+(data.capabilities.email_delivery_configured?'готов':'НЕ НАСТРОЕН')+(data.capabilities.email_delivery_configuration_error?'<br><span class="bad">'+esc(data.capabilities.email_delivery_configuration_error)+'</span>':'');
+ document.getElementById('delivery').innerHTML='Адрес подтверждён: <b>'+(p.email_verified?'да':'нет')+'</b>'+(p.email_verification_pending?'<br>Код действует до: '+esc(dt(p.email_verification_expires_at))+'<br>Ошибочных попыток: '+p.email_verification_attempts:'')+'<br><br>Доставка пакета: <b>'+esc(p.email_delivery_status)+'</b><br>Попыток доставки: '+p.email_delivery_attempts+'<br>Message-ID: '+esc(p.email_message_id||'—')+'<br>Последняя ошибка: '+esc(p.email_last_error||'—')+'<br>Email provider: '+(data.capabilities.email_delivery_configured?'готов':'НЕ НАСТРОЕН')+(data.capabilities.email_delivery_configuration_error?'<br><span class="bad">'+esc(data.capabilities.email_delivery_configuration_error)+'</span>':'');
  const reviewPayment=[...data.payments].reverse().find(x=>x.code==='M1_SELF_FILING_PACKAGE'&&['PAID_REVIEW','REFUND_PENDING','REFUND_DECLINED'].includes(String(x.status)));
  const reviewCard=document.getElementById('paymentReviewCard');
  if(reviewPayment){
