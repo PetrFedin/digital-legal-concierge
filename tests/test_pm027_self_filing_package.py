@@ -28,6 +28,10 @@ from app.domain.cases.self_filing_business_calendar import (
     add_business_days,
 )
 from app.domain.cases.self_filing_contract import (
+    SELF_FILING_EMAIL_VERIFICATION_MAX_ATTEMPTS,
+    SELF_FILING_EMAIL_VERIFICATION_PBKDF2_ROUNDS,
+    SELF_FILING_EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS,
+    SELF_FILING_EMAIL_VERIFICATION_TTL_MINUTES,
     SELF_FILING_PRICE_RUB,
     SELF_FILING_SLA_BUSINESS_DAYS,
 )
@@ -38,6 +42,7 @@ from app.domain.cases.self_filing_email_sender import (
 from app.domain.cases.self_filing_service import (
     JURISDICTION_BASES,
     SELF_FILING_REQUIRED_TYPES,
+    _email_code_hash,
 )
 from app.domain.cases.service_modes import M1ServiceMode
 from app.domain.payments.payment_types import PaymentCode
@@ -103,6 +108,99 @@ def test_commercial_contract_is_15k_and_two_business_days():
     )[0]
     assert "await self._require_commercial_contract()" in approve
     assert "payment=payment" in paid
+
+
+def test_mailbox_verification_contract_is_fail_closed_and_never_stores_plaintext_code():
+    assert SELF_FILING_EMAIL_VERIFICATION_TTL_MINUTES == 15
+    assert SELF_FILING_EMAIL_VERIFICATION_MAX_ATTEMPTS == 5
+    assert SELF_FILING_EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS == 60
+    assert SELF_FILING_EMAIL_VERIFICATION_PBKDF2_ROUNDS == 120_000
+
+    first = _email_code_hash(
+        code="123456",
+        salt_hex="00112233445566778899aabbccddeeff",
+    )
+    second = _email_code_hash(
+        code="123456",
+        salt_hex="ffeeddccbbaa99887766554433221100",
+    )
+    assert len(first) == 64
+    assert first != second
+    assert first != "123456"
+
+    model = read("app/models/self_filing_package.py")
+    migration = read("migrations/versions/20260925_0026_self_filing_package.py")
+    service = read("app/domain/cases/self_filing_service.py")
+    sender = read("app/domain/cases/self_filing_email_sender.py")
+
+    for field in (
+        "email_verification_salt",
+        "email_verification_hash",
+        "email_verification_expires_at",
+        "email_verification_attempts",
+        "email_verification_sent_at",
+        "email_verification_message_id",
+    ):
+        assert field in model
+        assert field in migration
+
+    assert "email_verification_code" not in model
+    assert "email_verification_code" not in migration
+    assert "hashlib.pbkdf2_hmac" in service
+    assert "hmac.compare_digest" in service
+    assert "secrets.randbelow" in service
+    assert "SELF_FILING_EMAIL_VERIFICATION_MAX_ATTEMPTS" in service
+    assert "SELF_FILING_EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS" in service
+    assert "send_self_filing_email_verification" in sender
+    assert "Код подтверждения email" in sender
+
+
+def test_profile_requires_mailbox_code_before_documents_or_payment():
+    service = read("app/domain/cases/self_filing_service.py")
+    bot = read("app/bot/screens/self_filing.py")
+    states = read("app/bot/states.py")
+
+    save_profile = service.split("async def save_confirmed_profile", 1)[1].split(
+        "async def submit_documents", 1
+    )[0]
+    verify = service.split("async def verify_delivery_email", 1)[1].split(
+        "@staticmethod", 1
+    )[0]
+    approve = service.split("async def approve_for_payment", 1)[1].split(
+        "async def start_preparation_after_payment", 1
+    )[0]
+
+    assert "package.email_confirmed_at = None" in save_profile
+    assert "SELF_FILING_PROFILE_SAVED_PENDING_EMAIL_VERIFICATION" in save_profile
+    assert "return await self._issue_email_verification" in save_profile
+    assert "M1_SELF_FILING_DOCUMENTS_PENDING" not in save_profile
+
+    assert "package.email_confirmed_at = now" in verify
+    assert "CaseStatus.M1_SELF_FILING_DOCUMENTS_PENDING" in verify
+    assert "SELF_FILING_EMAIL_VERIFIED" in verify
+    assert "email_confirmed_at" in approve
+
+    assert "waiting_email_code = State()" in states
+    assert "SelfFilingEmailVerificationError" in bot
+    assert "self_filing_email_resend:v2:" in bot
+    assert "self_filing_profile_restart:v2:" in bot
+    assert "if error.persist_state:" in bot
+    assert "await db.commit()" in bot
+    assert "готовый пакет" in bot.lower()
+    assert "только на подтверждённый адрес" in bot.lower()
+
+
+def test_staff_surface_exposes_verification_state_but_not_verification_secret():
+    surface = read("app/api/self_filing_product.py")
+
+    assert '"email_verified": package.email_confirmed_at is not None' in surface
+    assert '"email_verification_pending": bool(' in surface
+    assert '"email_verification_expires_at": (' in surface
+    assert '"email_verification_attempts": int(' in surface
+    assert "Email подтверждён" in surface
+    assert "Адрес подтверждён" in surface
+    assert '"email_verification_hash"' not in surface
+    assert '"email_verification_salt"' not in surface
 
 
 def test_client_minimum_documents_and_jurisdiction_are_explicit():
