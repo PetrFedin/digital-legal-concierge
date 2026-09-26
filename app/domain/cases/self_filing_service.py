@@ -523,13 +523,36 @@ class SelfFilingService:
             raise SelfFilingError("Контактные данные уже приняты или этап изменился")
 
         package = await self.require_package(case_id=case.id, for_update=True)
-        package.client_region = self._clean_required(
+        clean_region = self._clean_required(
             region, title="Регион", limit=255
         )
-        package.client_address = self._clean_required(
+        clean_address = self._clean_required(
             address, title="Адрес клиента", limit=2000
         )
-        package.delivery_email = self._normalize_email(email)
+        clean_email = self._normalize_email(email)
+
+        # A double tap of the exact confirmation screen may arrive as two
+        # distinct Telegram callbacks. The package row lock serializes them;
+        # if the first request already created a still-active challenge for the
+        # same facts, the second request is a pure idempotent read and must not
+        # invalidate the first code by sending another one.
+        active_expires = package.email_verification_expires_at
+        if active_expires is not None and active_expires.tzinfo is None:
+            active_expires = active_expires.replace(tzinfo=timezone.utc)
+        if (
+            str(package.client_region or "") == clean_region
+            and str(package.client_address or "") == clean_address
+            and str(package.delivery_email or "").lower() == clean_email
+            and package.email_confirmed_at is None
+            and bool(package.email_verification_hash)
+            and active_expires is not None
+            and datetime.now(timezone.utc) <= active_expires
+        ):
+            return package
+
+        package.client_region = clean_region
+        package.client_address = clean_address
+        package.delivery_email = clean_email
         package.email_confirmed_at = None
         package.status = SELF_FILING_STATUS_PROFILE_PENDING
         package.version = int(package.version or 1) + 1
