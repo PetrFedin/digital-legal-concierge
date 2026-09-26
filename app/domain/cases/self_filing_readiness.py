@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from app.config import settings
 from app.domain.cases.self_filing_business_calendar import (
     BusinessCalendarError,
     add_business_days,
@@ -86,8 +87,13 @@ async def self_filing_readiness(
         and price_matches_contract
         and sla_matches_contract
     )
+    new_sales_enabled = bool(settings.self_filing_new_sales_enabled)
 
     blockers: list[str] = []
+    if not new_sales_enabled:
+        blockers.append(
+            "Новые продажи пакета самостоятельной подачи выключены до controlled activation"
+        )
     if not price_matches_contract:
         blockers.append(
             "Стоимость услуги отличается от согласованных 15 000 ₽"
@@ -119,6 +125,7 @@ async def self_filing_readiness(
         "calendar_coverage_through": coverage_through,
         "sample_sla_due_at": sample_due_at,
         "configuration_ready_for_controlled_acceptance": configuration_ready,
+        "new_sales_enabled": new_sales_enabled,
         "external_email_delivery_verified": False,
         "production_ready": False,
         "remaining_external_proof": (
