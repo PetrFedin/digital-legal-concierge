@@ -98,11 +98,16 @@ def _email_code_hash(*, code: str, salt_hex: str) -> str:
     ).hex()
 
 
-def _clear_email_verification_challenge(package: SelfFilingPackage) -> None:
+def _clear_email_verification_challenge(
+    package: SelfFilingPackage,
+    *,
+    reset_attempts: bool = True,
+) -> None:
     package.email_verification_salt = None
     package.email_verification_hash = None
     package.email_verification_expires_at = None
-    package.email_verification_attempts = 0
+    if reset_attempts:
+        package.email_verification_attempts = 0
 
 
 class SelfFilingService:
@@ -342,7 +347,10 @@ class SelfFilingService:
                 },
             )
             if remaining <= 0:
-                _clear_email_verification_challenge(package)
+                _clear_email_verification_challenge(
+                    package,
+                    reset_attempts=False,
+                )
                 package.version = int(package.version or 1) + 1
                 raise SelfFilingEmailVerificationError(
                     "Лимит попыток исчерпан. Запросите новый код.",
