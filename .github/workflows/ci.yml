@@ -304,11 +304,13 @@ jobs:
         run: |
           python -m compileall -q \
             app/domain/cases/self_filing_business_calendar.py \
+            app/domain/cases/self_filing_contract.py \
             app/domain/cases/self_filing_documents.py \
             app/domain/cases/self_filing_email_sender.py \
             app/domain/cases/self_filing_readiness.py \
             app/domain/cases/self_filing_service.py \
             app/domain/cases/service_modes.py \
+            app/models/self_filing_package.py \
             app/api/self_filing_product.py \
             app/bot/screens/self_filing.py \
             app/bot/screens/post_calculation.py \
