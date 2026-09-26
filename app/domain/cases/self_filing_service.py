@@ -553,6 +553,8 @@ class SelfFilingService:
             and str(package.delivery_email or "").lower() == clean_email
             and package.email_confirmed_at is None
             and bool(package.email_verification_hash)
+            and package.email_verification_sent_at is not None
+            and bool(package.email_verification_message_id)
             and active_expires is not None
             and datetime.now(timezone.utc) <= active_expires
         ):
