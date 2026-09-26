@@ -34,6 +34,7 @@ class SelfFilingIntakeStates(StatesGroup):
     waiting_address = State()
     waiting_email = State()
     reviewing_profile = State()
+    waiting_email_code = State()
 
 
 class DocumentUploadStates(StatesGroup):
