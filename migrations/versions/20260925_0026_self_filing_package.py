@@ -124,6 +124,7 @@ def upgrade() -> None:
             sa.Column("court_name", sa.String(length=500), nullable=True),
             sa.Column("court_address", sa.Text(), nullable=True),
             sa.Column("jurisdiction_basis", sa.String(length=100), nullable=True),
+            sa.Column("jurisdiction_note", sa.Text(), nullable=True),
             sa.Column(
                 "jurisdiction_confirmed_at",
                 sa.DateTime(timezone=True),
