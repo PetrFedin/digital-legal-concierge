@@ -362,14 +362,25 @@ class PaymentService:
             return payment
         if not payment.payment_url:
             provider = get_payment_provider()
+            case = await self.db.get(Case, int(payment.case_id))
+            case_reference = (
+                str(case.case_number)
+                if case is not None
+                else str(payment.case_id)
+            )
+            payment_purpose = (
+                f"{payment.title}. Обращение {case_reference}"
+            )
             result = await provider.create_payment(
                 payment_id=payment.id,
                 amount=payment.amount,
                 currency=payment.currency,
-                title=payment.title,
+                title=payment_purpose,
                 metadata={
                     "case_id": payment.case_id,
+                    "case_number": case_reference,
                     "payment_code": payment.payment_code,
+                    "payment_purpose": payment_purpose,
                     "reservation_key": payment.reservation_key or "",
                 },
             )
