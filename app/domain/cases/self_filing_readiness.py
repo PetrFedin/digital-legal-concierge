@@ -11,6 +11,10 @@ from app.domain.cases.self_filing_contract import (
 from app.domain.cases.self_filing_email_sender import (
     email_delivery_configuration_error,
 )
+from app.domain.payments.bank_requisites import (
+    bank_requisites_ready,
+    bank_requisites_snapshot,
+)
 from app.system.settings_service import SettingsService
 
 
@@ -61,16 +65,8 @@ async def self_filing_readiness(
     delivery_days_match_contract = (
         configured_days == SELF_FILING_CONTRACT_DELIVERY_CALENDAR_DAYS
     )
-    payment_mode = str(settings.payment_provider or "").strip().lower()
-    online_payment_configured = bool(
-        payment_mode == "yookassa"
-        and str(settings.yookassa_shop_id or "").strip()
-        and str(settings.yookassa_secret_key or "").strip()
-    )
-    test_payment_configured = bool(
-        settings.app_env in {"local", "test"} and payment_mode == "fake"
-    )
-    customer_payment_ready = online_payment_configured or test_payment_configured
+    payment_mode = "bank_transfer"
+    customer_payment_ready = bank_requisites_ready()
     configuration_ready = bool(
         email_configuration_ready
         and price_matches_contract
@@ -94,9 +90,8 @@ async def self_filing_readiness(
         )
     if not customer_payment_ready:
         blockers.append(
-            "Клиентская оплата не готова: для production нужен настроенный YooKassa "
-            "redirect (в local/test допустим fake). Offline-режим не даёт клиенту "
-            "кнопку перехода в банк/платёжный сервис."
+            "Клиентская оплата не готова: банковские реквизиты коллегии адвокатов "
+            "или обязательное назначение платежа заполнены неполно."
         )
     if not email_configuration_ready:
         blockers.append(
@@ -114,6 +109,7 @@ async def self_filing_readiness(
         "delivery_days_match_contract": delivery_days_match_contract,
         "payment_mode": payment_mode,
         "customer_payment_ready": customer_payment_ready,
+        "payment_requisites": bank_requisites_snapshot(),
         "email_configuration_ready": email_configuration_ready,
         "email_configuration_error": email_error,
         "configuration_ready_for_controlled_acceptance": configuration_ready,
@@ -123,8 +119,8 @@ async def self_filing_readiness(
         "remaining_external_proof": (
             "До controlled activation нужны три независимых внешних доказательства: "
             "(1) реальная SMTP-доставка четырёх вложений с Message-ID/временем/получением; "
-            "(2) YooKassa test-shop checkout с рабочей внешней ссылкой, точной суммой "
-            "и Case-bound назначением платежа; (3) реальный Telegram-проход минимум "
+            "(2) реальный банковский платёж/сверка по реквизитам коллегии адвокатов "
+            "с обязательной пометкой «для адвоката Гамза Д.Г.»; (3) реальный Telegram-проход минимум "
             "трёх разных клиентских аккаунтов/чатов, чтобы подтвердить отсутствие "
             "скрытого single-user барьера."
         ),
