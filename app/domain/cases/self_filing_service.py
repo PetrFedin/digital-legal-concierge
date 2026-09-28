@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import re
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -211,14 +211,20 @@ class SelfFilingService:
                 "Нельзя зафиксировать расчёт суммы иска: исходный расчёт неполный"
             )
 
-        if bool(source.object_transferred):
-            if source.actual_transfer_date is None:
+        if package.transfer_act_signed is None or package.transfer_act_confirmed_at is None:
+            raise SelfFilingError(
+                "Юрист ещё не подтвердил, подписан ли акт передачи квартиры"
+            )
+        if bool(package.transfer_act_signed):
+            if package.transfer_act_date is None:
                 raise SelfFilingError(
-                    "Указано, что акт передачи подписан, но дата акта отсутствует"
+                    "Акт передачи отмечен как подписанный, но дата акта отсутствует"
                 )
-            cutoff = source.actual_transfer_date
+            cutoff = package.transfer_act_date
             basis = "TRANSFER_ACT_DATE"
             update_in_court = False
+            object_transferred = True
+            actual_transfer_date = package.transfer_act_date
         else:
             local_paid_at = payment_at.astimezone(
                 ZoneInfo(str(settings.business_timezone))
@@ -226,6 +232,8 @@ class SelfFilingService:
             cutoff = local_paid_at.date()
             basis = "SERVICE_PAYMENT_DATE"
             update_in_court = True
+            object_transferred = False
+            actual_transfer_date = None
 
         revision = await CalculationRuleRevisionService(self.db).resolve(
             calculation_date=cutoff
@@ -236,8 +244,8 @@ class SelfFilingService:
                     contract_price=Decimal(source.contract_price),
                     planned_transfer_date=source.planned_transfer_date,
                     calculation_date=cutoff,
-                    object_transferred=bool(source.object_transferred),
-                    actual_transfer_date=source.actual_transfer_date,
+                    object_transferred=object_transferred,
+                    actual_transfer_date=actual_transfer_date,
                     client_type=str(source.client_type or "consumer"),
                     unique_object=bool(source.unique_object),
                     manual_review_flags=(),
@@ -286,7 +294,7 @@ class SelfFilingService:
             rule_snapshot=result.rule_snapshot,
             applied_segments=result.applied_segments,
             excluded_segments=result.excluded_segments,
-            is_preliminary=False,
+            is_preliminary=True,
         )
         self.db.add(calculation)
         await self.db.flush()
@@ -902,6 +910,8 @@ class SelfFilingService:
         jurisdiction_basis: str,
         jurisdiction_note: str,
         completeness_confirmed: bool,
+        transfer_act_signed: bool,
+        transfer_act_date: date | None,
     ):
         case = await self._lock_case(case_id)
         if self._case_status(case) not in {
@@ -935,6 +945,23 @@ class SelfFilingService:
             jurisdiction_note, title="Обоснование подсудности", limit=4000
         )
 
+        if transfer_act_signed is True:
+            if transfer_act_date is None:
+                raise SelfFilingError(
+                    "Если акт передачи подписан, укажите дату его подписания"
+                )
+            today_local = datetime.now(
+                ZoneInfo(str(settings.business_timezone))
+            ).date()
+            if transfer_act_date > today_local:
+                raise SelfFilingError(
+                    "Дата акта передачи не может быть в будущем"
+                )
+        elif transfer_act_date is not None:
+            raise SelfFilingError(
+                "Если акт передачи не подписан, дата акта должна быть пустой"
+            )
+
         # Do not expose/take the 15k obligation unless the promised email
         # delivery and a real client payment-link path are operationally ready.
         from app.domain.cases.self_filing_email_sender import (
@@ -954,6 +981,10 @@ class SelfFilingService:
         package.jurisdiction_note = clean_note
         package.jurisdiction_confirmed_at = now
         package.jurisdiction_confirmed_by_lawyer_id = int(lawyer_id)
+        package.transfer_act_signed = bool(transfer_act_signed)
+        package.transfer_act_date = transfer_act_date if transfer_act_signed else None
+        package.transfer_act_confirmed_at = now
+        package.transfer_act_confirmed_by_lawyer_id = int(lawyer_id)
         package.status = SELF_FILING_STATUS_PAYMENT_PENDING
         package.version = int(package.version or 1) + 1
 
@@ -984,6 +1015,12 @@ class SelfFilingService:
                 "court_address": clean_address,
                 "jurisdiction_basis": basis,
                 "lawyer_completeness_attested": True,
+                "transfer_act_signed": bool(transfer_act_signed),
+                "transfer_act_date": (
+                    transfer_act_date.isoformat()
+                    if transfer_act_date
+                    else None
+                ),
                 "completeness_scope": (
                     "DDU + identity + all known appendices/additional agreements "
                     "+ other materials required by lawyer"
