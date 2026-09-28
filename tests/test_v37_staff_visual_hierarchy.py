@@ -133,3 +133,55 @@ def test_staff_palette_remains_consistent_on_decision_surfaces():
     for token in ("#f4f6fa", "#172033", "#667085", "#e4e7ec", "#3157d5"):
         assert token in document_review
         assert token in payment_review
+
+
+
+def test_rejected_placeholder_brand_is_absent_from_visible_staff_surfaces():
+    visible_sources = (
+        "app/api/auth.py",
+        "app/api/operator.py",
+        "app/api/workdesk_ui.py",
+        "app/api/web_admin.py",
+        "app/admin/case_detail_page.py",
+        "app/api/calculator_builder.py",
+        "app/api/case_action_ui.py",
+        "app/api/document_review.py",
+        "app/api/lawyer_consultation_desk.py",
+        "app/api/message_center.py",
+        "app/api/notification_delivery.py",
+        "app/api/search_center.py",
+        "app/api/settings_ui.py",
+        "app/api/diagnostic_center.py",
+    )
+    for path in visible_sources:
+        assert "Digital Legal Concierge" not in read(path), path
+
+
+def test_self_filing_staff_card_has_state_aware_role_controls_and_neutral_refresh():
+    source = read("app/api/self_filing_product.py")
+
+    assert 'id="startReviewButton"' in source
+    assert 'id="requestDocsButton"' in source
+    assert 'id="approveButton"' in source
+    assert 'id="retryEmailButton"' in source
+    assert "const canStartReview=" in source
+    assert "const canReviewDecision=" in source
+    assert "const canFinance=" in source
+    assert "M1_SELF_FILING_PAYMENT_PENDING" not in source.split(
+        "const canReviewDecision=", 1
+    )[1].split(";", 1)[0]
+    assert "document.querySelectorAll('button')" not in source
+    assert '<button class="secondary" onclick="load()">Обновить</button>' in source
+    assert ">Дела клиентов</a>" in source
+
+
+def test_admin_detailed_case_link_has_a_registered_authenticated_page_owner():
+    source = read("app/api/web_admin.py")
+    page = read("app/admin/case_detail_page.py")
+
+    assert '@router.get("/admin/cases/{case_id}/ui", response_class=HTMLResponse)' in source
+    assert "request.cookies.get(settings.admin_session_cookie)" in source
+    assert "require_admin(token)" in source
+    assert 'CASE_DETAIL_HTML.replace("__CASE_ID__", str(int(case_id)))' in source
+    assert "<title>Карточка дела</title>" in page
+    assert "Подтвердить поступление" in page
