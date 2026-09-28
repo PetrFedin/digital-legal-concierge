@@ -39,7 +39,7 @@ jobs:
       BOOTSTRAP_ADMIN: "false"
       BOOTSTRAP_DEMO_DATA: "false"
       STARTUP_BACKUP_ENABLED: "false"
-      PAYMENT_PROVIDER: disabled
+      PAYMENT_PROVIDER: offline
       PUBLIC_BASE_URL: http://127.0.0.1:8000
       ALLOW_TOKEN_QUERY: "false"
       ADMIN_API_TOKEN: browser-e2e-admin-token-not-for-production
