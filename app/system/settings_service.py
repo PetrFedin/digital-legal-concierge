@@ -17,7 +17,7 @@ _INTEGER_BOUNDS: dict[str, tuple[int, int]] = {
     "sla.next_lawyer_action_hours": (1, 24 * 90),
     "sla.escalation_repeat_hours": (1, 24 * 30),
     "consultations.slot_hold_minutes": (5, 24 * 60),
-    "self_filing.sla_business_days": (1, 30),
+    "self_filing.delivery_calendar_days": (1, 30),
 }
 _SENSITIVE_KEY_MARKERS = ("secret", "token", "password", "credential", "api_key")
 
