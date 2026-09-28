@@ -27,14 +27,6 @@ OFFLINE_M1_PAYMENT_PRESENTATIONS: dict[str, OfflinePaymentPresentation] = {
         ),
         button_label="💳 Проверить второй платёж",
     ),
-    "M1_SELF_FILING_PAYMENT_PENDING": OfflinePaymentPresentation(
-        next_action=(
-            "Оплата 15 000 ₽ за подготовку пакета ожидает подтверждения командой. "
-            "После подтверждённого поступления денег результат должен быть отправлен в течение 3 календарных дней, "
-            "так как полный комплект документов уже принят юристом."
-        ),
-        button_label="💳 Проверить оплату пакета",
-    ),
     "M1_WAITING_SUCCESS_FEE": OfflinePaymentPresentation(
         next_action=(
             "Финальный платёж ожидает подтверждения командой. После подтверждения "
@@ -54,9 +46,19 @@ def offline_m1_payment_presentation(view) -> OfflinePaymentPresentation | None:
     pending.
     """
 
-    if not payments_offline():
-        return None
     if str(getattr(view, "route", "") or "") != "M1":
+        return None
+    if str(getattr(view, "case_status", "") or "") == "M1_SELF_FILING_PAYMENT_PENDING":
+        return OfflinePaymentPresentation(
+            next_action=(
+                "Переведите 15 000 ₽ по реквизитам коллегии адвокатов. "
+                "Обязательная пометка в назначении: «для адвоката Гамза Д.Г.». "
+                "После сверки поступления результат будет отправлен на подтверждённый "
+                "email в течение 3 календарных дней."
+            ),
+            button_label="💳 Реквизиты для оплаты",
+        )
+    if not payments_offline():
         return None
     return OFFLINE_M1_PAYMENT_PRESENTATIONS.get(
         str(getattr(view, "case_status", "") or "")
