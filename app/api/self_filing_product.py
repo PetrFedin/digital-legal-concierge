@@ -756,8 +756,8 @@ button,.button{border:0;border-radius:9px;background:var(--blue);color:#fff;padd
 <div class="card"><div class="eyebrow">Документы</div><div id="docs"></div><div class="actions"><a id="materials" class="button secondary" href="#">Открыть защищённые материалы</a><a id="messages" class="button secondary" href="#">Переписка</a></div></div>
 <div class="card" id="uploadCard"><div class="eyebrow">Судебный комплект: ровно 4 документа</div><div class="muted">Загружайте финальные версии по отдельности: претензия, исковое заявление, расчёт суммы иска и дорожная карта клиента. Email-доставка откроется только когда утверждены все четыре.</div><label>Тип документа</label><select id="deliverableType"><option value="SELF_FILING_PRETRIAL_CLAIM">Претензия</option><option value="SELF_FILING_STATEMENT_OF_CLAIM">Исковое заявление</option><option value="SELF_FILING_CLAIM_CALCULATION">Расчёт суммы иска</option><option value="SELF_FILING_CLIENT_ROADMAP">Дорожная карта клиента</option></select><input id="file" type="file"><div class="actions"><button class="lawyer-action" onclick="uploadPackage()">Утвердить документ</button></div></div>
 </section><aside>
-<div class="card"><div class="eyebrow">Действие юриста</div><div class="actions"><button class="lawyer-action" onclick="startReview()">Начать проверку</button></div>
-<label>Что нужно дополнить</label><textarea id="reason" placeholder="Конкретно укажите отсутствующий документ или исправление"></textarea><button class="lawyer-action" onclick="requestDocs()">Запросить документы</button>
+<div class="card"><div class="eyebrow">Действие юриста</div><div class="actions"><button id="startReviewButton" class="lawyer-action" onclick="startReview()">Начать проверку</button></div>
+<label>Что нужно дополнить</label><textarea id="reason" placeholder="Конкретно укажите отсутствующий документ или исправление"></textarea><button id="requestDocsButton" class="lawyer-action" onclick="requestDocs()">Запросить документы</button>
 <hr style="border:0;border-top:1px solid var(--line);margin:16px 0">
 <label>Суд</label><input id="court" placeholder="Полное наименование суда">
 <label>Адрес суда</label><textarea id="courtAddress"></textarea>
@@ -768,11 +768,11 @@ button,.button{border:0;border-radius:9px;background:var(--blue);color:#fff;padd
 <label style="display:flex;gap:9px;align-items:flex-start;font-weight:600"><input id="actSigned" type="checkbox" style="width:auto;margin-top:3px" onchange="toggleActDate()"> <span>Акт передачи квартиры подписан.</span></label>
 <label>Дата подписания акта</label><input id="actDate" type="date" disabled>
 <div class="muted">Если акт не подписан, расчёт для судебного комплекта будет привязан к дате фактической оплаты услуги. Если акт подписан — к дате акта.</div>
-<div class="actions"><button class="lawyer-action" onclick="approve()">Подтвердить комплект и открыть 15 000 ₽</button></div>
+<div class="actions"><button id="approveButton" class="lawyer-action" onclick="approve()">Подтвердить комплект и открыть 15 000 ₽</button></div>
 </div>
 <div class="card"><div class="eyebrow">Оплата клиента</div><div id="bankPayment" class="muted">Загрузка…</div></div>
 <div class="card" id="paymentReviewCard"><div class="eyebrow">Финансовая сверка</div><div id="paymentReview" class="muted"></div><label>Комментарий администратора</label><textarea id="financialComment" placeholder="Причина возобновления либо возврата, минимум 10 символов"></textarea><div class="actions"><button class="finance-action" onclick="resolvePayment('resume')">Запустить подготовку по полученным деньгам</button><button class="danger finance-action" onclick="resolvePayment('refund_pending')">Направить на контролируемый возврат</button></div></div>
-<div class="card"><div class="eyebrow">Доставка</div><div id="delivery" class="muted"></div><div class="actions"><button class="secondary lawyer-action" onclick="retryEmail()">Повторить email-доставку</button><button class="secondary" onclick="load()">Обновить</button></div></div>
+<div class="card"><div class="eyebrow">Доставка</div><div id="delivery" class="muted"></div><div class="actions"><button id="retryEmailButton" class="secondary lawyer-action" onclick="retryEmail()">Повторить email-доставку</button><button class="secondary" onclick="load()">Обновить</button></div></div>
 </aside></div></main>
 <script>
 const qs=new URLSearchParams(location.search);const caseId=Number(qs.get('case_id'));let data=null;
@@ -824,7 +824,6 @@ function render(){
  if(p.jurisdiction_note)document.getElementById('note').value=p.jurisdiction_note;
  document.getElementById('actSigned').checked=p.transfer_act_signed===true;
  if(p.transfer_act_date)document.getElementById('actDate').value=p.transfer_act_date;
- toggleActDate();
  const bankPayment=[...data.payments].reverse().find(x=>x.code==='M1_SELF_FILING_PACKAGE');
  const bank=data.capabilities.bank_requisites||{};
  document.getElementById('bankPayment').innerHTML=
@@ -849,12 +848,23 @@ function render(){
    reviewCard.style.display='none';
    reviewCard.dataset.paymentId='';
  }
- document.querySelectorAll('.lawyer-action').forEach(el=>{el.disabled=!a.can_mutate});
- document.querySelectorAll('.finance-action').forEach(el=>{el.disabled=!(a.can_financial_reconcile&&reviewPayment&&reviewPayment.status==='PAID_REVIEW')});
- document.getElementById('file').disabled=!(c.status==='M1_SELF_FILING_PREPARATION'&&a.can_mutate);
- document.getElementById('uploadCard').style.display=(c.status==='M1_SELF_FILING_PREPARATION'&&a.can_mutate)?'block':'none';
+ const status=String(c.status||'');
+ const canStartReview=Boolean(a.can_mutate&&['M1_SELF_FILING_DOCUMENTS_RECEIVED','M1_SELF_FILING_DOCS_REQUESTED'].includes(status));
+ const canReviewDecision=Boolean(a.can_mutate&&['M1_SELF_FILING_DOCUMENTS_RECEIVED','M1_SELF_FILING_LAWYER_REVIEW'].includes(status));
+ const canFinance=Boolean(a.can_financial_reconcile&&reviewPayment&&reviewPayment.status==='PAID_REVIEW');
+ document.getElementById('startReviewButton').disabled=!canStartReview;
+ document.getElementById('requestDocsButton').disabled=!canReviewDecision;
+ document.getElementById('approveButton').disabled=!canReviewDecision;
+ ['reason','court','courtAddress','basis','note','completeConfirm','actSigned'].forEach(id=>{document.getElementById(id).disabled=!canReviewDecision});
+ document.querySelectorAll('.finance-action').forEach(el=>{el.disabled=!canFinance});
+ document.getElementById('financialComment').disabled=!canFinance;
+ document.getElementById('retryEmailButton').disabled=!(a.can_mutate&&['FAILED','QUEUED'].includes(String(p.email_delivery_status||'')));
+ document.getElementById('file').disabled=!(status==='M1_SELF_FILING_PREPARATION'&&a.can_mutate);
+ document.getElementById('deliverableType').disabled=!(status==='M1_SELF_FILING_PREPARATION'&&a.can_mutate);
+ document.getElementById('uploadCard').style.display=(status==='M1_SELF_FILING_PREPARATION'&&a.can_mutate)?'block':'none';
+ toggleActDate();
 }
-function toggleActDate(){const signed=document.getElementById('actSigned').checked,dateInput=document.getElementById('actDate');dateInput.disabled=!signed;if(!signed)dateInput.value=''}
+function toggleActDate(){const checkbox=document.getElementById('actSigned'),signed=checkbox.checked,dateInput=document.getElementById('actDate');dateInput.disabled=checkbox.disabled||!signed;if(!signed)dateInput.value=''}
 async function startReview(){try{await post('/self-filing/cases/'+caseId+'/review/start',payload())}catch(e){feedback(e.message,true)}}
 async function requestDocs(){try{await post('/self-filing/cases/'+caseId+'/request-documents',payload({reason:document.getElementById('reason').value}))}catch(e){feedback(e.message,true)}}
 async function approve(){const confirmed=document.getElementById('completeConfirm').checked,signed=document.getElementById('actSigned').checked,actDate=document.getElementById('actDate').value;if(!confirmed){feedback('Сначала явно подтвердите полноту комплекта документов.',true);return}if(signed&&!actDate){feedback('Укажите дату подписания акта передачи.',true);return}try{await post('/self-filing/cases/'+caseId+'/approve-for-payment',payload({court_name:document.getElementById('court').value,court_address:document.getElementById('courtAddress').value,jurisdiction_basis:document.getElementById('basis').value,jurisdiction_note:document.getElementById('note').value,completeness_confirmed:confirmed,transfer_act_signed:signed,transfer_act_date:signed?actDate:null}))}catch(e){feedback(e.message,true)}}
