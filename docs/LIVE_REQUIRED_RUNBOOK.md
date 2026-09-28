@@ -74,7 +74,7 @@ The workflow deliberately maps those test-shop secrets to the existing `YOOKASSA
 
 For `payment_mode=offline`, LIVE_REQUIRED runs the focused offline payment contract: no external payment URL, explicit administrator receipt authority, M1/M2 eligibility and Telegram presentation. Actual bank-receipt reconciliation is still proven in the later real persona/manual acceptance and is never simulated.
 
-If the candidate enables new `SELF_FILING_PACKAGE` sales, `payment_mode=offline` is not an acceptable candidate mode for that service. Use the controlled YooKassa **test-shop** mode for provider evidence and keep the sales flag off until the manual self-filing checkout/email/persona contract is proven.
+If the candidate enables new `SELF_FILING_PACKAGE` sales, its payment proof is the dedicated bar-association bank-transfer contract: exact snapshotted requisites + 15 000 ₽ + mandatory purpose + authenticated receipt reconciliation. Do not substitute YooKassa test-shop evidence for that self-filing contract.
 
 For `payment_mode=yookassa`, `scripts/live_required_smoke.py provider`:
 
@@ -105,7 +105,7 @@ Provider-side paid/refund sandbox expansion is a later Gate 7 operation. It is n
 - deletes both smoke messages after delivery and fails if cleanup cannot be confirmed;
 - prints only the bot id and delivery count, never the bot token or chat ids.
 
-This proves external Bot API reachability and delivery to both acceptance roles. It complements, but does not replace, the dispatcher/Redis business-flow acceptance paths in the test suite or the later manual M1 full-representation, M1 self-filing and M2 persona walkthroughs. The later self-filing gate additionally requires at least three distinct client Telegram chats; the automated two-chat smoke is not sufficient for that product acceptance.
+This proves external Bot API reachability and delivery to both acceptance roles. It complements, but does not replace, the dispatcher/Redis business-flow acceptance paths in the test suite or the later manual M1 full-representation, M1 self-filing and M2 persona walkthroughs. The later self-filing gate additionally requires at least three distinct client Telegram chats and an exact bank-requisites/payment-purpose check; the automated two-chat smoke is not sufficient.
 
 ## Evidence required from a successful run
 
