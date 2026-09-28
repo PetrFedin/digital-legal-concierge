@@ -10,26 +10,49 @@ from app.models.case import Case
 from app.security.document_access import DocumentActor
 
 
+SELF_FILING_DELIVERABLE_TYPES = (
+    "SELF_FILING_PRETRIAL_CLAIM",
+    "SELF_FILING_STATEMENT_OF_CLAIM",
+    "SELF_FILING_CLAIM_CALCULATION",
+    "SELF_FILING_CLIENT_ROADMAP",
+)
+
+SELF_FILING_DELIVERABLE_FIELDS = {
+    "SELF_FILING_PRETRIAL_CLAIM": "pretrial_claim_document_id",
+    "SELF_FILING_STATEMENT_OF_CLAIM": "statement_of_claim_document_id",
+    "SELF_FILING_CLAIM_CALCULATION": "claim_calculation_document_id",
+    "SELF_FILING_CLIENT_ROADMAP": "client_roadmap_document_id",
+}
+
+
 async def publish_self_filing_package(
     db,
     *,
     actor: DocumentActor,
     case: Case,
     stored,
+    document_type: str,
 ):
-    """Create one verified lawyer-authored package version and approve it.
+    """Create one verified lawyer-authored court deliverable and approve it.
 
-    The storage pipeline has already validated/encrypted the bytes. Approval
-    here means the authenticated responsible lawyer intentionally chose this
-    exact SHA/document version as the client deliverable.
+    The customer-approved product contains exactly four documents. The storage
+    pipeline has already validated/encrypted the bytes; this function refuses
+    any fifth/legacy deliverable type for new work.
     """
+
+    normalized_type = str(document_type or "").strip().upper()
+    if normalized_type not in SELF_FILING_DELIVERABLE_TYPES:
+        raise ValueError(
+            "Итоговый комплект допускает только четыре документа: претензия, "
+            "исковое заявление, расчёт суммы иска и дорожная карта клиента"
+        )
 
     if actor.role != "lawyer" or actor.lawyer_id is None:
         raise ValueError("Итоговый пакет может утвердить только персональный юрист")
     document = await DocumentService(db).create_document(
         case=case,
         uploaded_by_user_id=None,
-        document_type="SELF_FILING_PACKAGE",
+        document_type=normalized_type,
         file_name=stored.original_name,
         file_path=stored.storage_path,
         mime_type=stored.mime_type,
@@ -65,7 +88,7 @@ async def publish_self_filing_package(
             "security_status": document.security_status,
             "encryption_status": document.encryption_status,
         },
-        comment="Юрист утвердил точную версию итогового пакета к выдаче клиенту",
+        comment="Юрист утвердил точную версию документа судебного комплекта к выдаче клиенту",
     )
     await db.flush()
     return document
@@ -73,5 +96,7 @@ async def publish_self_filing_package(
 
 __all__ = [
     "DuplicateDocumentError",
+    "SELF_FILING_DELIVERABLE_FIELDS",
+    "SELF_FILING_DELIVERABLE_TYPES",
     "publish_self_filing_package",
 ]
