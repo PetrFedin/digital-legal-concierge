@@ -96,10 +96,32 @@ class SelfFilingPackage(Base, TimestampMixin):
         index=True,
     )
 
-    # Customer-approved claim-calculation cutoff. The legal team uses the act
-    # date when the transfer act is already signed; otherwise the payment date
-    # is frozen here and the client roadmap must explain the later in-court
-    # clarification/new calculation.
+    # Transfer-act fact is confirmed by the responsible lawyer at the same gate
+    # that opens payment. This prevents a stale preliminary calculator answer
+    # from deciding the customer-approved claim-calculation cutoff.
+    transfer_act_signed: Mapped[bool | None] = mapped_column(
+        Boolean,
+        nullable=True,
+    )
+    transfer_act_date: Mapped[date | None] = mapped_column(
+        Date,
+        nullable=True,
+        index=True,
+    )
+    transfer_act_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
+    transfer_act_confirmed_by_lawyer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("lawyers.id"),
+        nullable=True,
+        index=True,
+    )
+
+    # Immutable calculator snapshot used as source material for the lawyer-authored
+    # "Расчёт суммы иска". It is not itself an automated legal conclusion.
+    # Cutoff: confirmed transfer-act date if signed, otherwise service-payment date.
     claim_source_calculation_id: Mapped[int | None] = mapped_column(
         ForeignKey("calculations.id"),
         nullable=True,
