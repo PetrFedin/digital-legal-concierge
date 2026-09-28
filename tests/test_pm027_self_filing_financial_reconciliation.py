@@ -16,6 +16,10 @@ from app.bot.client_case_view import (
 from app.config import settings
 from app.domain.cases.self_filing_service import SelfFilingService
 from app.domain.cases.service_modes import M1ServiceMode
+from app.domain.payments.bank_requisites import (
+    GAMZA_COLLEGIUM_REQUISITES,
+    bank_requisites_snapshot,
+)
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.payments.payment_webhook_service import PaymentWebhookService
 from app.domain.statuses.case_statuses import CaseStatus
@@ -131,11 +135,16 @@ async def seed_payment_pending(session, *, suffix: int):
         amount=Decimal("15000.00"),
         currency="RUB",
         status=PaymentStatus.PENDING,
-        provider="yookassa",
-        provider_payment_id=f"self-filing-provider-{suffix}",
+        provider="bank_transfer",
+        payment_purpose=GAMZA_COLLEGIUM_REQUISITES.mandatory_purpose,
+        payment_details_snapshot=bank_requisites_snapshot(),
     )
     session.add_all([package, payment])
     await session.flush()
+    assert payment.provider == "bank_transfer"
+    assert payment.payment_url is None
+    assert payment.payment_purpose == "для адвоката Гамза Д.Г."
+    assert payment.payment_details_snapshot["recipient"] == "Адыгейская Республиканская Коллегия Адвокатов"
     return user, lawyer, case, package, payment
 
 
@@ -146,7 +155,7 @@ async def test_received_money_survives_failed_sla_activation(
 ):
     configure_smtp(monkeypatch)
     # Simulate configuration drift after the lawyer opened the payment. Runtime
-    # truth must preserve provider-confirmed money when the commercial contract
+    # truth must preserve bank-confirmed money when the commercial contract
     # cannot safely start delivery.
     set_delivery_days(monkeypatch, 4)
     monkeypatch.setattr(
@@ -171,9 +180,12 @@ async def test_received_money_survives_failed_sla_activation(
                 payment=payment,
                 case=case,
                 provider_payload={
-                    "provider_payment_id": payment.provider_payment_id,
-                    "status": "succeeded",
+                    "source": "admin_bank_receipt_confirm",
+                    "reference": "BANK-SELF-FILING-001",
                 },
+                actor_type="admin",
+                actor_id=7001,
+                processed_action="OFFLINE_PAYMENT_PROCESSED",
                 occurred_at=occurred_at,
             )
             await session.commit()
@@ -244,7 +256,13 @@ async def test_admin_resume_uses_original_money_time_and_starts_sla_once(
             await PaymentWebhookService(session).process_successful_payment(
                 payment=payment,
                 case=case,
-                provider_payload={"status": "succeeded"},
+                provider_payload={
+                    "source": "admin_bank_receipt_confirm",
+                    "reference": "BANK-SELF-FILING-002",
+                },
+                actor_type="admin",
+                actor_id=7002,
+                processed_action="OFFLINE_PAYMENT_PROCESSED",
                 occurred_at=datetime.now(timezone.utc),
             )
             await session.commit()
@@ -327,7 +345,13 @@ async def test_admin_refund_keeps_case_out_of_preparation_and_blocks_client_repa
             await PaymentWebhookService(session).process_successful_payment(
                 payment=payment,
                 case=case,
-                provider_payload={"status": "succeeded"},
+                provider_payload={
+                    "source": "admin_bank_receipt_confirm",
+                    "reference": "BANK-SELF-FILING-003",
+                },
+                actor_type="admin",
+                actor_id=7003,
+                processed_action="OFFLINE_PAYMENT_PROCESSED",
                 occurred_at=datetime.now(timezone.utc),
             )
             await session.commit()
