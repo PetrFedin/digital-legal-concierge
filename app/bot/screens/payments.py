@@ -549,7 +549,7 @@ async def start_payment(
 
     if is_m1_payment and not _m1_payment_context_matches(case, code):
         await callback.message.edit_text(
-            "Эта кнопка оплаты относится к другому или уже завершённому этапу. "
+            Эта кнопка оплаты относится к другому или уже завершённому действию. "
             "Новый платёж не создавался.",
             reply_markup=one(
                 ("💳 Оплаты", "payments_open"),
@@ -637,7 +637,7 @@ async def start_payment(
     except RuntimeError:
         await db.rollback()
         await callback.message.edit_text(
-            "Платёжный сервис временно недоступен. Данные текущего этапа сохранены.",
+            "Платёжный сервис временно недоступен. Данные обращения сохранены.",
             reply_markup=(
                 one(
                     (
@@ -675,7 +675,7 @@ async def start_payment(
         elif code == PaymentCode.M1_INITIAL_PAYMENT:
             next_step = (
                 "После подтверждения фактического поступления система откроет "
-                "этап оформления доверенности."
+                "оформление доверенности."
             )
         elif code == PaymentCode.M1_SELF_FILING_PACKAGE:
             next_step = (
@@ -685,13 +685,13 @@ async def start_payment(
             )
         elif code == PaymentCode.M1_SUCCESS_FEE:
             next_step = (
-                "После подтверждения фактического поступления финансовый этап "
+                После подтверждения фактического поступления расчёты "
                 "будет завершён и дело сможет закрыться."
             )
         else:
             next_step = (
                 "После подтверждения фактического поступления система откроет "
-                "следующий этап дела."
+                "следующее действие по делу."
             )
         text = (
             f"💳 {payment_title}\n"
@@ -714,14 +714,14 @@ async def start_payment(
             f"💳 {payment_title}\n"
             f"Обращение № {case_number}\n\n"
             f"Сумма: {money(payment_amount)}\n\n"
-            "После подтверждения оплаты система откроет следующий этап — оформление доверенности."
+            "После подтверждения оплаты станет доступно оформление доверенности."
         )
     else:
         text = (
             f"💳 {payment_title}\n"
             f"Обращение № {case_number}\n\n"
             f"Сумма: {money(payment_amount)}\n\n"
-            "После подтверждения оплаты система откроет исполнительный этап."
+            "После подтверждения оплаты станет доступна работа по исполнению решения."
         )
     await _present_committed_callback(
         callback,
@@ -914,7 +914,7 @@ async def fake(callback: CallbackQuery, db):
 
     await _present_committed_callback(
         callback,
-        "✅ Оплата подтверждена. Следующий этап открыт автоматически.",
+        "✅ Оплата подтверждена. Следующее действие по делу стало доступно.",
         reply_markup=one(
             ("💳 Все оплаты", "payments_open"),
             ("📁 Моё дело", "my_case_open"),
