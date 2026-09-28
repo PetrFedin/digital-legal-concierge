@@ -112,11 +112,11 @@ Production payment modes are explicit and non-equivalent:
 
 Received money is protected from late failure overwrites. Stale money enters review/refund flow; it cannot silently reserve or reopen another stage.
 
-### Self-filing checkout and delivery boundary
+### Self-filing bank-payment and delivery boundary
 
-New `M1_SELF_FILING_PACKAGE` sales are stricter than the generic offline contract. Opening the 15 000 ₽ obligation requires a customer-facing payment provider URL. In production this source contract currently means configured YooKassa credentials; `offline`/`disabled` fail closed for new self-filing sales and `fake` remains local/test only.
+New `M1_SELF_FILING_PACKAGE` sales use a dedicated bank-transfer contract. The `Payment` snapshots the bar-association recipient/bank requisites plus the mandatory purpose `для адвоката Гамза Д.Г.` at obligation creation. Reopening an old payment must show that frozen snapshot rather than silently adopting later requisites. No provider URL is created for self-filing.
 
-`PaymentService` creates the provider payment from the persisted Case-bound obligation. The exact amount, payment code, Case reference and payment purpose are generated server-side and sent to the provider. The client does not type merchant requisites or free-form payment purpose. Provider-specific methods such as SBP are available only if enabled for the configured merchant/test shop; the source does not fabricate support for a method the provider has not enabled.
+`PaymentService` creates the persisted 15 000 ₽ obligation and freezes `payment_purpose` plus `payment_details_snapshot`. Telegram and staff UI read those values. The client must not be sent to YooKassa/Robokassa/card/SBP for this service. Actual receipt is confirmed only after bank/accounting reconciliation; a client screenshot alone is not receipt authority.
 
 Confirmed receipt of 15 000 ₽ is the immutable start of the customer delivery promise. `SelfFilingPackage.payment_confirmed_at` and `sla_started_at` are the received payment time; `sla_due_at = payment_at + 3 calendar days`. Business-calendar coverage does not extend this customer promise.
 
