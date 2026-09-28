@@ -57,7 +57,7 @@ calculation → client decision → exact-version consent → documents → lawy
 
 **M1 / self-filing court package** is the customer-approved service mode `SELF_FILING_PACKAGE`:
 
-calculation → self-filing choice → service-specific consent → verified profile email → source documents → lawyer completeness/jurisdiction/transfer-act confirmation → online payment 15 000 ₽ → immutable calculation-cutoff snapshot → lawyer preparation/approval of exactly four court documents → email delivery → closure.
+calculation → self-filing choice → service-specific consent → verified profile email → source documents → lawyer completeness/jurisdiction/transfer-act confirmation → bank-transfer obligation 15 000 ₽ → bank receipt reconciliation → immutable calculation-cutoff snapshot → lawyer preparation/approval of exactly four court documents → email delivery → closure.
 
 The four deliverables are exactly:
 
@@ -68,7 +68,7 @@ The four deliverables are exactly:
 
 The claim-calculation cutoff is a customer-approved business rule. If the responsible lawyer confirms that the transfer act is signed, the cutoff is the act date. If the act is not signed, the cutoff is the actual service-payment date; the roadmap must explain that the client will request clarification of claims in the hearing and provide a new calculation. The calculator snapshot is source material for the lawyer-authored calculation document and is not an automated legal conclusion.
 
-For new self-filing sales, offline/manual payment is not an accepted customer path. The bot must expose an external provider checkout URL. The provider payment session owns the merchant/payment details; amount and Case-bound payment purpose are populated from the persisted Payment rather than typed by the client.
+For self-filing, the customer-approved payment method is **bank transfer only** to the Adygeya Republican Bar Association requisites. The bot must show the exact snapshotted recipient/bank details, exact 15 000 ₽ amount and the mandatory payment-purpose marker `для адвоката Гамза Д.Г.`. No YooKassa, Robokassa, personal card or invented SBP flow is part of this service contract unless the customer explicitly changes it later.
 
 The completed self-filing result must be sent to the client's confirmed profile/delivery email within **3 calendar days after confirmed payment**. Representation in court is not included in this service mode.
 
@@ -109,7 +109,7 @@ The current release supports two deliberate production payment modes:
 - `offline` — a real financial obligation is persisted without manufacturing an external payment link. The client pays outside the bot using team-approved requisites. An authenticated administrator may confirm receipt only after independent bank/accounting reconciliation; the same canonical payment lifecycle then advances M1 or confirms the exact M2 reservation.
 - `yookassa` — an online provider mode enabled only when its release-specific provider evidence and credentials are deliberately approved.
 
-`disabled` is a fail-closed maintenance/development switch, not a production-ready payment mode and not permission to auto-mark money as received. `fake` remains local/test only. Existing full-representation/consultation operation may still use the separately accepted `offline` contract, but **new self-filing sales require a customer-facing online provider URL** and therefore fail closed when only `offline` is configured.
+`disabled` is a fail-closed maintenance/development switch, not a production-ready payment mode and not permission to auto-mark money as received. `fake` remains local/test only. Full-representation/consultation may use the generic `offline` contract. Self-filing uses its stricter dedicated bank-transfer contract with snapshotted bar-association requisites and mandatory purpose text.
 
 M2 remains a paid consultation in `offline` mode: slot selection may create a payment obligation, but the slot becomes finally booked only after the administrator confirms actual receipt against the exact consultation/reservation context.
 
