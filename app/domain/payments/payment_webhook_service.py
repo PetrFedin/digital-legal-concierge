@@ -4,7 +4,6 @@ from sqlalchemy import select
 
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
-from app.domain.cases.self_filing_business_calendar import BusinessCalendarError
 from app.domain.cases.self_filing_email_sender import SelfFilingEmailConfigurationError
 from app.domain.cases.self_filing_service import SelfFilingError, SelfFilingService
 from app.domain.cases.service_modes import M1ServiceMode
@@ -122,8 +121,8 @@ class PaymentWebhookService:
         """Preserve received-money truth when package activation cannot complete.
 
         The provider-confirmed money fact must survive even if the legal/package
-        side cannot start its SLA atomically (for example because the controlled
-        business calendar no longer covers the due date). The Case deliberately
+        side cannot start the customer delivery obligation atomically (for example
+        because the configured commercial contract or delivery channel is unsafe). The Case deliberately
         remains on PAYMENT_PENDING until an administrator reconciles the exact
         received payment through the self-filing product.
         """
@@ -157,7 +156,7 @@ class PaymentWebhookService:
             },
             comment=(
                 "Деньги получены, но автоматический запуск подготовки пакета и "
-                "двухдневного SLA остановлен безопасностью. Повторная оплата "
+                "трёхдневного срока выдачи остановлен безопасностью. Повторная оплата "
                 "заблокирована; требуется финансовая сверка администратора."
             ),
         )
