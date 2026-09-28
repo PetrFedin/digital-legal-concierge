@@ -804,7 +804,7 @@ function render(){
   ['Оплата подтверждена',dt(p.payment_confirmed_at)],
   ['Расчёт суммы иска на дату',p.claim_calculation_cutoff_date],
   ['Основание даты',p.claim_calculation_basis],
-  ['Сумма расчёта',p.claim_calculation_amount],
+  ['Неустойка в расчётном снимке',p.claim_calculation_amount],
   ['Нужно уточнение в суде',p.claim_update_in_court_required===true?'Да':(p.claim_update_in_court_required===false?'Нет':'—')],
   ['Выдать до',dt(p.sla_due_at)],['Готово',dt(p.ready_at)],['Доставлено',dt(p.delivered_at)]
  ].map(([k,v])=>'<div class="cell"><b>'+esc(k)+'</b><span>'+esc(v||'—')+'</span></div>').join('');
