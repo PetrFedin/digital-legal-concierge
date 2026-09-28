@@ -17,9 +17,9 @@ DEFAULT_SETTINGS = {
         "type": "money",
         "editable": True,
     },
-    "self_filing.sla_business_days": {
-        "title": "Срок подготовки пакета, рабочих дней",
-        "value": 2,
+    "self_filing.delivery_calendar_days": {
+        "title": "Срок выдачи после оплаты, календарных дней",
+        "value": 3,
         "type": "integer",
         "editable": True,
     },
