@@ -75,9 +75,9 @@ At every material mutation verify the Telegram result against PostgreSQL Case/Do
 
 ### M1 self-filing
 
-Use at least three distinct client Telegram accounts/chats to prove the deployed bot is not effectively single-user. At minimum each account must complete `/start` plus one persisted Case/client action. Complete at least one full self-filing journey with the responsible lawyer/admin roles: positive calculation → self-filing choice → verified email/source documents → lawyer completeness, jurisdiction and transfer-act fact → YooKassa test-shop checkout/received-payment evidence → calculation cutoff → exactly four lawyer-approved deliverables → real SMTP delivery to the confirmed email.
+Use at least three distinct client Telegram accounts/chats to prove the deployed bot is not effectively single-user. At minimum each account must complete `/start` plus one persisted Case/client action. Complete at least one full self-filing journey with the responsible lawyer/admin roles: positive calculation → self-filing choice → verified email/source documents → lawyer completeness, jurisdiction and transfer-act fact → exact bar-association bank requisites + 15 000 ₽ + mandatory purpose → independently reconciled receipt → calculation cutoff → exactly four lawyer-approved deliverables → real SMTP delivery to the confirmed email.
 
-Exercise both calculation-cutoff branches across the acceptance Cases: signed act means cutoff = act date; unsigned act means cutoff = service-payment date and roadmap requires later clarification/new calculation in court. Verify exact 15 000 ₽ payment purpose, three-calendar-day deadline, four attachment hashes/versions, email Message-ID and Case/Payment/Audit evidence.
+Exercise both calculation-cutoff branches across the acceptance Cases: signed act means cutoff = act date; unsigned act means cutoff = service-payment date and roadmap requires later clarification/new calculation in court. Verify the exact bank-requisites snapshot, exact 15 000 ₽, mandatory purpose `для адвоката Гамза Д.Г.`, three-calendar-day deadline, four attachment hashes/versions, email Message-ID and Case/Payment/Audit evidence.
 
 ### M2
 
