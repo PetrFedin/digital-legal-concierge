@@ -14,7 +14,7 @@ For one immutable release-candidate commit SHA, execute in this order:
 2. **Full CI** — every required PR check for the exact candidate SHA executes and passes. This includes the main CI workflow and any required security/dependency/deployment checks attached to the PR.
 3. **Dedicated runtime workflows** — run and pass the PostgreSQL concurrency, Redis/Telegram runtime and browser staff E2E workflows for that same SHA. A configured workflow that never receives a runner is not evidence.
 4. **One complete LIVE_REQUIRED run** — dispatch `.github/workflows/live-required.yml` for the same SHA with `payment_mode` equal to the candidate's actual payment mode, and retain the SHA/run/attempt-bound `LIVE_REQUIRED_MANIFEST.json`. Do not combine component evidence from different workflow attempts.
-5. **Real Telegram M1/M2 persona walkthroughs** — execute the complete client/staff paths with dedicated non-production Telegram identities/chats against the production-like PostgreSQL/Redis application image. Record Case ids, timestamps and sanitized evidence references; do not record bot tokens, document plaintext or payment credentials.
+5. **Real Telegram product personas** — execute M1 full representation, M1 self-filing and M2 with dedicated non-production Telegram identities/chats against the production-like PostgreSQL/Redis application image. Self-filing must prove access from at least three distinct client chats. Record Case ids, timestamps and sanitized evidence references; do not record bot tokens, document plaintext or payment credentials.
 6. **Encrypted backup -> separate restore drill** — take the post-persona data state, create and verify an encrypted backup, restore it only into a separate empty staging/restore/drill PostgreSQL database and restored storage directory, then prove application-level facts and runtime usability.
 7. **Provider paid/refund sandbox expansion, when YooKassa is being enabled** — only after all previous gates pass, execute YooKassa test-shop paid/refund scenarios that can be completed safely without any production credential, production shop, production payment or production callback target. An offline-only release records this gate as not applicable rather than fabricating provider evidence.
 8. **Release decision** — PR #114 remains unmerged until the required evidence above is complete and no unresolved blocker/regression remains.
@@ -63,15 +63,21 @@ The manifest must name the frozen candidate SHA and contain successful evidence 
 
 For an offline candidate, payment-mode evidence proves the application/manual-reconciliation contract; the later real personas prove actual administrator receipt confirmation. For a YooKassa candidate, the provider component intentionally stops at a test-shop unpaid/pending payment and is not provider-side paid/refund proof.
 
-## Gate 5 — real Telegram M1/M2 personas
+## Gate 5 — real Telegram M1 full / M1 self-filing / M2 personas
 
 The automated Telegram component proves Bot API reachability and delivery, not the complete business journey. After LIVE_REQUIRED passes, execute real persona walkthroughs with separate acceptance identities.
 
-### M1
+### M1 full representation
 
-Execute the current approved M1 path end to end through Telegram and staff surfaces, including calculation, M1 selection, consent, encrypted document upload/review, service-contract evidence, both required payment stages, power-of-attorney/claim/court/enforcement evidence, actual recovered amount, success fee, structured close and read-only/archive behavior.
+Execute the current approved full-representation M1 path end to end through Telegram and staff surfaces, including calculation, M1 selection, consent, encrypted document upload/review, service-contract evidence, both required payment stages, power-of-attorney/claim/court/enforcement evidence, actual recovered amount, success fee, structured close and read-only/archive behavior.
 
 At every material mutation verify the Telegram result against PostgreSQL Case/Document/Payment state, Case/Audit history and PaymentEvent evidence. Include stale/duplicate/retry paths required by `docs/ACCEPTANCE_CURRENT.md`.
+
+### M1 self-filing
+
+Use at least three distinct client Telegram accounts/chats to prove the deployed bot is not effectively single-user. At minimum each account must complete `/start` plus one persisted Case/client action. Complete at least one full self-filing journey with the responsible lawyer/admin roles: positive calculation → self-filing choice → verified email/source documents → lawyer completeness, jurisdiction and transfer-act fact → YooKassa test-shop checkout/received-payment evidence → calculation cutoff → exactly four lawyer-approved deliverables → real SMTP delivery to the confirmed email.
+
+Exercise both calculation-cutoff branches across the acceptance Cases: signed act means cutoff = act date; unsigned act means cutoff = service-payment date and roadmap requires later clarification/new calculation in court. Verify exact 15 000 ₽ payment purpose, three-calendar-day deadline, four attachment hashes/versions, email Message-ID and Case/Payment/Audit evidence.
 
 ### M2
 
