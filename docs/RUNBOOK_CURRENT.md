@@ -142,11 +142,11 @@ For a controlled non-production acceptance environment:
 
 1. deploy the exact candidate image to both the HTTP container and the host-network Telegram worker; verify the worker owns the polling singleton and can reach Telegram through the current Timeweb IPv6 route;
 2. provision real SMTP acceptance credentials and a mailbox whose receipt can be independently observed;
-3. configure YooKassa **test-shop** credentials and verify the provider returns a customer checkout URL; do not use production shop credentials or production money;
+3. verify the exact customer-approved bar-association bank requisites and mandatory payment-purpose marker shown by the candidate; do not configure YooKassa/Robokassa/SBP for self-filing;
 4. set `SELF_FILING_NEW_SALES_ENABLED=true` only after `/self-filing/readiness` reports the source/configuration gates ready;
 5. have at least three different client Telegram accounts open `/start` and perform a persisted action. Record Telegram user/chat identity only as non-secret acceptance identifiers; do not add code/user allowlists;
-6. complete one self-filing path with `transfer_act_signed=true` and one with `transfer_act_signed=false` far enough to prove both cutoff branches; at least one path must complete the test-shop payment/email delivery boundary;
-7. verify the payment checkout displays the server-generated 15 000 ₽ obligation and Case-bound purpose. Verify SBP only if the configured YooKassa test shop actually offers it; otherwise record it as not proven;
+6. complete one self-filing path with `transfer_act_signed=true` and one with `transfer_act_signed=false` far enough to prove both cutoff branches; at least one path must complete a real controlled bank-transfer/reconciliation + email-delivery boundary;
+7. verify Telegram displays the snapshotted recipient/bank requisites, exact 15 000 ₽ and the mandatory marker `для адвоката Гамза Д.Г.`; confirm the actual bank receipt through the authenticated financial reconciliation path;
 8. verify `sla_due_at` is exactly payment receipt + 3 calendar days, all four approved documents are attached, the email lands on the confirmed profile address and the Case closes only after send evidence;
 9. turn the self-filing sales flag back off after acceptance until the full release evidence chain permits controlled production activation.
 
@@ -156,7 +156,7 @@ There is no source-level per-user Telegram allowlist in the current bot path. If
 
 ### Offline production mode
 
-The current no-provider production path for the existing full-representation/consultation product is `PAYMENT_PROVIDER=offline`, not `disabled`. **It does not satisfy new self-filing sales**, which require a customer-facing provider checkout URL.
+The current no-provider production path for full-representation/consultation is `PAYMENT_PROVIDER=offline`, not `disabled`. Self-filing also uses bank transfer, but with a stricter fixed bar-association requisites contract rather than generic team-approved instructions.
 
 In offline mode:
 
