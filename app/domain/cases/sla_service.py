@@ -41,7 +41,7 @@ PAUSED_CASE_STATUSES = {
     "M1_WAITING_SUCCESS_FEE",
     "M1_SELF_FILING_DOCS_REQUESTED",
     "M1_SELF_FILING_PAYMENT_PENDING",
-    # PREPARATION has its own authoritative two-business-day package SLA.
+    # PREPARATION has its own authoritative three-calendar-day-after-payment delivery deadline.
     "M1_SELF_FILING_PREPARATION",
     # READY/DELIVERED are controlled by durable delivery state, not generic lawyer SLA.
     "M1_SELF_FILING_READY",
