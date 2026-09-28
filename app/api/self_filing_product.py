@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -291,6 +291,17 @@ async def self_filing_context(
             "court_address": package.court_address,
             "jurisdiction_basis": package.jurisdiction_basis,
             "jurisdiction_note": package.jurisdiction_note,
+            "transfer_act_signed": package.transfer_act_signed,
+            "transfer_act_date": (
+                package.transfer_act_date.isoformat()
+                if package.transfer_act_date
+                else None
+            ),
+            "transfer_act_confirmed_at": (
+                package.transfer_act_confirmed_at.isoformat()
+                if package.transfer_act_confirmed_at
+                else None
+            ),
             "jurisdiction_confirmed_at": (
                 package.jurisdiction_confirmed_at.isoformat()
                 if package.jurisdiction_confirmed_at
@@ -448,6 +459,17 @@ async def approve_self_filing_for_payment(
         service = SelfFilingService(db)
         package = await service.require_package(case_id=case_id, for_update=True)
         _expect_version(package, payload)
+        raw_act_date = str(payload.get("transfer_act_date") or "").strip()
+        try:
+            transfer_act_date = (
+                date.fromisoformat(raw_act_date)
+                if raw_act_date
+                else None
+            )
+        except ValueError as error:
+            raise SelfFilingError(
+                "Дата акта передачи должна быть в формате ГГГГ-ММ-ДД"
+            ) from error
         package, payment = await service.approve_for_payment(
             case_id=case_id,
             lawyer_id=int(actor.lawyer.id),
@@ -458,6 +480,10 @@ async def approve_self_filing_for_payment(
             completeness_confirmed=(
                 payload.get("completeness_confirmed") is True
             ),
+            transfer_act_signed=(
+                payload.get("transfer_act_signed") is True
+            ),
+            transfer_act_date=transfer_act_date,
         )
         await db.commit()
     except HTTPException:
@@ -733,6 +759,10 @@ button,.button{border:0;border-radius:9px;background:var(--blue);color:#fff;padd
 <label>Основание подсудности</label><select id="basis"></select>
 <label>Юридическое обоснование</label><textarea id="note" placeholder="Почему выбран именно этот суд и на каком основании"></textarea>
 <label style="display:flex;gap:9px;align-items:flex-start;font-weight:600"><input id="completeConfirm" type="checkbox" style="width:auto;margin-top:3px"> <span>Подтверждаю как ответственный юрист: проверены ДДУ, паспорт/иной документ личности, все имеющиеся приложения и дополнительные соглашения к ДДУ, а также иные материалы, необходимые для подготовки полного пакета. Автоматически определить отсутствие не загруженного приложения система не может.</span></label>
+<hr style="border:0;border-top:1px solid var(--line);margin:16px 0">
+<label style="display:flex;gap:9px;align-items:flex-start;font-weight:600"><input id="actSigned" type="checkbox" style="width:auto;margin-top:3px" onchange="toggleActDate()"> <span>Акт передачи квартиры подписан.</span></label>
+<label>Дата подписания акта</label><input id="actDate" type="date" disabled>
+<div class="muted">Если акт не подписан, расчёт для судебного комплекта будет привязан к дате фактической оплаты услуги. Если акт подписан — к дате акта.</div>
 <div class="actions"><button onclick="approve()">Подтвердить комплект и открыть 15 000 ₽</button></div>
 </div>
 <div class="card" id="paymentReviewCard"><div class="eyebrow">Финансовая сверка</div><div id="paymentReview" class="muted"></div><label>Комментарий администратора</label><textarea id="financialComment" placeholder="Причина возобновления либо возврата, минимум 10 символов"></textarea><div class="actions"><button class="finance-action" onclick="resolvePayment('resume')">Запустить подготовку по полученным деньгам</button><button class="danger finance-action" onclick="resolvePayment('refund_pending')">Направить на контролируемый возврат</button></div></div>
@@ -769,6 +799,8 @@ function render(){
   ['Email',p.delivery_email],
   ['Email подтверждён',p.email_verified?('Да · '+dt(p.email_confirmed_at)):(p.email_verification_pending?'Ожидается код до '+dt(p.email_verification_expires_at):'Нет')],
   ['Полный комплект',dt(p.documents_complete_at)],['Суд',p.court_name],
+  ['Акт передачи подписан',p.transfer_act_signed===true?'Да':(p.transfer_act_signed===false?'Нет':'Не подтверждено')],
+  ['Дата акта',p.transfer_act_date],
   ['Оплата подтверждена',dt(p.payment_confirmed_at)],
   ['Расчёт суммы иска на дату',p.claim_calculation_cutoff_date],
   ['Основание даты',p.claim_calculation_basis],
@@ -784,6 +816,9 @@ function render(){
  if(p.court_address)document.getElementById('courtAddress').value=p.court_address;
  if(p.jurisdiction_basis)basis.value=p.jurisdiction_basis;
  if(p.jurisdiction_note)document.getElementById('note').value=p.jurisdiction_note;
+ document.getElementById('actSigned').checked=p.transfer_act_signed===true;
+ if(p.transfer_act_date)document.getElementById('actDate').value=p.transfer_act_date;
+ toggleActDate();
  document.getElementById('delivery').innerHTML='Адрес подтверждён: <b>'+(p.email_verified?'да':'нет')+'</b>'+(p.email_verification_pending?'<br>Код действует до: '+esc(dt(p.email_verification_expires_at))+'<br>Ошибочных попыток: '+p.email_verification_attempts:'')+'<br><br>Доставка пакета: <b>'+esc(p.email_delivery_status)+'</b><br>Попыток доставки: '+p.email_delivery_attempts+'<br>Message-ID: '+esc(p.email_message_id||'—')+'<br>Последняя ошибка: '+esc(p.email_last_error||'—')+'<br>Email provider: '+(data.capabilities.email_delivery_configured?'готов':'НЕ НАСТРОЕН')+(data.capabilities.email_delivery_configuration_error?'<br><span class="bad">'+esc(data.capabilities.email_delivery_configuration_error)+'</span>':'');
  const reviewPayment=[...data.payments].reverse().find(x=>x.code==='M1_SELF_FILING_PACKAGE'&&['PAID_REVIEW','REFUND_PENDING','REFUND_DECLINED'].includes(String(x.status)));
  const reviewCard=document.getElementById('paymentReviewCard');
@@ -800,9 +835,10 @@ function render(){
  document.getElementById('file').disabled=!(c.status==='M1_SELF_FILING_PREPARATION'&&a.can_mutate);
  document.getElementById('uploadCard').style.display=(c.status==='M1_SELF_FILING_PREPARATION'&&a.can_mutate)?'block':'none';
 }
+function toggleActDate(){const signed=document.getElementById('actSigned').checked,dateInput=document.getElementById('actDate');dateInput.disabled=!signed;if(!signed)dateInput.value=''}
 async function startReview(){try{await post('/self-filing/cases/'+caseId+'/review/start',payload())}catch(e){feedback(e.message,true)}}
 async function requestDocs(){try{await post('/self-filing/cases/'+caseId+'/request-documents',payload({reason:document.getElementById('reason').value}))}catch(e){feedback(e.message,true)}}
-async function approve(){const confirmed=document.getElementById('completeConfirm').checked;if(!confirmed){feedback('Сначала явно подтвердите полноту комплекта документов.',true);return}try{await post('/self-filing/cases/'+caseId+'/approve-for-payment',payload({court_name:document.getElementById('court').value,court_address:document.getElementById('courtAddress').value,jurisdiction_basis:document.getElementById('basis').value,jurisdiction_note:document.getElementById('note').value,completeness_confirmed:confirmed}))}catch(e){feedback(e.message,true)}}
+async function approve(){const confirmed=document.getElementById('completeConfirm').checked,signed=document.getElementById('actSigned').checked,actDate=document.getElementById('actDate').value;if(!confirmed){feedback('Сначала явно подтвердите полноту комплекта документов.',true);return}if(signed&&!actDate){feedback('Укажите дату подписания акта передачи.',true);return}try{await post('/self-filing/cases/'+caseId+'/approve-for-payment',payload({court_name:document.getElementById('court').value,court_address:document.getElementById('courtAddress').value,jurisdiction_basis:document.getElementById('basis').value,jurisdiction_note:document.getElementById('note').value,completeness_confirmed:confirmed,transfer_act_signed:signed,transfer_act_date:signed?actDate:null}))}catch(e){feedback(e.message,true)}}
 async function resolvePayment(decision){const card=document.getElementById('paymentReviewCard'),paymentId=Number(card.dataset.paymentId||0),comment=document.getElementById('financialComment').value;if(!paymentId){feedback('Платёж для сверки не найден',true);return}try{await post('/self-filing/cases/'+caseId+'/payment-review/'+paymentId+'/resolve',payload({decision,comment}));document.getElementById('financialComment').value=''}catch(e){feedback(e.message,true)}}
 async function uploadPackage(){const f=document.getElementById('file').files[0],dtype=document.getElementById('deliverableType').value;if(!f){feedback('Выберите файл',true);return}try{const out=await api('/self-filing/cases/'+caseId+'/package',{method:'POST',headers:{'x-file-name':f.name,'x-file-type':f.type||'application/octet-stream','x-deliverable-type':dtype,'x-package-version':String(data.package.version)},body:f});feedback('Документ утверждён. SHA '+String(out.sha256||'').slice(0,12));document.getElementById('file').value='';await load()}catch(e){feedback(e.message,true)}}
 async function retryEmail(){try{await post('/self-filing/cases/'+caseId+'/email/retry',payload())}catch(e){feedback(e.message,true)}}
