@@ -11,6 +11,10 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.domain.cases.case_history import add_case_history_event
+from app.domain.cases.self_filing_documents import (
+    SELF_FILING_DELIVERABLE_FIELDS,
+    SELF_FILING_DELIVERABLE_TYPES,
+)
 from app.domain.cases.self_filing_service import (
     EMAIL_FAILED,
     EMAIL_QUEUED,
@@ -178,62 +182,102 @@ class SelfFilingEmailSender:
         *,
         package: SelfFilingPackage,
         case: Case,
-        document: Document,
+        documents: list[Document],
     ) -> EmailMessage:
         if not package.delivery_email or not package.email_confirmed_at:
             raise ValueError("Email клиента не подтверждён")
-        if (
-            document.document_type != "SELF_FILING_PACKAGE"
-            or document.status != DocumentStatus.APPROVED
-            or not document_is_usable(document)
-        ):
-            raise ValueError("Итоговый пакет не прошёл проверку и одобрение")
 
-        storage = LocalStorageService()
-        plaintext = await asyncio.to_thread(
-            storage.read_document_bytes,
-            document.file_path,
-            expected_case_id=int(case.id),
-            expected_sha256=document.sha256,
-            encryption_key_id=document.encryption_key_id,
-            encryption_envelope_id=document.encryption_envelope_id,
-            encrypted_data_key=document.encrypted_data_key,
-            encrypted_data_key_nonce=document.encrypted_data_key_nonce,
-        )
+        by_type = {str(item.document_type): item for item in documents}
+        if set(by_type) != set(SELF_FILING_DELIVERABLE_TYPES):
+            raise ValueError(
+                "Email можно отправить только после готовности ровно четырёх документов"
+            )
+        for dtype in SELF_FILING_DELIVERABLE_TYPES:
+            document = by_type[dtype]
+            if (
+                document.status != DocumentStatus.APPROVED
+                or not document_is_usable(document)
+            ):
+                raise ValueError(
+                    f"Документ {dtype} не прошёл проверку и одобрение"
+                )
 
         message = EmailMessage(policy=SMTP)
         message["Subject"] = (
-            f"Готовый пакет документов — обращение {case.case_number}"
+            f"Судебный комплект — обращение {case.case_number}"
         )
         message["From"] = str(settings.self_filing_smtp_from_email).strip()
         message["To"] = str(package.delivery_email)
         message["Message-ID"] = package.email_message_id or _stable_message_id(package)
+
+        clarification = (
+            "Акт передачи квартиры не был подписан на дату оплаты услуги. "
+            "Расчёт суммы иска зафиксирован на дату оплаты. Дорожная карта "
+            "объясняет, как в судебном заседании уточнить исковые требования "
+            "и представить новый расчёт."
+            if package.claim_update_in_court_required
+            else
+            "Акт передачи квартиры подписан. Расчёт суммы иска зафиксирован "
+            "на дату подписания акта."
+        )
         message.set_content(
-            "Готовый пакет документов для самостоятельной подачи в суд приложен к письму.\n\n"
-            f"Обращение: {case.case_number}\n"
-            f"Суд, подтверждённый юристом: {package.court_name or 'уточняется'}\n"
-            f"Адрес суда: {package.court_address or 'уточняется'}\n\n"
-            "Услуга включает подготовку пакета документов. Представительство в суде "
-            "не входит: распечатку/подачу документов, участие в заседаниях и дальнейшие "
-            "процессуальные действия вы выполняете самостоятельно, если отдельно не "
-            "заказана иная услуга.\n\n"
-            "Сохраните это письмо и приложенный файл. По вопросам используйте переписку "
-            "по вашему обращению в Legal Concierge."
+            "Готов судебный комплект для самостоятельной подачи.
+
+"
+            "В письмо вложены ровно четыре документа:
+"
+            "1. Претензия.
+"
+            "2. Исковое заявление.
+"
+            "3. Расчёт суммы иска.
+"
+            "4. Дорожная карта клиента.
+
+"
+            f"Обращение: {case.case_number}
+"
+            f"Суд, подтверждённый юристом: {package.court_name or 'уточняется'}
+"
+            f"Адрес суда: {package.court_address or 'уточняется'}
+"
+            f"Дата расчёта суммы иска: "
+            f"{package.claim_calculation_cutoff_date.isoformat() if package.claim_calculation_cutoff_date else 'не зафиксирована'}
+
+"
+            f"{clarification}
+
+"
+            "Представительство в суде в эту услугу не входит. Сохраните письмо "
+            "и все четыре вложения; дальнейшие действия выполняйте по дорожной карте."
         )
 
-        mime = str(document.mime_type or "application/octet-stream")
-        maintype, subtype = (
-            mime.split("/", 1)
-            if "/" in mime
-            else ("application", "octet-stream")
-        )
-        filename = Path(str(document.file_name or "court-package.pdf")).name
-        message.add_attachment(
-            plaintext,
-            maintype=maintype,
-            subtype=subtype,
-            filename=filename,
-        )
+        storage = LocalStorageService()
+        for dtype in SELF_FILING_DELIVERABLE_TYPES:
+            document = by_type[dtype]
+            plaintext = await asyncio.to_thread(
+                storage.read_document_bytes,
+                document.file_path,
+                expected_case_id=int(case.id),
+                expected_sha256=document.sha256,
+                encryption_key_id=document.encryption_key_id,
+                encryption_envelope_id=document.encryption_envelope_id,
+                encrypted_data_key=document.encrypted_data_key,
+                encrypted_data_key_nonce=document.encrypted_data_key_nonce,
+            )
+            mime = str(document.mime_type or "application/octet-stream")
+            maintype, subtype = (
+                mime.split("/", 1)
+                if "/" in mime
+                else ("application", "octet-stream")
+            )
+            filename = Path(str(document.file_name or f"{dtype}.pdf")).name
+            message.add_attachment(
+                plaintext,
+                maintype=maintype,
+                subtype=subtype,
+                filename=filename,
+            )
         return message
 
     async def send_one(self, package_id: int) -> bool:
@@ -251,14 +295,21 @@ class SelfFilingEmailSender:
             return False
 
         case = await self.db.get(Case, int(package.case_id))
-        document = (
-            await self.db.get(Document, int(package.package_document_id))
-            if package.package_document_id
-            else None
-        )
-        if case is None or document is None:
+        deliverable_ids = [
+            getattr(package, SELF_FILING_DELIVERABLE_FIELDS[dtype])
+            for dtype in SELF_FILING_DELIVERABLE_TYPES
+        ]
+        documents: list[Document] = []
+        if case is not None and all(deliverable_ids):
+            for document_id in deliverable_ids:
+                document = await self.db.get(Document, int(document_id))
+                if document is not None:
+                    documents.append(document)
+        if case is None or len(documents) != len(SELF_FILING_DELIVERABLE_TYPES):
             package.email_delivery_status = EMAIL_FAILED
-            package.email_last_error = "Case или итоговый документ не найден"
+            package.email_last_error = (
+                "Case или один из четырёх документов судебного комплекта не найден"
+            )
             return False
 
         package.email_delivery_attempts = int(package.email_delivery_attempts or 0) + 1
@@ -271,7 +322,7 @@ class SelfFilingEmailSender:
             message = await self._compose(
                 package=package,
                 case=case,
-                document=document,
+                documents=documents,
             )
             await asyncio.to_thread(_smtp_send, message)
         except Exception as error:
@@ -323,8 +374,14 @@ class SelfFilingEmailSender:
                 "attempt": int(package.email_delivery_attempts),
                 "message_id": package.email_message_id,
                 "sent_at": sent_at.isoformat(),
-                "document_id": int(document.id),
-                "document_sha256": document.sha256,
+                "documents": [
+                    {
+                        "id": int(document.id),
+                        "type": str(document.document_type),
+                        "sha256": document.sha256,
+                    }
+                    for document in documents
+                ],
             },
         )
         await SelfFilingService(self.db).close_after_delivery(
