@@ -120,7 +120,7 @@ Execute the self-filing service mode with a real Telegram acceptance client, a s
 
 Required happy path:
 
-positive saved calculation → choose `SELF_FILING_PACKAGE` → exact service consent → region/address + verified profile/delivery email → source documents → lawyer completeness + jurisdiction + transfer-act confirmation → client opens provider checkout → confirmed 15 000 ₽ receipt → cutoff snapshot → lawyer approves exactly four deliverables → real SMTP email with exactly four attachments → closure.
+positive saved calculation → choose `SELF_FILING_PACKAGE` → exact service consent → region/address + verified profile/delivery email → source documents → lawyer completeness + jurisdiction + transfer-act confirmation → bot shows exact bank requisites + 15 000 ₽ + mandatory purpose → independent bank receipt confirmation → cutoff snapshot → lawyer approves exactly four deliverables → real SMTP email with exactly four attachments → closure.
 
 Mandatory product assertions:
 
@@ -130,7 +130,7 @@ Mandatory product assertions:
 4. **Transfer act not signed.** Lawyer confirms `transfer_act_signed=false`. After payment, cutoff equals the actual received service-payment date in the configured business timezone and `claim_update_in_court_required=true`; client roadmap/email copy explains later clarification of claims and a new calculation in court.
 5. **Calculation provenance is frozen.** The source snapshot records exact legal rule revision/key/hash and remains preliminary source material for the lawyer-authored calculation document; it is not presented as an automatic legal conclusion.
 6. **Exactly four deliverables.** READY is impossible until PRETRIAL_CLAIM, STATEMENT_OF_CLAIM, CLAIM_CALCULATION and CLIENT_ROADMAP are all APPROVED/usable. A fifth/legacy package file cannot satisfy or replace the set.
-7. **Online payment is real.** New self-filing sale in production-like acceptance does not use `offline` or `disabled`. The bot returns a provider checkout URL; persisted amount is exactly 15 000 ₽; provider request contains the Case reference/payment purpose generated server-side. If YooKassa offers SBP for the configured test shop, verify that provider method; otherwise record SBP as NOT PROVEN rather than fabricating it.
+7. **Bank payment is exact.** The self-filing payment shows the approved bar-association requisites, exact 15 000 ₽ and the mandatory marker `для адвоката Гамза Д.Г.`. `Payment.payment_purpose` and `payment_details_snapshot` are persisted before the client sees them. No YooKassa/Robokassa/card/SBP action is exposed for this service. Receipt is applied only after independent bank/accounting reconciliation.
 8. **Three-calendar-day promise.** `sla_started_at == payment_confirmed_at` and `sla_due_at == payment_confirmed_at + 3 calendar days`. Weekend/holiday boundaries do not extend this customer promise.
 9. **Email is the confirmed profile address.** Verified address is persisted in both the self-filing package and user profile; the actual email arrives at that address with exactly four attachments and stable Message-ID evidence.
 10. **No duplicate money/delivery.** Provider retry, Telegram retry, email retry and stale buttons do not create a second charge, alter the frozen cutoff or close the Case before confirmed delivery.
@@ -179,7 +179,7 @@ A release using `PAYMENT_PROVIDER=offline` is accepted only when all of the foll
 
 `PAYMENT_PROVIDER=disabled` is not an accepted production-ready substitute for this gate.
 
-**Self-filing exception:** this offline acceptance contract does not authorize new `SELF_FILING_PACKAGE` sales. The customer-approved self-filing flow requires a bot-generated external checkout URL. If the candidate is `offline`, the self-filing sales flag must remain off.
+**Self-filing specialization:** self-filing uses the approved bar-association bank requisites rather than a generic team-defined offline instruction. The acceptance must verify exact recipient/bank fields, frozen snapshot, mandatory purpose text and independent receipt confirmation.
 
 ### Automated LIVE_REQUIRED provider baseline
 
@@ -189,7 +189,7 @@ For an `offline` release, the provider-connectivity step is **not applicable** a
 
 The YooKassa baseline proves provider connectivity/idempotent creation only. It does **not** prove provider-side paid/refund lifecycle.
 
-For the self-filing customer contract, acceptance must additionally inspect the created test-shop payment: exact 15 000 ₽ amount, Case-bound description/payment purpose, returned confirmation URL and no client-entered recipient/payment-purpose fields. Availability of a specific hosted checkout method such as SBP is provider/shop configuration evidence, not a source-code assumption.
+The YooKassa provider baseline is unrelated to the self-filing customer contract unless another service deliberately enables YooKassa. Self-filing itself must not create a provider payment object.
 
 ### Application/PostgreSQL financial semantics
 
