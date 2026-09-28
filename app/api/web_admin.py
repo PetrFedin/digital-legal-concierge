@@ -2,16 +2,18 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Header, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.admin.case_detail_page import CASE_DETAIL_HTML
 from app.api.admin import (
     payment_can_be_confirmed_offline,
     payment_can_be_manually_confirmed,
     require_admin,
 )
+from app.config import settings
 from app.db.session import get_db
 from app.domain.cases.admin_manual_status_policy import (
     M1_FINANCIAL_MANAGED_STATUSES,
@@ -296,6 +298,31 @@ async def case_workspace(
     }
 
 
+@router.get("/admin/cases/{case_id}/ui", response_class=HTMLResponse)
+async def admin_case_detail_ui(
+    case_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    """Authenticated detailed Case card used by all admin payment links."""
+
+    token = x_admin_token or request.cookies.get(settings.admin_session_cookie)
+    if not token:
+        return RedirectResponse(
+            url=f"/login?next=/admin/cases/{int(case_id)}/ui",
+            status_code=303,
+        )
+    require_admin(token)
+    case = await db.get(Case, int(case_id))
+    if case is None:
+        raise HTTPException(status_code=404, detail="Дело не найдено")
+    return HTMLResponse(
+        CASE_DETAIL_HTML.replace("__CASE_ID__", str(int(case_id))),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @router.get("/admin-ui", response_class=HTMLResponse)
 async def admin_ui():
     return HTMLResponse(ADMIN_HTML)
@@ -306,13 +333,13 @@ ADMIN_HTML = r"""
 <html lang="ru">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Digital Legal Concierge — рабочий кабинет</title>
+<title>Рабочий кабинет администратора</title>
 <style>
 :root{--bg:#f4f6fa;--surface:#fff;--ink:#172033;--muted:#667085;--line:#e4e7ec;--primary:#3157d5;--primary-soft:#eef2ff;--green:#14804a;--green-soft:#ecfdf3;--red:#b42318;--red-soft:#fef3f2;--amber:#a15c00;--amber-soft:#fff7e6;--shadow:0 10px 30px rgba(16,24,40,.07)}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif}header{background:linear-gradient(135deg,#111827,#26334f);color:#fff;padding:18px 24px;display:flex;justify-content:space-between;align-items:center;gap:16px}header h1{font-size:20px;margin:0 0 4px}header p{margin:0;color:#d0d5dd;font-size:13px}.layout{display:grid;grid-template-columns:230px minmax(0,1fr) 370px;min-height:calc(100vh - 76px)}nav,.side{background:var(--surface);padding:18px}.side{border-left:1px solid var(--line);overflow:auto}nav{border-right:1px solid var(--line)}.content{padding:22px;overflow:auto}.nav-title{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:14px 10px 6px}.nav-button{display:block;width:100%;text-align:left;border:0;background:transparent;color:var(--ink);border-radius:10px;padding:10px 11px;cursor:pointer;font-weight:650}.nav-button:hover,.nav-button.active{background:var(--primary-soft);color:#2445b5}.header-actions,.toolbar,.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.toolbar{justify-content:space-between;margin-bottom:14px}.card{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:var(--shadow)}.metric-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.metric{border:1px solid var(--line);background:#fff;border-radius:14px;padding:15px;cursor:pointer;text-align:left}.metric:hover{border-color:#b8c4f4;background:var(--primary-soft)}.metric b{display:block;font-size:27px;margin-bottom:4px}.metric span{font-size:13px;color:var(--muted)}.metric.urgent{background:var(--red-soft);border-color:#fecdca}.metric.warn{background:var(--amber-soft);border-color:#fedf89}.section-title{display:flex;justify-content:space-between;align-items:end;gap:12px;margin:22px 0 10px}.section-title h2{margin:0;font-size:20px}.section-title p{margin:0;color:var(--muted);font-size:13px}.queue-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.queue-card{border:1px solid var(--line);background:#fff;border-radius:14px;padding:15px;cursor:pointer;text-align:left}.queue-card:hover{border-color:#b8c4f4;transform:translateY(-1px)}.queue-card b{font-size:17px}.queue-card .count{float:right;font-size:22px;font-weight:800}.list-item{border:1px solid var(--line);border-radius:13px;padding:13px;margin:9px 0;background:#fff}.list-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.badge{display:inline-flex;padding:4px 8px;border-radius:999px;background:#eef2f6;font-size:12px;font-weight:700}.badge.red{color:var(--red);background:var(--red-soft)}.badge.amber{color:var(--amber);background:var(--amber-soft)}.muted{font-size:13px;color:var(--muted)}.ok{color:var(--green)}.bad{color:var(--red)}.warn-text{color:var(--amber)}.action-box{background:var(--primary-soft);border:1px solid #c7d2fe;border-radius:13px;padding:13px;margin:12px 0}.action-box b{display:block;margin-bottom:5px}.data-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.data-cell{background:#f8fafc;border-radius:10px;padding:10px}.data-cell span{display:block;color:var(--muted);font-size:12px;margin-bottom:3px}button,.button{border:0;border-radius:9px;padding:9px 12px;background:var(--primary);color:#fff;font-weight:700;cursor:pointer;text-decoration:none;display:inline-block}button.secondary,.button.secondary{background:#475467}button.green{background:var(--green)}button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.55;cursor:wait}.empty,.error,.loading{padding:28px;text-align:center;border:1px dashed var(--line);border-radius:14px;color:var(--muted)}.error{color:var(--red);background:var(--red-soft)}table{width:100%;border-collapse:collapse}th,td{padding:10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{font-size:12px;color:var(--muted);text-transform:uppercase}input,select,textarea{width:100%;padding:9px;border:1px solid #d0d5dd;border-radius:9px;margin:5px 0}textarea{min-height:90px;resize:vertical}.raw-toggle{font-size:12px;color:var(--muted);cursor:pointer}pre{white-space:pre-wrap;word-break:break-word;background:#111827;color:#e5e7eb;padding:12px;border-radius:10px;max-height:240px;overflow:auto}.side h3{margin-top:0}.side-section{border-top:1px solid var(--line);padding-top:14px;margin-top:14px}@media(max-width:1120px){.layout{grid-template-columns:210px 1fr}.side{grid-column:1/-1;border-left:0;border-top:1px solid var(--line)}}@media(max-width:760px){header{align-items:flex-start;flex-direction:column}.layout{display:block}nav{display:flex;gap:6px;overflow:auto;padding:10px;border-right:0}.nav-title{display:none}.nav-button{white-space:nowrap;width:auto}.content{padding:14px}.metric-grid,.queue-grid{grid-template-columns:1fr 1fr}.side{padding:14px}}@media(max-width:500px){.metric-grid,.queue-grid,.data-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
-<header><div><h1>⚖ Digital Legal Concierge</h1><p>Операционный кабинет администратора</p></div><div class="header-actions"><a class="button secondary" href="/message-center/ui">Сообщения</a><a class="button secondary" href="/admin/sla/ui">SLA</a><a class="button secondary" href="/operator">Все разделы</a><form method="post" action="/logout" style="margin:0"><button class="secondary" type="submit">Выйти</button></form></div></header>
+<header><div><h1>⚖ Рабочий кабинет администратора</h1><p>Операционный кабинет администратора</p></div><div class="header-actions"><a class="button secondary" href="/message-center/ui">Сообщения</a><a class="button secondary" href="/admin/sla/ui">SLA</a><a class="button secondary" href="/operator">Все разделы</a><form method="post" action="/logout" style="margin:0"><button class="secondary" type="submit">Выйти</button></form></div></header>
 <div class="layout">
 <nav><div class="nav-title">Работа</div><button class="nav-button active" data-tab="dashboard" onclick="showTab('dashboard',this)">Обзор</button><button class="nav-button" data-tab="queue" onclick="showTab('queue',this)">Рабочие очереди</button><button class="nav-button" data-tab="cases" onclick="showTab('cases',this)">Все дела</button><button class="nav-button" data-tab="documents" onclick="showTab('documents',this)">Документы</button><div class="nav-title">Команда</div><button class="nav-button" data-tab="lawyers" onclick="showTab('lawyers',this)">Юристы</button><button class="nav-button" data-tab="notifications" onclick="showTab('notifications',this)">Уведомления</button><div class="nav-title">Система</div><button class="nav-button" data-tab="payments" onclick="showTab('payments',this)">Платежи</button><button class="nav-button" data-tab="settings" onclick="showTab('settings',this)">Настройки</button></nav>
 <main class="content"><div class="toolbar"><div><b id="pageTitle">Обзор</b><div id="freshness" class="muted"></div></div><div class="row"><button class="secondary" onclick="reloadCurrent(this)">Обновить</button><button data-global-action="scheduler" class="green" onclick="runScheduler(this)">Запустить проверки</button></div></div><div id="message" class="muted" role="status" aria-live="polite"></div><div id="view" class="card"><div class="loading">Загрузка…</div></div></main>
