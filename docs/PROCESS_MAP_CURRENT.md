@@ -844,3 +844,10 @@ Whenever anything changes:
 - Removed `Digital Legal Concierge` from visible staff page titles in favor of neutral `Рабочий кабинет / Дела клиентов`. The customer-facing bot name itself is **not falsely declared solved**: Telegram display name/username is external and a replacement name has not yet been approved; PM-029 records that blocker.
 - Exact four-document contract remains unchanged and is consistent with the supplied roadmap: pretension, statement of claim, claim calculation and roadmap.
 - Runtime remains unproven. Before activation require exact-head CI/migrations 0026→0029, 3+ real client Telegram accounts, real bank transfer/reconciliation, both act/no-act cutoff branches and real SMTP receipt of all four attachments.
+
+## 2026-09-28 — PM-027 final source correction after bank-details verification
+
+- Rechecked the customer-provided requisites against the supplied source image and corrected the OGRN snapshot to the 13-digit value `1030100534331`; focused PM-027 tests now lock that exact value and the validation rule rejects a malformed length.
+- Hardened the administrator receipt boundary for the new self-filing `bank_transfer` provider identity: it is confirmable only when both the frozen requisites snapshot and mandatory payment purpose are present, there is no external payment URL, the payment is still pending/waiting, and the global production mode permits authenticated offline/bank reconciliation.
+- Admin payment projections now expose the frozen purpose/requisites snapshot needed for reconciliation. The canonical successful-payment application boundary remains the only authority that can turn the verified bank receipt into received-money state and start the three-calendar-day self-filing delivery clock.
+- Migration head is `20260928_0029`; CI/focused migration proof has been updated accordingly. This source correction still requires exact-head executable runner evidence and real Timeweb/Telegram/bank/SMTP acceptance before release.
