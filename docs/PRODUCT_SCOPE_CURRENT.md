@@ -11,7 +11,7 @@ Digital Legal Concierge supports exactly two legal routes:
 - **M1 — standard recovery / legal case handling**;
 - **M2 — paid consultation**.
 
-There is no M3/M4 or other legal route in the current product. Telegram is the client cabinet. A separate client web cabinet is out of scope. New legal services, a new CRM, a second payment product, a separate calendar product and AI legal decision-making are out of scope unless a purely technical mechanism is physically required to make M1/M2 safe and complete.
+There is no M3/M4 or other legal route in the current product. Telegram is the client cabinet. A separate client web cabinet is out of scope. New legal routes, a new CRM, a second payment product, a separate calendar product and AI legal decision-making are out of scope unless explicitly approved here. The customer-approved self-filing court-document product is **not** a third route: it is an M1 service mode recorded below.
 
 `MVP` in historical specification filenames defines the functional boundary only. It does **not** define the accepted quality level. M1/M2 are expected to meet production-grade correctness, security, recoverability, idempotency, runtime verification and operations standards.
 
@@ -49,11 +49,30 @@ A stale/crafted Case-selection callback cannot select a terminal or foreign Case
 
 ## M1 product route
 
-The M1 route covers the existing approved chain only:
+After a positive saved calculation the client has two M1 commercial choices plus the separate M2 consultation choice. These are product choices, not new legal routes.
 
-calculation → client decision → exact-version consent → documents → lawyer review → accept/request/reject → service contract → initial payment → power of attorney → claim → statutory wait → court evidence/stage → second payment → enforcement → actual recovered amount → success fee → business closure.
+**M1 / full representation** keeps the approved chain:
 
-Client statements do not establish lawyer, court or financial facts. Those facts are recorded by the responsible role/service through the state machine and supporting evidence.
+calculation → client decision → exact-version consent → documents → lawyer review → accept/request/reject → service contract → initial payment → power of attorney → claim → statutory wait → court evidence/status → second payment → enforcement → actual recovered amount → success fee → business closure.
+
+**M1 / self-filing court package** is the customer-approved service mode `SELF_FILING_PACKAGE`:
+
+calculation → self-filing choice → service-specific consent → verified profile email → source documents → lawyer completeness/jurisdiction/transfer-act confirmation → online payment 15 000 ₽ → immutable calculation-cutoff snapshot → lawyer preparation/approval of exactly four court documents → email delivery → closure.
+
+The four deliverables are exactly:
+
+1. pretension / pre-trial claim (`Претензия`);
+2. statement of claim (`Исковое заявление`);
+3. claim-amount calculation (`Расчёт суммы иска`);
+4. client roadmap (`Дорожная карта клиента`).
+
+The claim-calculation cutoff is a customer-approved business rule. If the responsible lawyer confirms that the transfer act is signed, the cutoff is the act date. If the act is not signed, the cutoff is the actual service-payment date; the roadmap must explain that the client will request clarification of claims in the hearing and provide a new calculation. The calculator snapshot is source material for the lawyer-authored calculation document and is not an automated legal conclusion.
+
+For new self-filing sales, offline/manual payment is not an accepted customer path. The bot must expose an external provider checkout URL. The provider payment session owns the merchant/payment details; amount and Case-bound payment purpose are populated from the persisted Payment rather than typed by the client.
+
+The completed self-filing result must be sent to the client's confirmed profile/delivery email within **3 calendar days after confirmed payment**. Representation in court is not included in this service mode.
+
+Client statements do not establish lawyer, transfer-act, court or financial facts. Those facts are recorded by the responsible role/service through the state machine and supporting evidence.
 
 ## M2 product route
 
@@ -90,7 +109,7 @@ The current release supports two deliberate production payment modes:
 - `offline` — a real financial obligation is persisted without manufacturing an external payment link. The client pays outside the bot using team-approved requisites. An authenticated administrator may confirm receipt only after independent bank/accounting reconciliation; the same canonical payment lifecycle then advances M1 or confirms the exact M2 reservation.
 - `yookassa` — an online provider mode enabled only when its release-specific provider evidence and credentials are deliberately approved.
 
-`disabled` is a fail-closed maintenance/development switch, not a production-ready payment mode and not permission to auto-mark money as received. `fake` remains local/test only.
+`disabled` is a fail-closed maintenance/development switch, not a production-ready payment mode and not permission to auto-mark money as received. `fake` remains local/test only. Existing full-representation/consultation operation may still use the separately accepted `offline` contract, but **new self-filing sales require a customer-facing online provider URL** and therefore fail closed when only `offline` is configured.
 
 M2 remains a paid consultation in `offline` mode: slot selection may create a payment obligation, but the slot becomes finally booked only after the administrator confirms actual receipt against the exact consultation/reservation context.
 
