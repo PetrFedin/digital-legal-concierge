@@ -31,6 +31,7 @@ from app.domain.cases.self_filing_service import (
 )
 from app.domain.cases.service_modes import M1ServiceMode
 from app.domain.documents.document_service import DuplicateDocumentError
+from app.domain.payments.bank_requisites import bank_requisites_snapshot
 from app.domain.documents.staff_upload_storage import save_staff_upload
 from app.domain.statuses.case_statuses import CaseStatus
 from app.models.calculation import Calculation
@@ -354,6 +355,9 @@ async def self_filing_context(
                 "title": item.title,
                 "amount": str(item.amount),
                 "status": str(item.status),
+                "provider": item.provider,
+                "payment_purpose": item.payment_purpose,
+                "payment_details_snapshot": item.payment_details_snapshot,
                 "updated_at": item.updated_at.isoformat() if item.updated_at else None,
             }
             for item in payments
@@ -370,6 +374,7 @@ async def self_filing_context(
                 email_delivery_configuration_error()
             ),
             "jurisdiction_bases": sorted(JURISDICTION_BASES),
+            "bank_requisites": bank_requisites_snapshot(),
             "business_timezone": settings.business_timezone,
             "business_timezone_label": settings.business_timezone_label,
         },
@@ -765,6 +770,7 @@ button,.button{border:0;border-radius:9px;background:var(--blue);color:#fff;padd
 <div class="muted">Если акт не подписан, расчёт для судебного комплекта будет привязан к дате фактической оплаты услуги. Если акт подписан — к дате акта.</div>
 <div class="actions"><button onclick="approve()">Подтвердить комплект и открыть 15 000 ₽</button></div>
 </div>
+<div class="card"><div class="eyebrow">Оплата клиента</div><div id="bankPayment" class="muted">Загрузка…</div></div>
 <div class="card" id="paymentReviewCard"><div class="eyebrow">Финансовая сверка</div><div id="paymentReview" class="muted"></div><label>Комментарий администратора</label><textarea id="financialComment" placeholder="Причина возобновления либо возврата, минимум 10 символов"></textarea><div class="actions"><button class="finance-action" onclick="resolvePayment('resume')">Запустить подготовку по полученным деньгам</button><button class="danger finance-action" onclick="resolvePayment('refund_pending')">Направить на контролируемый возврат</button></div></div>
 <div class="card"><div class="eyebrow">Доставка</div><div id="delivery" class="muted"></div><div class="actions"><button class="secondary" onclick="retryEmail()">Повторить email-доставку</button><button class="secondary" onclick="load()">Обновить</button></div></div>
 </aside></div></main>
@@ -819,6 +825,19 @@ function render(){
  document.getElementById('actSigned').checked=p.transfer_act_signed===true;
  if(p.transfer_act_date)document.getElementById('actDate').value=p.transfer_act_date;
  toggleActDate();
+ const bankPayment=[...data.payments].reverse().find(x=>x.code==='M1_SELF_FILING_PACKAGE');
+ const bank=data.capabilities.bank_requisites||{};
+ document.getElementById('bankPayment').innerHTML=
+   '<b>Только банковский перевод по реквизитам коллегии адвокатов.</b><br>'+
+   'Получатель: '+esc(bank.recipient||'—')+'<br>'+
+   'ИНН: '+esc(bank.inn||'—')+' · КПП: '+esc(bank.kpp||'—')+'<br>'+
+   'ОГРН: '+esc(bank.ogrn||'—')+'<br>'+
+   'р/с: '+esc(bank.settlement_account||'—')+'<br>'+
+   'к/с: '+esc(bank.correspondent_account||'—')+'<br>'+
+   'Банк: '+esc(bank.bank||'—')+'<br>'+
+   'БИК: '+esc(bank.bik||'—')+'<br><br>'+
+   '<b>Обязательная пометка:</b> '+esc((bankPayment&&bankPayment.payment_purpose)||bank.mandatory_purpose||'—')+
+   (bankPayment?'<br><br>Платёж #'+bankPayment.id+' · '+esc(bankPayment.amount)+' RUB · '+esc(bankPayment.status):'');
  document.getElementById('delivery').innerHTML='Адрес подтверждён: <b>'+(p.email_verified?'да':'нет')+'</b>'+(p.email_verification_pending?'<br>Код действует до: '+esc(dt(p.email_verification_expires_at))+'<br>Ошибочных попыток: '+p.email_verification_attempts:'')+'<br><br>Доставка пакета: <b>'+esc(p.email_delivery_status)+'</b><br>Попыток доставки: '+p.email_delivery_attempts+'<br>Message-ID: '+esc(p.email_message_id||'—')+'<br>Последняя ошибка: '+esc(p.email_last_error||'—')+'<br>Email provider: '+(data.capabilities.email_delivery_configured?'готов':'НЕ НАСТРОЕН')+(data.capabilities.email_delivery_configuration_error?'<br><span class="bad">'+esc(data.capabilities.email_delivery_configuration_error)+'</span>':'');
  const reviewPayment=[...data.payments].reverse().find(x=>x.code==='M1_SELF_FILING_PACKAGE'&&['PAID_REVIEW','REFUND_PENDING','REFUND_DECLINED'].includes(String(x.status)));
  const reviewCard=document.getElementById('paymentReviewCard');
