@@ -750,14 +750,14 @@ button,.button{border:0;border-radius:9px;background:var(--blue);color:#fff;padd
 @media(max-width:760px){.grid{grid-template-columns:1fr}.kv{grid-template-columns:1fr}.top{align-items:flex-start}.actions>*{flex:1;text-align:center}}
 </style></head>
 <body>
-<header><div class="top"><div><h1>📄 Пакет для самостоятельной подачи</h1><div id="sub" class="muted" style="color:#d0d5dd"></div></div><div class="links"><a href="/lawyer/workspace/ui">Кабинет юриста</a><a href="/admin/workdesk/ui">Workdesk</a><a href="/self-filing/readiness">Готовность услуги</a></div></div></header>
+<header><div class="top"><div><h1>📄 Пакет для самостоятельной подачи</h1><div id="sub" class="muted" style="color:#d0d5dd"></div></div><div class="links"><a href="/lawyer/workspace/ui">Кабинет юриста</a><a href="/admin/workdesk/ui">Дела клиентов</a><a href="/self-filing/readiness">Готовность услуги</a></div></div></header>
 <main><div id="feedback"></div><div class="grid"><section>
 <div class="card"><div class="eyebrow">Сейчас</div><div id="status" class="status">Загрузка…</div><div id="now" class="muted"></div><div id="facts" class="kv"></div></div>
 <div class="card"><div class="eyebrow">Документы</div><div id="docs"></div><div class="actions"><a id="materials" class="button secondary" href="#">Открыть защищённые материалы</a><a id="messages" class="button secondary" href="#">Переписка</a></div></div>
-<div class="card" id="uploadCard"><div class="eyebrow">Судебный комплект: ровно 4 документа</div><div class="muted">Загружайте финальные версии по отдельности: претензия, исковое заявление, расчёт суммы иска и дорожная карта клиента. Email-доставка откроется только когда утверждены все четыре.</div><label>Тип документа</label><select id="deliverableType"><option value="SELF_FILING_PRETRIAL_CLAIM">Претензия</option><option value="SELF_FILING_STATEMENT_OF_CLAIM">Исковое заявление</option><option value="SELF_FILING_CLAIM_CALCULATION">Расчёт суммы иска</option><option value="SELF_FILING_CLIENT_ROADMAP">Дорожная карта клиента</option></select><input id="file" type="file"><div class="actions"><button onclick="uploadPackage()">Утвердить документ</button></div></div>
+<div class="card" id="uploadCard"><div class="eyebrow">Судебный комплект: ровно 4 документа</div><div class="muted">Загружайте финальные версии по отдельности: претензия, исковое заявление, расчёт суммы иска и дорожная карта клиента. Email-доставка откроется только когда утверждены все четыре.</div><label>Тип документа</label><select id="deliverableType"><option value="SELF_FILING_PRETRIAL_CLAIM">Претензия</option><option value="SELF_FILING_STATEMENT_OF_CLAIM">Исковое заявление</option><option value="SELF_FILING_CLAIM_CALCULATION">Расчёт суммы иска</option><option value="SELF_FILING_CLIENT_ROADMAP">Дорожная карта клиента</option></select><input id="file" type="file"><div class="actions"><button class="lawyer-action" onclick="uploadPackage()">Утвердить документ</button></div></div>
 </section><aside>
-<div class="card"><div class="eyebrow">Действие юриста</div><div class="actions"><button onclick="startReview()">Начать проверку</button></div>
-<label>Что нужно дополнить</label><textarea id="reason" placeholder="Конкретно укажите отсутствующий документ или исправление"></textarea><button onclick="requestDocs()">Запросить документы</button>
+<div class="card"><div class="eyebrow">Действие юриста</div><div class="actions"><button class="lawyer-action" onclick="startReview()">Начать проверку</button></div>
+<label>Что нужно дополнить</label><textarea id="reason" placeholder="Конкретно укажите отсутствующий документ или исправление"></textarea><button class="lawyer-action" onclick="requestDocs()">Запросить документы</button>
 <hr style="border:0;border-top:1px solid var(--line);margin:16px 0">
 <label>Суд</label><input id="court" placeholder="Полное наименование суда">
 <label>Адрес суда</label><textarea id="courtAddress"></textarea>
@@ -768,11 +768,11 @@ button,.button{border:0;border-radius:9px;background:var(--blue);color:#fff;padd
 <label style="display:flex;gap:9px;align-items:flex-start;font-weight:600"><input id="actSigned" type="checkbox" style="width:auto;margin-top:3px" onchange="toggleActDate()"> <span>Акт передачи квартиры подписан.</span></label>
 <label>Дата подписания акта</label><input id="actDate" type="date" disabled>
 <div class="muted">Если акт не подписан, расчёт для судебного комплекта будет привязан к дате фактической оплаты услуги. Если акт подписан — к дате акта.</div>
-<div class="actions"><button onclick="approve()">Подтвердить комплект и открыть 15 000 ₽</button></div>
+<div class="actions"><button class="lawyer-action" onclick="approve()">Подтвердить комплект и открыть 15 000 ₽</button></div>
 </div>
 <div class="card"><div class="eyebrow">Оплата клиента</div><div id="bankPayment" class="muted">Загрузка…</div></div>
 <div class="card" id="paymentReviewCard"><div class="eyebrow">Финансовая сверка</div><div id="paymentReview" class="muted"></div><label>Комментарий администратора</label><textarea id="financialComment" placeholder="Причина возобновления либо возврата, минимум 10 символов"></textarea><div class="actions"><button class="finance-action" onclick="resolvePayment('resume')">Запустить подготовку по полученным деньгам</button><button class="danger finance-action" onclick="resolvePayment('refund_pending')">Направить на контролируемый возврат</button></div></div>
-<div class="card"><div class="eyebrow">Доставка</div><div id="delivery" class="muted"></div><div class="actions"><button class="secondary" onclick="retryEmail()">Повторить email-доставку</button><button class="secondary" onclick="load()">Обновить</button></div></div>
+<div class="card"><div class="eyebrow">Доставка</div><div id="delivery" class="muted"></div><div class="actions"><button class="secondary lawyer-action" onclick="retryEmail()">Повторить email-доставку</button><button class="secondary" onclick="load()">Обновить</button></div></div>
 </aside></div></main>
 <script>
 const qs=new URLSearchParams(location.search);const caseId=Number(qs.get('case_id'));let data=null;
@@ -849,7 +849,7 @@ function render(){
    reviewCard.style.display='none';
    reviewCard.dataset.paymentId='';
  }
- document.querySelectorAll('button').forEach(el=>{el.disabled=!a.can_mutate});
+ document.querySelectorAll('.lawyer-action').forEach(el=>{el.disabled=!a.can_mutate});
  document.querySelectorAll('.finance-action').forEach(el=>{el.disabled=!(a.can_financial_reconcile&&reviewPayment&&reviewPayment.status==='PAID_REVIEW')});
  document.getElementById('file').disabled=!(c.status==='M1_SELF_FILING_PREPARATION'&&a.can_mutate);
  document.getElementById('uploadCard').style.display=(c.status==='M1_SELF_FILING_PREPARATION'&&a.can_mutate)?'block':'none';
