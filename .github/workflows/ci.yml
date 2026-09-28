@@ -319,10 +319,11 @@ jobs:
             app/bot/client_case_view.py \
             migrations/versions/20260925_0026_self_filing_package.py \
             migrations/versions/20260928_0027_self_filing_customer_contract.py \
+            migrations/versions/20260928_0028_self_filing_transfer_act_fact.py \
             tests/test_pm027_self_filing_package.py \
             tests/test_pm027_self_filing_financial_reconciliation.py
 
-      - name: Prove migrations 0026-0027 and ORM parity
+      - name: Prove migrations 0026-0028 and ORM parity
         run: |
           rm -f pm027_ci.db
           alembic upgrade head
