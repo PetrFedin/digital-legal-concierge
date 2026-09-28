@@ -233,7 +233,7 @@ def test_case_detail_offline_confirmation_has_snapshot_reference_comment_and_can
     source = Path("app/admin/case_detail_page.py").read_text(encoding="utf-8")
 
     assert "offline_confirm_allowed" in source
-    assert "Подтвердить офлайн-поступление" in source
+    assert "Подтвердить поступление" in source
     assert "Банковский / бухгалтерский референс" in source
     assert "Основание подтверждения" in source
     assert "reference.length<3" in source
