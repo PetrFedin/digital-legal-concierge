@@ -5,7 +5,7 @@ from pathlib import Path
 
 from app.db.migrations import run_database_migrations
 
-HEAD_REVISION = "20260928_0028"
+HEAD_REVISION = "20260928_0029"
 RETENTION_TRIGGER = "trg_retention_destroy_document_keys"
 MESSAGE_SOURCE_INDEX = "uq_messages_sender_source_message"
 DOCUMENT_REVIEW_STARTED_INDEX = "ix_documents_review_started_at"
@@ -173,6 +173,8 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "event_key",
         "event_type",
         "provider_payment_id",
+        "payment_purpose",
+        "payment_details_snapshot",
         "payment_id",
         "payload_sha256",
         "status",
