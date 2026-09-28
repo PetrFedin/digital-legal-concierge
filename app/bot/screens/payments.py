@@ -29,6 +29,7 @@ from app.domain.consultations.consultation_no_payment_booking import (
     ConsultationNoPaymentBookingService,
 )
 from app.domain.consultations.slot_service import SlotUnavailableError
+from app.domain.payments.bank_requisites import bank_payment_instructions
 from app.domain.payments.mode import payments_disabled, payments_offline
 from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
@@ -97,13 +98,28 @@ def is_offline_payment_waiting_for_team(payment: Payment) -> bool:
     )
 
 
+def is_self_filing_bank_payment(payment: Payment) -> bool:
+    return bool(
+        str(payment.payment_code) == PaymentCode.M1_SELF_FILING_PACKAGE.value
+        and str(payment.provider or "") == "bank_transfer"
+        and not payment.payment_url
+    )
+
+
 def client_payment_status_label(payment: Payment) -> str:
+    if is_self_filing_bank_payment(payment) and payment.status in {
+        PaymentStatus.PENDING,
+        PaymentStatus.WAITING_CONFIRMATION,
+    }:
+        return "Ожидает банковского перевода и сверки"
     if is_offline_payment_waiting_for_team(payment):
         return "Ожидает подтверждения командой"
     return payment_status_label(payment.status)
 
 
 def client_payment_status_note(payment: Payment) -> str:
+    if is_self_filing_bank_payment(payment):
+        return bank_payment_instructions(amount=payment.amount)
     if not is_offline_payment_waiting_for_team(payment):
         return ""
     return (
@@ -641,7 +657,16 @@ async def start_payment(
         )
         return
 
-    if payments_offline():
+    if code == PaymentCode.M1_SELF_FILING_PACKAGE:
+        text = (
+            f"💳 {payment_title}\n"
+            f"Обращение № {case_number}\n\n"
+            + bank_payment_instructions(amount=payment_amount)
+            + "\n\nПосле подтверждения поступления денег результат будет отправлен "
+              "на подтверждённый email в течение 3 календарных дней. "
+              "Представительство в суде в эту услугу не входит."
+        )
+    elif payments_offline():
         if code == PaymentCode.M2_CONSULTATION_PAYMENT:
             next_step = (
                 "После подтверждения фактического поступления команда закрепит "
@@ -683,16 +708,6 @@ async def start_payment(
             f"Сумма: {money(payment_amount)}\n\n"
             "Вопрос и документы сохранены. После подтверждения оплаты выбранный "
             "слот станет окончательно вашим. Не используйте эту ссылку после выбора другого времени."
-        )
-    elif code == PaymentCode.M1_SELF_FILING_PACKAGE:
-        text = (
-            f"💳 {payment_title}\n"
-            f"Обращение № {case_number}\n\n"
-            f"Сумма: {money(payment_amount)}\n\n"
-            "После подтверждения оплаты начнётся срок выдачи результата — не более "
-            "3 календарных дней. Кнопка выше ведёт в платёжный сервис; сумма, "
-            "получатель и назначение платежа формируются в платёжном контуре "
-            "автоматически. Представительство в суде в эту услугу не входит."
         )
     elif code == PaymentCode.M1_INITIAL_PAYMENT:
         text = (
