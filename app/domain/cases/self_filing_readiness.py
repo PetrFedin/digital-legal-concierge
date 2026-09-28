@@ -121,8 +121,12 @@ async def self_filing_readiness(
         "external_email_delivery_verified": False,
         "production_ready": False,
         "remaining_external_proof": (
-            "Выполнить контролируемую реальную SMTP-доставку и зафиксировать "
-            "её Message-ID/время/получение до production activation."
+            "До controlled activation нужны три независимых внешних доказательства: "
+            "(1) реальная SMTP-доставка четырёх вложений с Message-ID/временем/получением; "
+            "(2) YooKassa test-shop checkout с рабочей внешней ссылкой, точной суммой "
+            "и Case-bound назначением платежа; (3) реальный Telegram-проход минимум "
+            "трёх разных клиентских аккаунтов/чатов, чтобы подтвердить отсутствие "
+            "скрытого single-user барьера."
         ),
         "blockers": blockers,
     }
