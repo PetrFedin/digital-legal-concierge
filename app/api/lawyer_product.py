@@ -176,7 +176,7 @@ async def business_timezone_guided_workspace_data(
                     item["priority"] = "normal"
                     item["recommended_action"] = "Ожидать подтверждение 15 000 ₽"
                     item["action_note"] = (
-                        "Срок 2 рабочих дня ещё не идёт: он начнётся после подтверждения оплаты."
+                        "Срок выдачи ещё не идёт: после подтверждения оплаты результат должен быть отправлен в течение 3 календарных дней."
                     )
                 elif status == "M1_SELF_FILING_PREPARATION":
                     due = package.sla_due_at if package is not None else None
