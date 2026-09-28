@@ -148,8 +148,10 @@ def test_mailbox_verification_contract_is_fail_closed_and_never_stores_plaintext
     assert first != "123456"
 
     model = read("app/models/self_filing_package.py")
-    migration = read("migrations/versions/20260925_0026_self_filing_package.py") + read(
-        "migrations/versions/20260928_0027_self_filing_customer_contract.py"
+    migration = (
+        read("migrations/versions/20260925_0026_self_filing_package.py")
+        + read("migrations/versions/20260928_0027_self_filing_customer_contract.py")
+        + read("migrations/versions/20260928_0028_self_filing_transfer_act_fact.py")
     )
     service = read("app/domain/cases/self_filing_service.py")
     sender = read("app/domain/cases/self_filing_email_sender.py")
@@ -393,10 +395,10 @@ def test_claim_calculation_cutoff_follows_customer_rule():
     )[0]
     assert 'basis = "TRANSFER_ACT_DATE"' in freeze
     assert 'basis = "SERVICE_PAYMENT_DATE"' in freeze
-    assert "cutoff = source.actual_transfer_date" in freeze
+    assert "cutoff = package.transfer_act_date" in freeze
     assert "cutoff = local_paid_at.date()" in freeze
     assert "update_in_court = True" in freeze
-    assert "is_preliminary=False" in freeze
+    assert "is_preliminary=True" in freeze
 
 
 def test_payment_and_sla_only_start_after_lawyer_completeness_gate():
@@ -410,6 +412,8 @@ def test_payment_and_sla_only_start_after_lawyer_completeness_gate():
 
     assert "_approved_document_gate" in approve
     assert "jurisdiction_confirmed_at" in approve
+    assert "transfer_act_signed" in approve
+    assert "transfer_act_date" in approve
     assert "require_email_delivery_configured" in approve
     assert "_require_customer_payment_provider" in approve
     assert "PaymentCode.M1_SELF_FILING_PACKAGE" in approve
