@@ -24,7 +24,7 @@ For one immutable candidate SHA:
 2. Full CI and all required PR checks execute and pass, including the `Process map maintenance contract` governance check.
 3. Dedicated PostgreSQL concurrency → Redis/Telegram runtime → browser staff E2E workflows execute and pass on that SHA.
 4. One complete `.github/workflows/live-required.yml` run passes and produces one SHA/run/attempt-bound `LIVE_REQUIRED_MANIFEST.json`.
-5. Real Telegram M1 and M2 persona walkthroughs execute with UI ↔ PostgreSQL ↔ Audit/PaymentEvent reconciliation.
+5. Real Telegram personas execute for M1 full representation, M1 self-filing and M2 with UI ↔ PostgreSQL ↔ Audit/PaymentEvent reconciliation. The self-filing acceptance must include at least three distinct client Telegram accounts/chats so a single-user-only deployment cannot pass.
 6. Encrypted backup → separate empty staging/restore database and storage → application evidence → normal restored-runtime usability executes and passes.
 7. Only after Gates 1–6 pass may YooKassa test-shop evidence be deliberately expanded to provider-side paid/refund scenarios that can be completed safely without any production credential, production shop, production callback or production operation.
 8. Only then may the release/merge decision be made.
@@ -114,6 +114,31 @@ Acceptance requires client UI, Case/Document/Payment projections, Case history/A
 
 State: **LIVE_REQUIRED**.
 
+### M1 self-filing customer-contract acceptance
+
+Execute the self-filing service mode with a real Telegram acceptance client, a separate responsible lawyer account and a separate admin/financial account against PostgreSQL/Redis and the same candidate image.
+
+Required happy path:
+
+positive saved calculation → choose `SELF_FILING_PACKAGE` → exact service consent → region/address + verified profile/delivery email → source documents → lawyer completeness + jurisdiction + transfer-act confirmation → client opens provider checkout → confirmed 15 000 ₽ receipt → cutoff snapshot → lawyer approves exactly four deliverables → real SMTP email with exactly four attachments → closure.
+
+Mandatory product assertions:
+
+1. **Three client accounts can enter the bot.** At least three distinct Telegram client chats must complete `/start` and a persisted read/write action; there must be no source or deployment allowlist that makes the bot usable only by one person.
+2. **Three commercial choices remain coherent.** After a positive saved calculation the client can choose full representation, the self-filing court package or M2 consultation without creating an M3 route.
+3. **Transfer act signed.** Lawyer confirms `transfer_act_signed=true` and exact act date. After payment, `claim_calculation_cutoff_date` equals that act date and `claim_update_in_court_required=false`.
+4. **Transfer act not signed.** Lawyer confirms `transfer_act_signed=false`. After payment, cutoff equals the actual received service-payment date in the configured business timezone and `claim_update_in_court_required=true`; client roadmap/email copy explains later clarification of claims and a new calculation in court.
+5. **Calculation provenance is frozen.** The source snapshot records exact legal rule revision/key/hash and remains preliminary source material for the lawyer-authored calculation document; it is not presented as an automatic legal conclusion.
+6. **Exactly four deliverables.** READY is impossible until PRETRIAL_CLAIM, STATEMENT_OF_CLAIM, CLAIM_CALCULATION and CLIENT_ROADMAP are all APPROVED/usable. A fifth/legacy package file cannot satisfy or replace the set.
+7. **Online payment is real.** New self-filing sale in production-like acceptance does not use `offline` or `disabled`. The bot returns a provider checkout URL; persisted amount is exactly 15 000 ₽; provider request contains the Case reference/payment purpose generated server-side. If YooKassa offers SBP for the configured test shop, verify that provider method; otherwise record SBP as NOT PROVEN rather than fabricating it.
+8. **Three-calendar-day promise.** `sla_started_at == payment_confirmed_at` and `sla_due_at == payment_confirmed_at + 3 calendar days`. Weekend/holiday boundaries do not extend this customer promise.
+9. **Email is the confirmed profile address.** Verified address is persisted in both the self-filing package and user profile; the actual email arrives at that address with exactly four attachments and stable Message-ID evidence.
+10. **No duplicate money/delivery.** Provider retry, Telegram retry, email retry and stale buttons do not create a second charge, alter the frozen cutoff or close the Case before confirmed delivery.
+
+Run the client-facing path with at least three distinct client Telegram accounts/chats. One complete paid self-filing journey is sufficient for the expensive provider/email evidence, while the additional accounts must at minimum prove independent bot access, identity persistence and no hidden single-user restriction.
+
+State: **LIVE_REQUIRED**.
+
 ## M2 persona acceptance
 
 Required path:
@@ -154,6 +179,8 @@ A release using `PAYMENT_PROVIDER=offline` is accepted only when all of the foll
 
 `PAYMENT_PROVIDER=disabled` is not an accepted production-ready substitute for this gate.
 
+**Self-filing exception:** this offline acceptance contract does not authorize new `SELF_FILING_PACKAGE` sales. The customer-approved self-filing flow requires a bot-generated external checkout URL. If the candidate is `offline`, the self-filing sales flag must remain off.
+
 ### Automated LIVE_REQUIRED provider baseline
 
 This provider-specific gate applies when the candidate enables YooKassa. It is intentionally limited to a safe YooKassa **test-shop** preflight + create + exact idempotent retry + retrieve. Every object must prove `test=true`; the payment remains unpaid/pending and the smoke does not open/complete confirmation.
@@ -161,6 +188,8 @@ This provider-specific gate applies when the candidate enables YooKassa. It is i
 For an `offline` release, the provider-connectivity step is **not applicable** and must not be simulated. The offline/manual acceptance matrix above replaces it for the payment mechanism actually deployed.
 
 The YooKassa baseline proves provider connectivity/idempotent creation only. It does **not** prove provider-side paid/refund lifecycle.
+
+For the self-filing customer contract, acceptance must additionally inspect the created test-shop payment: exact 15 000 ₽ amount, Case-bound description/payment purpose, returned confirmation URL and no client-entered recipient/payment-purpose fields. Availability of a specific hosted checkout method such as SBP is provider/shop configuration evidence, not a source-code assumption.
 
 ### Application/PostgreSQL financial semantics
 
