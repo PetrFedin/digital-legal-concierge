@@ -42,6 +42,7 @@ from app.domain.documents.document_service import (
 )
 from app.domain.payments.payment_lifecycle import PaymentLifecycleService
 from app.domain.payments.payment_service import PaymentService
+from app.domain.payments.bank_requisites import bank_requisites_ready
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.document_statuses import DocumentStatus
@@ -160,23 +161,15 @@ class SelfFilingService:
         return configured_days
 
     @staticmethod
-    def _require_customer_payment_provider() -> None:
-        mode = str(settings.payment_provider or "").strip().lower()
-        if mode == "yookassa":
-            if not str(settings.yookassa_shop_id or "").strip() or not str(
-                settings.yookassa_secret_key or ""
-            ).strip():
-                raise SelfFilingError(
-                    "Онлайн-оплата не настроена: для YooKassa нужны shop_id и secret_key"
-                )
-            return
-        if settings.app_env in {"local", "test"} and mode == "fake":
-            return
-        raise SelfFilingError(
-            "Для новой клиентской оплаты требуется ссылка на платёжный сервис. "
-            "В production настройте YooKassa; offline/disabled не открывают клиенту "
-            "кнопку перехода к оплате."
-        )
+    def _require_customer_payment_contract() -> None:
+        # Customer clarification of 28 Sep 2026: self-filing is paid only by
+        # bank transfer to the bar association account. Provider checkout is not
+        # part of this product contract.
+        if not bank_requisites_ready():
+            raise SelfFilingError(
+                "Банковские реквизиты коллегии адвокатов настроены неполно. "
+                "Открытие оплаты заблокировано до исправления."
+            )
 
     async def _freeze_claim_calculation(
         self,
@@ -969,7 +962,7 @@ class SelfFilingService:
         )
 
         require_email_delivery_configured()
-        self._require_customer_payment_provider()
+        self._require_customer_payment_contract()
         now = datetime.now(timezone.utc)
         await self._require_commercial_contract()
 
