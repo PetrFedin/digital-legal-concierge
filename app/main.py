@@ -116,7 +116,7 @@ def _namespace_duplicate_route_names(router_specs):
 
 
 def create_app():
-    app = FastAPI(title="Digital Legal Concierge Bot", version=VERSION)
+    app = FastAPI(title="Юридический сервис", version=VERSION)
     app.add_middleware(AdminSessionGuardMiddleware)
     app.add_middleware(RequestOriginGuardMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
