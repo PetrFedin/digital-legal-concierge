@@ -221,33 +221,18 @@ class SelfFilingEmailSender:
             "на дату подписания акта."
         )
         message.set_content(
-            "Готов судебный комплект для самостоятельной подачи.
-
-"
-            "В письмо вложены ровно четыре документа:
-"
-            "1. Претензия.
-"
-            "2. Исковое заявление.
-"
-            "3. Расчёт суммы иска.
-"
-            "4. Дорожная карта клиента.
-
-"
-            f"Обращение: {case.case_number}
-"
-            f"Суд, подтверждённый юристом: {package.court_name or 'уточняется'}
-"
-            f"Адрес суда: {package.court_address or 'уточняется'}
-"
+            "Готов судебный комплект для самостоятельной подачи.\n\n"
+            "В письмо вложены ровно четыре документа:\n"
+            "1. Претензия.\n"
+            "2. Исковое заявление.\n"
+            "3. Расчёт суммы иска.\n"
+            "4. Дорожная карта клиента.\n\n"
+            f"Обращение: {case.case_number}\n"
+            f"Суд, подтверждённый юристом: {package.court_name or 'уточняется'}\n"
+            f"Адрес суда: {package.court_address or 'уточняется'}\n"
             f"Дата расчёта суммы иска: "
-            f"{package.claim_calculation_cutoff_date.isoformat() if package.claim_calculation_cutoff_date else 'не зафиксирована'}
-
-"
-            f"{clarification}
-
-"
+            f"{package.claim_calculation_cutoff_date.isoformat() if package.claim_calculation_cutoff_date else 'не зафиксирована'}\n\n"
+            f"{clarification}\n\n"
             "Представительство в суде в эту услугу не входит. Сохраните письмо "
             "и все четыре вложения; дальнейшие действия выполняйте по дорожной карте."
         )
