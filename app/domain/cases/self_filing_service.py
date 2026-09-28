@@ -956,7 +956,7 @@ class SelfFilingService:
             )
 
         # Do not expose/take the 15k obligation unless the promised email
-        # delivery and a real client payment-link path are operationally ready.
+        # delivery and the approved bank-payment presentation/reconciliation path are operationally ready.
         from app.domain.cases.self_filing_email_sender import (
             require_email_delivery_configured,
         )
@@ -1136,7 +1136,7 @@ class SelfFilingService:
         """Resolve received money that could not atomically start package work.
 
         Only an administrator should call this method. It never invents money
-        truth: PAID_REVIEW already proves that the provider/offline authority
+        truth: PAID_REVIEW already proves that the bank/payment authority
         recorded received funds. A resume reuses the immutable paid_at timestamp;
         a refund decision moves only the financial record to REFUND_PENDING.
         """
