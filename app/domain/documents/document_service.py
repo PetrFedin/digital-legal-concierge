@@ -20,7 +20,11 @@ DOC_TITLES = {
     "CORRESPONDENCE": "Переписка",
     "POWER_OF_ATTORNEY": "Доверенность",
     "PASSPORT": "Паспорт / документ, удостоверяющий личность",
-    "SELF_FILING_PACKAGE": "Пакет документов для самостоятельной подачи в суд",
+    "SELF_FILING_PACKAGE": "Архивный пакет документов для самостоятельной подачи",
+    "SELF_FILING_PRETRIAL_CLAIM": "Претензия",
+    "SELF_FILING_STATEMENT_OF_CLAIM": "Исковое заявление",
+    "SELF_FILING_CLAIM_CALCULATION": "Расчёт суммы иска",
+    "SELF_FILING_CLIENT_ROADMAP": "Дорожная карта клиента",
     "OTHER": "Другой документ",
 }
 
