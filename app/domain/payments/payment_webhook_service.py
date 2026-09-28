@@ -453,7 +453,6 @@ class PaymentWebhookService:
                         )
                 except (
                     SelfFilingError,
-                    BusinessCalendarError,
                     SelfFilingEmailConfigurationError,
                     KeyError,
                     ValueError,
