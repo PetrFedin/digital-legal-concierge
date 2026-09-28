@@ -10,7 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db.session import get_db
 from app.domain.cases.case_responsibility import lawyer_can_access_case
-from app.domain.cases.self_filing_documents import publish_self_filing_package
+from app.domain.cases.self_filing_documents import (
+    SELF_FILING_DELIVERABLE_FIELDS,
+    SELF_FILING_DELIVERABLE_TYPES,
+    publish_self_filing_package,
+)
 from app.domain.cases.self_filing_email_sender import (
     SelfFilingEmailSender,
     email_delivery_configuration_error,
@@ -29,6 +33,7 @@ from app.domain.cases.service_modes import M1ServiceMode
 from app.domain.documents.document_service import DuplicateDocumentError
 from app.domain.documents.staff_upload_storage import save_staff_upload
 from app.domain.statuses.case_statuses import CaseStatus
+from app.models.calculation import Calculation
 from app.models.case import Case
 from app.models.document import Document
 from app.models.payment import Payment
@@ -223,6 +228,11 @@ async def self_filing_context(
             lawyer_id=actor.lawyer_id,
         )
     )
+    claim_calculation = (
+        await db.get(Calculation, int(package.claim_source_calculation_id))
+        if package.claim_source_calculation_id
+        else None
+    )
     return {
         "case": {
             "id": int(case.id),
@@ -230,7 +240,7 @@ async def self_filing_context(
             "status": str(case.status),
             "status_label": SELF_FILING_STATUS_LABELS.get(
                 str(case.status),
-                "Этап требует уточнения",
+                "Статус требует уточнения",
             ),
             "next_action": case.next_action,
             "service_mode": case.service_mode,
@@ -291,6 +301,19 @@ async def self_filing_context(
                 if package.payment_confirmed_at
                 else None
             ),
+            "claim_calculation_id": package.claim_source_calculation_id,
+            "claim_calculation_cutoff_date": (
+                package.claim_calculation_cutoff_date.isoformat()
+                if package.claim_calculation_cutoff_date
+                else None
+            ),
+            "claim_calculation_basis": package.claim_calculation_basis,
+            "claim_update_in_court_required": package.claim_update_in_court_required,
+            "claim_calculation_amount": (
+                str(claim_calculation.penalty_amount)
+                if claim_calculation and claim_calculation.penalty_amount is not None
+                else None
+            ),
             "sla_started_at": (
                 package.sla_started_at.isoformat() if package.sla_started_at else None
             ),
@@ -300,6 +323,10 @@ async def self_filing_context(
                 package.delivered_at.isoformat() if package.delivered_at else None
             ),
             "package_document_id": package.package_document_id,
+            "deliverables": {
+                dtype: getattr(package, SELF_FILING_DELIVERABLE_FIELDS[dtype])
+                for dtype in SELF_FILING_DELIVERABLE_TYPES
+            },
             "email_delivery_status": package.email_delivery_status,
             "email_delivery_attempts": int(package.email_delivery_attempts or 0),
             "email_message_id": package.email_message_id,
@@ -545,6 +572,18 @@ async def upload_self_filing_package(
             detail="Карточка пакета уже изменилась. Обновите экран перед загрузкой.",
         )
 
+    document_type = str(
+        request.headers.get("x-deliverable-type") or ""
+    ).strip().upper()
+    if document_type not in SELF_FILING_DELIVERABLE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Выберите один из четырёх документов: претензия, исковое заявление, "
+                "расчёт суммы иска или дорожная карта клиента"
+            ),
+        )
+
     original_name = str(request.headers.get("x-file-name") or "").strip()
     if not original_name:
         raise HTTPException(status_code=400, detail="Не передано имя итогового файла")
@@ -577,11 +616,13 @@ async def upload_self_filing_package(
             ),
             case=case,
             stored=stored,
+            document_type=document_type,
         )
         package = await SelfFilingService(db).mark_package_ready(
             case_id=int(case.id),
             lawyer_id=int(actor.lawyer.id),
             document_id=int(document.id),
+            document_type=document_type,
         )
         await db.commit()
     except UploadSecurityError as error:
@@ -618,6 +659,7 @@ async def upload_self_filing_package(
     return {
         "ok": True,
         "document_id": int(document.id),
+        "document_type": document_type,
         "document_version": int(document.version or 1),
         "sha256": document.sha256,
         "package_version": int(package.version or 1),
@@ -681,7 +723,7 @@ button,.button{border:0;border-radius:9px;background:var(--blue);color:#fff;padd
 <main><div id="feedback"></div><div class="grid"><section>
 <div class="card"><div class="eyebrow">Сейчас</div><div id="status" class="status">Загрузка…</div><div id="now" class="muted"></div><div id="facts" class="kv"></div></div>
 <div class="card"><div class="eyebrow">Документы</div><div id="docs"></div><div class="actions"><a id="materials" class="button secondary" href="#">Открыть защищённые материалы</a><a id="messages" class="button secondary" href="#">Переписка</a></div></div>
-<div class="card" id="uploadCard"><div class="eyebrow">Итоговый пакет</div><div class="muted">Загрузите только финальную проверенную версию. После публикации SHA-256 и версия фиксируются, а email-доставка ставится в очередь.</div><input id="file" type="file"><div class="actions"><button onclick="uploadPackage()">Утвердить и поставить на доставку</button></div></div>
+<div class="card" id="uploadCard"><div class="eyebrow">Судебный комплект: ровно 4 документа</div><div class="muted">Загружайте финальные версии по отдельности: претензия, исковое заявление, расчёт суммы иска и дорожная карта клиента. Email-доставка откроется только когда утверждены все четыре.</div><label>Тип документа</label><select id="deliverableType"><option value="SELF_FILING_PRETRIAL_CLAIM">Претензия</option><option value="SELF_FILING_STATEMENT_OF_CLAIM">Исковое заявление</option><option value="SELF_FILING_CLAIM_CALCULATION">Расчёт суммы иска</option><option value="SELF_FILING_CLIENT_ROADMAP">Дорожная карта клиента</option></select><input id="file" type="file"><div class="actions"><button onclick="uploadPackage()">Утвердить документ</button></div></div>
 </section><aside>
 <div class="card"><div class="eyebrow">Действие юриста</div><div class="actions"><button onclick="startReview()">Начать проверку</button></div>
 <label>Что нужно дополнить</label><textarea id="reason" placeholder="Конкретно укажите отсутствующий документ или исправление"></textarea><button onclick="requestDocs()">Запросить документы</button>
@@ -719,15 +761,20 @@ async function load(){
 function render(){
  const c=data.case,p=data.package,a=data.actor;
  document.getElementById('sub').textContent='Обращение '+c.number+' · '+data.client.name;
- document.getElementById('status').textContent=c.status_label||'Этап требует уточнения';
+ document.getElementById('status').textContent=c.status_label||'Статус требует уточнения';
  const roleNote=a.can_mutate?'Вы отвечаете за это обращение. Все решения ниже привязаны к текущей версии карточки.':'Режим просмотра: юридические решения доступны только ответственному юристу.';
- document.getElementById('now').innerHTML='<b>Главный следующий шаг:</b> '+esc(c.next_action||'Уточнить этап')+'<br>'+esc(roleNote);
+ document.getElementById('now').innerHTML='<b>Главное следующее действие:</b> '+esc(c.next_action||'Уточнить статус')+'<br>'+esc(roleNote);
  document.getElementById('facts').innerHTML=[
   ['Регион',p.region],
   ['Email',p.delivery_email],
   ['Email подтверждён',p.email_verified?('Да · '+dt(p.email_confirmed_at)):(p.email_verification_pending?'Ожидается код до '+dt(p.email_verification_expires_at):'Нет')],
   ['Полный комплект',dt(p.documents_complete_at)],['Суд',p.court_name],
-  ['Оплата подтверждена',dt(p.payment_confirmed_at)],['SLA до',dt(p.sla_due_at)],['Готово',dt(p.ready_at)],['Доставлено',dt(p.delivered_at)]
+  ['Оплата подтверждена',dt(p.payment_confirmed_at)],
+  ['Расчёт суммы иска на дату',p.claim_calculation_cutoff_date],
+  ['Основание даты',p.claim_calculation_basis],
+  ['Сумма расчёта',p.claim_calculation_amount],
+  ['Нужно уточнение в суде',p.claim_update_in_court_required===true?'Да':(p.claim_update_in_court_required===false?'Нет':'—')],
+  ['Выдать до',dt(p.sla_due_at)],['Готово',dt(p.ready_at)],['Доставлено',dt(p.delivered_at)]
  ].map(([k,v])=>'<div class="cell"><b>'+esc(k)+'</b><span>'+esc(v||'—')+'</span></div>').join('');
  document.getElementById('docs').innerHTML=data.documents.length?data.documents.map(d=>'<div class="doc"><b>'+esc(d.title)+' · v'+d.version+'</b><div class="muted">'+esc(d.status)+' · SHA '+esc(d.sha256_prefix||'—')+(d.lawyer_comment?'<br>'+esc(d.lawyer_comment):'')+'</div></div>').join(''):'<div class="muted">Документов нет.</div>';
  document.getElementById('materials').href='/document-access/ui?case_id='+caseId;
@@ -757,7 +804,7 @@ async function startReview(){try{await post('/self-filing/cases/'+caseId+'/revie
 async function requestDocs(){try{await post('/self-filing/cases/'+caseId+'/request-documents',payload({reason:document.getElementById('reason').value}))}catch(e){feedback(e.message,true)}}
 async function approve(){const confirmed=document.getElementById('completeConfirm').checked;if(!confirmed){feedback('Сначала явно подтвердите полноту комплекта документов.',true);return}try{await post('/self-filing/cases/'+caseId+'/approve-for-payment',payload({court_name:document.getElementById('court').value,court_address:document.getElementById('courtAddress').value,jurisdiction_basis:document.getElementById('basis').value,jurisdiction_note:document.getElementById('note').value,completeness_confirmed:confirmed}))}catch(e){feedback(e.message,true)}}
 async function resolvePayment(decision){const card=document.getElementById('paymentReviewCard'),paymentId=Number(card.dataset.paymentId||0),comment=document.getElementById('financialComment').value;if(!paymentId){feedback('Платёж для сверки не найден',true);return}try{await post('/self-filing/cases/'+caseId+'/payment-review/'+paymentId+'/resolve',payload({decision,comment}));document.getElementById('financialComment').value=''}catch(e){feedback(e.message,true)}}
-async function uploadPackage(){const f=document.getElementById('file').files[0];if(!f){feedback('Выберите файл',true);return}try{const out=await api('/self-filing/cases/'+caseId+'/package',{method:'POST',headers:{'x-file-name':f.name,'x-file-type':f.type||'application/octet-stream','x-package-version':String(data.package.version)},body:f});feedback('Итоговый пакет утверждён. SHA '+String(out.sha256||'').slice(0,12));await load()}catch(e){feedback(e.message,true)}}
+async function uploadPackage(){const f=document.getElementById('file').files[0],dtype=document.getElementById('deliverableType').value;if(!f){feedback('Выберите файл',true);return}try{const out=await api('/self-filing/cases/'+caseId+'/package',{method:'POST',headers:{'x-file-name':f.name,'x-file-type':f.type||'application/octet-stream','x-deliverable-type':dtype,'x-package-version':String(data.package.version)},body:f});feedback('Документ утверждён. SHA '+String(out.sha256||'').slice(0,12));document.getElementById('file').value='';await load()}catch(e){feedback(e.message,true)}}
 async function retryEmail(){try{await post('/self-filing/cases/'+caseId+'/email/retry',payload())}catch(e){feedback(e.message,true)}}
 load();
 </script></body></html>
