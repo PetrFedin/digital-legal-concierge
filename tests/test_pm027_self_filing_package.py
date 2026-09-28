@@ -141,7 +141,7 @@ def test_customer_bank_payment_and_four_document_contract_are_explicit():
     assert "Адыгейская Республиканская Коллегия Адвокатов" in bank
     assert 'inn="0105040071"' in bank
     assert 'kpp="010501001"' in bank
-    assert 'ogrn="10301000534331"' in bank
+    assert 'ogrn="1030100534331"' in bank
     assert 'settlement_account="40703810201000102939"' in bank
     assert 'correspondent_account="30101810600000000602"' in bank
     assert 'bik="046015602"' in bank
