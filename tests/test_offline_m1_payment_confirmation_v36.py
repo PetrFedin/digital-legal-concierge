@@ -165,6 +165,7 @@ async def test_admin_offline_success_fee_confirmation_closes_case_atomically(
         (PaymentCode.M1_COURT_PAYMENT, PaymentStatus.PENDING, None, None, True),
         (PaymentCode.M1_SUCCESS_FEE, PaymentStatus.WAITING_CONFIRMATION, None, None, True),
         (PaymentCode.M1_SELF_FILING_PACKAGE, PaymentStatus.PENDING, None, None, True),
+        (PaymentCode.M1_SELF_FILING_PACKAGE, PaymentStatus.PENDING, "bank_transfer", None, True),
         (PaymentCode.M2_CONSULTATION_PAYMENT, PaymentStatus.PENDING, None, None, True),
         (PaymentCode.M1_SUCCESS_FEE, PaymentStatus.PAID, None, None, False),
         (PaymentCode.M1_SUCCESS_FEE, PaymentStatus.FAILED, None, None, False),
@@ -195,6 +196,16 @@ def test_offline_confirmation_eligibility_is_narrow(
         status=status,
         provider=provider,
         payment_url=payment_url,
+        payment_purpose=(
+            "для адвоката Гамза Д.Г."
+            if provider == "bank_transfer"
+            else None
+        ),
+        payment_details_snapshot=(
+            {"recipient": "Адыгейская Республиканская Коллегия Адвокатов"}
+            if provider == "bank_transfer"
+            else None
+        ),
     )
 
     assert admin_module.payment_can_be_confirmed_offline(payment) is allowed
