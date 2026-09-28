@@ -27,6 +27,7 @@ from app.domain.calculator.calculator_service import CalculatorService
 from app.domain.calculator.rule_engine import (
     CalculationManualReviewRequired,
     CalculationRuleEngine,
+    CalculationRuleError,
     RuleBasedCalculationInput,
 )
 from app.domain.calculator.rule_revision_service import CalculationRuleRevisionService
@@ -250,6 +251,11 @@ class SelfFilingService:
             raise SelfFilingError(
                 "Финальный расчёт суммы иска требует ручной юридической проверки: "
                 + "; ".join(error.reasons)
+            ) from error
+        except CalculationRuleError as error:
+            raise SelfFilingError(
+                "Не удалось зафиксировать расчёт суммы иска по утверждённым правилам: "
+                + str(error)
             ) from error
 
         calculation = Calculation(
@@ -670,7 +676,7 @@ class SelfFilingService:
             new_value={
                 "service_mode": M1ServiceMode.SELF_FILING_PACKAGE.value,
                 "price_setting": "payments.m1_self_filing_package",
-                "sla_setting": "self_filing.sla_business_days",
+                "delivery_setting": "self_filing.delivery_calendar_days",
             },
         )
         await self.db.flush()
