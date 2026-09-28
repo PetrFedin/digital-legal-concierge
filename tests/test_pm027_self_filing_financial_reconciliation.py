@@ -59,12 +59,26 @@ def configure_smtp(monkeypatch) -> None:
     monkeypatch.setattr(settings, "self_filing_email_timeout_seconds", 30)
 
 
-def set_calendar_coverage(monkeypatch, value: str) -> None:
+def set_delivery_days(monkeypatch, value: int) -> None:
     monkeypatch.setitem(
-        DEFAULT_SETTINGS["self_filing.business_calendar_coverage_through"],
+        DEFAULT_SETTINGS["self_filing.delivery_calendar_days"],
         "value",
         value,
     )
+
+
+async def bypass_claim_snapshot(
+    self,
+    *,
+    case,
+    package,
+    payment_at,
+    actor_type,
+    actor_id,
+):
+    # Financial-reconciliation tests are intentionally scoped to received-money
+    # durability; the claim-calculation authority has dedicated PM-027 tests.
+    return None
 
 
 async def seed_payment_pending(session, *, suffix: int):
@@ -131,10 +145,15 @@ async def test_received_money_survives_failed_sla_activation(
     monkeypatch,
 ):
     configure_smtp(monkeypatch)
-    # Deliberately leave business-calendar coverage empty. The lawyer could have
-    # opened the payment when coverage existed, but runtime truth must preserve
-    # provider-confirmed money if coverage is missing when the payment arrives.
-    set_calendar_coverage(monkeypatch, "")
+    # Simulate configuration drift after the lawyer opened the payment. Runtime
+    # truth must preserve provider-confirmed money when the commercial contract
+    # cannot safely start delivery.
+    set_delivery_days(monkeypatch, 4)
+    monkeypatch.setattr(
+        SelfFilingService,
+        "_freeze_claim_calculation",
+        bypass_claim_snapshot,
+    )
 
     async with database(tmp_path, "self-filing-payment-review.db") as factory:
         async with factory() as session:
@@ -207,7 +226,12 @@ async def test_admin_resume_uses_original_money_time_and_starts_sla_once(
     monkeypatch,
 ):
     configure_smtp(monkeypatch)
-    set_calendar_coverage(monkeypatch, "")
+    set_delivery_days(monkeypatch, 4)
+    monkeypatch.setattr(
+        SelfFilingService,
+        "_freeze_claim_calculation",
+        bypass_claim_snapshot,
+    )
 
     async with database(tmp_path, "self-filing-payment-resume.db") as factory:
         async with factory() as session:
@@ -229,7 +253,7 @@ async def test_admin_resume_uses_original_money_time_and_starts_sla_once(
             assert payment.status == PaymentStatus.PAID_REVIEW
             assert original_paid_at is not None
 
-            set_calendar_coverage(monkeypatch, "2027-12-31")
+            set_delivery_days(monkeypatch, 3)
             package, resolved_payment = await SelfFilingService(
                 session
             ).resolve_received_payment_review(
@@ -259,7 +283,11 @@ async def test_admin_resume_uses_original_money_time_and_starts_sla_once(
                 started = started.replace(tzinfo=timezone.utc)
             if paid.tzinfo is None:
                 paid = paid.replace(tzinfo=timezone.utc)
-            assert started >= paid
+            assert started == paid
+            due = package.sla_due_at
+            if due.tzinfo is None:
+                due = due.replace(tzinfo=timezone.utc)
+            assert due == paid + timedelta(days=3)
 
             # Exact retry is idempotent after the package has already started.
             retry_package, retry_payment = await SelfFilingService(
@@ -281,7 +309,12 @@ async def test_admin_refund_keeps_case_out_of_preparation_and_blocks_client_repa
     monkeypatch,
 ):
     configure_smtp(monkeypatch)
-    set_calendar_coverage(monkeypatch, "")
+    set_delivery_days(monkeypatch, 4)
+    monkeypatch.setattr(
+        SelfFilingService,
+        "_freeze_claim_calculation",
+        bypass_claim_snapshot,
+    )
 
     async with database(tmp_path, "self-filing-payment-refund.db") as factory:
         async with factory() as session:
