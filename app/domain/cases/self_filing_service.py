@@ -6,6 +6,7 @@ import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,19 +14,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
-from app.domain.cases.self_filing_business_calendar import (
-    add_business_days,
-    load_business_calendar,
-)
 from app.domain.cases.self_filing_contract import (
     SELF_FILING_EMAIL_VERIFICATION_MAX_ATTEMPTS,
     SELF_FILING_EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS,
     SELF_FILING_EMAIL_VERIFICATION_PBKDF2_ROUNDS,
     SELF_FILING_EMAIL_VERIFICATION_TTL_MINUTES,
+    SELF_FILING_DELIVERY_CALENDAR_DAYS,
     SELF_FILING_PRICE_RUB,
-    SELF_FILING_SLA_BUSINESS_DAYS,
 )
 from app.domain.cases.service_modes import M1ServiceMode
+from app.domain.calculator.calculator_service import CalculatorService
+from app.domain.calculator.rule_engine import (
+    CalculationManualReviewRequired,
+    CalculationRuleEngine,
+    RuleBasedCalculationInput,
+)
+from app.domain.calculator.rule_revision_service import CalculationRuleRevisionService
+from app.domain.cases.self_filing_documents import (
+    SELF_FILING_DELIVERABLE_FIELDS,
+    SELF_FILING_DELIVERABLE_TYPES,
+)
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.documents.document_service import (
     DocumentService,
@@ -37,10 +45,12 @@ from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.document_statuses import DocumentStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
+from app.models.calculation import Calculation
 from app.models.case import Case
 from app.models.document import Document
 from app.models.payment import Payment
 from app.models.self_filing_package import SelfFilingPackage
+from app.models.user import User
 from app.system.settings_service import SettingsService
 
 
@@ -128,17 +138,17 @@ class SelfFilingService:
             str(await settings_service.get_value("payments.m1_self_filing_package"))
         )
         configured_days = int(
-            await settings_service.get_value("self_filing.sla_business_days")
+            await settings_service.get_value("self_filing.delivery_calendar_days")
         )
         if configured_price != SELF_FILING_PRICE_RUB:
             raise SelfFilingError(
                 "Стоимость услуги в настройках не соответствует согласованным "
                 f"{SELF_FILING_PRICE_RUB:.0f} ₽. Открытие или применение оплаты заблокировано."
             )
-        if configured_days != SELF_FILING_SLA_BUSINESS_DAYS:
+        if configured_days != SELF_FILING_DELIVERY_CALENDAR_DAYS:
             raise SelfFilingError(
-                "SLA услуги в настройках не соответствует согласованным "
-                f"{SELF_FILING_SLA_BUSINESS_DAYS} рабочим дням. "
+                "Срок выдачи в настройках не соответствует согласованным "
+                f"{SELF_FILING_DELIVERY_CALENDAR_DAYS} календарным дням после оплаты. "
                 "Открытие или применение оплаты заблокировано."
             )
         if payment is not None and Decimal(str(payment.amount)) != SELF_FILING_PRICE_RUB:
@@ -147,6 +157,156 @@ class SelfFilingService:
                 f"{SELF_FILING_PRICE_RUB:.0f} ₽; требуется финансовая сверка."
             )
         return configured_days
+
+    @staticmethod
+    def _require_customer_payment_provider() -> None:
+        mode = str(settings.payment_provider or "").strip().lower()
+        if mode == "yookassa":
+            if not str(settings.yookassa_shop_id or "").strip() or not str(
+                settings.yookassa_secret_key or ""
+            ).strip():
+                raise SelfFilingError(
+                    "Онлайн-оплата не настроена: для YooKassa нужны shop_id и secret_key"
+                )
+            return
+        if settings.app_env in {"local", "test"} and mode == "fake":
+            return
+        raise SelfFilingError(
+            "Для новой клиентской оплаты требуется ссылка на платёжный сервис. "
+            "В production настройте YooKassa; offline/disabled не открывают клиенту "
+            "кнопку перехода к оплате."
+        )
+
+    async def _freeze_claim_calculation(
+        self,
+        *,
+        case: Case,
+        package: SelfFilingPackage,
+        payment_at: datetime,
+        actor_type: str,
+        actor_id: int | None,
+    ) -> Calculation:
+        """Freeze the claim calculation required by the customer contract.
+
+        Signed transfer act -> cutoff is the act date.
+        No signed act -> cutoff is the service-payment date in the business
+        timezone and the roadmap must instruct the client to clarify claims and
+        provide a new calculation in court.
+        """
+
+        if package.claim_source_calculation_id:
+            existing = await self.db.get(
+                Calculation,
+                int(package.claim_source_calculation_id),
+            )
+            if existing is not None and int(existing.case_id) == int(case.id):
+                return existing
+
+        source = await CalculatorService(self.db).require_m1_eligible_calculation(
+            case_id=int(case.id)
+        )
+        if source.contract_price is None or source.planned_transfer_date is None:
+            raise SelfFilingError(
+                "Нельзя зафиксировать расчёт суммы иска: исходный расчёт неполный"
+            )
+
+        if bool(source.object_transferred):
+            if source.actual_transfer_date is None:
+                raise SelfFilingError(
+                    "Указано, что акт передачи подписан, но дата акта отсутствует"
+                )
+            cutoff = source.actual_transfer_date
+            basis = "TRANSFER_ACT_DATE"
+            update_in_court = False
+        else:
+            local_paid_at = payment_at.astimezone(
+                ZoneInfo(str(settings.business_timezone))
+            )
+            cutoff = local_paid_at.date()
+            basis = "SERVICE_PAYMENT_DATE"
+            update_in_court = True
+
+        revision = await CalculationRuleRevisionService(self.db).resolve(
+            calculation_date=cutoff
+        )
+        try:
+            result = CalculationRuleEngine().calculate(
+                RuleBasedCalculationInput(
+                    contract_price=Decimal(source.contract_price),
+                    planned_transfer_date=source.planned_transfer_date,
+                    calculation_date=cutoff,
+                    object_transferred=bool(source.object_transferred),
+                    actual_transfer_date=source.actual_transfer_date,
+                    client_type=str(source.client_type or "consumer"),
+                    unique_object=bool(source.unique_object),
+                    manual_review_flags=(),
+                ),
+                rule_revision_id=int(revision.id),
+                rule_revision_key=str(revision.revision_key),
+                rule_snapshot_sha256=str(revision.rules_sha256),
+                rule_snapshot=dict(revision.rules),
+            )
+        except CalculationManualReviewRequired as error:
+            raise SelfFilingError(
+                "Финальный расчёт суммы иска требует ручной юридической проверки: "
+                + "; ".join(error.reasons)
+            ) from error
+
+        calculation = Calculation(
+            case_id=int(case.id),
+            contract_price=result.contract_price,
+            planned_transfer_date=result.planned_transfer_date,
+            calculation_date=result.calculation_date,
+            actual_transfer_date=result.actual_transfer_date,
+            object_transferred=result.object_transferred,
+            delay_days=result.delay_days_chargeable,
+            delay_days_total=result.delay_days_total,
+            delay_days_chargeable=result.delay_days_chargeable,
+            moratorium_days=result.moratorium_days,
+            key_rate=result.key_rate,
+            consumer_multiplier=result.consumer_multiplier,
+            client_type=result.client_type,
+            unique_object=result.unique_object,
+            penalty_amount=result.penalty_amount,
+            gross_penalty_amount=result.gross_penalty_amount,
+            amount_cap=result.amount_cap,
+            amount_cap_applied=result.amount_cap_applied,
+            manual_review_required=result.manual_review_required,
+            manual_review_reasons=result.manual_review_reasons,
+            formula_version=result.formula_version,
+            rule_revision_id=result.rule_revision_id,
+            rule_revision_key=result.rule_revision_key,
+            rule_snapshot_sha256=result.rule_snapshot_sha256,
+            rule_snapshot=result.rule_snapshot,
+            applied_segments=result.applied_segments,
+            excluded_segments=result.excluded_segments,
+            is_preliminary=False,
+        )
+        self.db.add(calculation)
+        await self.db.flush()
+
+        package.claim_source_calculation_id = int(calculation.id)
+        package.claim_calculation_cutoff_date = cutoff
+        package.claim_calculation_basis = basis
+        package.claim_update_in_court_required = update_in_court
+        await add_case_history_event(
+            self.db,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            case_id=int(case.id),
+            action="SELF_FILING_CLAIM_CALCULATION_FROZEN",
+            new_value={
+                "package_id": int(package.id),
+                "calculation_id": int(calculation.id),
+                "cutoff_date": cutoff.isoformat(),
+                "basis": basis,
+                "penalty_amount": str(result.penalty_amount),
+                "update_in_court_required": update_in_court,
+                "rule_revision_id": result.rule_revision_id,
+                "rule_snapshot_sha256": result.rule_snapshot_sha256,
+            },
+        )
+        return calculation
 
     async def _issue_email_verification(
         self,
@@ -376,6 +536,9 @@ class SelfFilingService:
             ),
         )
         email = str(package.delivery_email or "").lower()
+        user = await self.db.get(User, int(case.client_id))
+        if user is not None:
+            user.email = email
         await add_case_history_event(
             self.db,
             actor_type="client",
@@ -766,24 +929,16 @@ class SelfFilingService:
             jurisdiction_note, title="Обоснование подсудности", limit=4000
         )
 
-        # Do not expose/take the 15k obligation while either delivery or
-        # the promised two-business-day calendar is operationally impossible.
+        # Do not expose/take the 15k obligation unless the promised email
+        # delivery and a real client payment-link path are operationally ready.
         from app.domain.cases.self_filing_email_sender import (
             require_email_delivery_configured,
         )
 
         require_email_delivery_configured()
+        self._require_customer_payment_provider()
         now = datetime.now(timezone.utc)
-        business_days = await self._require_commercial_contract()
-        calendar = await load_business_calendar(self.db)
-        # This is a preflight for a payment confirmed now. The authoritative
-        # SLA is recomputed from the actual paid/completeness timestamps when
-        # money is confirmed.
-        add_business_days(
-            now,
-            business_days=business_days,
-            calendar=calendar,
-        )
+        await self._require_commercial_contract()
 
         package.documents_complete_at = now
         package.documents_complete_by_lawyer_id = int(lawyer_id)
@@ -870,25 +1025,23 @@ class SelfFilingService:
             raise SelfFilingError("Email клиента не подтверждён")
 
         payment_at = occurred_at or payment.paid_at or datetime.now(timezone.utc)
-        completeness_at = package.documents_complete_at
-        if completeness_at.tzinfo is None:
-            completeness_at = completeness_at.replace(tzinfo=timezone.utc)
         if payment_at.tzinfo is None:
             payment_at = payment_at.replace(tzinfo=timezone.utc)
-        started_at = max(payment_at, completeness_at)
 
-        business_days = await self._require_commercial_contract(
+        calendar_days = await self._require_commercial_contract(
             payment=payment,
         )
-        calendar = await load_business_calendar(self.db)
-        due_at = add_business_days(
-            started_at,
-            business_days=business_days,
-            calendar=calendar,
+        due_at = payment_at + timedelta(days=calendar_days)
+        await self._freeze_claim_calculation(
+            case=case,
+            package=package,
+            payment_at=payment_at,
+            actor_type=actor_type,
+            actor_id=actor_id,
         )
 
         package.payment_confirmed_at = payment_at
-        package.sla_started_at = started_at
+        package.sla_started_at = payment_at
         package.sla_due_at = due_at
         package.status = SELF_FILING_STATUS_PREPARATION
         package.version = int(package.version or 1) + 1
@@ -899,8 +1052,9 @@ class SelfFilingService:
             actor_type="system",
             actor_id=None,
             comment=(
-                f"Оплата пакета подтверждена; SLA {business_days} рабочих дня/дней "
-                f"начат до {due_at.isoformat()}"
+                f"Оплата пакета подтверждена; результат должен быть отправлен "
+                f"не позднее чем через {calendar_days} календарных дня/дней — "
+                f"до {due_at.isoformat()}"
             ),
         )
         await add_case_history_event(
@@ -913,11 +1067,22 @@ class SelfFilingService:
                 "package_id": int(package.id),
                 "payment_id": int(payment.id),
                 "payment_confirmed_at": payment_at.isoformat(),
-                "documents_complete_at": completeness_at.isoformat(),
-                "sla_started_at": started_at.isoformat(),
+                "documents_complete_at": (
+                    package.documents_complete_at.isoformat()
+                    if package.documents_complete_at
+                    else None
+                ),
+                "sla_started_at": payment_at.isoformat(),
                 "sla_due_at": due_at.isoformat(),
-                "business_days": business_days,
-                "calendar_coverage_through": calendar.coverage_through.isoformat(),
+                "calendar_days_after_payment": calendar_days,
+                "claim_calculation_id": package.claim_source_calculation_id,
+                "claim_calculation_cutoff_date": (
+                    package.claim_calculation_cutoff_date.isoformat()
+                    if package.claim_calculation_cutoff_date
+                    else None
+                ),
+                "claim_calculation_basis": package.claim_calculation_basis,
+                "claim_update_in_court_required": package.claim_update_in_court_required,
             },
         )
         await self.db.flush()
@@ -1106,11 +1271,20 @@ class SelfFilingService:
         case_id: int,
         lawyer_id: int,
         document_id: int,
+        document_type: str,
     ) -> SelfFilingPackage:
         case = await self._lock_case(case_id)
         if self._case_status(case) != CaseStatus.M1_SELF_FILING_PREPARATION:
-            raise SelfFilingError("Пакет нельзя выдать на текущем этапе")
+            raise SelfFilingError("Судебный комплект нельзя изменять в текущем статусе")
         package = await self.require_package(case_id=case.id, for_update=True)
+        normalized_type = str(document_type or "").strip().upper()
+        field_name = SELF_FILING_DELIVERABLE_FIELDS.get(normalized_type)
+        if field_name is None:
+            raise SelfFilingError(
+                "В комплект входят только четыре документа: претензия, исковое "
+                "заявление, расчёт суммы иска и дорожная карта клиента"
+            )
+
         document = (
             await self.db.execute(
                 select(Document)
@@ -1124,16 +1298,39 @@ class SelfFilingService:
         if document is None:
             raise SelfFilingError("Итоговый документ не найден")
         if (
-            document.document_type != "SELF_FILING_PACKAGE"
+            document.document_type != normalized_type
             or document.status != DocumentStatus.APPROVED
             or not document_is_usable(document)
         ):
             raise SelfFilingError(
-                "Для выдачи нужен проверенный и одобренный документ SELF_FILING_PACKAGE"
+                "Документ не соответствует выбранному типу либо не прошёл проверку"
             )
 
+        setattr(package, field_name, int(document.id))
+        package.version = int(package.version or 1) + 1
+        await add_case_history_event(
+            self.db,
+            actor_type="lawyer",
+            actor_id=int(lawyer_id),
+            case_id=case.id,
+            action="SELF_FILING_DELIVERABLE_APPROVED",
+            new_value={
+                "package_id": int(package.id),
+                "document_id": int(document.id),
+                "document_type": normalized_type,
+                "document_sha256": document.sha256,
+            },
+        )
+
+        deliverable_ids = {
+            dtype: getattr(package, SELF_FILING_DELIVERABLE_FIELDS[dtype])
+            for dtype in SELF_FILING_DELIVERABLE_TYPES
+        }
+        if not all(deliverable_ids.values()):
+            await self.db.flush()
+            return package
+
         now = datetime.now(timezone.utc)
-        package.package_document_id = int(document.id)
         package.ready_at = now
         package.status = SELF_FILING_STATUS_READY
         package.email_delivery_status = EMAIL_QUEUED
@@ -1144,7 +1341,10 @@ class SelfFilingService:
             next_status=CaseStatus.M1_SELF_FILING_READY,
             actor_type="lawyer",
             actor_id=int(lawyer_id),
-            comment="Юрист утвердил итоговый пакет и поставил email-доставку в очередь",
+            comment=(
+                "Юрист утвердил все четыре документа судебного комплекта: претензию, "
+                "исковое заявление, расчёт суммы иска и дорожную карту клиента"
+            ),
         )
         await add_case_history_event(
             self.db,
@@ -1154,10 +1354,15 @@ class SelfFilingService:
             action="SELF_FILING_PACKAGE_READY",
             new_value={
                 "package_id": int(package.id),
-                "document_id": int(document.id),
-                "document_sha256": document.sha256,
+                "deliverables": deliverable_ids,
                 "ready_at": now.isoformat(),
                 "email_delivery_status": EMAIL_QUEUED,
+                "claim_calculation_id": package.claim_source_calculation_id,
+                "claim_calculation_cutoff_date": (
+                    package.claim_calculation_cutoff_date.isoformat()
+                    if package.claim_calculation_cutoff_date
+                    else None
+                ),
             },
         )
         return package
@@ -1212,7 +1417,10 @@ class SelfFilingService:
             action="SELF_FILING_PACKAGE_DELIVERED",
             new_value={
                 "package_id": int(package.id),
-                "document_id": package.package_document_id,
+                "document_ids": {
+                    dtype: getattr(package, SELF_FILING_DELIVERABLE_FIELDS[dtype])
+                    for dtype in SELF_FILING_DELIVERABLE_TYPES
+                },
                 "email": package.delivery_email,
                 "email_message_id": package.email_message_id,
                 "delivered_at": sent_at.isoformat(),
