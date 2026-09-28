@@ -129,25 +129,35 @@ def test_self_filing_new_sales_are_dark_until_controlled_activation():
     assert '"new_sales_enabled": new_sales_enabled' in readiness
 
 
-def test_customer_payment_checkout_and_four_document_contract_are_explicit():
+def test_customer_bank_payment_and_four_document_contract_are_explicit():
+    bank = read("app/domain/payments/bank_requisites.py")
     payment_service = read("app/domain/payments/payment_service.py")
-    providers = read("app/domain/payments/providers.py")
     readiness = read("app/domain/cases/self_filing_readiness.py")
     service = read("app/domain/cases/self_filing_service.py")
+    payments_ui = read("app/bot/screens/payments.py")
     documents = read("app/domain/cases/self_filing_documents.py")
     sender = read("app/domain/cases/self_filing_email_sender.py")
 
-    assert 'payment_purpose = (' in payment_service
-    assert '"case_number": case_reference' in payment_service
-    assert '"payment_purpose": payment_purpose' in payment_service
-    assert '"description": title[:128]' in providers
-    assert '"type": "redirect"' in providers
-    assert "confirmation_url" in providers
+    assert "Адыгейская Республиканская Коллегия Адвокатов" in bank
+    assert 'inn="0105040071"' in bank
+    assert 'kpp="010501001"' in bank
+    assert 'ogrn="10301000534331"' in bank
+    assert 'settlement_account="40703810201000102939"' in bank
+    assert 'correspondent_account="30101810600000000602"' in bank
+    assert 'bik="046015602"' in bank
+    assert 'mandatory_purpose="для адвоката Гамза Д.Г."' in bank
 
-    assert "_require_customer_payment_provider" in service
-    assert 'mode == "yookassa"' in service
-    assert "offline/disabled" in service
+    assert '"bank_transfer" if is_self_filing_bank_transfer else None' in payment_service
+    assert "payment_details_snapshot" in payment_service
+    assert "payment_purpose" in payment_service
+    assert "must never be" not in payments_ui  # no provider-specific client fiction
+    assert "bank_payment_instructions" in payments_ui
+    assert "Обязательная пометка" in bank
+
+    assert "_require_customer_payment_contract" in service
+    assert "bank_requisites_ready()" in service
     assert '"customer_payment_ready": customer_payment_ready' in readiness
+    assert '"payment_requisites": bank_requisites_snapshot()' in readiness
 
     for document_type in (
         "SELF_FILING_PRETRIAL_CLAIM",
@@ -159,7 +169,6 @@ def test_customer_payment_checkout_and_four_document_contract_are_explicit():
         assert document_type in sender
     assert "set(by_type) != set(SELF_FILING_DELIVERABLE_TYPES)" in sender
     assert "all(deliverable_ids.values())" in service
-
 
 def test_verified_delivery_email_becomes_profile_email():
     service = read("app/domain/cases/self_filing_service.py")
@@ -193,6 +202,7 @@ def test_mailbox_verification_contract_is_fail_closed_and_never_stores_plaintext
         read("migrations/versions/20260925_0026_self_filing_package.py")
         + read("migrations/versions/20260928_0027_self_filing_customer_contract.py")
         + read("migrations/versions/20260928_0028_self_filing_transfer_act_fact.py")
+        + read("migrations/versions/20260928_0029_payment_bank_snapshot.py")
     )
     service = read("app/domain/cases/self_filing_service.py")
     sender = read("app/domain/cases/self_filing_email_sender.py")
@@ -456,7 +466,7 @@ def test_payment_and_sla_only_start_after_lawyer_completeness_gate():
     assert "transfer_act_signed" in approve
     assert "transfer_act_date" in approve
     assert "require_email_delivery_configured" in approve
-    assert "_require_customer_payment_provider" in approve
+    assert "_require_customer_payment_contract" in approve
     assert "PaymentCode.M1_SELF_FILING_PACKAGE" in approve
 
     assert "payment.status" in paid
