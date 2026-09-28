@@ -5,7 +5,7 @@ from pathlib import Path
 
 from app.db.migrations import run_database_migrations
 
-HEAD_REVISION = "20260928_0027"
+HEAD_REVISION = "20260928_0028"
 RETENTION_TRIGGER = "trg_retention_destroy_document_keys"
 MESSAGE_SOURCE_INDEX = "uq_messages_sender_source_message"
 DOCUMENT_REVIEW_STARTED_INDEX = "ix_documents_review_started_at"
@@ -150,6 +150,10 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "claim_calculation_cutoff_date",
         "claim_calculation_basis",
         "claim_update_in_court_required",
+        "transfer_act_signed",
+        "transfer_act_date",
+        "transfer_act_confirmed_at",
+        "transfer_act_confirmed_by_lawyer_id",
         "pretrial_claim_document_id",
         "statement_of_claim_document_id",
         "claim_calculation_document_id",
