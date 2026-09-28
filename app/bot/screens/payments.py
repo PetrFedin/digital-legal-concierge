@@ -498,7 +498,7 @@ async def _show_missing_m1_payment_case(callback: CallbackQuery, db, ctx, user) 
         await callback.message.edit_text(
             f"✅ Дело {completed.case_number} уже завершено.\n\n"
             "Эта старая кнопка оплаты больше не создаёт платежей. "
-            "Проверьте итог или платёжную историю завершённого M1-дела.",
+            "Проверьте итог или платёжную историю завершённого дела.",
             reply_markup=one(
                 ("💳 Оплаты", "payments_open"),
                 ("📁 Итог дела", "my_case_open"),
@@ -508,7 +508,7 @@ async def _show_missing_m1_payment_case(callback: CallbackQuery, db, ctx, user) 
         )
         return
     await callback.message.edit_text(
-        "Активное M1-дело для этой оплаты не найдено. Новый платёж не создавался.",
+        "Активное дело для этой оплаты не найдено. Новый платёж не создавался.",
         reply_markup=one(
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
