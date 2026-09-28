@@ -38,7 +38,7 @@ _CONTRACT_WORKSPACE_PATCH = r"""
     let html=previousCaseCard(x);
     if(x?.route==='M1'&&String(x.service_mode||'')==='SELF_FILING_PACKAGE'){
       const id=Number(x.case_id);
-      const block=`<div class="deadline"><b>Пакет для самостоятельной подачи</b><div class="muted">Это отдельный режим M1 без представительства в суде. Полнота документов, статус акта передачи, конкретная подсудность, 15 000 ₽, выдача в течение 3 календарных дней после оплаты и email-доставка четырёх документов ведутся в отдельной карточке.</div><div class="actions" style="margin-top:9px"><a class="button green" href="/self-filing/ui?case_id=${id}">Открыть карточку пакета</a><a class="button secondary" href="/message-center/ui?case_id=${id}">Переписка</a><a class="button secondary" href="/document-access/ui?case_id=${id}">Материалы</a></div></div>`;
+      const block=`<div class="deadline"><b>Пакет для самостоятельной подачи</b><div class="muted">Это отдельная услуга без представительства в суде. Полнота документов, статус акта передачи, конкретная подсудность, 15 000 ₽, выдача в течение 3 календарных дней после оплаты и email-доставка четырёх документов ведутся в отдельной карточке.</div><div class="actions" style="margin-top:9px"><a class="button green" href="/self-filing/ui?case_id=${id}">Открыть карточку пакета</a><a class="button secondary" href="/message-center/ui?case_id=${id}">Переписка</a><a class="button secondary" href="/document-access/ui?case_id=${id}">Материалы</a></div></div>`;
       return html.replace('</article>',block+'</article>');
     }
     if(x?.route!=='M1'||String(x.status||'')!=='M1_CONTRACT_READY')return html;
