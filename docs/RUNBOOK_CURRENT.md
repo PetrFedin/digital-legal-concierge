@@ -33,7 +33,7 @@ For one frozen candidate SHA execute strictly in this order:
 2. execute full CI and required PR checks, including the living process-map maintenance contract;
 3. execute dedicated PostgreSQL concurrency → Redis/Telegram runtime → browser staff E2E workflows;
 4. execute one complete LIVE_REQUIRED run and retain its SHA/run/attempt-bound manifest;
-5. execute real Telegram M1 and M2 persona walkthroughs and reconcile UI ↔ PostgreSQL ↔ Audit/PaymentEvent evidence;
+5. execute real Telegram personas for M1 full representation, M1 self-filing and M2; for self-filing use at least three distinct client chats and reconcile UI ↔ PostgreSQL ↔ Audit/PaymentEvent evidence;
 6. execute encrypted backup → separate empty staging/restore DB and storage → application restore evidence → normal restored-runtime usability;
 7. only then deliberately expand YooKassa **test-shop** proof to provider-side paid/refund scenarios that are safely supported without any production operation;
 8. make the release/merge decision.
@@ -110,7 +110,7 @@ If Telegram delivery fails **after** a committed mutation, do not repeat the dom
 
 ## Real Telegram persona operation
 
-The post-LIVE persona gate uses dedicated non-production acceptance identities/chats. Run M1 and M2 end to end, including documented recovery paths. At each material write reconcile the client/staff UI result with PostgreSQL Case/Document/Payment state, Case/Audit history and `PaymentEvent` evidence.
+The post-LIVE persona gate uses dedicated non-production acceptance identities/chats. Run M1 full representation, M1 self-filing and M2 end to end, including documented recovery paths. The self-filing access check must use at least three distinct client Telegram accounts/chats; a candidate that only works for one operator/tester fails acceptance. At each material write reconcile the client/staff UI result with PostgreSQL Case/Document/Payment state, Case/Audit history and `PaymentEvent` evidence.
 
 Screenshots alone are not acceptance evidence. Do not record bot tokens, document plaintext or payment credentials in the evidence package.
 
@@ -134,11 +134,29 @@ For stale M1/M2 money:
 
 Provider timeout after create is an idempotency/reconciliation case, not permission to create unlimited replacement payments.
 
+## Self-filing controlled acceptance activation
+
+Keep `SELF_FILING_NEW_SALES_ENABLED=false` by default. Do not turn it on in production merely because source/migrations exist.
+
+For a controlled non-production acceptance environment:
+
+1. deploy the exact candidate image to both the HTTP container and the host-network Telegram worker; verify the worker owns the polling singleton and can reach Telegram through the current Timeweb IPv6 route;
+2. provision real SMTP acceptance credentials and a mailbox whose receipt can be independently observed;
+3. configure YooKassa **test-shop** credentials and verify the provider returns a customer checkout URL; do not use production shop credentials or production money;
+4. set `SELF_FILING_NEW_SALES_ENABLED=true` only after `/self-filing/readiness` reports the source/configuration gates ready;
+5. have at least three different client Telegram accounts open `/start` and perform a persisted action. Record Telegram user/chat identity only as non-secret acceptance identifiers; do not add code/user allowlists;
+6. complete one self-filing path with `transfer_act_signed=true` and one with `transfer_act_signed=false` far enough to prove both cutoff branches; at least one path must complete the test-shop payment/email delivery boundary;
+7. verify the payment checkout displays the server-generated 15 000 ₽ obligation and Case-bound purpose. Verify SBP only if the configured YooKassa test shop actually offers it; otherwise record it as not proven;
+8. verify `sla_due_at` is exactly payment receipt + 3 calendar days, all four approved documents are attached, the email lands on the confirmed profile address and the Case closes only after send evidence;
+9. turn the self-filing sales flag back off after acceptance until the full release evidence chain permits controlled production activation.
+
+There is no source-level per-user Telegram allowlist in the current bot path. If a colleague cannot use the deployed bot while another user can, treat that as a runtime/deployment/configuration incident and inspect the exact deployed SHA, bot token/username, polling worker, singleton lease, Telegram delivery logs and PostgreSQL user/case creation evidence before changing product logic.
+
 ## Payment provider enable/disable and sandbox sequence
 
 ### Offline production mode
 
-The current no-provider production path is `PAYMENT_PROVIDER=offline`, not `disabled`.
+The current no-provider production path for the existing full-representation/consultation product is `PAYMENT_PROVIDER=offline`, not `disabled`. **It does not satisfy new self-filing sales**, which require a customer-facing provider checkout URL.
 
 In offline mode:
 
