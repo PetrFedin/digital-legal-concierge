@@ -99,7 +99,7 @@ def test_commercial_contract_is_15k_and_three_calendar_days():
     service = read("app/domain/cases/self_filing_service.py")
     assert "async def _require_commercial_contract" in service
     assert "configured_price != SELF_FILING_PRICE_RUB" in service
-    assert "configured_days != SELF_FILING_SLA_BUSINESS_DAYS" in service
+    assert "configured_days != SELF_FILING_DELIVERY_CALENDAR_DAYS" in service
     approve = service.split("async def approve_for_payment", 1)[1].split(
         "async def start_preparation_after_payment", 1
     )[0]
