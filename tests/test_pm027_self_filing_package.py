@@ -33,7 +33,7 @@ from app.domain.cases.self_filing_contract import (
     SELF_FILING_EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS,
     SELF_FILING_EMAIL_VERIFICATION_TTL_MINUTES,
     SELF_FILING_PRICE_RUB,
-    SELF_FILING_SLA_BUSINESS_DAYS,
+    SELF_FILING_DELIVERY_CALENDAR_DAYS,
 )
 from app.domain.cases.self_filing_email_sender import (
     email_delivery_configuration_error,
@@ -87,14 +87,14 @@ def test_consent_can_start_self_filing_but_error_recovery_cannot_fake_financial_
     assert CaseStatus.M1_SELF_FILING_DELIVERED not in ERROR_RECOVERY_TARGETS
 
 
-def test_commercial_contract_is_15k_and_two_business_days():
+def test_commercial_contract_is_15k_and_three_calendar_days():
     assert PaymentCode.M1_SELF_FILING_PACKAGE.value == "M1_SELF_FILING_PACKAGE"
     assert SELF_FILING_PRICE_RUB == Decimal("15000")
-    assert SELF_FILING_SLA_BUSINESS_DAYS == 2
+    assert SELF_FILING_DELIVERY_CALENDAR_DAYS == 3
     assert DEFAULT_SETTINGS["payments.m1_self_filing_package"]["value"] == 15000
-    assert DEFAULT_SETTINGS["self_filing.sla_business_days"]["value"] == 2
+    assert DEFAULT_SETTINGS["self_filing.delivery_calendar_days"]["value"] == 3
     assert DEFAULT_SETTINGS["payments.m1_self_filing_package"]["type"] == "money"
-    assert DEFAULT_SETTINGS["self_filing.sla_business_days"]["type"] == "integer"
+    assert DEFAULT_SETTINGS["self_filing.delivery_calendar_days"]["type"] == "integer"
 
     service = read("app/domain/cases/self_filing_service.py")
     assert "async def _require_commercial_contract" in service
@@ -148,7 +148,9 @@ def test_mailbox_verification_contract_is_fail_closed_and_never_stores_plaintext
     assert first != "123456"
 
     model = read("app/models/self_filing_package.py")
-    migration = read("migrations/versions/20260925_0026_self_filing_package.py")
+    migration = read("migrations/versions/20260925_0026_self_filing_package.py") + read(
+        "migrations/versions/20260928_0027_self_filing_customer_contract.py"
+    )
     service = read("app/domain/cases/self_filing_service.py")
     sender = read("app/domain/cases/self_filing_email_sender.py")
 
@@ -384,6 +386,19 @@ def test_email_delivery_is_fail_closed_until_complete_provider_contract(monkeypa
     assert email_delivery_configured() is False
 
 
+def test_claim_calculation_cutoff_follows_customer_rule():
+    source = read("app/domain/cases/self_filing_service.py")
+    freeze = source.split("async def _freeze_claim_calculation", 1)[1].split(
+        "async def _issue_email_verification", 1
+    )[0]
+    assert 'basis = "TRANSFER_ACT_DATE"' in freeze
+    assert 'basis = "SERVICE_PAYMENT_DATE"' in freeze
+    assert "cutoff = source.actual_transfer_date" in freeze
+    assert "cutoff = local_paid_at.date()" in freeze
+    assert "update_in_court = True" in freeze
+    assert "is_preliminary=False" in freeze
+
+
 def test_payment_and_sla_only_start_after_lawyer_completeness_gate():
     source = read("app/domain/cases/self_filing_service.py")
     approve = source.split("async def approve_for_payment", 1)[1].split(
@@ -396,31 +411,39 @@ def test_payment_and_sla_only_start_after_lawyer_completeness_gate():
     assert "_approved_document_gate" in approve
     assert "jurisdiction_confirmed_at" in approve
     assert "require_email_delivery_configured" in approve
-    assert "load_business_calendar" in approve
+    assert "_require_customer_payment_provider" in approve
     assert "PaymentCode.M1_SELF_FILING_PACKAGE" in approve
 
     assert "payment.status" in paid
     assert "documents_complete_at" in paid
     assert "jurisdiction_confirmed_at" in paid
-    assert "started_at = max(payment_at, completeness_at)" in paid
-    assert "add_business_days" in paid
+    assert "package.sla_started_at = payment_at" in paid
+    assert "payment_at + timedelta(days=calendar_days)" in paid
+    assert "_freeze_claim_calculation" in paid
     assert "M1_SELF_FILING_PREPARATION" in paid
 
 
-def test_final_package_is_exact_approved_sha_and_delivery_closes_only_after_send():
+def test_final_package_is_exact_four_approved_documents_and_delivery_closes_only_after_send():
     docs = read("app/domain/cases/self_filing_documents.py")
     service = read("app/domain/cases/self_filing_service.py")
     sender = read("app/domain/cases/self_filing_email_sender.py")
 
-    assert 'document_type="SELF_FILING_PACKAGE"' in docs
+    for document_type in (
+        "SELF_FILING_PRETRIAL_CLAIM",
+        "SELF_FILING_STATEMENT_OF_CLAIM",
+        "SELF_FILING_CLAIM_CALCULATION",
+        "SELF_FILING_CLIENT_ROADMAP",
+    ):
+        assert document_type in docs
     assert "document.status = DocumentStatus.APPROVED" in docs
     assert '"sha256": document.sha256' in docs
 
     ready = service.split("async def mark_package_ready", 1)[1].split(
         "async def close_after_delivery", 1
     )[0]
-    assert 'document.document_type != "SELF_FILING_PACKAGE"' in ready
+    assert "SELF_FILING_DELIVERABLE_FIELDS" in ready
     assert "document.status != DocumentStatus.APPROVED" in ready
+    assert "all(deliverable_ids.values())" in ready
     assert "package.email_delivery_status = EMAIL_QUEUED" in ready
 
     assert "read_document_bytes" in sender
@@ -438,7 +461,7 @@ def test_telegram_and_client_projection_expose_exact_self_filing_path():
 
     assert "calc_self_filing:v2:" in post
     assert "15 000 ₽" in post
-    assert "2 рабочих дня" in post
+    assert "3 календарных дней" in post
     assert "Услуга доступна клиентам по России" in post
     assert '"M1_SELF_FILING_PAYMENT_PENDING": ClientAction(' in view
     assert '"pay_self_filing"' in view
