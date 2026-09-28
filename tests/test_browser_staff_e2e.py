@@ -627,6 +627,7 @@ def test_self_filing_staff_card_is_role_safe_and_shows_frozen_bank_contract() ->
             wait_until="domcontentloaded",
         )
         assert case_response is not None and case_response.status == 200
+        expect(admin_page).to_have_title("Карточка дела")
         expect(admin_page.get_by_role("button", name="Подтвердить поступление")).to_be_visible()
         _assert_no_horizontal_overflow(admin_page)
         admin_context.close()
