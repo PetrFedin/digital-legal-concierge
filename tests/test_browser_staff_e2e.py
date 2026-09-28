@@ -260,7 +260,7 @@ def _login(page: Page, username: str, password: str) -> None:
     page.locator('input[name="password"]').fill(password)
     page.get_by_role("button", name="Войти в кабинет").click()
     page.wait_for_url(f"{BASE_URL}/operator")
-    expect(page.get_by_role("heading", name="Digital Legal Concierge")).to_be_visible()
+    expect(page.get_by_role("heading", name="⚖ Рабочий кабинет")).to_be_visible()
 
 
 async def _superadmin_session_token() -> str:
@@ -361,8 +361,8 @@ def test_admin_browser_login_staff_surfaces_and_logout_revoke() -> None:
         assert session["body"]["api_token"] != session_cookie["value"]
 
         _assert_html_surface(page, "/admin/workdesk/ui")
-        expect(page).to_have_title("Digital Legal Concierge — рабочий стол")
-        expect(page.get_by_role("heading", name="⚖ Единый рабочий стол")).to_be_visible()
+        expect(page).to_have_title("Рабочий кабинет — дела клиентов")
+        expect(page.get_by_role("heading", name="⚖ Дела клиентов")).to_be_visible()
 
         _assert_html_surface(page, "/calculator-builder/ui")
         expect(
