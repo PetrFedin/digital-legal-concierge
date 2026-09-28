@@ -91,10 +91,16 @@ def offline_payment_confirmation_enabled() -> bool:
 def payment_can_be_confirmed_offline(payment: Payment) -> bool:
     """Allow verified manual receipt confirmation in explicit offline mode."""
 
+    provider_allowed = payment.provider in {None, "offline"} or (
+        payment.payment_code == PaymentCode.M1_SELF_FILING_PACKAGE
+        and payment.provider == "bank_transfer"
+        and bool(payment.payment_details_snapshot)
+        and bool(payment.payment_purpose)
+    )
     return (
         offline_payment_confirmation_enabled()
         and payment.payment_code in OFFLINE_CONFIRMABLE_CODES
-        and payment.provider in {None, "offline"}
+        and provider_allowed
         and not payment.payment_url
         and payment.status
         in {
@@ -431,6 +437,8 @@ async def case_detail(
                 "amount": float(payment.amount),
                 "status": payment.status,
                 "provider": payment.provider,
+                "payment_purpose": payment.payment_purpose,
+                "payment_details_snapshot": payment.payment_details_snapshot,
                 "manual_confirm_allowed": payment_can_be_manually_confirmed(payment),
                 "offline_confirm_allowed": payment_can_be_confirmed_offline(payment),
             }
@@ -741,6 +749,8 @@ async def all_payments(
             "amount": float(payment.amount),
             "status": payment.status,
             "provider": payment.provider,
+            "payment_purpose": payment.payment_purpose,
+            "payment_details_snapshot": payment.payment_details_snapshot,
             "manual_confirm_allowed": payment_can_be_manually_confirmed(payment),
             "offline_confirm_allowed": payment_can_be_confirmed_offline(payment),
         }
