@@ -129,6 +129,47 @@ def test_self_filing_new_sales_are_dark_until_controlled_activation():
     assert '"new_sales_enabled": new_sales_enabled' in readiness
 
 
+def test_customer_payment_checkout_and_four_document_contract_are_explicit():
+    payment_service = read("app/domain/payments/payment_service.py")
+    providers = read("app/domain/payments/providers.py")
+    readiness = read("app/domain/cases/self_filing_readiness.py")
+    service = read("app/domain/cases/self_filing_service.py")
+    documents = read("app/domain/cases/self_filing_documents.py")
+    sender = read("app/domain/cases/self_filing_email_sender.py")
+
+    assert 'payment_purpose = (' in payment_service
+    assert '"case_number": case_reference' in payment_service
+    assert '"payment_purpose": payment_purpose' in payment_service
+    assert '"description": title[:128]' in providers
+    assert '"type": "redirect"' in providers
+    assert "confirmation_url" in providers
+
+    assert "_require_customer_payment_provider" in service
+    assert 'mode == "yookassa"' in service
+    assert "offline/disabled" in service
+    assert '"customer_payment_ready": customer_payment_ready' in readiness
+
+    for document_type in (
+        "SELF_FILING_PRETRIAL_CLAIM",
+        "SELF_FILING_STATEMENT_OF_CLAIM",
+        "SELF_FILING_CLAIM_CALCULATION",
+        "SELF_FILING_CLIENT_ROADMAP",
+    ):
+        assert document_type in documents
+        assert document_type in sender
+    assert "set(by_type) != set(SELF_FILING_DELIVERABLE_TYPES)" in sender
+    assert "all(deliverable_ids.values())" in service
+
+
+def test_verified_delivery_email_becomes_profile_email():
+    service = read("app/domain/cases/self_filing_service.py")
+    verify = service.split("async def verify_delivery_email", 1)[1].split(
+        "async def upload_required_document", 1
+    )[0]
+    assert "user = await self.db.get(User, int(case.client_id))" in verify
+    assert "user.email = email" in verify
+
+
 def test_mailbox_verification_contract_is_fail_closed_and_never_stores_plaintext_code():
     assert SELF_FILING_EMAIL_VERIFICATION_TTL_MINUTES == 15
     assert SELF_FILING_EMAIL_VERIFICATION_MAX_ATTEMPTS == 5
