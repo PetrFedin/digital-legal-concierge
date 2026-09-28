@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -96,6 +96,29 @@ class SelfFilingPackage(Base, TimestampMixin):
         index=True,
     )
 
+    # Customer-approved claim-calculation cutoff. The legal team uses the act
+    # date when the transfer act is already signed; otherwise the payment date
+    # is frozen here and the client roadmap must explain the later in-court
+    # clarification/new calculation.
+    claim_source_calculation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("calculations.id"),
+        nullable=True,
+        index=True,
+    )
+    claim_calculation_cutoff_date: Mapped[date | None] = mapped_column(
+        Date,
+        nullable=True,
+        index=True,
+    )
+    claim_calculation_basis: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+    )
+    claim_update_in_court_required: Mapped[bool | None] = mapped_column(
+        Boolean,
+        nullable=True,
+    )
+
     payment_confirmed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
@@ -112,7 +135,29 @@ class SelfFilingPackage(Base, TimestampMixin):
         index=True,
     )
 
+    # Legacy single-file package pointer remains readable for already-created
+    # rows. New work must use exactly the four customer-approved deliverables.
     package_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("documents.id"),
+        nullable=True,
+        index=True,
+    )
+    pretrial_claim_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("documents.id"),
+        nullable=True,
+        index=True,
+    )
+    statement_of_claim_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("documents.id"),
+        nullable=True,
+        index=True,
+    )
+    claim_calculation_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("documents.id"),
+        nullable=True,
+        index=True,
+    )
+    client_roadmap_document_id: Mapped[int | None] = mapped_column(
         ForeignKey("documents.id"),
         nullable=True,
         index=True,
@@ -148,6 +193,18 @@ class SelfFilingPackage(Base, TimestampMixin):
 
     case = relationship("Case", back_populates="self_filing_package")
     package_document = relationship("Document", foreign_keys=[package_document_id])
+    pretrial_claim_document = relationship(
+        "Document", foreign_keys=[pretrial_claim_document_id]
+    )
+    statement_of_claim_document = relationship(
+        "Document", foreign_keys=[statement_of_claim_document_id]
+    )
+    claim_calculation_document = relationship(
+        "Document", foreign_keys=[claim_calculation_document_id]
+    )
+    client_roadmap_document = relationship(
+        "Document", foreign_keys=[client_roadmap_document_id]
+    )
 
 
 __all__ = ["SelfFilingPackage"]
