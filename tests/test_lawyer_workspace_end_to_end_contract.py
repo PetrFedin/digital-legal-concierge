@@ -223,6 +223,7 @@ def test_lawyer_has_role_scoped_self_contained_case_card():
 
     assert "lawyer_can_access_case" in source
     assert "require_lawyer_actor" in source
+    assert 'audience="lawyer"' in source
     assert '@router.get("/lawyer/cases/{case_id}/workspace")' in source
     assert '@router.get("/lawyer/cases/{case_id}/ui"' in source
     for label in (
