@@ -831,9 +831,22 @@ class SelfFilingService:
         self,
         *,
         case_id: int,
-        lawyer_id: int,
+        lawyer_id: int | None = None,
         reason: str,
+        actor_type: str = "lawyer",
+        actor_id: int | None = None,
     ) -> SelfFilingPackage:
+        normalized_actor = str(actor_type or "").strip().lower()
+        if normalized_actor == "lawyer":
+            effective_actor_id = int(lawyer_id or 0)
+            if effective_actor_id <= 0:
+                raise SelfFilingError("Не указан ответственный юрист")
+        elif normalized_actor == "admin":
+            effective_actor_id = int(actor_id or 0)
+            if effective_actor_id <= 0:
+                raise SelfFilingError("Не указан администратор")
+        else:
+            raise SelfFilingError("Запрос новой версии доступен только юристу или администратору")
         case = await self._lock_case(case_id)
         if self._case_status(case) not in {
             CaseStatus.M1_SELF_FILING_DOCUMENTS_RECEIVED,
@@ -849,8 +862,8 @@ class SelfFilingService:
         await self.cases.change_status(
             case=case,
             next_status=CaseStatus.M1_SELF_FILING_DOCS_REQUESTED,
-            actor_type="lawyer",
-            actor_id=int(lawyer_id),
+            actor_type=normalized_actor,
+            actor_id=effective_actor_id,
             comment=clean_reason,
         )
         return package
