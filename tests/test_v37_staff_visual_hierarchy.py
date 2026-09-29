@@ -178,6 +178,11 @@ def test_self_filing_staff_card_has_state_aware_role_controls_and_neutral_refres
     assert "lawyerNav.style.display=a.role==='lawyer'" in source
     assert "adminNav.style.display=['admin','superadmin'].includes" in source
     assert "readinessNav.style.display=['admin','superadmin'].includes" in source
+    assert 'id="lawyerActionCard"' in source
+    assert "lawyerActionCard').style.display=a.can_mutate?'block':'none'" in source
+    assert "if(reviewPayment&&a.can_financial_reconcile)" in source
+    assert "retryEmailButton.style.display=a.can_mutate?'':'none'" in source
+    assert "Операционная роль: можно сверять фактическую оплату" in source
 
 
 def test_admin_detailed_case_link_has_a_registered_authenticated_page_owner():
