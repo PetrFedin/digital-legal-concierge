@@ -79,6 +79,27 @@ Evidence rule: an E2E row is accepted only when the resulting database state, au
 | C-M1-031 | Success fee succeeds | Case closes only after confirmed final financial event | SOURCE_OK / LIVE_REQUIRED |
 | C-M1-032 | Closed M1 case | My Case/Documents/Payments/History are read-only archive; old mutating buttons do nothing | SOURCE_OK / LIVE_REQUIRED |
 
+## C2. Client — M1 self-filing package
+
+| ID | Scenario | Expected result | Current status |
+| --- | --- | --- | --- |
+| C-SF-001 | Eligible client chooses package after saved calculation | Same Case remains route M1 with service mode `SELF_FILING_PACKAGE`; no M3 is created | SOURCE_OK / LIVE_REQUIRED |
+| C-SF-002 | Client accepts exact self-filing consent | Service-specific consent evidence is stored; full-representation consent is not reinterpreted | SOURCE_OK / LIVE_REQUIRED |
+| C-SF-003 | Region/address/email submitted | Profile is saved; document upload/payment remain blocked until mailbox code is verified | SOURCE_OK / LIVE_REQUIRED |
+| C-SF-004 | Wrong/expired email verification code | No document/payment stage opens; retry/resend remains bounded and auditable | SOURCE_OK / LIVE_REQUIRED |
+| C-SF-005 | Verified email + DDU/passport uploaded and submitted | Source files stay on exact Case; lawyer review becomes available without claiming legal completeness | SOURCE_OK / LIVE_REQUIRED |
+| C-SF-006 | Admin finds unreadable file | Admin may request a replacement only; no legal approve/reject or lawyer-review fact is created | SOURCE_OK / LIVE_REQUIRED |
+| C-SF-007 | Responsible Lawyer reviews source files | Legal approve/reject decisions are snapshot checked; foreign lawyer cannot act | SOURCE_OK / LIVE_REQUIRED |
+| C-SF-008 | Lawyer confirms completeness, court, jurisdiction and transfer-act fact | 15 000 ₽ bank-transfer obligation opens only after the legal gate; exact requisites/purpose are frozen on Payment | SOURCE_OK / LIVE_REQUIRED |
+| C-SF-009 | Client sees payment instructions | Telegram shows 15 000 ₽, frozen bar-association requisites and mandatory purpose; no provider checkout is fabricated | SOURCE_OK / LIVE_REQUIRED |
+| C-SF-010 | Staff confirms actual bank receipt | Preparation starts from factual receipt time; ambiguous money enters controlled review instead of silently advancing | SOURCE_OK / LIVE_REQUIRED |
+| C-SF-011 | Transfer act signed / unsigned branches | Claim-calculation cutoff uses act date when signed, otherwise actual service-payment date with later court update warning | SOURCE_OK / LIVE_REQUIRED |
+| C-SF-012 | Responsible Lawyer prepares package | Exactly four approved encrypted/versioned deliverables are required: pretension, claim, claim calculation, roadmap | SOURCE_OK / LIVE_REQUIRED |
+| C-SF-013 | Package incomplete or stale | READY/email delivery is blocked; old package version cannot be published | SOURCE_OK / LIVE_REQUIRED |
+| C-SF-014 | Four-document email delivery succeeds | Exact four attachments go to verified email; Case closes only after delivery evidence | SOURCE_OK / LIVE_REQUIRED |
+| C-SF-015 | Email delivery fails | Case remains operationally recoverable; no false delivered/closed state is shown | SOURCE_OK / LIVE_REQUIRED |
+| C-SF-016 | Closed self-filing Case | Telegram archive, messages, payments, documents and staff case cards are read-only and retain the self-filing service label | SOURCE_OK / LIVE_REQUIRED |
+
 ## D. Client — M2 consultation
 
 | ID | Scenario | Expected result | Current status |
@@ -130,6 +151,10 @@ Evidence rule: an E2E row is accepted only when the resulting database state, au
 | A-019 | Process-integrity contradiction | `/admin/workdesk/integrity` shows severity, explanation and safe deep link | SOURCE_OK / LIVE_REQUIRED |
 | A-020 | Full scheduler manual run | Personal MFA superadmin only; audited | SOURCE_OK / LIVE_REQUIRED |
 | A-021 | Superadmin resets MFA/roles/password | Session version changes and existing sessions are revoked | SOURCE_OK / LIVE_REQUIRED |
+| A-022 | Admin opens self-filing case card | Client contacts, calculation, documents, payment state, history and communications are visible in one case context | SOURCE_OK / LIVE_REQUIRED |
+| A-023 | Admin tries to approve/reject a source document legally | Rejected; admin can only request a readable replacement | SOURCE_OK / LIVE_REQUIRED |
+| A-024 | Admin confirms self-filing bank receipt | Exact frozen payment is reconciled with reference/evidence; package SLA starts only through the self-filing payment lifecycle | SOURCE_OK / LIVE_REQUIRED |
+| A-025 | Closed self-filing case appears in active queues/integrity/message writes | It is treated as terminal/read-only everywhere; no active work item or legal write is fabricated | SOURCE_OK / LIVE_REQUIRED |
 
 ## F. Lawyer — legal work and responsibility
 
@@ -155,6 +180,11 @@ Evidence rule: an E2E row is accepted only when the resulting database state, au
 | L-018 | Save M2 consultation result draft then close/reopen UI | Draft survives locally until committed | SOURCE_OK / LIVE_REQUIRED |
 | L-019 | Complete M2 with close/to-M1/follow-up | Domain service commits exactly one outcome | SOURCE_OK / LIVE_REQUIRED |
 | L-020 | Mark client no-show | Admin resolution becomes next operational action | SOURCE_OK / LIVE_REQUIRED |
+| L-021 | Open assigned self-filing Case | Self-contained lawyer card shows client, calculation, documents, payments, process history, communications and one current next step | SOURCE_OK / LIVE_REQUIRED |
+| L-022 | Start self-filing legal review | Only responsible Lawyer can establish the legal-review stage; admin technical check cannot start it | SOURCE_OK / LIVE_REQUIRED |
+| L-023 | Confirm self-filing completeness/jurisdiction | Exact package version + source-document gate is required; 15 000 ₽ obligation opens only after confirmation | SOURCE_OK / LIVE_REQUIRED |
+| L-024 | Upload/approve four final deliverables | Each required type is encrypted/versioned and SHA-bound; READY requires all four current approved documents | SOURCE_OK / LIVE_REQUIRED |
+| L-025 | Standard M1 financial final on self-filing | No 30k/70k/success-fee panel is treated as applicable to the self-filing service | SOURCE_OK / LIVE_REQUIRED |
 
 ## G. Cross-role concurrency / stale-action safety
 
