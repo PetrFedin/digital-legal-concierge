@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -47,6 +48,39 @@ def test_document_review_service_is_locked_scoped_and_idempotent():
     assert "DocumentStatus.ON_REVIEW" in source
     assert "DOCUMENT_REVIEW_DECISION" in source
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", ["approve", "reject"])
+async def test_admin_cannot_make_legal_document_decisions(decision):
+    service = DocumentReviewService(None)
+    actor = SimpleNamespace(role="admin", lawyer_id=None, account_id=77)
+
+    with pytest.raises(DocumentReviewError, match="только юристу"):
+        await service.review(
+            actor=actor,
+            document_id=1,
+            decision=decision,
+            comment="Юридическое решение администратора запрещено",
+            expected_status="ON_REVIEW",
+            expected_version=1,
+            expected_updated_at="2026-09-29T00:00:00+00:00",
+        )
+
+
+def test_admin_file_check_does_not_start_lawyer_review_and_ui_hides_legal_buttons():
+    service = read("app/domain/documents/document_review_service.py")
+    ui = read("app/api/document_review.py")
+
+    start = service.split("async def _start_m1_review_if_needed", 1)[1].split(
+        "async def _archive_previous_versions", 1
+    )[0]
+    assert 'if actor.role != "lawyer":' in start
+    assert 'normalized != "request_reupload"' in service
+    assert "Администратор может проверить наличие/читаемость файла" in service
+
+    assert "const legal=role==='lawyer'" in ui
+    assert "Администратор проверяет только наличие и читаемость" in ui
 
 def test_document_review_updates_case_and_notifies_client():
     service = read("app/domain/documents/document_review_service.py")
