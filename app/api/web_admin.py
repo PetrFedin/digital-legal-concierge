@@ -37,7 +37,7 @@ from app.models.user import User
 
 router = APIRouter(tags=["web-admin"])
 
-CLOSED_STATUSES = {"M1_CLOSED", "M2_CLOSED", "ARCHIVED"}
+CLOSED_STATUSES = {"M1_CLOSED", "M1_SELF_FILING_CLOSED", "M2_CLOSED", "ARCHIVED"}
 DOCUMENT_REVIEW_STATUSES = ACTIONABLE_REVIEW_STATUSES
 QUEUE_NAMES = {"unassigned", "documents", "consultations", "overdue"}
 
