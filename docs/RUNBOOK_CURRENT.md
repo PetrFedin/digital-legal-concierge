@@ -150,6 +150,15 @@ For a controlled non-production acceptance environment:
 8. verify `sla_due_at` is exactly payment receipt + 3 calendar days, all four approved documents are attached, the email lands on the confirmed profile address and the Case closes only after send evidence;
 9. turn the self-filing sales flag back off after acceptance until the full release evidence chain permits controlled production activation.
 
+Role check during the same acceptance pass:
+
+- **Admin/Superadmin:** open the self-filing staff card and generic Case card; verify only operational navigation is shown. Admin may inspect/reconcile payment and request a technical reupload, but legal review/approval controls are not available.
+- **Responsible Lawyer:** open the self-filing staff card and role-scoped Lawyer Case card; verify client/calculation/documents/payments/history/communications agree. Legal review/completeness/final-document controls are available only when state permits, while admin financial reconciliation controls and admin-only readiness navigation are absent.
+- **Foreign Lawyer:** exact Case URL/API must fail the responsibility check.
+- **Closed Case:** both roles see read-only/terminal behavior; no old message/document/payment control may reactivate the Case.
+
+Do not use the standard M1 30k/70k/success-fee dashboard as evidence for self-filing. Its financial contract is the frozen 15 000 ₽ bank-transfer obligation plus reconciliation and delivery evidence.
+
 There is no source-level per-user Telegram allowlist in the current bot path. If a colleague cannot use the deployed bot while another user can, treat that as a runtime/deployment/configuration incident and inspect the exact deployed SHA, bot token/username, polling worker, singleton lease, Telegram delivery logs and PostgreSQL user/case creation evidence before changing product logic.
 
 ## Payment provider enable/disable and sandbox sequence
