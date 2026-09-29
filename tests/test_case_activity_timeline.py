@@ -262,3 +262,33 @@ def test_self_filing_history_exposes_customer_milestones_but_keeps_internal_fail
     assert internal_failure_client is None
     assert internal_failure_staff is not None
     assert internal_failure_staff.title == "Email-доставка пакета требует внимания"
+
+
+def test_lawyer_history_keeps_staff_milestone_but_hides_admin_operational_comment():
+    item = present_case_activity(
+        audit(
+            "SELF_FILING_PAYMENT_REVIEW_RESOLVED",
+            comment="Бухгалтерская сверка: внутренний референс 12345",
+            actor_type="admin",
+        ),
+        audience="lawyer",
+    )
+
+    assert item is not None
+    assert item.title == "Финансовая сверка пакета завершена"
+    assert item.detail is None
+    assert "внутренний референс" not in str(item.as_dict())
+
+
+def test_admin_history_still_keeps_bounded_operational_comment():
+    item = present_case_activity(
+        audit(
+            "SELF_FILING_PAYMENT_REVIEW_RESOLVED",
+            comment="Бухгалтерская сверка завершена",
+            actor_type="admin",
+        ),
+        audience="staff",
+    )
+
+    assert item is not None
+    assert item.detail == "Бухгалтерская сверка завершена"
