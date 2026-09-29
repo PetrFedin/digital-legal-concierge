@@ -199,7 +199,7 @@ async def queue(
     result = await db.execute(
         select(Case)
         .where(Case.assigned_lawyer_id.is_(None))
-        .where(Case.status.notin_(["M1_CLOSED", "M2_CLOSED", "ARCHIVED"]))
+        .where(Case.status.notin_(["M1_CLOSED", "M1_SELF_FILING_CLOSED", "M2_CLOSED", "ARCHIVED"]))
         .order_by(Case.created_at.asc())
         .limit(100)
     )
