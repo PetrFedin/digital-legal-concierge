@@ -81,6 +81,7 @@ STAFF_ONLY_ACTIONS = frozenset(
         "SELF_FILING_DELIVERABLE_APPROVED",
         "SELF_FILING_PACKAGE_DOCUMENT_APPROVED",
         "SELF_FILING_EMAIL_DELIVERY_FAILED",
+        "SELF_FILING_EMAIL_RETRY_REQUESTED",
     }
 )
 
@@ -140,6 +141,7 @@ TITLE_BY_ACTION = {
     "SELF_FILING_DELIVERABLE_APPROVED": "Утверждён документ судебного комплекта",
     "SELF_FILING_PACKAGE_DOCUMENT_APPROVED": "Утверждена версия документа пакета",
     "SELF_FILING_EMAIL_DELIVERY_FAILED": "Email-доставка пакета требует внимания",
+    "SELF_FILING_EMAIL_RETRY_REQUESTED": "Администратор запустил повторную email-доставку",
     "SLA_STARTED": "Запущен контроль срока реакции",
     "SLA_FIRST_RESPONSE_RECORDED": "Первая реакция зафиксирована",
     "SLA_ACTION_RECORDED": "Действие по SLA зафиксировано",
@@ -201,6 +203,7 @@ CATEGORY_BY_ACTION = {
     "SELF_FILING_DELIVERABLE_APPROVED": "documents",
     "SELF_FILING_PACKAGE_DOCUMENT_APPROVED": "documents",
     "SELF_FILING_EMAIL_DELIVERY_FAILED": "documents",
+    "SELF_FILING_EMAIL_RETRY_REQUESTED": "documents",
 }
 
 DOCUMENT_TYPE_LABELS = {
