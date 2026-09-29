@@ -33,6 +33,7 @@ from app.models.lawyer import Lawyer
 from app.models.message import Message
 from app.models.notification import Notification
 from app.models.payment import Payment
+from app.models.self_filing_package import SelfFilingPackage
 from app.models.user import User
 
 router = APIRouter(tags=["web-admin"])
@@ -253,6 +254,15 @@ async def case_workspace(
             .limit(1)
         )
     ).scalars().first()
+    self_filing = None
+    if str(case.service_mode or "") == M1ServiceMode.SELF_FILING_PACKAGE.value:
+        self_filing = (
+            await db.execute(
+                select(SelfFilingPackage).where(
+                    SelfFilingPackage.case_id == int(case.id)
+                )
+            )
+        ).scalar_one_or_none()
     message_count = int(
         await db.scalar(
             select(func.count(Message.id)).where(Message.case_id == case.id)
@@ -401,6 +411,58 @@ async def case_workspace(
                 "manual_review_required": calculation.manual_review_required,
             }
             if calculation
+            else None
+        ),
+        "self_filing": (
+            {
+                "status": self_filing.status,
+                "version": int(self_filing.version or 1),
+                "delivery_email": self_filing.delivery_email,
+                "email_confirmed_at": (
+                    self_filing.email_confirmed_at.isoformat()
+                    if self_filing.email_confirmed_at
+                    else None
+                ),
+                "documents_complete_at": (
+                    self_filing.documents_complete_at.isoformat()
+                    if self_filing.documents_complete_at
+                    else None
+                ),
+                "court_name": self_filing.court_name,
+                "court_address": self_filing.court_address,
+                "jurisdiction_basis": self_filing.jurisdiction_basis,
+                "payment_confirmed_at": (
+                    self_filing.payment_confirmed_at.isoformat()
+                    if self_filing.payment_confirmed_at
+                    else None
+                ),
+                "sla_started_at": (
+                    self_filing.sla_started_at.isoformat()
+                    if self_filing.sla_started_at
+                    else None
+                ),
+                "sla_due_at": (
+                    self_filing.sla_due_at.isoformat()
+                    if self_filing.sla_due_at
+                    else None
+                ),
+                "ready_at": (
+                    self_filing.ready_at.isoformat()
+                    if self_filing.ready_at
+                    else None
+                ),
+                "delivered_at": (
+                    self_filing.delivered_at.isoformat()
+                    if self_filing.delivered_at
+                    else None
+                ),
+                "email_delivery_status": self_filing.email_delivery_status,
+                "email_delivery_attempts": int(
+                    self_filing.email_delivery_attempts or 0
+                ),
+                "product_url": f"/self-filing/ui?case_id={int(case.id)}",
+            }
+            if self_filing
             else None
         ),
         "communications": {
