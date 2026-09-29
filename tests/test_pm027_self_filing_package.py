@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import inspect
+
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
+
+import app.api.self_filing_product as self_filing_product_module
 
 from app.config import settings
 from app.domain.cases.consent_contract import (
@@ -598,3 +602,18 @@ def test_no_moscow_only_gate_is_introduced_for_self_filing_scope():
     assert "client_region" in service
     assert "Moscow" not in service
     assert "Moscow" not in intake
+
+
+def test_email_retry_is_admin_operational_authority_not_lawyer_legal_authority():
+    source = inspect.getsource(self_filing_product_module.retry_self_filing_email)
+    context = inspect.getsource(self_filing_product_module.self_filing_context)
+
+    assert "ROLE_ADMIN, ROLE_SUPERADMIN" in source
+    assert "_lawyer_case" not in source
+    assert "SELF_FILING_EMAIL_RETRY_REQUESTED" in source
+    assert 'actor_type="admin_user"' in source
+    assert '"actor_role": actor.role' in source
+
+    assert '"can_retry_delivery": actor.role in {ROLE_ADMIN, ROLE_SUPERADMIN}' in context
+    assert "package.email_last_error" in context
+    assert "if actor.role in {ROLE_ADMIN, ROLE_SUPERADMIN}" in context
