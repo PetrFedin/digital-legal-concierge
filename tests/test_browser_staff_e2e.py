@@ -629,11 +629,14 @@ def test_self_filing_staff_card_is_role_safe_and_shows_frozen_bank_contract() ->
         expect(admin_page.get_by_text("для адвоката Гамза Д.Г.")).to_be_visible()
         expect(admin_page.get_by_text(f"Платёж #{payment_id}", exact=False)).to_be_visible()
         expect(admin_page.get_by_role("button", name="Обновить")).to_be_enabled()
-        expect(admin_page.get_by_role("button", name="Начать проверку")).to_be_disabled()
-        expect(admin_page.get_by_role("button", name="Запросить документы")).to_be_disabled()
+        expect(admin_page.get_by_role("link", name="Дела клиентов")).to_be_visible()
+        expect(admin_page.get_by_role("link", name="Готовность услуги")).to_be_visible()
+        expect(admin_page.get_by_role("link", name="Мои дела")).to_be_hidden()
+        expect(admin_page.get_by_role("button", name="Начать проверку")).to_be_hidden()
+        expect(admin_page.get_by_role("button", name="Запросить документы")).to_be_hidden()
         expect(
             admin_page.get_by_role("button", name="Подтвердить комплект и открыть 15 000 ₽")
-        ).to_be_disabled()
+        ).to_be_hidden()
         _assert_no_horizontal_overflow(admin_page)
 
         # The generic case card uses the same server authority and exposes a
@@ -667,6 +670,9 @@ def test_self_filing_staff_card_is_role_safe_and_shows_frozen_bank_contract() ->
             lawyer_page.get_by_role("button", name="Подтвердить комплект и открыть 15 000 ₽")
         ).to_be_disabled()
         expect(lawyer_page.get_by_role("button", name="Обновить")).to_be_enabled()
+        expect(lawyer_page.get_by_role("link", name="Мои дела")).to_be_visible()
+        expect(lawyer_page.get_by_role("link", name="Дела клиентов")).to_be_hidden()
+        expect(lawyer_page.get_by_role("link", name="Готовность услуги")).to_be_hidden()
         _assert_no_horizontal_overflow(lawyer_page)
 
         case_response = lawyer_page.goto(
