@@ -135,3 +135,9 @@ def test_access_management_keeps_operator_as_auxiliary_not_base_workspace_role()
     source = open("app/api/access_management.py", encoding="utf-8").read()
     assert "PRODUCT_WORKSPACE_ROLES = frozenset({ROLE_ADMIN, ROLE_SUPERADMIN, ROLE_LAWYER})" in source
     assert "Роли «Оператор» и «Тестировщик» являются дополнительными" in source
+
+
+def test_completed_self_filing_case_is_read_only_in_staff_message_center():
+    source = open("app/api/guided_message_center.py", encoding="utf-8").read()
+    assert '"M1_SELF_FILING_CLOSED"' in source
+    assert "def _is_terminal(case: Case)" in source
