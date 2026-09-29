@@ -229,3 +229,36 @@ def test_staff_endpoint_and_case_card_use_same_shared_timeline():
     assert "Показать более ранние" in ui
     assert "if(selected!==id)return" in ui
     assert "Повторить историю" in ui
+
+
+def test_self_filing_history_exposes_customer_milestones_but_keeps_internal_failures_staff_only():
+    selected = present_case_activity(
+        audit("SELF_FILING_SERVICE_MODE_SELECTED", actor_type="client"),
+        audience="client",
+    )
+    prepared = present_case_activity(
+        audit("SELF_FILING_PACKAGE_READY", actor_type="lawyer"),
+        audience="client",
+    )
+    internal_failure_client = present_case_activity(
+        audit(
+            "SELF_FILING_EMAIL_DELIVERY_FAILED",
+            comment="SMTP diagnostic must stay staff-only",
+        ),
+        audience="client",
+    )
+    internal_failure_staff = present_case_activity(
+        audit(
+            "SELF_FILING_EMAIL_DELIVERY_FAILED",
+            comment="SMTP diagnostic must stay staff-only",
+        ),
+        audience="staff",
+    )
+
+    assert selected is not None
+    assert selected.title == "Выбран пакет для самостоятельной подачи"
+    assert prepared is not None
+    assert prepared.title == "Пакет документов готов"
+    assert internal_failure_client is None
+    assert internal_failure_staff is not None
+    assert internal_failure_staff.title == "Email-доставка пакета требует внимания"
