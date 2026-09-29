@@ -35,8 +35,8 @@ def test_document_review_service_is_locked_scoped_and_idempotent():
     source = read("app/domain/documents/document_review_service.py")
 
     assert source.count(".with_for_update()") >= 2
-    assert "Case.assigned_lawyer_id == actor.lawyer_id" in source
-    assert "case.assigned_lawyer_id != actor.lawyer_id" in source
+    assert "lawyer_can_access_case" in source
+    assert "effective_lawyer_ids_for_cases" in source
     assert "expected_status" in source
     assert "expected_version" in source
     assert "expected_updated_at" in source
