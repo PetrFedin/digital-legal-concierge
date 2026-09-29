@@ -33,6 +33,7 @@ router = APIRouter(tags=["admin-workdesk-integrity"])
 MAX_SCAN_CASES = 5000
 TERMINAL_CASE_STATUSES = {
     CaseStatus.M1_CLOSED.value,
+    CaseStatus.M1_SELF_FILING_CLOSED.value,
     CaseStatus.M2_CLOSED.value,
     CaseStatus.ARCHIVED.value,
 }
