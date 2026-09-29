@@ -18,12 +18,14 @@ from app.domain.documents.document_workflow import (
     normalize_document_status,
 )
 from app.domain.messages.message_service import MessageService
+from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models.calculation import Calculation
 from app.models.consultation import Consultation
 from app.models.document import Document
 from app.models.payment import Payment
+from app.models.self_filing_package import SelfFilingPackage
 from app.presentation_time import format_business_datetime
 
 
@@ -126,7 +128,7 @@ CLIENT_ACTIONS: dict[str, ClientAction] = {
     "M1_ACCEPTED": ClientAction(
         "Посмотреть ход дела",
         "case_history_open",
-        "Дело принято юристом. Следующий рабочий этап откроется командой; история уже доступна для просмотра.",
+        "Дело принято юристом. Команда покажет следующее нужное действие; история уже доступна для просмотра.",
     ),
     "M1_CONTRACT_READY": ClientAction(
         "Открыть договор",
@@ -136,12 +138,12 @@ CLIENT_ACTIONS: dict[str, ClientAction] = {
     "M1_WAITING_PAYMENT_30000": ClientAction(
         "Открыть первый платёж",
         "pay_start_30000",
-        "Откройте первый платёж. Этап доверенности откроется только после подтверждения поступления денег.",
+        "Откройте первый платёж. Оформление доверенности станет доступно после подтверждения поступления денег.",
     ),
     "M1_PAYMENT_30000_RECEIVED": ClientAction(
         "Проверить оплаты",
         "payments_open",
-        "Первый платёж получен. Откройте историю оплат; следующий этап появится после системной обработки платежа.",
+        "Первый платёж получен. Откройте историю оплат; следующее действие появится после обработки платежа.",
     ),
     "M1_POWER_OF_ATTORNEY": ClientAction(
         "Оформить доверенность",
@@ -161,27 +163,27 @@ CLIENT_ACTIONS: dict[str, ClientAction] = {
     "M1_CLAIM_SENT": ClientAction(
         "Посмотреть ход дела",
         "case_history_open",
-        "Претензия направлена. Откройте историю дела; следующий процессуальный этап будет открыт юристом по фактическим событиям.",
+        "Претензия направлена. Откройте историю дела; дальнейшее действие определит юрист по фактическим событиям.",
     ),
     "M1_WAITING_30_DAYS": ClientAction(
         "Открыть срок ожидания",
         "court_status",
-        "Проверьте текущий срок после претензии. Этот экран только показывает состояние и сам не открывает судебный этап.",
+        "Проверьте срок после претензии. Этот экран только показывает состояние и сам не переводит дело в суд.",
     ),
     "M1_COURT_STAGE": ClientAction(
         "Открыть судебный статус",
         "court_status",
-        "Откройте судебный этап и актуальные безопасные действия по делу.",
+        "Откройте карточку суда и актуальные действия по делу.",
     ),
     "M1_WAITING_PAYMENT_70000": ClientAction(
         "Открыть второй платёж",
         "pay_court_70000",
-        "Откройте второй платёж. Исполнительный этап откроется только после подтверждения поступления денег.",
+        "Откройте второй платёж. Работа по исполнению решения станет доступна после подтверждения поступления денег.",
     ),
     "M1_PAYMENT_70000_RECEIVED": ClientAction(
         "Проверить оплаты",
         "payments_open",
-        "Второй платёж получен. Откройте оплаты; исполнительный этап откроется по штатной логике после подтверждения.",
+        "Второй платёж получен. Откройте оплаты; дальнейшая работа по исполнению решения станет доступна после подтверждения.",
     ),
     "M1_ENFORCEMENT": ClientAction(
         "Следить за исполнением",
@@ -189,19 +191,64 @@ CLIENT_ACTIONS: dict[str, ClientAction] = {
         "Исполнительное производство идёт. Значимые события фиксируются в истории дела; дополнительных действий сейчас не требуется.",
     ),
     "M1_MONEY_RECEIVED": ClientAction(
-        "Завершить финансовый этап",
+        "Завершить расчёты",
         "pay_success_fee",
-        "Подтвердите финальный финансовый этап сопровождения.",
+        "Подтвердите финальный платёж по сопровождению.",
     ),
     "M1_WAITING_SUCCESS_FEE": ClientAction(
-        "Завершить финансовый этап",
+        "Завершить расчёты",
         "pay_success_fee",
-        "Завершите финальный финансовый этап сопровождения.",
+        "Завершите финальный платёж по сопровождению.",
     ),
     "M1_SUCCESS_FEE_RECEIVED": ClientAction(
         "Проверить оплаты",
         "payments_open",
         "Финальный платёж получен. Откройте историю оплат; закрытие дела выполняется системой после подтверждённого финансового события.",
+    ),
+    "M1_SELF_FILING_DOCUMENTS_PENDING": ClientAction(
+        "Загрузить документы",
+        "documents_open",
+        "Загрузите ДДУ, паспорт/удостоверение личности, приложения и остальные материалы по спору.",
+    ),
+    "M1_SELF_FILING_DOCUMENTS_RECEIVED": ClientAction(
+        "Открыть документы",
+        "documents_open",
+        "Комплект передан юристу. Проверьте статусы файлов и замечания, если они появятся.",
+    ),
+    "M1_SELF_FILING_LAWYER_REVIEW": ClientAction(
+        "Открыть документы",
+        "documents_open",
+        "Юрист проверяет полноту комплекта и конкретную подсудность. Новая оплата пока не требуется.",
+    ),
+    "M1_SELF_FILING_DOCS_REQUESTED": ClientAction(
+        "Дополнить комплект",
+        "documents_open",
+        "Юрист запросил дополнительный или исправленный документ. Откройте документы и добавьте нужную версию.",
+    ),
+    "M1_SELF_FILING_PAYMENT_PENDING": ClientAction(
+        "Открыть оплату 15 000 ₽",
+        "pay_self_filing",
+        "Юрист подтвердил полный комплект и подсудность. Откройте платёж 15 000 ₽ за подготовку пакета.",
+    ),
+    "M1_SELF_FILING_PREPARATION": ClientAction(
+        "Посмотреть ход подготовки",
+        "case_history_open",
+        "Оплата подтверждена. Судебный комплект из четырёх документов готовится к отправке на подтверждённый email в течение 3 календарных дней.",
+    ),
+    "M1_SELF_FILING_READY": ClientAction(
+        "Открыть готовый пакет",
+        "documents_open",
+        "Все четыре документа готовы и поставлены на email-доставку: претензия, исковое заявление, расчёт суммы иска и дорожная карта клиента.",
+    ),
+    "M1_SELF_FILING_DELIVERED": ClientAction(
+        "Открыть документы",
+        "documents_open",
+        "Пакет отправлен на подтверждённый email и остаётся доступен в документах обращения.",
+    ),
+    "M1_SELF_FILING_CLOSED": ClientAction(
+        "Открыть итог и документы",
+        "documents_open",
+        "Подготовка пакета завершена. Представительство в суде в эту услугу не входило.",
     ),
     "M1_REJECTED": ClientAction(
         "Выбрать, что делать дальше",
@@ -246,12 +293,12 @@ CLIENT_ACTIONS: dict[str, ClientAction] = {
     "M2_TO_M1": ClientAction(
         "Обновить дело",
         "my_case_open",
-        "Юрист переводит обращение в стандартное ведение. Обновите карточку, чтобы увидеть подтверждённый этап M1.",
+        "Юрист переводит обращение в стандартное ведение. Обновите карточку, чтобы увидеть текущее состояние дела.",
     ),
     "ERROR": ClientAction(
         "Связаться с юристом",
         "contact_lawyer",
-        "Не удалось определить следующий автоматический этап. Напишите юристу.",
+        "Не удалось определить следующее безопасное действие. Напишите юристу.",
     ),
 }
 
@@ -290,7 +337,47 @@ CLIENT_STAGE_COPY: dict[str, tuple[str, str]] = {
     ),
     "M1_ACCEPTED": (
         "Юрист подтвердил возможность стандартного ведения дела.",
-        "От вас сейчас дополнительных действий не требуется; ожидайте открытия договорного этапа.",
+        "От вас сейчас дополнительных действий не требуется; ожидайте готовности договора.",
+    ),
+    "M1_SELF_FILING_PROFILE_PENDING": (
+        "Вы выбрали подготовку пакета документов для самостоятельной подачи в суд.",
+        "Подтвердите регион, адрес и email для выдачи пакета. Эти данные не выбирают суд автоматически.",
+    ),
+    "M1_SELF_FILING_DOCUMENTS_PENDING": (
+        "Для подготовки пакета нужен полный комплект исходных документов.",
+        "Загрузите минимум ДДУ и паспорт/удостоверение личности, а также все приложения, дополнительные соглашения и иные материалы по спору.",
+    ),
+    "M1_SELF_FILING_DOCUMENTS_RECEIVED": (
+        "Документы переданы юридической команде.",
+        "От вас сейчас ничего не требуется, если юрист не запросит дополнительный материал.",
+    ),
+    "M1_SELF_FILING_LAWYER_REVIEW": (
+        "Юрист проверяет полноту документов и подтверждает конкретную подсудность.",
+        "Оплата 15 000 ₽ откроется только после юридического подтверждения полного комплекта и суда.",
+    ),
+    "M1_SELF_FILING_DOCS_REQUESTED": (
+        "Для подготовки пакета не хватает документа или требуется новая версия.",
+        "Откройте документы и выполните точный запрос юриста.",
+    ),
+    "M1_SELF_FILING_PAYMENT_PENDING": (
+        "Юрист подтвердил полный комплект документов и конкретную подсудность; создано обязательство 15 000 ₽.",
+        "Откройте оплату. После подтверждённого поступления денег результат должен быть отправлен на подтверждённый email в течение 3 календарных дней.",
+    ),
+    "M1_SELF_FILING_PREPARATION": (
+        "Оплата подтверждена, полный комплект принят юристом; пакет находится в подготовке.",
+        "Дополнительных действий сейчас не требуется. Следите за подтверждённым сроком и историей обращения.",
+    ),
+    "M1_SELF_FILING_READY": (
+        "Юрист утвердил все четыре документа судебного комплекта. Они поставлены на email-доставку.",
+        "Откройте документы и проверьте готовый пакет. Если email не пришёл, напишите команде, не создавая новую оплату.",
+    ),
+    "M1_SELF_FILING_DELIVERED": (
+        "Готовый пакет отправлен на подтверждённый email.",
+        "Сохраните пакет и используйте его для самостоятельной подачи. Представительство в суде этой услугой не предусмотрено.",
+    ),
+    "M1_SELF_FILING_CLOSED": (
+        "Услуга подготовки пакета завершена; итоговые документы и история сохранены.",
+        "Дальнейшую подачу и участие в суде вы осуществляете самостоятельно, если отдельно не согласована другая услуга.",
     ),
     "M1_REJECTED": (
         "Стандартное ведение по результатам юридической проверки не продолжено.",
@@ -301,12 +388,12 @@ CLIENT_STAGE_COPY: dict[str, tuple[str, str]] = {
         "Откройте договор и подтвердите продолжение работы только после ознакомления с текущей версией.",
     ),
     "M1_WAITING_PAYMENT_30000": (
-        "Договорный этап завершён, ожидается подтверждение первого платежа.",
-        "Откройте финансовый этап и выполните доступное действие по первому платежу.",
+        "Договор готов, ожидается подтверждение первого платежа.",
+        "Откройте оплату и выполните доступное действие по первому платежу.",
     ),
     "M1_PAYMENT_30000_RECEIVED": (
         "Первый платёж получен и зафиксирован в истории дела.",
-        "От вас сейчас дополнительных действий не требуется; следующий этап откроется после подтверждённой обработки платежа.",
+        "От вас сейчас дополнительных действий не требуется; следующее действие появится после подтверждения платежа.",
     ),
     "M1_POWER_OF_ATTORNEY": (
         "Для дальнейшей юридической работы требуется доверенность.",
@@ -325,32 +412,32 @@ CLIENT_STAGE_COPY: dict[str, tuple[str, str]] = {
         "От вас сейчас ничего не требуется; ожидается дальнейшее процессуальное событие.",
     ),
     "M1_WAITING_30_DAYS": (
-        "Идёт установленный этап ожидания после направления претензии.",
+        "Идёт установленный срок ожидания после направления претензии.",
         "От вас сейчас ничего не требуется; откройте срок ожидания для актуальной информации.",
     ),
     "M1_COURT_STAGE": (
-        "Дело находится на судебном этапе.",
+        "Дело находится в суде.",
         "Откройте судебный статус; новые действия появляются только после подтверждённых событий по делу.",
     ),
     "M1_WAITING_PAYMENT_70000": (
         "Для перехода к исполнению ожидается подтверждение второго платежа.",
-        "Откройте финансовый этап и выполните доступное действие по второму платежу.",
+        "Откройте оплату и выполните доступное действие по второму платежу.",
     ),
     "M1_PAYMENT_70000_RECEIVED": (
-        "Платёж судебного этапа получен и зафиксирован.",
-        "От вас сейчас дополнительных действий не требуется; исполнительный этап откроется после подтверждённой обработки.",
+        "Платёж, связанный с судом, получен и зафиксирован.",
+        "От вас сейчас дополнительных действий не требуется; работа по исполнению решения станет доступна после подтверждённой обработки.",
     ),
     "M1_ENFORCEMENT": (
         "Идёт исполнительное производство.",
         "От вас сейчас ничего не требуется; следите за подтверждёнными событиями в истории дела.",
     ),
     "M1_MONEY_RECEIVED": (
-        "Получение денежных средств по делу зафиксировано; остаётся финальный финансовый этап.",
-        "Откройте финальный финансовый этап и выполните доступное действие.",
+        "Получение денежных средств по делу зафиксировано; остаётся финальный платёж.",
+        "Откройте финальный платёж и выполните доступное действие.",
     ),
     "M1_WAITING_SUCCESS_FEE": (
-        "Ожидается завершение финального финансового этапа сопровождения.",
-        "Откройте финальный финансовый этап и выполните доступное действие.",
+        "Ожидается финальный платёж по сопровождению.",
+        "Откройте финальный платёж и выполните доступное действие.",
     ),
     "M1_SUCCESS_FEE_RECEIVED": (
         "Финальный платёж получен и зафиксирован.",
@@ -390,14 +477,14 @@ CLIENT_STAGE_COPY: dict[str, tuple[str, str]] = {
     ),
     "M2_TO_M1": (
         "Юрист подтвердил переход из консультации к стандартному ведению.",
-        "Обновите карточку обращения: следующий подтверждённый этап будет показан уже в M1.",
+        "Обновите карточку обращения: текущее состояние будет показано в основном ведении дела.",
     ),
     "M2_CLOSED": (
         "Консультационное обращение завершено и доступно в режиме просмотра.",
         "Действий по закрытому обращению не требуется; итог, документы, оплаты и история сохранены.",
     ),
     "ERROR": (
-        "Автоматически определить безопасный следующий этап сейчас не удалось.",
+        "Автоматически определить безопасное следующее действие сейчас не удалось.",
         "Не повторяйте старые действия вслепую; свяжитесь с юридической командой для уточнения.",
     ),
     "ARCHIVED": (
@@ -412,6 +499,10 @@ _DOCUMENT_PRIMARY_STATUSES = frozenset(
         "M1_DOCUMENTS_RECEIVED",
         "M1_LAWYER_REVIEW",
         "M1_DOCS_REQUESTED",
+        "M1_SELF_FILING_DOCUMENTS_PENDING",
+        "M1_SELF_FILING_DOCUMENTS_RECEIVED",
+        "M1_SELF_FILING_LAWYER_REVIEW",
+        "M1_SELF_FILING_DOCS_REQUESTED",
     }
 )
 
@@ -577,6 +668,13 @@ def _document_overview(documents: list[Document]) -> DocumentOverview:
 def _priority_action(case, documents: DocumentOverview) -> ClientAction | None:
     status = str(case.status)
 
+    if status == "M1_SELF_FILING_PROFILE_PENDING":
+        return ClientAction(
+            "Указать данные для пакета",
+            f"self_filing_profile_start:v2:{int(case.id)}",
+            "Подтвердите регион, адрес и email для выдачи готового пакета.",
+        )
+
     # Document facts may own the primary action only while the Case itself is
     # inside the M1 document collection/review contour. An old/rejected file
     # must never pull a court, payment or consultation Case backwards.
@@ -622,7 +720,7 @@ def _stage_blocker(status: str, documents: DocumentOverview) -> str | None:
         return None
     if documents.replacement_count:
         return (
-            "Продолжение документального этапа ожидает новую версию одного или "
+            "Продолжение работы с документами ожидает новую версию одного или "
             "нескольких файлов."
         )
     if documents.legacy_attention_count and not documents.review_count:
@@ -738,6 +836,186 @@ def _payments_summary(payments: list[Payment]) -> str:
     return f"Платежей в истории: {len(payments)} · активных действий по оплате нет"
 
 
+def _self_filing_profile_projection(
+    case,
+    projection: ClientStageProjection,
+    package: SelfFilingPackage | None,
+) -> ClientStageProjection:
+    """Reflect mailbox verification while Case remains on PROFILE_PENDING."""
+
+    if str(case.status) != "M1_SELF_FILING_PROFILE_PENDING":
+        return projection
+    if str(getattr(case, "service_mode", "") or "") != "SELF_FILING_PACKAGE":
+        return projection
+    if package is None or not package.delivery_email:
+        return projection
+
+    callback = f"self_filing_profile_start:v2:{int(case.id)}"
+    if package.email_confirmed_at is not None:
+        return ClientStageProjection(
+            status_label=projection.status_label,
+            now_text=(
+                "Email уже подтверждён, но состояние обращения ещё обновляется. "
+                "Повторно вводить данные или код не нужно."
+            ),
+            client_requirement="Обновите карточку обращения.",
+            blocker="Ожидается обновление обращения после подтверждения email.",
+            action=ClientAction(
+                "Обновить обращение",
+                "my_case_open",
+                "Откройте актуальное состояние обращения.",
+            ),
+        )
+
+    if (
+        package.email_verification_hash
+        and package.email_verification_expires_at is not None
+    ):
+        return ClientStageProjection(
+            status_label="Нужно подтвердить email",
+            now_text=(
+                "Регион, адрес и email сохранены. Для защиты персональных и "
+                "юридических документов адрес почты ещё не подтверждён."
+            ),
+            client_requirement=(
+                "Введите шестизначный код из письма. Если код истёк или не пришёл, "
+                "на этом же экране можно запросить новый или изменить email."
+            ),
+            blocker=(
+                "До подтверждения email загрузка документов и оплата пакета "
+                "не открываются."
+            ),
+            action=ClientAction(
+                "Подтвердить email",
+                callback,
+                "Откройте проверку email и введите код из письма.",
+            ),
+        )
+
+    return ClientStageProjection(
+        status_label="Нужно подтвердить email",
+        now_text=(
+            "Email для доставки указан, но действующего кода подтверждения сейчас нет."
+        ),
+        client_requirement=(
+            "Откройте проверку email и запросите новый код либо измените адрес."
+        ),
+        blocker=(
+            "До подтверждения email загрузка документов и оплата пакета "
+            "не открываются."
+        ),
+        action=ClientAction(
+            "Подтвердить email",
+            callback,
+            "Запросите новый код подтверждения или измените email.",
+        ),
+    )
+
+
+def _payment_aware_projection(
+    case,
+    projection: ClientStageProjection,
+    payments: list[Payment],
+) -> ClientStageProjection:
+    """Prevent a second 15k action after money has already been received.
+
+    The Case intentionally remains on SELF_FILING_PAYMENT_PENDING while a
+    provider-confirmed payment is under review/refund handling. Payment ledger
+    truth therefore overrides the generic stage button until reconciliation is
+    finished.
+    """
+
+    if str(case.status) != "M1_SELF_FILING_PAYMENT_PENDING":
+        return projection
+    if str(getattr(case, "service_mode", "") or "") != "SELF_FILING_PACKAGE":
+        return projection
+
+    payment = next(
+        (
+            item
+            for item in payments
+            if str(item.payment_code) == PaymentCode.M1_SELF_FILING_PACKAGE.value
+        ),
+        None,
+    )
+    if payment is None:
+        return projection
+
+    status = PaymentStatus(str(payment.status))
+    if status == PaymentStatus.PAID_REVIEW:
+        return ClientStageProjection(
+            status_label=projection.status_label,
+            now_text=(
+                "Оплата 15 000 ₽ уже получена, но автоматический запуск подготовки "
+                "остановлен для безопасной финансовой сверки."
+            ),
+            client_requirement=(
+                "Повторно не оплачивайте. Команда проверит полученный платёж и "
+                "либо запустит подготовку по исходному времени поступления денег, "
+                "либо оформит контролируемый возврат."
+            ),
+            blocker="Полученный платёж находится на финансовой сверке.",
+            action=ClientAction(
+                "Проверить статус оплаты",
+                "payments_open",
+                "Откройте историю оплаты. Повторная оплата сейчас заблокирована.",
+            ),
+        )
+    if status == PaymentStatus.REFUND_PENDING:
+        return ClientStageProjection(
+            status_label=projection.status_label,
+            now_text=(
+                "Полученные 15 000 ₽ направлены на контролируемый возврат. "
+                "Подготовка пакета по этому платежу не начата."
+            ),
+            client_requirement=(
+                "Повторно не оплачивайте до завершения возврата и обновления "
+                "статуса финансовой операции."
+            ),
+            blocker="Возврат полученного платежа ещё не завершён.",
+            action=ClientAction(
+                "Проверить возврат",
+                "payments_open",
+                "Откройте историю оплаты и дождитесь завершения возврата.",
+            ),
+        )
+    if status == PaymentStatus.REFUND_DECLINED:
+        return ClientStageProjection(
+            status_label=projection.status_label,
+            now_text=(
+                "По возврату 15 000 ₽ требуется дополнительная проверка команды."
+            ),
+            client_requirement=(
+                "Не оплачивайте повторно. Свяжитесь с командой по этому обращению."
+            ),
+            blocker="Финансовая операция требует ручного уточнения.",
+            action=ClientAction(
+                "Написать команде",
+                "message_create",
+                "Уточните статус полученного платежа и возврата по этому обращению.",
+            ),
+        )
+    if status == PaymentStatus.PAID:
+        return ClientStageProjection(
+            status_label=projection.status_label,
+            now_text=(
+                "Оплата 15 000 ₽ уже зафиксирована как полученная. "
+                "Повторный платёж не требуется."
+            ),
+            client_requirement=(
+                "Откройте историю оплаты; если подготовка ещё не началась, "
+                "команда завершает системную обработку полученного платежа."
+            ),
+            blocker="Повторная оплата заблокирована до завершения системной обработки.",
+            action=ClientAction(
+                "Проверить статус оплаты",
+                "payments_open",
+                "Откройте историю полученного платежа.",
+            ),
+        )
+    return projection
+
+
 def _action_key(
     *,
     case,
@@ -745,6 +1023,7 @@ def _action_key(
     documents: DocumentOverview,
     consultation: Consultation | None,
     payments: list[Payment],
+    self_filing_package: SelfFilingPackage | None,
     history_event_id: int | None,
     unread_team_messages: int = 0,
     latest_team_message_at: datetime | None = None,
@@ -752,6 +1031,7 @@ def _action_key(
     parts = [
         str(case.id),
         str(case.status),
+        str(getattr(case, "service_mode", "") or ""),
         str(getattr(case, "version", "") or ""),
         case.updated_at.isoformat() if case.updated_at else "",
         action.callback if action else "wait",
@@ -770,6 +1050,23 @@ def _action_key(
         str(unread_team_messages),
         latest_team_message_at.isoformat() if latest_team_message_at else "",
         str(history_event_id or ""),
+        str(self_filing_package.version if self_filing_package else ""),
+        (
+            self_filing_package.updated_at.isoformat()
+            if self_filing_package and self_filing_package.updated_at
+            else ""
+        ),
+        (
+            self_filing_package.email_confirmed_at.isoformat()
+            if self_filing_package and self_filing_package.email_confirmed_at
+            else ""
+        ),
+        (
+            self_filing_package.email_verification_expires_at.isoformat()
+            if self_filing_package
+            and self_filing_package.email_verification_expires_at
+            else ""
+        ),
         *[
             ":".join(
                 (
@@ -838,9 +1135,27 @@ async def load_client_case_view(
     unread_team_messages, latest_team_message_at = (
         await MessageService(db).unread_lawyer_summary(case.id)
     )
+    self_filing_package = None
+    if str(getattr(case, "service_mode", "") or "") == "SELF_FILING_PACKAGE":
+        self_filing_package = (
+            await db.execute(
+                select(SelfFilingPackage).where(
+                    SelfFilingPackage.case_id == int(case.id)
+                )
+            )
+        ).scalar_one_or_none()
 
     document_overview = _document_overview(documents)
-    projection = client_stage_projection(case, document_overview)
+    projection = _self_filing_profile_projection(
+        case,
+        client_stage_projection(case, document_overview),
+        self_filing_package,
+    )
+    projection = _payment_aware_projection(
+        case,
+        projection,
+        payments,
+    )
     action = projection.action
     next_action = (
         action.description
@@ -866,6 +1181,11 @@ async def load_client_case_view(
         consultation_updated_at,
         latest_team_message_at,
         payment_updated_at,
+        (
+            self_filing_package.updated_at
+            if self_filing_package is not None
+            else None
+        ),
     )
     effective_route = effective_client_route(case)
 
@@ -874,7 +1194,11 @@ async def load_client_case_view(
         case_number=case.case_number,
         case_status=str(case.status),
         route=effective_route,
-        route_label=route_label(effective_route),
+        route_label=(
+            "Пакет для самостоятельной подачи"
+            if str(getattr(case, "service_mode", "") or "") == "SELF_FILING_PACKAGE"
+            else route_label(effective_route)
+        ),
         status_label=projection.status_label,
         progress_percent=get_case_progress_percent(case.status),
         now_text=projection.now_text,
@@ -888,6 +1212,7 @@ async def load_client_case_view(
             documents=document_overview,
             consultation=consultation,
             payments=payments,
+            self_filing_package=self_filing_package,
             history_event_id=history_event_id,
             unread_team_messages=unread_team_messages,
             latest_team_message_at=latest_team_message_at,

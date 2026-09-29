@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import inspect
+from types import SimpleNamespace
 
 import pytest
 from aiogram.exceptions import TelegramBadRequest
 
+from app.bot.screens import documents as documents_screen
 from app.bot.screens.documents import (
     _present_committed_result,
     choose,
@@ -31,6 +33,30 @@ class FakeState:
 
     async def update_data(self, **kwargs):
         self.data.update(kwargs)
+
+
+class FakeDb:
+    def __init__(self):
+        self.rollbacks = 0
+
+    async def rollback(self):
+        self.rollbacks += 1
+
+
+class FakeCaseService:
+    def __init__(self, case):
+        self.case = case
+
+    async def get_active_case_for_user(self, _user_id):
+        return self.case
+
+
+class FakeContext:
+    def __init__(self, case):
+        self.case_service = FakeCaseService(case)
+
+    async def get_user_from_callback(self, _callback):
+        return SimpleNamespace(id=77)
 
 
 class FakeMessage:
@@ -86,9 +112,9 @@ async def test_stale_unknown_document_type_never_enters_file_upload_state():
         {"document_type": "DDU"},
         current=DocumentUploadStates.waiting_file.state,
     )
-    callback = FakeCallback("doc_type:REMOVED_TYPE")
+    callback = FakeCallback("doc_type:v2:41:REMOVED_TYPE")
 
-    await choose(callback, state)
+    await choose(callback, state, db=FakeDb())
 
     assert state.clear_count == 1
     assert state.data == {}
@@ -102,15 +128,50 @@ async def test_stale_unknown_document_type_never_enters_file_upload_state():
 
 
 @pytest.mark.asyncio
-async def test_valid_document_type_moves_to_waiting_file_only_after_choice():
+async def test_valid_case_bound_document_type_moves_to_waiting_file_only_after_choice(
+    monkeypatch,
+):
     state = FakeState(current=DocumentUploadStates.choosing_type.state)
+    callback = FakeCallback("doc_type:v2:41:DDU")
+    case = SimpleNamespace(
+        id=41,
+        status="M1_DOCUMENTS_PENDING",
+        route="M1",
+        service_mode="FULL_REPRESENTATION",
+    )
+    monkeypatch.setattr(
+        documents_screen,
+        "BotContextService",
+        lambda _db: FakeContext(case),
+    )
+    db = FakeDb()
+
+    await choose(callback, state, db=db)
+
+    assert state.data == {"document_type": "DDU", "document_case_id": 41}
+    assert state.current == DocumentUploadStates.waiting_file.state
+    assert db.rollbacks == 1
+    assert "Прикрепите PDF" in callback.message.edits[-1][0]
+
+
+@pytest.mark.asyncio
+async def test_legacy_unbound_document_type_is_navigation_only():
+    state = FakeState(
+        {"document_type": "DDU"},
+        current=DocumentUploadStates.choosing_type.state,
+    )
     callback = FakeCallback("doc_type:DDU")
 
-    await choose(callback, state)
+    await choose(callback, state, db=FakeDb())
 
-    assert state.data == {"document_type": "DDU"}
-    assert state.current == DocumentUploadStates.waiting_file.state
-    assert "Прикрепите PDF" in callback.message.edits[-1][0]
+    assert state.clear_count == 1
+    assert state.data == {}
+    assert "не содержит номер обращения" in callback.message.edits[-1][0]
+    assert _callbacks(callback.message.edits[-1][1]) == [
+        "documents_open",
+        "my_case_open",
+        "nav_home",
+    ]
 
 
 @pytest.mark.asyncio

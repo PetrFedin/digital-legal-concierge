@@ -9,6 +9,7 @@ from fastapi.routing import iter_route_contexts
 import app.domain.documents.document_review_service as review_module
 from app.api.admin_queue_guard import safe_legacy_admin_queue
 from app.domain.cases.assignment_service import CaseAssignmentService
+from app.domain.cases.case_responsibility import TERMINAL_CASE_STATUS_VALUES
 from app.domain.documents.document_review_service import (
     DocumentReviewError,
     DocumentReviewService,
@@ -89,3 +90,7 @@ def test_closed_case_document_decisions_are_read_only_even_for_admin():
 
     with pytest.raises(DocumentReviewError, match="только для просмотра"):
         asyncio.run(service.ensure_actor_can_review(actor, case))
+
+
+def test_self_filing_closed_is_terminal_for_role_scoped_case_access():
+    assert "M1_SELF_FILING_CLOSED" in TERMINAL_CASE_STATUS_VALUES

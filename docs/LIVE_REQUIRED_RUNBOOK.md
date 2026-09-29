@@ -74,6 +74,8 @@ The workflow deliberately maps those test-shop secrets to the existing `YOOKASSA
 
 For `payment_mode=offline`, LIVE_REQUIRED runs the focused offline payment contract: no external payment URL, explicit administrator receipt authority, M1/M2 eligibility and Telegram presentation. Actual bank-receipt reconciliation is still proven in the later real persona/manual acceptance and is never simulated.
 
+If the candidate enables new `SELF_FILING_PACKAGE` sales, its payment proof is the dedicated bar-association bank-transfer contract: exact snapshotted requisites + 15 000 ₽ + mandatory purpose + authenticated receipt reconciliation. Do not substitute YooKassa test-shop evidence for that self-filing contract.
+
 For `payment_mode=yookassa`, `scripts/live_required_smoke.py provider`:
 
 - uses the existing `YooKassaPaymentProvider` code path;
@@ -91,7 +93,7 @@ A failed test-shop probe, production-shop response, non-idempotent retry or unex
 
 This provider smoke proves connectivity, test-shop isolation and create/retry/retrieve idempotency. It **does not** prove a real paid/refund lifecycle at YooKassa because the gate deliberately never confirms the payment. Paid/review/refund race and recovery semantics are covered separately by PostgreSQL/application suites and must not be described as provider-side live proof.
 
-Provider-side paid/refund sandbox expansion is a later Gate 7 operation. It is not permitted until the same candidate SHA has passed LIVE_REQUIRED, real Telegram M1/M2 persona walkthroughs and the encrypted backup→restore drill. See `docs/ACCEPTANCE_CURRENT.md` and `docs/POST_LIVE_RELEASE_EVIDENCE.md`.
+Provider-side paid/refund sandbox expansion is a later Gate 7 operation. It is not permitted until the same candidate SHA has passed LIVE_REQUIRED, real Telegram M1 full-representation/M1 self-filing/M2 persona walkthroughs and the encrypted backup→restore drill. See `docs/ACCEPTANCE_CURRENT.md` and `docs/POST_LIVE_RELEASE_EVIDENCE.md`.
 
 ## Telegram safety contract
 
@@ -103,7 +105,7 @@ Provider-side paid/refund sandbox expansion is a later Gate 7 operation. It is n
 - deletes both smoke messages after delivery and fails if cleanup cannot be confirmed;
 - prints only the bot id and delivery count, never the bot token or chat ids.
 
-This proves external Bot API reachability and delivery to both acceptance roles. It complements, but does not replace, the dispatcher/Redis business-flow acceptance paths in the test suite or the later full M1/M2 persona walkthrough.
+This proves external Bot API reachability and delivery to both acceptance roles. It complements, but does not replace, the dispatcher/Redis business-flow acceptance paths in the test suite or the later manual M1 full-representation, M1 self-filing and M2 persona walkthroughs. The later self-filing gate additionally requires at least three distinct client Telegram chats and an exact bank-requisites/payment-purpose check; the automated two-chat smoke is not sufficient.
 
 ## Evidence required from a successful run
 

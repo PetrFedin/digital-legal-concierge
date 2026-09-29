@@ -29,6 +29,7 @@ from app.domain.consultations.consultation_no_payment_booking import (
     ConsultationNoPaymentBookingService,
 )
 from app.domain.consultations.slot_service import SlotUnavailableError
+from app.domain.payments.bank_requisites import bank_payment_instructions
 from app.domain.payments.mode import payments_disabled, payments_offline
 from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
@@ -58,11 +59,13 @@ PAYMENT_STATUS_LABELS = {
 M1_PAYMENT_EXPECTED_STATUSES = {
     PaymentCode.M1_INITIAL_PAYMENT: CaseStatus.M1_WAITING_PAYMENT_30000,
     PaymentCode.M1_COURT_PAYMENT: CaseStatus.M1_WAITING_PAYMENT_70000,
+    PaymentCode.M1_SELF_FILING_PACKAGE: CaseStatus.M1_SELF_FILING_PAYMENT_PENDING,
 }
 OFFLINE_PAYMENT_CODES = {
     PaymentCode.M1_INITIAL_PAYMENT,
     PaymentCode.M1_COURT_PAYMENT,
     PaymentCode.M1_SUCCESS_FEE,
+    PaymentCode.M1_SELF_FILING_PACKAGE,
     PaymentCode.M2_CONSULTATION_PAYMENT,
 }
 
@@ -95,13 +98,28 @@ def is_offline_payment_waiting_for_team(payment: Payment) -> bool:
     )
 
 
+def is_self_filing_bank_payment(payment: Payment) -> bool:
+    return bool(
+        str(payment.payment_code) == PaymentCode.M1_SELF_FILING_PACKAGE.value
+        and str(payment.provider or "") == "bank_transfer"
+        and not payment.payment_url
+    )
+
+
 def client_payment_status_label(payment: Payment) -> str:
+    if is_self_filing_bank_payment(payment) and payment.status in {
+        PaymentStatus.PENDING,
+        PaymentStatus.WAITING_CONFIRMATION,
+    }:
+        return "Ожидает банковского перевода и сверки"
     if is_offline_payment_waiting_for_team(payment):
         return "Ожидает подтверждения командой"
     return payment_status_label(payment.status)
 
 
 def client_payment_status_note(payment: Payment) -> str:
+    if is_self_filing_bank_payment(payment):
+        return bank_payment_instructions(amount=payment.amount)
     if not is_offline_payment_waiting_for_team(payment):
         return ""
     return (
@@ -316,6 +334,18 @@ async def pay_30000(callback: CallbackQuery, db):
     )
 
 
+@router.callback_query(
+    lambda c: callback_matches_action(c.data, "pay_self_filing")
+)
+async def pay_self_filing(callback: CallbackQuery, db):
+    await start_payment(
+        callback,
+        db,
+        PaymentCode.M1_SELF_FILING_PACKAGE,
+        action="pay_self_filing",
+    )
+
+
 @router.callback_query(lambda c: callback_matches_action(c.data, "consult_pay"))
 async def consult_pay(callback: CallbackQuery, db):
     scope = await resolve_case_callback_scope(
@@ -468,7 +498,7 @@ async def _show_missing_m1_payment_case(callback: CallbackQuery, db, ctx, user) 
         await callback.message.edit_text(
             f"✅ Дело {completed.case_number} уже завершено.\n\n"
             "Эта старая кнопка оплаты больше не создаёт платежей. "
-            "Проверьте итог или платёжную историю завершённого M1-дела.",
+            "Проверьте итог или платёжную историю завершённого дела.",
             reply_markup=one(
                 ("💳 Оплаты", "payments_open"),
                 ("📁 Итог дела", "my_case_open"),
@@ -478,7 +508,7 @@ async def _show_missing_m1_payment_case(callback: CallbackQuery, db, ctx, user) 
         )
         return
     await callback.message.edit_text(
-        "Активное M1-дело для этой оплаты не найдено. Новый платёж не создавался.",
+        "Активное дело для этой оплаты не найдено. Новый платёж не создавался.",
         reply_markup=one(
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
@@ -519,7 +549,7 @@ async def start_payment(
 
     if is_m1_payment and not _m1_payment_context_matches(case, code):
         await callback.message.edit_text(
-            "Эта кнопка оплаты относится к другому или уже завершённому этапу. "
+            Эта кнопка оплаты относится к другому или уже завершённому действию. "
             "Новый платёж не создавался.",
             reply_markup=one(
                 ("💳 Оплаты", "payments_open"),
@@ -607,7 +637,7 @@ async def start_payment(
     except RuntimeError:
         await db.rollback()
         await callback.message.edit_text(
-            "Платёжный сервис временно недоступен. Данные текущего этапа сохранены.",
+            "Платёжный сервис временно недоступен. Данные обращения сохранены.",
             reply_markup=(
                 one(
                     (
@@ -627,7 +657,16 @@ async def start_payment(
         )
         return
 
-    if payments_offline():
+    if code == PaymentCode.M1_SELF_FILING_PACKAGE:
+        text = (
+            f"💳 {payment_title}\n"
+            f"Обращение № {case_number}\n\n"
+            + bank_payment_instructions(amount=payment_amount)
+            + "\n\nПосле подтверждения поступления денег результат будет отправлен "
+              "на подтверждённый email в течение 3 календарных дней. "
+              "Представительство в суде в эту услугу не входит."
+        )
+    elif payments_offline():
         if code == PaymentCode.M2_CONSULTATION_PAYMENT:
             next_step = (
                 "После подтверждения фактического поступления команда закрепит "
@@ -636,17 +675,23 @@ async def start_payment(
         elif code == PaymentCode.M1_INITIAL_PAYMENT:
             next_step = (
                 "После подтверждения фактического поступления система откроет "
-                "этап оформления доверенности."
+                "оформление доверенности."
+            )
+        elif code == PaymentCode.M1_SELF_FILING_PACKAGE:
+            next_step = (
+                "После подтверждения фактического поступления начнётся срок "
+                "подготовки пакета — 3 календарных дня от более позднего из двух "
+                "подтверждений: оплаты и полного комплекта документов."
             )
         elif code == PaymentCode.M1_SUCCESS_FEE:
             next_step = (
-                "После подтверждения фактического поступления финансовый этап "
+                После подтверждения фактического поступления расчёты "
                 "будет завершён и дело сможет закрыться."
             )
         else:
             next_step = (
                 "После подтверждения фактического поступления система откроет "
-                "следующий этап дела."
+                "следующее действие по делу."
             )
         text = (
             f"💳 {payment_title}\n"
@@ -669,14 +714,14 @@ async def start_payment(
             f"💳 {payment_title}\n"
             f"Обращение № {case_number}\n\n"
             f"Сумма: {money(payment_amount)}\n\n"
-            "После подтверждения оплаты система откроет следующий этап — оформление доверенности."
+            "После подтверждения оплаты станет доступно оформление доверенности."
         )
     else:
         text = (
             f"💳 {payment_title}\n"
             f"Обращение № {case_number}\n\n"
             f"Сумма: {money(payment_amount)}\n\n"
-            "После подтверждения оплаты система откроет исполнительный этап."
+            "После подтверждения оплаты станет доступна работа по исполнению решения."
         )
     await _present_committed_callback(
         callback,
@@ -834,6 +879,25 @@ async def fake(callback: CallbackQuery, db):
         )
         return
 
+    if payment_code == PaymentCode.M1_SELF_FILING_PACKAGE:
+        await _present_committed_callback(
+            callback,
+            "✅ Оплата пакета подтверждена.\n\n"
+            "Дата оплаты зафиксирована. Если акт передачи квартиры ещё не подписан, "
+            "расчёт суммы иска фиксируется на дату этой оплаты; в дорожной карте "
+            "будет указано, как в суде уточнить требования и представить новый расчёт. "
+            "Если акт уже подписан, расчёт фиксируется на дату акта.\n\n"
+            "Готовый комплект из четырёх документов будет отправлен на подтверждённый "
+            "email в течение 3 календарных дней.",
+            reply_markup=one(
+                ("📁 Моё дело", "my_case_open"),
+                ("📄 Документы", "documents_open"),
+                ("💳 Все оплаты", "payments_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
     if payment_code == PaymentCode.M1_SUCCESS_FEE:
         await _present_committed_callback(
             callback,
@@ -850,7 +914,7 @@ async def fake(callback: CallbackQuery, db):
 
     await _present_committed_callback(
         callback,
-        "✅ Оплата подтверждена. Следующий этап открыт автоматически.",
+        "✅ Оплата подтверждена. Следующее действие по делу стало доступно.",
         reply_markup=one(
             ("💳 Все оплаты", "payments_open"),
             ("📁 Моё дело", "my_case_open"),

@@ -85,6 +85,24 @@ class Settings(BaseSettings):
     payment_provider: str = "fake"
     yookassa_shop_id: str = ""
     yookassa_secret_key: str = ""
+
+    # PM-027 delivery channel. Package files remain encrypted at rest and are
+    # decrypted only in memory for the configured SMTP send. Credentials are
+    # environment-only and must never be written to SystemSetting/AuditLog.
+    # New PM-027 sales remain dark until controlled production acceptance.
+    # Disabling this gate blocks only NEW self-filing selections; already-started
+    # matters must remain serviceable so paid obligations are never stranded.
+    self_filing_new_sales_enabled: bool = False
+    self_filing_email_provider: str = "disabled"
+    self_filing_smtp_host: str = ""
+    self_filing_smtp_port: int = 587
+    self_filing_smtp_username: str = ""
+    self_filing_smtp_password: str = ""
+    self_filing_smtp_from_email: str = ""
+    self_filing_smtp_starttls: bool = True
+    self_filing_email_max_attempts: int = 8
+    self_filing_email_timeout_seconds: int = 30
+
     admin_username: str = "admin"
     admin_password: str = ""
     admin_session_cookie: str = "dlc_admin_session"

@@ -144,12 +144,12 @@ _WORKDESK_PRODUCT_EXTENSION = r"""
       responsibility.lawyer_name||'будет определён выбранным слотом'
     );
     replaceCell(
-      caseCell('SLA'),
+      caseCell('Контроль консультации')||caseCell('SLA'),
       'Контроль консультации',
       responsibility.lawyer_name?'по выбранному слоту':'ожидается выбор слота'
     );
     replaceCell(
-      caseCell('Срок'),
+      caseCell('Время консультации')||caseCell('Срок'),
       'Время консультации',
       responsibility.scheduled_at?dt(responsibility.scheduled_at):'ещё не выбрано'
     );

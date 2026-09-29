@@ -30,3 +30,9 @@ def test_workdesk_ui_exposes_client_readable_financial_labels():
     assert "Возврат обрабатывается" in WORKDESK_UI_SOURCE
     assert "/admin/payment-reviews/ui?payment_id=" in WORKDESK_UI_SOURCE
     assert "/admin/refunds/ui?payment_id=" in WORKDESK_UI_SOURCE
+
+
+def test_integrity_center_treats_self_filing_closed_as_terminal():
+    source = open("app/api/workdesk_integrity.py", encoding="utf-8").read()
+    terminal = source.split("TERMINAL_CASE_STATUSES = {", 1)[1].split("}", 1)[0]
+    assert "CaseStatus.M1_SELF_FILING_CLOSED.value" in terminal

@@ -14,6 +14,7 @@ from app.config import settings
 from app.db.session import get_db
 from app.domain.cases.assignment_policy import automatic_assignment_required
 from app.domain.cases.case_timeline import get_client_visible_status
+from app.domain.cases.service_modes import M1ServiceMode
 from app.domain.documents.document_workflow import (
     DocumentAttentionState,
     DocumentWorkflowDescriptor,
@@ -29,11 +30,12 @@ from app.models.document import Document
 from app.models.lawyer import Lawyer
 from app.models.message import Message
 from app.models.payment import Payment
+from app.models.self_filing_package import SelfFilingPackage
 from app.models.user import User
 
 router = APIRouter(tags=["admin-workdesk"])
 
-CLOSED_STATUSES = ("M1_CLOSED", "M2_CLOSED", "ARCHIVED")
+CLOSED_STATUSES = ("M1_CLOSED", "M1_SELF_FILING_CLOSED", "M2_CLOSED", "ARCHIVED")
 OVERDUE_SLA_STATUSES = ("FIRST_RESPONSE_OVERDUE", "ACTION_OVERDUE")
 ACTIVE_CONSULTATION_STATUSES = ("BOOKED", "CONFIRMED")
 CASE_ACTION_TASKS = {"documents", "consultation", "sla"}
@@ -46,6 +48,13 @@ ROUTE_LABELS = {
     "M1": "Ведение дела",
     "M2": "Консультация",
 }
+SELF_FILING_STAFF_STATUSES = {
+    "M1_SELF_FILING_DOCUMENTS_RECEIVED",
+    "M1_SELF_FILING_LAWYER_REVIEW",
+    "M1_SELF_FILING_PREPARATION",
+    "M1_SELF_FILING_READY",
+}
+
 SLA_LABELS = {
     "NOT_STARTED": "SLA не запущен",
     "FIRST_RESPONSE_PENDING": "Ожидается первая реакция",
@@ -62,6 +71,7 @@ _REASON_PRIORITY = {
     "overdue": 2,
     "messages": 3,
     "unassigned": 4,
+    "self_filing": 5,
     "documents": 5,
     "document_draft": 6,
     "document_legacy": 6,
@@ -73,6 +83,7 @@ _REASON_LABELS = {
     "overdue": "Нарушен SLA",
     "messages": "Новое сообщение клиента",
     "unassigned": "Нет ответственного юриста",
+    "self_filing": "Пакет самостоятельной подачи требует действия",
     "documents": "Документы ждут решения",
     "document_draft": "Файлы ещё не переданы юристу",
     "document_legacy": "Статус документов требует уточнения",
@@ -150,6 +161,8 @@ def _attention_reasons(
         codes.append("messages")
     if case.assigned_lawyer_id is None and automatic_assignment_required(case.status):
         codes.append("unassigned")
+    if str(case.status) in SELF_FILING_STAFF_STATUSES:
+        codes.append("self_filing")
     if document_workflow.state != DocumentAttentionState.NONE:
         codes.append(document_workflow.code)
     if consultation_at is not None:
@@ -187,6 +200,15 @@ def _primary_action(
     refund_ids = payment_attention.get("refund_ids") or []
     if "payment_review" in reason_codes and review_ids:
         payment_id = int(review_ids[0])
+        if (
+            str(getattr(case, "service_mode", "") or "")
+            == M1ServiceMode.SELF_FILING_PACKAGE.value
+        ):
+            return {
+                "kind": "link",
+                "label": "Сверить оплату пакета 15 000 ₽",
+                "href": f"/self-filing/ui?case_id={case.id}",
+            }
         return {
             "kind": "link",
             "label": "Сверить полученный платёж",
@@ -238,6 +260,12 @@ def _primary_action(
                 "expected_status": str(case.status),
             },
         }
+    if "self_filing" in reason_codes:
+        return {
+            "kind": "link",
+            "label": "Открыть пакет самостоятельной подачи",
+            "href": f"/self-filing/ui?case_id={case.id}",
+        }
     if "documents" in reason_codes:
         return {
             "kind": "link",
@@ -266,6 +294,7 @@ def _attention_item(
     consultation_at: datetime | None,
     lawyer_name: str | None,
     payment_attention: dict[str, object],
+    self_filing_due_at: datetime | None = None,
 ) -> dict[str, object] | None:
     reasons = _attention_reasons(
         case,
@@ -286,6 +315,8 @@ def _attention_item(
         deadline = case.sla_due_at
     elif primary_reason == "messages":
         deadline = latest_client_message_at
+    elif primary_reason == "self_filing" and self_filing_due_at is not None:
+        deadline = self_filing_due_at
     elif consultation_at is not None:
         deadline = consultation_at
     else:
@@ -297,7 +328,12 @@ def _attention_item(
         "id": case.id,
         "number": case.case_number,
         "route": case.route,
-        "route_label": _route_label(case.route),
+        "route_label": (
+            "Пакет для самостоятельной подачи"
+            if str(getattr(case, "service_mode", "") or "")
+            == M1ServiceMode.SELF_FILING_PACKAGE.value
+            else _route_label(case.route)
+        ),
         "status": str(case.status),
         "status_label": get_client_visible_status(case.status),
         "lawyer_id": case.assigned_lawyer_id,
@@ -308,6 +344,9 @@ def _attention_item(
         "sla_label": _sla_label(case.sla_status),
         "sla_due_at": case.sla_due_at.isoformat() if case.sla_due_at else None,
         "consultation_at": consultation_at.isoformat() if consultation_at else None,
+        "self_filing_sla_due_at": (
+            self_filing_due_at.isoformat() if self_filing_due_at else None
+        ),
         "unread_client_messages": unread_client_messages,
         "latest_client_message_at": (
             latest_client_message_at.isoformat()
@@ -448,6 +487,18 @@ async def workdesk_attention(
             activity_at=updated_at or created_at,
         )
 
+    self_filing_rows = (
+        await db.execute(
+            select(
+                SelfFilingPackage.case_id,
+                SelfFilingPackage.sla_due_at,
+            ).where(SelfFilingPackage.case_id.in_(case_ids))
+        )
+    ).all()
+    self_filing_due: dict[int, datetime | None] = {
+        int(case_id): due_at for case_id, due_at in self_filing_rows
+    }
+
     message_rows = (
         await db.execute(
             select(
@@ -517,6 +568,7 @@ async def workdesk_attention(
                 case.id,
                 _empty_payment_attention(),
             ),
+            self_filing_due_at=self_filing_due.get(int(case.id)),
         )
         if item is not None:
             items.append(item)

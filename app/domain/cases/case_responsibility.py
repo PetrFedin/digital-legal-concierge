@@ -14,6 +14,7 @@ from app.models.consultation import Consultation
 TERMINAL_CASE_STATUS_VALUES = frozenset(
     {
         CaseStatus.M1_CLOSED.value,
+        CaseStatus.M1_SELF_FILING_CLOSED.value,
         CaseStatus.M2_CLOSED.value,
         CaseStatus.ARCHIVED.value,
     }

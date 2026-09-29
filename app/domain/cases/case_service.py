@@ -35,6 +35,7 @@ _CLIENT_DOCUMENT_COLLECTION_STATUSES = {
 }
 _TERMINAL_CASE_VALUES = {
     CaseStatus.M1_CLOSED.value,
+    CaseStatus.M1_SELF_FILING_CLOSED.value,
     CaseStatus.M2_CLOSED.value,
     CaseStatus.ARCHIVED.value,
 }
@@ -848,6 +849,26 @@ class CaseService:
         await self.db.flush()
         return case
 
+    async def start_self_filing(
+        self,
+        *,
+        case: Case,
+        actor_type: str,
+        actor_id: int | None,
+        comment: str | None = None,
+    ):
+        case, _changed = await self._transition(
+            case=case,
+            next_status=CaseStatus.M1_SELF_FILING_PROFILE_PENDING,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            comment=comment,
+            force=False,
+            action="CASE_SELF_FILING_STARTED",
+            request_client_id=(actor_id if actor_type == "client" else None),
+        )
+        return case
+
     async def transfer_to_m2(
         self,
         *,
@@ -932,6 +953,16 @@ class CaseService:
             CaseStatus.M1_WAITING_SUCCESS_FEE: "Оплатить финальный процент",
             CaseStatus.M1_SUCCESS_FEE_RECEIVED: "Закрыть дело",
             CaseStatus.M1_CLOSED: "Дело завершено",
+            CaseStatus.M1_SELF_FILING_PROFILE_PENDING: "Указать регион, адрес и email для выдачи пакета",
+            CaseStatus.M1_SELF_FILING_DOCUMENTS_PENDING: "Загрузить ДДУ, паспорт и приложения",
+            CaseStatus.M1_SELF_FILING_DOCUMENTS_RECEIVED: "Передать комплект юристу на проверку",
+            CaseStatus.M1_SELF_FILING_LAWYER_REVIEW: "Ожидать проверки комплекта и подсудности",
+            CaseStatus.M1_SELF_FILING_DOCS_REQUESTED: "Добавить запрошенные документы",
+            CaseStatus.M1_SELF_FILING_PAYMENT_PENDING: "Оплатить подготовку пакета 15 000 ₽",
+            CaseStatus.M1_SELF_FILING_PREPARATION: "Ожидать подготовку пакета документов",
+            CaseStatus.M1_SELF_FILING_READY: "Получить готовый пакет",
+            CaseStatus.M1_SELF_FILING_DELIVERED: "Проверить полученный пакет",
+            CaseStatus.M1_SELF_FILING_CLOSED: "Услуга подготовки пакета завершена",
             CaseStatus.M2_CONSULTATION_ROUTE: "Описать ситуацию",
             CaseStatus.M2_DESCRIPTION_PENDING: "Описать ситуацию",
             CaseStatus.M2_DOCUMENTS_OPTIONAL: "Загрузить документы при наличии",

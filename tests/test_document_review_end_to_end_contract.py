@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -34,8 +35,8 @@ def test_document_review_service_is_locked_scoped_and_idempotent():
     source = read("app/domain/documents/document_review_service.py")
 
     assert source.count(".with_for_update()") >= 2
-    assert "Case.assigned_lawyer_id == actor.lawyer_id" in source
-    assert "case.assigned_lawyer_id != actor.lawyer_id" in source
+    assert "lawyer_can_access_case" in source
+    assert "effective_lawyer_ids_for_cases" in source
     assert "expected_status" in source
     assert "expected_version" in source
     assert "expected_updated_at" in source
@@ -47,6 +48,39 @@ def test_document_review_service_is_locked_scoped_and_idempotent():
     assert "DocumentStatus.ON_REVIEW" in source
     assert "DOCUMENT_REVIEW_DECISION" in source
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", ["approve", "reject"])
+async def test_admin_cannot_make_legal_document_decisions(decision):
+    service = DocumentReviewService(None)
+    actor = SimpleNamespace(role="admin", lawyer_id=None, account_id=77)
+
+    with pytest.raises(DocumentReviewError, match="только юристу"):
+        await service.review(
+            actor=actor,
+            document_id=1,
+            decision=decision,
+            comment="Юридическое решение администратора запрещено",
+            expected_status="ON_REVIEW",
+            expected_version=1,
+            expected_updated_at="2026-09-29T00:00:00+00:00",
+        )
+
+
+def test_admin_file_check_does_not_start_lawyer_review_and_ui_hides_legal_buttons():
+    service = read("app/domain/documents/document_review_service.py")
+    ui = read("app/api/document_review.py")
+
+    start = service.split("async def _start_m1_review_if_needed", 1)[1].split(
+        "async def _archive_previous_versions", 1
+    )[0]
+    assert 'if actor.role != "lawyer":' in start
+    assert 'normalized != "request_reupload"' in service
+    assert "Администратор может проверить наличие/читаемость файла" in service
+
+    assert "const legal=role==='lawyer'" in ui
+    assert "Администратор проверяет только наличие и читаемость" in ui
 
 def test_document_review_updates_case_and_notifies_client():
     service = read("app/domain/documents/document_review_service.py")
@@ -115,3 +149,23 @@ def test_document_review_center_is_visible_from_operator_workspace():
     assert 'href="/document-access/review/ui"' in source
     assert "Проверка документов" in source
     assert '"document_review": "/document-access/review/ui"' in source
+
+
+def test_self_filing_document_decisions_advance_the_same_package_authority():
+    service = read("app/domain/documents/document_review_service.py")
+    package = read("app/domain/cases/self_filing_service.py")
+
+    assert '"SELF_FILING_PACKAGE"' in service
+    assert "SelfFilingService(self.db).begin_lawyer_review" in service
+    assert "SelfFilingService(self.db).request_more_documents" in service
+    assert 'actor_type="admin"' in service
+    assert "CaseStatus.M1_SELF_FILING_DOCUMENTS_RECEIVED" in service
+    assert "CaseStatus.M1_SELF_FILING_LAWYER_REVIEW" in service
+
+    request = package.split("async def request_more_documents", 1)[1].split(
+        "async def _approved_document_gate", 1
+    )[0]
+    assert 'normalized_actor == "lawyer"' in request
+    assert 'normalized_actor == "admin"' in request
+    assert "actor_type=normalized_actor" in request
+    assert "actor_id=effective_actor_id" in request

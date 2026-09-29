@@ -214,3 +214,28 @@ def test_operator_and_product_router_expose_current_and_compatibility_workspaces
     assert '"/lawyer/workspace/data"' in product
     assert '"/lawyer/workspace/ui"' in product
     assert '("lawyer_product", lawyer_product_router)' in main
+
+
+def test_lawyer_has_role_scoped_self_contained_case_card():
+    source = read("app/api/lawyer_case_card.py")
+    workspace = read("app/api/lawyer_workspace.py")
+    product = read("app/api/lawyer_product.py")
+
+    assert "lawyer_can_access_case" in source
+    assert "require_lawyer_actor" in source
+    assert 'audience="lawyer"' in source
+    assert '@router.get("/lawyer/cases/{case_id}/workspace")' in source
+    assert '@router.get("/lawyer/cases/{case_id}/ui"' in source
+    for label in (
+        "Клиент",
+        "Расчёт",
+        "Документы",
+        "Оплаты",
+        "История процесса",
+        "Коммуникации",
+        "Главный следующий шаг",
+    ):
+        assert label in source
+
+    assert '/lawyer/cases/${x.case_id}/ui' in workspace
+    assert "router.include_router(lawyer_case_card_router)" in product

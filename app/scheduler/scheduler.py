@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.db.session import AsyncSessionLocal
+from app.domain.cases.self_filing_email_sender import SelfFilingEmailSender
 from app.domain.notifications.client_inactivity_service import (
     ClientInactivityReminderService,
 )
@@ -37,6 +38,8 @@ JOB_SPECS = (
     ("case_retention", "scheduler", "discover_due_case_retention"),
     ("security_cleanup", "scheduler", "cleanup_security_state"),
     ("claim_deadlines", "scheduler", "check_claim_waiting_30_days"),
+    ("self_filing_sla", "scheduler", "check_self_filing_sla"),
+    ("self_filing_email", "self_filing_email", "send_pending"),
     ("sent_notifications", "sender", "send_pending"),
 )
 
@@ -130,6 +133,8 @@ class AppScheduler:
                 service = NotificationSender(db)
             elif service_type == "client_inactivity":
                 service = ClientInactivityReminderService(db)
+            elif service_type == "self_filing_email":
+                service = SelfFilingEmailSender(db)
             else:
                 raise RuntimeError(f"Unknown scheduler service type: {service_type}")
             try:

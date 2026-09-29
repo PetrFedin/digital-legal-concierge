@@ -65,8 +65,17 @@ def install_archive_button() -> None:
     _ARCHIVE_BUTTON_INSTALLED = True
 
 
+def _archive_route_label(case) -> str:
+    if (
+        str(getattr(case, "route", "") or "") == "M1"
+        and str(getattr(case, "service_mode", "") or "") == "SELF_FILING_PACKAGE"
+    ):
+        return "Пакет для самостоятельной подачи"
+    return route_label(case.route)
+
+
 def _archive_case_label(case) -> str:
-    return f"{case.case_number} · {route_label(case.route)}"
+    return f"{case.case_number} · {_archive_route_label(case)}"
 
 
 def _archive_closed_at(case) -> str:
@@ -164,7 +173,7 @@ def _archive_selector(
         lines.append(f"• {_archive_case_label(case)} · {_archive_closed_at(case)}")
         buttons.append(
             (
-                f"🗄 {case.case_number} · {route_label(case.route)}",
+                f"🗄 {case.case_number} · {_archive_route_label(case)}",
                 f"my_case_archive:v2:{int(case.id)}",
             )
         )

@@ -15,6 +15,7 @@ from sqlalchemy import select
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.states import PreviewCalculatorStates
+from app.config import settings
 from app.domain.calculator.calculator_result_formatter import format_calculation_result
 from app.domain.calculator.calculator_service import CalculatorService
 from app.domain.calculator.intake_service import CalculationIntakeService, INTAKE_COMPLETED
@@ -487,8 +488,15 @@ async def _present_saved(callback: CallbackQuery, state: FSMContext, db, case, r
     buttons: list[tuple[str, str]] = []
     if int(result.delay_days or 0) > 0 and Decimal(result.penalty_amount or 0) > 0:
         buttons.append(
-            ("⚖️ Продолжить с ведением дела", f"calc_continue_m1:v2:{case_id}")
+            ("⚖️ Полное ведение дела", f"calc_continue_m1:v2:{case_id}")
         )
+        if bool(settings.self_filing_new_sales_enabled):
+            buttons.append(
+                (
+                    "📄 Подготовить пакет — в суд пойду сам",
+                    f"calc_self_filing:v2:{case_id}",
+                )
+            )
     buttons.extend(
         [
             ("💬 Перейти к консультации", f"calc_to_m2:v2:{case_id}"),

@@ -9,6 +9,8 @@ from aiogram.types import CallbackQuery, Message
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.states import DocumentUploadStates
+from app.domain.cases.self_filing_service import SelfFilingService
+from app.domain.cases.service_modes import M1ServiceMode
 from app.domain.cases.client_case_scope import (
     active_or_latest_completed_m1_case_for_user,
     latest_completed_m1_case_for_user,
@@ -34,6 +36,7 @@ TYPES = [
     ("Акт", "TRANSFER_ACT"),
     ("Платёжные документы", "PAYMENT_PROOF"),
     ("Переписка", "CORRESPONDENCE"),
+    ("Паспорт / удостоверение личности", "PASSPORT"),
     ("Другой документ", "OTHER"),
 ]
 _DOCUMENT_TYPE_CODES = {code for _, code in TYPES}
@@ -45,8 +48,31 @@ DOC_UPLOAD_ALIASES = {
     "doc_upload_act": "TRANSFER_ACT",
     "doc_upload_payment": "PAYMENT_PROOF",
     "doc_upload_correspondence": "CORRESPONDENCE",
+    "doc_upload_passport": "PASSPORT",
     "doc_upload_other": "OTHER",
 }
+
+_SELF_FILING_COLLECTION_STATUSES = {
+    CaseStatus.M1_SELF_FILING_DOCUMENTS_PENDING,
+    CaseStatus.M1_SELF_FILING_DOCUMENTS_RECEIVED,
+    CaseStatus.M1_SELF_FILING_DOCS_REQUESTED,
+}
+_SELF_FILING_UPLOAD_OPEN_STATUSES = frozenset(_SELF_FILING_COLLECTION_STATUSES)
+
+
+def _self_filing_mode(case) -> bool:
+    return (
+        str(getattr(case, "service_mode", "") or "")
+        == M1ServiceMode.SELF_FILING_PACKAGE.value
+    )
+
+
+def _self_filing_upload_open(case) -> bool:
+    return bool(
+        _self_filing_mode(case)
+        and _case_status(case) in _SELF_FILING_UPLOAD_OPEN_STATUSES
+    )
+
 
 _M1_COLLECTION_STATUSES = {
     CaseStatus.M1_DOCUMENTS_PENDING,
@@ -272,6 +298,50 @@ def _document_counts(documents: list) -> dict[str, int]:
 
 
 def _recommended_step(case, documents: list) -> tuple[str, list[tuple[str, str]]]:
+    status = _case_status(case)
+    if _self_filing_mode(case) and status not in _SELF_FILING_UPLOAD_OPEN_STATUSES:
+        if status == CaseStatus.M1_SELF_FILING_PROFILE_PENDING:
+            return (
+                "Сначала подтвердите email одноразовым кодом. До подтверждения адреса "
+                "загрузка персональных и юридических документов заблокирована.",
+                [
+                    (
+                        "✉️ Подтвердить email",
+                        f"self_filing_profile_start:v2:{int(case.id)}",
+                    )
+                ],
+            )
+        if status == CaseStatus.M1_SELF_FILING_LAWYER_REVIEW:
+            return (
+                "Юрист проверяет зафиксированный комплект. Новые файлы сейчас не добавляются; "
+                "если чего-то не хватает, юрист откроет точный запрос на дополнение.",
+                [("🔄 Обновить статус", "documents_open")],
+            )
+        if status == CaseStatus.M1_SELF_FILING_PAYMENT_PENDING:
+            return (
+                "Комплект и подсудность подтверждены юристом. Файлы зафиксированы; "
+                "следующий шаг находится в оплатах.",
+                [("💳 Открыть оплату 15 000 ₽", "pay_self_filing")],
+            )
+        if status == CaseStatus.M1_SELF_FILING_PREPARATION:
+            return (
+                "Исходный комплект зафиксирован. Юрист готовит итоговый пакет; "
+                "новые клиентские файлы на этом этапе не принимаются.",
+                [("📁 Открыть статус услуги", "my_case_open")],
+            )
+        if status == CaseStatus.M1_SELF_FILING_READY:
+            return (
+                "Итоговый пакет утверждён юристом и доступен среди документов; "
+                "email-доставка обрабатывается отдельно.",
+                [("🔄 Обновить статус", "documents_open")],
+            )
+        if status == CaseStatus.M1_SELF_FILING_DELIVERED:
+            return (
+                "Итоговый пакет уже отправлен на подтверждённый email. "
+                "Документы доступны только для просмотра.",
+                [("📁 Открыть итог услуги", "my_case_open")],
+            )
+
     counts = _document_counts(documents)
     if counts["replacement"]:
         return (
@@ -297,6 +367,13 @@ def _recommended_step(case, documents: list) -> tuple[str, list[tuple[str, str]]
             ],
         )
     if not documents:
+        if str(case.service_mode or "") == M1ServiceMode.SELF_FILING_PACKAGE.value:
+            return (
+                "Загрузите минимум ДДУ и паспорт/удостоверение личности, а также "
+                "все приложения и дополнительные соглашения к ДДУ. Полноту "
+                "комплекта перед оплатой отдельно подтверждает юрист.",
+                [("➕ Загрузить документ", "documents_upload_open")],
+            )
         return (
             "Загрузите ДДУ — без него дело нельзя передать юристу.",
             [("➕ Загрузить документ", "documents_upload_open")],
@@ -339,6 +416,35 @@ async def _load_case_documents(callback: CallbackQuery, db):
                 "📄 Документы можно добавить после создания обращения.\n\n"
                 "Начните с предварительного расчёта или свяжитесь с юридической командой.",
                 reply_markup=one(*_new_case_buttons()),
+            )
+        return None, []
+    if _self_filing_mode(case) and not _self_filing_upload_open(case):
+        if _case_status(case) == CaseStatus.M1_SELF_FILING_PROFILE_PENDING:
+            await callback.message.edit_text(
+                "📄 Документы пока не принимаются.\n\n"
+                "Перед загрузкой ДДУ, паспорта и приложений подтвердите email "
+                "одноразовым кодом. Это защищает готовый юридический пакет от "
+                "отправки на ошибочный адрес.",
+                reply_markup=one(
+                    (
+                        "✉️ Подтвердить email",
+                        f"self_filing_profile_start:v2:{int(case.id)}",
+                    ),
+                    ("📁 Моё дело", "my_case_open"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+            )
+        else:
+            await callback.message.edit_text(
+                "📄 Комплект документов уже зафиксирован для юридической проверки, "
+                "оплаты или подготовки итогового пакета. Новые файлы на текущем этапе "
+                "не принимаются, чтобы не изменить подтверждённую юридическую базу.",
+                reply_markup=one(
+                    ("📄 Открыть документы для просмотра", "documents_open"),
+                    ("📁 Моё дело", "my_case_open"),
+                    ("✉️ Написать команде", "message_create"),
+                    ("🏠 Главная", "nav_home"),
+                ),
             )
         return None, []
     documents = await DocumentService(db).list_case_documents(case.id)
@@ -409,7 +515,11 @@ async def _render_documents_home(callback: CallbackQuery, db):
     primary_callbacks = {callback_data for _, callback_data in primary_buttons}
     if active:
         buttons.append(("📋 Все актуальные документы", "documents_list_open"))
-    if "documents_upload_open" not in primary_callbacks and not counts["replacement"]:
+    if (
+        "documents_upload_open" not in primary_callbacks
+        and not counts["replacement"]
+        and (not _self_filing_mode(case) or _self_filing_upload_open(case))
+    ):
         buttons.append(("➕ Добавить документ", "documents_upload_open"))
     if archived:
         buttons.append((f"🕘 История версий ({len(archived)})", "documents_history_open"))
@@ -460,11 +570,17 @@ async def upload_menu(callback: CallbackQuery, state: FSMContext, db):
         ]
     )
 
-    requirement = (
-        "Для передачи дела на проверку обязательно загрузите актуальный ДДУ."
-        if case.route == "M1"
-        else "Для консультации документы необязательны, но помогут юристу подготовиться."
-    )
+    if str(case.service_mode or "") == M1ServiceMode.SELF_FILING_PACKAGE.value:
+        requirement = (
+            "Для пакета самостоятельной подачи минимум обязательны ДДУ и паспорт/"
+            "удостоверение личности. Также загрузите все приложения, дополнительные "
+            "соглашения и относящиеся к спору материалы. Юрист отдельно подтверждает "
+            "полноту: бот не считает отсутствие приложения доказательством, что его нет."
+        )
+    elif case.route == "M1":
+        requirement = "Для передачи дела на проверку обязательно загрузите актуальный ДДУ."
+    else:
+        requirement = "Для консультации документы необязательны, но помогут юристу подготовиться."
     await callback.message.edit_text(
         "➕ Добавить документ\n\n"
         "Выберите тип, затем прикрепите PDF, DOCX, JPG или PNG. Каждый файл "
@@ -477,12 +593,36 @@ async def upload_menu(callback: CallbackQuery, state: FSMContext, db):
 @router.callback_query(
     lambda c: c.data.startswith("doc_type:") or c.data in DOC_UPLOAD_ALIASES
 )
-async def choose(callback: CallbackQuery, state: FSMContext):
-    document_type = (
-        callback.data.split(":", 1)[1]
-        if callback.data.startswith("doc_type:")
-        else DOC_UPLOAD_ALIASES[callback.data]
-    )
+async def choose(callback: CallbackQuery, state: FSMContext, db):
+    case_id: int | None = None
+    if callback.data.startswith("doc_type:v2:"):
+        parts = str(callback.data or "").split(":", 3)
+        if len(parts) != 4:
+            document_type = ""
+        else:
+            try:
+                case_id = int(parts[2])
+            except (TypeError, ValueError):
+                case_id = None
+            document_type = parts[3]
+    elif callback.data.startswith("doc_type:"):
+        # Historical unbound type buttons are navigation-only now. Re-open the
+        # exact current upload menu rather than reinterpreting them against a
+        # different selected Case.
+        await state.clear()
+        await callback.message.edit_text(
+            "Эта старая кнопка типа документа не содержит номер обращения. "
+            "Откройте актуальное дело и выберите тип заново.",
+            reply_markup=one(
+                ("📄 Открыть документы", "documents_open"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+    else:
+        document_type = DOC_UPLOAD_ALIASES[callback.data]
+
     if document_type not in _DOCUMENT_TYPE_CODES:
         await state.clear()
         await state.set_state(DocumentUploadStates.choosing_type)
@@ -495,7 +635,32 @@ async def choose(callback: CallbackQuery, state: FSMContext):
             ),
         )
         return
-    await state.update_data(document_type=document_type)
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    case = await ctx.case_service.get_active_case_for_user(user.id)
+    if (
+        case is None
+        or case_id is None
+        or int(case.id) != int(case_id)
+        or (_self_filing_mode(case) and not _self_filing_upload_open(case))
+    ):
+        await state.clear()
+        await db.rollback()
+        await callback.message.edit_text(
+            "Контекст обращения или допустимый этап уже изменился. "
+            "Файл не будет привязан по старой кнопке.",
+            reply_markup=one(
+                ("📄 Открыть актуальные документы", "documents_open"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+    await db.rollback()
+    await state.update_data(
+        document_type=document_type,
+        document_case_id=int(case.id),
+    )
     await state.set_state(DocumentUploadStates.waiting_file)
     await callback.message.edit_text(
         "Прикрепите PDF, DOCX, JPG или PNG.\n\n"
@@ -533,6 +698,25 @@ async def upload(message: Message, state: FSMContext, db):
 
     data = await state.get_data()
     document_type = data.get("document_type")
+    expected_case_id = int(data.get("document_case_id") or 0)
+    if (
+        not expected_case_id
+        or int(case.id) != expected_case_id
+        or (_self_filing_mode(case) and not _self_filing_upload_open(case))
+    ):
+        await state.clear()
+        await db.rollback()
+        await message.answer(
+            "Этап или выбранное обращение изменились после выбора типа документа. "
+            "Файл не загружен. Откройте актуальные документы и начните действие заново.",
+            reply_markup=one(
+                ("📄 Открыть документы", "documents_open"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
     if not document_type:
         await state.clear()
         await message.answer(
@@ -866,7 +1050,10 @@ async def documents_history_page(callback: CallbackQuery, db):
     await _render_document_history(callback, db, page)
 
 
-@router.callback_query(lambda c: c.data == "doc_finish_upload")
+@router.callback_query(
+    lambda c: c.data == "doc_finish_upload"
+    or str(c.data or "").startswith("doc_finish_upload:v2:")
+)
 async def finish(callback: CallbackQuery, db):
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
@@ -890,6 +1077,37 @@ async def finish(callback: CallbackQuery, db):
         return
 
     case_id = int(case.id)
+    raw = str(callback.data or "")
+    if raw.startswith("doc_finish_upload:v2:"):
+        try:
+            expected_case_id = int(raw.rsplit(":", 1)[1])
+        except (TypeError, ValueError):
+            expected_case_id = 0
+        if expected_case_id != case_id:
+            await db.rollback()
+            await callback.message.edit_text(
+                "Эта кнопка передачи документов относится к другому обращению. "
+                "Ничего не передано.",
+                reply_markup=one(
+                    ("📄 Открыть актуальные документы", "documents_open"),
+                    ("📁 Моё дело", "my_case_open"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+            )
+            return
+    if _self_filing_mode(case) and not _self_filing_upload_open(case):
+        await db.rollback()
+        await callback.message.edit_text(
+            "Комплект уже зафиксирован на следующем юридическом этапе. "
+            "Новые файлы не переданы.",
+            reply_markup=one(
+                ("📄 Документы", "documents_open"),
+                ("📁 Моё дело", "my_case_open"),
+                ("✉️ Написать команде", "message_create"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
     document_service = DocumentService(db)
     existing = await document_service.list_case_documents(case.id)
     active = _active_documents(existing)
@@ -930,19 +1148,41 @@ async def finish(callback: CallbackQuery, db):
         await callback.message.edit_text(text, reply_markup=one(*buttons))
         return
 
-    required_types = {"DDU"} if case.route == "M1" else set()
+    is_self_filing = (
+        str(case.service_mode or "") == M1ServiceMode.SELF_FILING_PACKAGE.value
+        and _case_status(case) in _SELF_FILING_COLLECTION_STATUSES
+    )
+    required_types = (
+        {"DDU", "PASSPORT"}
+        if is_self_filing
+        else {"DDU"} if case.route == "M1" else set()
+    )
     try:
         await callback.answer("Передаём документы юристу…")
     except Exception:
         logger.warning("Document review submission callback acknowledgement failed")
     try:
-        new_count = await document_service.send_documents_to_review(
-            case=case,
-            actor_id=user.id,
-            required_types=required_types,
-        )
+        if is_self_filing:
+            new_count = await SelfFilingService(db).submit_documents(
+                case_id=int(case.id),
+                client_id=int(user.id),
+            )
+        else:
+            new_count = await document_service.send_documents_to_review(
+                case=case,
+                actor_id=user.id,
+                required_types=required_types,
+            )
         status = _case_status(case)
-        if case.route == "M1" and status in _M1_COLLECTION_STATUSES:
+        if is_self_filing:
+            response_text = (
+                "✅ Документы переданы юристу на проверку.\n\n"
+                f"Передано файлов: {new_count}.\n"
+                "Минимум ДДУ + паспорт принят к проверке. Юрист проверит все "
+                "приложения, дополнительные соглашения и отдельно подтвердит "
+                "конкретный суд/подсудность до выставления 15 000 ₽."
+            )
+        elif case.route == "M1" and status in _M1_COLLECTION_STATUSES:
             await ctx.case_service.change_status(
                 case=case,
                 next_status=CaseStatus.M1_LAWYER_REVIEW,

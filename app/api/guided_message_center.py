@@ -35,7 +35,7 @@ from app.models.user import User
 
 router = APIRouter(tags=["guided-message-center"])
 
-_TERMINAL_CASE_STATUSES = frozenset({"M1_CLOSED", "M2_CLOSED", "ARCHIVED"})
+_TERMINAL_CASE_STATUSES = frozenset({"M1_CLOSED", "M1_SELF_FILING_CLOSED", "M2_CLOSED", "ARCHIVED"})
 _M2_CURRENT_RESPONSIBILITY_STATUSES = frozenset(
     {
         "SLOT_RESERVED",

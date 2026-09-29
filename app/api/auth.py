@@ -310,7 +310,7 @@ LOGIN_HTML = """
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Вход в Digital Legal Concierge</title>
+<title>Вход в рабочий кабинет</title>
 <style>
 :root{--ink:#172033;--muted:#667085;--line:#dfe3ea;--primary:#3157d5;--error:#b42318;--error-bg:#fef3f2}
 *{box-sizing:border-box}
@@ -322,7 +322,7 @@ label{display:block;font-weight:700;font-size:14px;margin-top:14px}input{width:1
 </head>
 <body>
 <form class="card" method="post" action="/login">
-  <div class="brand"><div class="mark">⚖</div><div><h1>Вход в кабинет</h1><p>Digital Legal Concierge</p></div></div>
+  <div class="brand"><div class="mark">⚖</div><div><h1>Вход в кабинет</h1><p>Рабочий кабинет</p></div></div>
   <p class="muted">Используйте логин или email вашей учетной записи кабинета. Пароль из переменных сервера не заменяет пароль уже созданного пользователя.</p>
   __ERROR__
   <label for="username">Логин или email</label>

@@ -24,6 +24,9 @@ _CONTRACT_WORKSPACE_PATCH = r"""
 
   const previousPrimaryButton=primaryButton;
   primaryButton=function(x){
+    if(x?.route==='M1'&&String(x.service_mode||'')==='SELF_FILING_PACKAGE'){
+      return `<a class="button green" href="/self-filing/ui?case_id=${Number(x.case_id)}">Открыть пакет самостоятельной подачи</a>`;
+    }
     if(x?.route==='M1'&&String(x.status||'')==='M1_CONTRACT_READY'){
       return `<a class="button green" href="/contracts/ui?case_id=${Number(x.case_id)}">Подготовить / проверить договор</a>`;
     }
@@ -33,6 +36,11 @@ _CONTRACT_WORKSPACE_PATCH = r"""
   const previousCaseCard=caseCard;
   caseCard=function(x){
     let html=previousCaseCard(x);
+    if(x?.route==='M1'&&String(x.service_mode||'')==='SELF_FILING_PACKAGE'){
+      const id=Number(x.case_id);
+      const block=`<div class="deadline"><b>Пакет для самостоятельной подачи</b><div class="muted">Это отдельная услуга без представительства в суде. Полнота документов, статус акта передачи, конкретная подсудность, 15 000 ₽, выдача в течение 3 календарных дней после оплаты и email-доставка четырёх документов ведутся в отдельной карточке.</div><div class="actions" style="margin-top:9px"><a class="button green" href="/self-filing/ui?case_id=${id}">Открыть карточку пакета</a><a class="button secondary" href="/message-center/ui?case_id=${id}">Переписка</a><a class="button secondary" href="/document-access/ui?case_id=${id}">Материалы</a></div></div>`;
+      return html.replace('</article>',block+'</article>');
+    }
     if(x?.route!=='M1'||String(x.status||'')!=='M1_CONTRACT_READY')return html;
     const id=Number(x.case_id);
     const block=`<div class="deadline"><b>Договор — обязательный артефакт до 30 000 ₽</b><div class="muted">Опубликуйте конкретную проверенную версию файла. Клиент получит её в Telegram; подтверждение будет связано с document_id, версией и SHA-256. Пока файла нет, первый платёж закрыт.</div><div class="actions" style="margin-top:9px"><a class="button green" href="/contracts/ui?case_id=${id}">Открыть договор</a><a class="button secondary" href="/message-center/ui?case_id=${id}">Переписка</a><a class="button secondary" href="/document-access/ui?case_id=${id}">Материалы</a></div></div>`;

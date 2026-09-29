@@ -44,16 +44,19 @@ def test_client_m1_handoff_stops_at_received_not_lawyer_review():
     assert "ждём назначения ответственного и фактического начала проверки" in m1
 
 
-def test_first_valid_staff_review_decision_establishes_lawyer_review_boundary():
+def test_first_valid_lawyer_review_decision_establishes_lawyer_review_boundary():
     service = read("app/domain/documents/document_review_service.py")
 
     assert "async def _start_m1_review_if_needed" in service
     boundary = service.split("async def _start_m1_review_if_needed", 1)[1].split(
         "async def _request_new_version", 1
     )[0]
+    assert 'if actor.role != "lawyer":' in boundary
     assert "CaseStatus.M1_DOCUMENTS_RECEIVED" in boundary
     assert "next_status=CaseStatus.M1_LAWYER_REVIEW" in boundary
-    assert "actor_type=\"lawyer\" if actor.role == \"lawyer\" else \"admin_user\"" in boundary
+    assert 'actor_type="lawyer"' in boundary
+    assert "admin_user" not in boundary
+    assert "SelfFilingService(self.db).begin_lawyer_review" in boundary
 
     review = service.split("async def review(", 1)[1]
     assert "current_status != DocumentStatus.ON_REVIEW" in review

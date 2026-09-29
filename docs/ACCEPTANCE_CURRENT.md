@@ -24,7 +24,7 @@ For one immutable candidate SHA:
 2. Full CI and all required PR checks execute and pass, including the `Process map maintenance contract` governance check.
 3. Dedicated PostgreSQL concurrency → Redis/Telegram runtime → browser staff E2E workflows execute and pass on that SHA.
 4. One complete `.github/workflows/live-required.yml` run passes and produces one SHA/run/attempt-bound `LIVE_REQUIRED_MANIFEST.json`.
-5. Real Telegram M1 and M2 persona walkthroughs execute with UI ↔ PostgreSQL ↔ Audit/PaymentEvent reconciliation.
+5. Real Telegram personas execute for M1 full representation, M1 self-filing and M2 with UI ↔ PostgreSQL ↔ Audit/PaymentEvent reconciliation. The self-filing acceptance must include at least three distinct client Telegram accounts/chats so a single-user-only deployment cannot pass.
 6. Encrypted backup → separate empty staging/restore database and storage → application evidence → normal restored-runtime usability executes and passes.
 7. Only after Gates 1–6 pass may YooKassa test-shop evidence be deliberately expanded to provider-side paid/refund scenarios that can be completed safely without any production credential, production shop, production callback or production operation.
 8. Only then may the release/merge decision be made.
@@ -114,6 +114,35 @@ Acceptance requires client UI, Case/Document/Payment projections, Case history/A
 
 State: **LIVE_REQUIRED**.
 
+### M1 self-filing customer-contract acceptance
+
+Execute the self-filing service mode with a real Telegram acceptance client, a separate responsible lawyer account and a separate admin/financial account against PostgreSQL/Redis and the same candidate image.
+
+Required happy path:
+
+positive saved calculation → choose `SELF_FILING_PACKAGE` → exact service consent → region/address + verified profile/delivery email → source documents → lawyer completeness + jurisdiction + transfer-act confirmation → bot shows exact bank requisites + 15 000 ₽ + mandatory purpose → independent bank receipt confirmation → cutoff snapshot → lawyer approves exactly four deliverables → real SMTP email with exactly four attachments → closure.
+
+Mandatory product assertions:
+
+1. **Three client accounts can enter the bot.** At least three distinct Telegram client chats must complete `/start` and a persisted read/write action; there must be no source or deployment allowlist that makes the bot usable only by one person.
+2. **Three commercial choices remain coherent.** After a positive saved calculation the client can choose full representation, the self-filing court package or M2 consultation without creating an M3 route.
+3. **Transfer act signed.** Lawyer confirms `transfer_act_signed=true` and exact act date. After payment, `claim_calculation_cutoff_date` equals that act date and `claim_update_in_court_required=false`.
+4. **Transfer act not signed.** Lawyer confirms `transfer_act_signed=false`. After payment, cutoff equals the actual received service-payment date in the configured business timezone and `claim_update_in_court_required=true`; client roadmap/email copy explains later clarification of claims and a new calculation in court.
+5. **Calculation provenance is frozen.** The source snapshot records exact legal rule revision/key/hash and remains preliminary source material for the lawyer-authored calculation document; it is not presented as an automatic legal conclusion.
+6. **Exactly four deliverables.** READY is impossible until PRETRIAL_CLAIM, STATEMENT_OF_CLAIM, CLAIM_CALCULATION and CLIENT_ROADMAP are all APPROVED/usable. A fifth/legacy package file cannot satisfy or replace the set.
+7. **Bank payment is exact.** The self-filing payment shows the approved bar-association requisites, exact 15 000 ₽ and the mandatory marker `для адвоката Гамза Д.Г.`. `Payment.payment_purpose` and `payment_details_snapshot` are persisted before the client sees them. No YooKassa/Robokassa/card/SBP action is exposed for this service. Receipt is applied only after independent bank/accounting reconciliation.
+8. **Three-calendar-day promise.** `sla_started_at == payment_confirmed_at` and `sla_due_at == payment_confirmed_at + 3 calendar days`. Weekend/holiday boundaries do not extend this customer promise.
+9. **Email is the confirmed profile address.** Verified address is persisted in both the self-filing package and user profile; the actual email arrives at that address with exactly four attachments and stable Message-ID evidence.
+10. **No duplicate money/delivery.** Provider retry, Telegram retry, email retry and stale buttons do not create a second charge, alter the frozen cutoff or close the Case before confirmed delivery.
+11. **Role separation is visible and enforced.** Admin/Superadmin can inspect the Case, reconcile factual bank receipt and request a technical replacement file, but cannot `approve/reject` legal substance, start lawyer review, confirm completeness/jurisdiction or publish the four legal deliverables. The responsible Lawyer can perform those legal actions but cannot manufacture bank receipt/reconciliation facts. Cross-role controls are hidden or disabled on the browser surface and the server independently rejects an unauthorized call.
+12. **One Case context is sufficient for staff work.** Admin and responsible Lawyer case cards show the client, saved calculation, current documents/versions, payment state, process history, communications and one current next action. The Lawyer history must not expose administrator/payment diagnostic free text that is outside the lawyer role.
+13. **Closure is uniformly terminal.** `M1_SELF_FILING_CLOSED` disappears from active admin/lawyer queues, rejects document/message mutations, remains visible in the client archive with the self-filing label, and is treated as terminal by Workdesk integrity/retention logic.
+14. **No standard-M1 financial fiction.** A self-filing Case never renders the full-representation 30 000 ₽ / 70 000 ₽ / recovered-amount / success-fee final as applicable.
+
+Run the client-facing path with at least three distinct client Telegram accounts/chats. One complete paid self-filing journey is sufficient for the expensive provider/email evidence, while the additional accounts must at minimum prove independent bot access, identity persistence and no hidden single-user restriction.
+
+State: **LIVE_REQUIRED**.
+
 ## M2 persona acceptance
 
 Required path:
@@ -154,6 +183,8 @@ A release using `PAYMENT_PROVIDER=offline` is accepted only when all of the foll
 
 `PAYMENT_PROVIDER=disabled` is not an accepted production-ready substitute for this gate.
 
+**Self-filing specialization:** self-filing uses the approved bar-association bank requisites rather than a generic team-defined offline instruction. The acceptance must verify exact recipient/bank fields, frozen snapshot, mandatory purpose text and independent receipt confirmation.
+
 ### Automated LIVE_REQUIRED provider baseline
 
 This provider-specific gate applies when the candidate enables YooKassa. It is intentionally limited to a safe YooKassa **test-shop** preflight + create + exact idempotent retry + retrieve. Every object must prove `test=true`; the payment remains unpaid/pending and the smoke does not open/complete confirmation.
@@ -161,6 +192,8 @@ This provider-specific gate applies when the candidate enables YooKassa. It is i
 For an `offline` release, the provider-connectivity step is **not applicable** and must not be simulated. The offline/manual acceptance matrix above replaces it for the payment mechanism actually deployed.
 
 The YooKassa baseline proves provider connectivity/idempotent creation only. It does **not** prove provider-side paid/refund lifecycle.
+
+The YooKassa provider baseline is unrelated to the self-filing customer contract unless another service deliberately enables YooKassa. Self-filing itself must not create a provider payment object.
 
 ### Application/PostgreSQL financial semantics
 

@@ -18,6 +18,8 @@ Physical/implemented mapping:
 | --- | --- |
 | Client → Cases = one-to-many | `cases.client_id` non-unique; no one-active-Case-per-client index |
 | one active M1/M2 route per Case | `Case.route` + state-machine transition policy |
+| M1 commercial service mode | `Case.service_mode`; self-filing is `SELF_FILING_PACKAGE`, never M3 |
+| self-filing aggregate | one `self_filing_packages` row per Case with confirmed email, lawyer-confirmed act/jurisdiction, payment/delivery evidence and exact four deliverable pointers |
 | Case → Calculations = one-to-many | `calculations.case_id` non-unique; latest calculation selected by query order |
 | Telegram selected Case | `client_case_contexts(client_id, selected_case_id)` |
 | idempotent Case creation for same source action | `case_creation_requests` unique `(client_id, operation_key)` |
@@ -65,7 +67,17 @@ Documents are versioned domain records. Active and archived versions are distinc
 
 File upload controls include size/type/content checks, quarantine, hashing, encryption-at-rest/key versioning and protected download grants. File authorization is checked at access time; stale grants and revoked roles must not preserve access.
 
-Document review decisions belong to staff role/domain services, not the client.
+Document review is role-split. The responsible Lawyer owns legal `approve/reject` decisions and the lawyer-review fact. Admin/Superadmin may perform the operational presence/readability check and request a replacement version, but that action must not approve legal substance or start lawyer review. The client never establishes either staff fact.
+
+### Self-filing document authority
+
+For new `SELF_FILING_PACKAGE` work, the deliverable set is closed and exact: `SELF_FILING_PRETRIAL_CLAIM`, `SELF_FILING_STATEMENT_OF_CLAIM`, `SELF_FILING_CLAIM_CALCULATION`, `SELF_FILING_CLIENT_ROADMAP`. A legacy `SELF_FILING_PACKAGE` document pointer may remain readable for historical rows but is not a fifth deliverable.
+
+Each deliverable is an individually versioned, hashed, encrypted, lawyer-approved `Document`. The package may move to READY/email queue only when all four exact pointers resolve to usable APPROVED documents. Email delivery attaches those four documents and no legacy substitute.
+
+Self-filing staff responsibility is deliberately split: Lawyer owns legal source-document review, completeness, jurisdiction/transfer-act confirmation and the four final deliverables; Admin/Superadmin owns factual bank/payment reconciliation and may request a technical reupload when a file is absent/unreadable. Delivery/close is established only by the email-delivery lifecycle after real send evidence. Standard full-representation M1 financial-final semantics (30k/70k/recovered amount/success fee) do not apply to this service mode.
+
+The responsible lawyer also owns the transfer-act fact used for the claim-calculation cutoff. `transfer_act_signed`, `transfer_act_date`, confirmer and confirmation time are persisted before payment opens. If signed, the cutoff is the confirmed act date. If not signed, the cutoff is the received service-payment date in the configured business timezone and `claim_update_in_court_required=true`. The resulting calculator snapshot remains source material (`is_preliminary=true`) for the lawyer-authored claim-calculation document, not an automatic legal conclusion.
 
 ## 6. Consent evidence
 
@@ -101,6 +113,18 @@ Production payment modes are explicit and non-equivalent:
 - `yookassa` requires the provider-specific credentials and evidence defined by acceptance/runbook.
 
 Received money is protected from late failure overwrites. Stale money enters review/refund flow; it cannot silently reserve or reopen another stage.
+
+### Self-filing bank-payment and delivery boundary
+
+New `M1_SELF_FILING_PACKAGE` sales use a dedicated bank-transfer contract. The `Payment` snapshots the bar-association recipient/bank requisites plus the mandatory purpose `для адвоката Гамза Д.Г.` at obligation creation. Reopening an old payment must show that frozen snapshot rather than silently adopting later requisites. No provider URL is created for self-filing.
+
+`PaymentService` creates the persisted 15 000 ₽ obligation and freezes `payment_purpose` plus `payment_details_snapshot`. Telegram and staff UI read those values. The client must not be sent to YooKassa/Robokassa/card/SBP for this service. Actual receipt is confirmed only after bank/accounting reconciliation; a client screenshot alone is not receipt authority.
+
+Confirmed receipt of 15 000 ₽ is the immutable start of the customer delivery promise. `SelfFilingPackage.payment_confirmed_at` and `sla_started_at` are the received payment time; `sla_due_at = payment_at + 3 calendar days`. Business-calendar coverage does not extend this customer promise.
+
+Before the Case moves into preparation, the service freezes the calculation-cutoff source snapshot using the lawyer-confirmed transfer-act fact and the legal-rule revision effective on that cutoff date. Failure to establish the rule snapshot, email channel or commercial contract sends received money to `PAID_REVIEW`; it never discards the received-money fact or asks the client to pay again.
+
+The verified profile/delivery email is written to `User.email` and `SelfFilingPackage.delivery_email`. Successful completion requires actual email send evidence for the exact four documents; retry does not create a second payment or silently change the cutoff.
 
 ## 8. Client activity and reminders
 

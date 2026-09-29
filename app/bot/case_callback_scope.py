@@ -14,6 +14,7 @@ PAYMENT_CASE_BOUND_ACTIONS = frozenset(
         "pay_start_30000",
         "pay_court_70000",
         "pay_success_fee",
+        "pay_self_filing",
         "consult_pay",
     }
 )

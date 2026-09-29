@@ -17,6 +17,7 @@ from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
 from app.models.payment import Payment
+from app.models.self_filing_package import SelfFilingPackage
 from app.presentation_time import format_business_datetime
 from app.security.backup_freshness import backup_freshness_status
 from app.security.backup_restore_fence import (
@@ -236,6 +237,47 @@ class SchedulerJobs:
                 retention_days=settings.upload_quarantine_retention_days,
             ),
         }
+
+    async def check_self_filing_sla(self) -> int:
+        now = datetime.now(timezone.utc)
+        packages = list(
+            (
+                await self.db.execute(
+                    select(SelfFilingPackage)
+                    .where(
+                        SelfFilingPackage.status == "PREPARATION",
+                        SelfFilingPackage.sla_due_at.is_not(None),
+                        SelfFilingPackage.sla_due_at <= now,
+                    )
+                    .order_by(SelfFilingPackage.sla_due_at.asc())
+                )
+            ).scalars().all()
+        )
+        count = 0
+        for package in packages:
+            case = await self.db.get(Case, int(package.case_id))
+            created = await self.notifications.emit(
+                event_code="SELF_FILING_SLA_OVERDUE",
+                case_id=int(package.case_id),
+                payload={
+                    "case_number": (
+                        case.case_number if case else int(package.case_id)
+                    ),
+                    "package_id": int(package.id),
+                    "sla_due_at": (
+                        package.sla_due_at.isoformat()
+                        if package.sla_due_at
+                        else None
+                    ),
+                },
+                dedupe_key=(
+                    f"self-filing:{package.id}:sla-overdue:"
+                    f"{package.sla_due_at.isoformat() if package.sla_due_at else 'none'}"
+                ),
+            )
+            if created:
+                count += 1
+        return count
 
     async def check_claim_waiting_30_days(self) -> int:
         now = datetime.now(timezone.utc)

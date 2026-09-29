@@ -34,6 +34,7 @@ M1_OFFLINE_CONFIRMABLE_CODES = frozenset(
         PaymentCode.M1_INITIAL_PAYMENT,
         PaymentCode.M1_COURT_PAYMENT,
         PaymentCode.M1_SUCCESS_FEE,
+        PaymentCode.M1_SELF_FILING_PACKAGE,
     }
 )
 OFFLINE_CONFIRMABLE_CODES = frozenset(
@@ -90,10 +91,16 @@ def offline_payment_confirmation_enabled() -> bool:
 def payment_can_be_confirmed_offline(payment: Payment) -> bool:
     """Allow verified manual receipt confirmation in explicit offline mode."""
 
+    provider_allowed = payment.provider in {None, "offline"} or (
+        payment.payment_code == PaymentCode.M1_SELF_FILING_PACKAGE
+        and payment.provider == "bank_transfer"
+        and bool(payment.payment_details_snapshot)
+        and bool(payment.payment_purpose)
+    )
     return (
         offline_payment_confirmation_enabled()
         and payment.payment_code in OFFLINE_CONFIRMABLE_CODES
-        and payment.provider in {None, "offline"}
+        and provider_allowed
         and not payment.payment_url
         and payment.status
         in {
@@ -192,7 +199,7 @@ async def queue(
     result = await db.execute(
         select(Case)
         .where(Case.assigned_lawyer_id.is_(None))
-        .where(Case.status.notin_(["M1_CLOSED", "M2_CLOSED", "ARCHIVED"]))
+        .where(Case.status.notin_(["M1_CLOSED", "M1_SELF_FILING_CLOSED", "M2_CLOSED", "ARCHIVED"]))
         .order_by(Case.created_at.asc())
         .limit(100)
     )
@@ -430,6 +437,8 @@ async def case_detail(
                 "amount": float(payment.amount),
                 "status": payment.status,
                 "provider": payment.provider,
+                "payment_purpose": payment.payment_purpose,
+                "payment_details_snapshot": payment.payment_details_snapshot,
                 "manual_confirm_allowed": payment_can_be_manually_confirmed(payment),
                 "offline_confirm_allowed": payment_can_be_confirmed_offline(payment),
             }
@@ -616,7 +625,7 @@ async def confirm_offline_payment(
         raise HTTPException(
             status_code=403,
             detail=(
-                "Офлайн-подтверждение доступно только когда онлайн-платежи отключены. "
+                "Подтверждение банковского поступления доступно только в режиме банковской оплаты. "
                 "При активном провайдере статус принимает только платёжный webhook."
             ),
         )
@@ -655,7 +664,7 @@ async def confirm_offline_payment(
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "Этот платёж нельзя подтверждать как офлайн-поступление: "
+                    "Этот платёж нельзя подтверждать как банковское поступление: "
                     "проверьте режим оплаты, назначение, провайдера и текущий статус."
                 ),
             )
@@ -740,6 +749,8 @@ async def all_payments(
             "amount": float(payment.amount),
             "status": payment.status,
             "provider": payment.provider,
+            "payment_purpose": payment.payment_purpose,
+            "payment_details_snapshot": payment.payment_details_snapshot,
             "manual_confirm_allowed": payment_can_be_manually_confirmed(payment),
             "offline_confirm_allowed": payment_can_be_confirmed_offline(payment),
         }

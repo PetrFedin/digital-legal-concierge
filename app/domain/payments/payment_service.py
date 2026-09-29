@@ -14,6 +14,10 @@ from app.domain.consultations.consultation_intake import (
 )
 from app.domain.consultations.consultation_service import ConsultationService
 from app.domain.consultations.slot_service import SlotUnavailableError
+from app.domain.payments.bank_requisites import (
+    GAMZA_COLLEGIUM_REQUISITES,
+    bank_requisites_snapshot,
+)
 from app.domain.payments.payment_lifecycle import PaymentLifecycleService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.payments.providers import get_payment_provider
@@ -41,6 +45,10 @@ class PaymentService:
             return Decimal(str(await settings.get_value("payments.m1_initial_payment")))
         if code == PaymentCode.M1_COURT_PAYMENT:
             return Decimal(str(await settings.get_value("payments.m1_court_payment")))
+        if code == PaymentCode.M1_SELF_FILING_PACKAGE:
+            return Decimal(
+                str(await settings.get_value("payments.m1_self_filing_package"))
+            )
         if code == PaymentCode.M2_CONSULTATION_PAYMENT:
             return Decimal(str(await settings.get_value("payments.m2_consultation_payment")))
         return Decimal("0")
@@ -50,6 +58,9 @@ class PaymentService:
             PaymentCode.M1_INITIAL_PAYMENT: "Первый платеж М1",
             PaymentCode.M1_COURT_PAYMENT: "Второй платеж М1",
             PaymentCode.M1_SUCCESS_FEE: "Success fee",
+            PaymentCode.M1_SELF_FILING_PACKAGE: (
+                "Подготовка пакета документов для самостоятельной подачи"
+            ),
             PaymentCode.M2_CONSULTATION_PAYMENT: "Оплата консультации",
         }.get(code, "Платеж")
 
@@ -289,6 +300,9 @@ class PaymentService:
             else:
                 final_amount = await self.amount_for_code(payment_code)
 
+        is_self_filing_bank_transfer = (
+            payment_code == PaymentCode.M1_SELF_FILING_PACKAGE
+        )
         payment = Payment(
             case_id=case.id,
             payment_code=payment_code,
@@ -296,6 +310,17 @@ class PaymentService:
             amount=final_amount,
             currency="RUB",
             status=PaymentStatus.PENDING,
+            provider=("bank_transfer" if is_self_filing_bank_transfer else None),
+            payment_purpose=(
+                GAMZA_COLLEGIUM_REQUISITES.mandatory_purpose
+                if is_self_filing_bank_transfer
+                else None
+            ),
+            payment_details_snapshot=(
+                bank_requisites_snapshot()
+                if is_self_filing_bank_transfer
+                else None
+            ),
             reservation_key=reservation_key,
         )
         self.db.add(payment)
@@ -311,6 +336,12 @@ class PaymentService:
                 "code": payment_code,
                 "amount": str(payment.amount),
                 "reservation_key": reservation_key,
+                "payment_method": (
+                    "bank_transfer"
+                    if payment_code == PaymentCode.M1_SELF_FILING_PACKAGE
+                    else None
+                ),
+                "payment_purpose": payment.payment_purpose,
             },
         )
         return payment
@@ -351,18 +382,48 @@ class PaymentService:
         return (await self.success_fee_quote_for_case(case_id)).amount
 
     async def create_payment_link(self, payment: Payment):
+        # Customer-approved 28 Sep 2026 contract: self-filing is paid only by
+        # bank transfer to the bar association requisites. It must never be
+        # converted into YooKassa/Robokassa/card/SBP checkout implicitly.
+        if str(payment.payment_code) == PaymentCode.M1_SELF_FILING_PACKAGE.value:
+            if not payment.payment_details_snapshot or not payment.payment_purpose:
+                raise ValueError(
+                    "Банковские реквизиты или обязательное назначение платежа "
+                    "не зафиксированы в платеже. Оплата заблокирована до проверки."
+                )
+            payment.provider = "bank_transfer"
+            payment.payment_url = None
+            if str(payment.status) == PaymentStatus.PENDING.value:
+                PaymentLifecycleService.transition(
+                    payment,
+                    to_status=PaymentStatus.WAITING_CONFIRMATION,
+                )
+                await self.db.flush()
+            return payment
+
         if payment.provider == "offline" and payment.provider_payment_id:
             return payment
         if not payment.payment_url:
             provider = get_payment_provider()
+            case = await self.db.get(Case, int(payment.case_id))
+            case_reference = (
+                str(case.case_number)
+                if case is not None
+                else str(payment.case_id)
+            )
+            payment_purpose = (
+                f"{payment.title}. Обращение {case_reference}"
+            )
             result = await provider.create_payment(
                 payment_id=payment.id,
                 amount=payment.amount,
                 currency=payment.currency,
-                title=payment.title,
+                title=payment_purpose,
                 metadata={
                     "case_id": payment.case_id,
+                    "case_number": case_reference,
                     "payment_code": payment.payment_code,
+                    "payment_purpose": payment_purpose,
                     "reservation_key": payment.reservation_key or "",
                 },
             )

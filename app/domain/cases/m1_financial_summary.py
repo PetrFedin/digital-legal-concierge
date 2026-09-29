@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.m1_recovery_amount import load_recovered_amount
+from app.domain.cases.service_modes import M1ServiceMode
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
@@ -68,12 +69,18 @@ class M1FinancialSummaryService:
         self.db = db
 
     async def build(self, case: Case) -> dict[str, object]:
-        if str(case.route or "") != "M1":
+        if (
+            str(case.route or "") != "M1"
+            or str(getattr(case, "service_mode", "") or "")
+            == M1ServiceMode.SELF_FILING_PACKAGE.value
+        ):
             return {
                 "applicable": False,
                 "health": "ok",
                 "diagnostics": [],
-                "recommended_action": "Для этого маршрута финансовый финал M1 не применяется.",
+                "recommended_action": (
+                    "Финансовый финал стандартного ведения M1 к этому продукту не применяется."
+                ),
                 "steps": [],
             }
 

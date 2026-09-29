@@ -12,7 +12,7 @@ from app.domain.cases.case_timeline import get_client_visible_status
 from app.models.audit_log import AuditLog
 from app.presentation_time import format_business_datetime
 
-ActivityAudience = Literal["client", "staff"]
+ActivityAudience = Literal["client", "staff", "lawyer"]
 
 CLIENT_VISIBLE_ACTIONS = frozenset(
     {
@@ -48,6 +48,14 @@ CLIENT_VISIBLE_ACTIONS = frozenset(
         "COURT_EVENT_ADDED",
         "ENFORCEMENT_STARTED",
         "CASE_CLOSED",
+        "SELF_FILING_SERVICE_MODE_SELECTED",
+        "SELF_FILING_PROFILE_SAVED_PENDING_EMAIL_VERIFICATION",
+        "SELF_FILING_EMAIL_VERIFIED",
+        "SELF_FILING_DOCUMENTS_AND_JURISDICTION_CONFIRMED",
+        "SELF_FILING_SLA_STARTED",
+        "SELF_FILING_PACKAGE_READY",
+        "SELF_FILING_PACKAGE_DELIVERED",
+        "SELF_FILING_EMAIL_SENT",
     }
 )
 
@@ -64,6 +72,16 @@ STAFF_ONLY_ACTIONS = frozenset(
         "DOCUMENT_PREVIOUS_VERSIONS_ARCHIVED",
         "CONSULTATION_LAWYER_NO_SHOW",
         "CONSULTATION_REFUND_QUEUED",
+        "SELF_FILING_CLAIM_CALCULATION_FROZEN",
+        "SELF_FILING_EMAIL_VERIFICATION_SENT",
+        "SELF_FILING_EMAIL_VERIFICATION_EXPIRED",
+        "SELF_FILING_EMAIL_VERIFICATION_FAILED",
+        "SELF_FILING_PAYMENT_REVIEW_RESOLVED",
+        "SELF_FILING_PAYMENT_REFUND_PENDING",
+        "SELF_FILING_DELIVERABLE_APPROVED",
+        "SELF_FILING_PACKAGE_DOCUMENT_APPROVED",
+        "SELF_FILING_EMAIL_DELIVERY_FAILED",
+        "SELF_FILING_EMAIL_RETRY_REQUESTED",
     }
 )
 
@@ -106,6 +124,24 @@ TITLE_BY_ACTION = {
     "COURT_EVENT_ADDED": "Обновлён судебный этап",
     "ENFORCEMENT_STARTED": "Начато исполнительное производство",
     "CASE_CLOSED": "Дело завершено",
+    "SELF_FILING_SERVICE_MODE_SELECTED": "Выбран пакет для самостоятельной подачи",
+    "SELF_FILING_PROFILE_SAVED_PENDING_EMAIL_VERIFICATION": "Данные для пакета сохранены",
+    "SELF_FILING_EMAIL_VERIFIED": "Email для выдачи пакета подтверждён",
+    "SELF_FILING_DOCUMENTS_AND_JURISDICTION_CONFIRMED": "Юрист подтвердил комплект документов",
+    "SELF_FILING_SLA_STARTED": "Началась подготовка пакета",
+    "SELF_FILING_PACKAGE_READY": "Пакет документов готов",
+    "SELF_FILING_PACKAGE_DELIVERED": "Пакет документов передан клиенту",
+    "SELF_FILING_EMAIL_SENT": "Пакет отправлен на подтверждённый email",
+    "SELF_FILING_CLAIM_CALCULATION_FROZEN": "Зафиксирован расчёт для судебного комплекта",
+    "SELF_FILING_EMAIL_VERIFICATION_SENT": "Отправлен код подтверждения email",
+    "SELF_FILING_EMAIL_VERIFICATION_EXPIRED": "Истёк код подтверждения email",
+    "SELF_FILING_EMAIL_VERIFICATION_FAILED": "Не удалось подтвердить email",
+    "SELF_FILING_PAYMENT_REVIEW_RESOLVED": "Финансовая сверка пакета завершена",
+    "SELF_FILING_PAYMENT_REFUND_PENDING": "Возврат оплаты пакета передан в работу",
+    "SELF_FILING_DELIVERABLE_APPROVED": "Утверждён документ судебного комплекта",
+    "SELF_FILING_PACKAGE_DOCUMENT_APPROVED": "Утверждена версия документа пакета",
+    "SELF_FILING_EMAIL_DELIVERY_FAILED": "Email-доставка пакета требует внимания",
+    "SELF_FILING_EMAIL_RETRY_REQUESTED": "Администратор запустил повторную email-доставку",
     "SLA_STARTED": "Запущен контроль срока реакции",
     "SLA_FIRST_RESPONSE_RECORDED": "Первая реакция зафиксирована",
     "SLA_ACTION_RECORDED": "Действие по SLA зафиксировано",
@@ -150,6 +186,24 @@ CATEGORY_BY_ACTION = {
     "SLA_ACTION_RECORDED": "sla",
     "SLA_OVERDUE": "sla",
     "SLA_ACKNOWLEDGED": "sla",
+    "SELF_FILING_SERVICE_MODE_SELECTED": "case",
+    "SELF_FILING_PROFILE_SAVED_PENDING_EMAIL_VERIFICATION": "case",
+    "SELF_FILING_EMAIL_VERIFIED": "case",
+    "SELF_FILING_DOCUMENTS_AND_JURISDICTION_CONFIRMED": "documents",
+    "SELF_FILING_SLA_STARTED": "sla",
+    "SELF_FILING_PACKAGE_READY": "documents",
+    "SELF_FILING_PACKAGE_DELIVERED": "documents",
+    "SELF_FILING_EMAIL_SENT": "documents",
+    "SELF_FILING_CLAIM_CALCULATION_FROZEN": "calculation",
+    "SELF_FILING_EMAIL_VERIFICATION_SENT": "case",
+    "SELF_FILING_EMAIL_VERIFICATION_EXPIRED": "case",
+    "SELF_FILING_EMAIL_VERIFICATION_FAILED": "case",
+    "SELF_FILING_PAYMENT_REVIEW_RESOLVED": "payments",
+    "SELF_FILING_PAYMENT_REFUND_PENDING": "payments",
+    "SELF_FILING_DELIVERABLE_APPROVED": "documents",
+    "SELF_FILING_PACKAGE_DOCUMENT_APPROVED": "documents",
+    "SELF_FILING_EMAIL_DELIVERY_FAILED": "documents",
+    "SELF_FILING_EMAIL_RETRY_REQUESTED": "documents",
 }
 
 DOCUMENT_TYPE_LABELS = {
@@ -313,6 +367,13 @@ def _safe_detail(log: AuditLog, audience: ActivityAudience) -> str | None:
     if audience == "staff" and action in STAFF_ONLY_ACTIONS:
         return _clean_text(log.comment, 220)
 
+    # Lawyers may need the business milestone in their own Case history, but
+    # administrator/payment/delivery diagnostic comments are not part of the
+    # lawyer role contract. The title/category remain visible without leaking
+    # operational free text from another staff authority.
+    if audience == "lawyer" and action in STAFF_ONLY_ACTIONS:
+        return None
+
     return None
 
 
@@ -323,7 +384,7 @@ def present_case_activity(
 ) -> CaseActivityItem | None:
     action = str(log.action)
     allowed = CLIENT_VISIBLE_ACTIONS | (
-        STAFF_ONLY_ACTIONS if audience == "staff" else frozenset()
+        STAFF_ONLY_ACTIONS if audience in {"staff", "lawyer"} else frozenset()
     )
     if action not in allowed:
         return None
@@ -356,7 +417,7 @@ class CaseActivityService:
     ) -> dict[str, object]:
         bounded_limit = min(max(int(limit), 1), 20)
         actions = CLIENT_VISIBLE_ACTIONS | (
-            STAFF_ONLY_ACTIONS if audience == "staff" else frozenset()
+            STAFF_ONLY_ACTIONS if audience in {"staff", "lawyer"} else frozenset()
         )
         statement = (
             select(AuditLog)

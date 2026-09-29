@@ -13,6 +13,11 @@ from sqlalchemy import func, select
 from app.config import settings
 from app.db.session import AsyncSessionLocal
 from app.domain.calculator.rule_revision_service import rule_payload_sha256
+from app.domain.cases.service_modes import M1ServiceMode
+from app.domain.payments.bank_requisites import (
+    GAMZA_COLLEGIUM_REQUISITES,
+    bank_requisites_snapshot,
+)
 from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
@@ -23,9 +28,11 @@ from app.models.audit_log import AuditLog
 from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
+from app.models.calculation import Calculation
 from app.models.calculation_rule_revision import CalculationRuleRevision
 from app.models.lawyer import Lawyer
 from app.models.payment import Payment
+from app.models.self_filing_package import SelfFilingPackage
 from app.models.user import User
 from app.security.access_control import (
     ROLE_ADMIN,
@@ -249,6 +256,84 @@ async def _seed_payment_review_conflict() -> tuple[int, int, int, int]:
         return result
 
 
+async def _seed_self_filing_staff_case() -> tuple[int, int]:
+    async with AsyncSessionLocal() as db:
+        now = datetime.now(timezone.utc)
+        lawyer = await db.scalar(select(Lawyer).where(Lawyer.email == LAWYER_EMAIL))
+        assert lawyer is not None
+
+        user = User(
+            telegram_id=8_910_000_000_000 + (uuid.uuid4().int % 1_000_000_000),
+            full_name="Browser Self Filing Client",
+            phone="+79990001122",
+            email="browser-self-filing@example.test",
+        )
+        db.add(user)
+        await db.flush()
+
+        case = Case(
+            case_number=f"BROWSER-SELF-{uuid.uuid4().hex[:16]}",
+            client_id=int(user.id),
+            route="M1",
+            service_mode=M1ServiceMode.SELF_FILING_PACKAGE.value,
+            status=CaseStatus.M1_SELF_FILING_PAYMENT_PENDING,
+            title="Пакет для самостоятельной подачи",
+            assigned_lawyer_id=int(lawyer.id),
+            assigned_at=now - timedelta(hours=2),
+        )
+        db.add(case)
+        await db.flush()
+
+        calculation = Calculation(
+            case_id=int(case.id),
+            contract_price=Decimal("10000000.00"),
+            planned_transfer_date=date(2026, 1, 15),
+            calculation_date=date(2026, 9, 20),
+            object_transferred=False,
+            delay_days=248,
+            delay_days_total=248,
+            delay_days_chargeable=248,
+            penalty_amount=Decimal("350000.00"),
+            is_preliminary=True,
+        )
+        db.add(calculation)
+
+        package = SelfFilingPackage(
+            case_id=int(case.id),
+            status="PAYMENT_PENDING",
+            version=5,
+            client_region="Тверская область",
+            client_address="г. Тверь, тестовый адрес",
+            delivery_email=user.email,
+            email_confirmed_at=now - timedelta(hours=3),
+            documents_complete_at=now - timedelta(hours=2),
+            documents_complete_by_lawyer_id=int(lawyer.id),
+            court_name="Тестовый районный суд",
+            court_address="г. Тверь, адрес суда",
+            jurisdiction_basis="CLIENT_RESIDENCE_OR_STAY",
+            jurisdiction_note="Подсудность подтверждена для browser E2E",
+            jurisdiction_confirmed_at=now - timedelta(hours=2),
+            jurisdiction_confirmed_by_lawyer_id=int(lawyer.id),
+            transfer_act_signed=False,
+            transfer_act_confirmed_at=now - timedelta(hours=2),
+            transfer_act_confirmed_by_lawyer_id=int(lawyer.id),
+        )
+        payment = Payment(
+            case_id=int(case.id),
+            payment_code=PaymentCode.M1_SELF_FILING_PACKAGE,
+            title="Подготовка пакета документов для самостоятельной подачи",
+            amount=Decimal("15000.00"),
+            currency="RUB",
+            status=PaymentStatus.PENDING,
+            provider="bank_transfer",
+            payment_purpose=GAMZA_COLLEGIUM_REQUISITES.mandatory_purpose,
+            payment_details_snapshot=bank_requisites_snapshot(),
+        )
+        db.add_all([package, payment])
+        await db.commit()
+        return int(case.id), int(payment.id)
+
+
 @pytest.fixture(scope="module", autouse=True)
 def browser_staff_seed() -> None:
     asyncio.run(_upsert_staff())
@@ -260,7 +345,7 @@ def _login(page: Page, username: str, password: str) -> None:
     page.locator('input[name="password"]').fill(password)
     page.get_by_role("button", name="Войти в кабинет").click()
     page.wait_for_url(f"{BASE_URL}/operator")
-    expect(page.get_by_role("heading", name="Digital Legal Concierge")).to_be_visible()
+    expect(page.get_by_role("heading", name="⚖ Рабочий кабинет")).to_be_visible()
 
 
 async def _superadmin_session_token() -> str:
@@ -361,8 +446,8 @@ def test_admin_browser_login_staff_surfaces_and_logout_revoke() -> None:
         assert session["body"]["api_token"] != session_cookie["value"]
 
         _assert_html_surface(page, "/admin/workdesk/ui")
-        expect(page).to_have_title("Digital Legal Concierge — рабочий стол")
-        expect(page.get_by_role("heading", name="⚖ Единый рабочий стол")).to_be_visible()
+        expect(page).to_have_title("Рабочий кабинет — дела клиентов")
+        expect(page.get_by_role("heading", name="⚖ Дела клиентов")).to_be_visible()
 
         _assert_html_surface(page, "/calculator-builder/ui")
         expect(
@@ -520,6 +605,90 @@ def test_superadmin_landing_has_distinct_leadership_workspace() -> None:
             _assert_no_horizontal_overflow(page)
 
         context.close()
+        browser.close()
+
+
+def test_self_filing_staff_card_is_role_safe_and_shows_frozen_bank_contract() -> None:
+    case_id, payment_id = asyncio.run(_seed_self_filing_staff_case())
+    self_filing_url = f"{BASE_URL}/self-filing/ui?case_id={case_id}"
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+
+        admin_context = browser.new_context(viewport={"width": 390, "height": 844})
+        admin_page = admin_context.new_page()
+        _login(admin_page, ADMIN_USERNAME, ADMIN_PASSWORD)
+        response = admin_page.goto(self_filing_url, wait_until="domcontentloaded")
+        assert response is not None and response.status == 200
+        expect(
+            admin_page.get_by_role("heading", name="📄 Пакет для самостоятельной подачи")
+        ).to_be_visible()
+        expect(
+            admin_page.get_by_text("Адыгейская Республиканская Коллегия Адвокатов")
+        ).to_be_visible()
+        expect(admin_page.get_by_text("для адвоката Гамза Д.Г.")).to_be_visible()
+        expect(admin_page.get_by_text(f"Платёж #{payment_id}", exact=False)).to_be_visible()
+        expect(admin_page.get_by_role("button", name="Обновить")).to_be_enabled()
+        expect(admin_page.get_by_role("link", name="Дела клиентов")).to_be_visible()
+        expect(admin_page.get_by_role("link", name="Готовность услуги")).to_be_visible()
+        expect(admin_page.get_by_role("link", name="Мои дела")).to_be_hidden()
+        expect(admin_page.get_by_role("button", name="Начать проверку")).to_be_hidden()
+        expect(admin_page.get_by_role("button", name="Запросить документы")).to_be_hidden()
+        expect(
+            admin_page.get_by_role("button", name="Подтвердить комплект и открыть 15 000 ₽")
+        ).to_be_hidden()
+        _assert_no_horizontal_overflow(admin_page)
+
+        # The generic case card uses the same server authority and exposes a
+        # bank-reconciliation action rather than a second payment implementation.
+        case_response = admin_page.goto(
+            f"{BASE_URL}/admin/cases/{case_id}/ui",
+            wait_until="domcontentloaded",
+        )
+        assert case_response is not None and case_response.status == 200
+        expect(admin_page).to_have_title("Карточка дела")
+        expect(admin_page.get_by_text("+79990001122")).to_be_visible()
+        expect(admin_page.get_by_text("10 000 000,00 RUB")).to_be_visible()
+        expect(admin_page.get_by_text("350 000,00 RUB")).to_be_visible()
+        expect(admin_page.get_by_role("heading", name="История процесса")).to_be_visible()
+        expect(admin_page.get_by_role("heading", name="Коммуникации")).to_be_visible()
+        expect(admin_page.get_by_role("button", name="Подтвердить поступление")).to_be_visible()
+        _assert_no_horizontal_overflow(admin_page)
+        admin_context.close()
+
+        lawyer_context = browser.new_context(viewport={"width": 390, "height": 844})
+        lawyer_page = lawyer_context.new_page()
+        _login(lawyer_page, LAWYER_USERNAME, LAWYER_PASSWORD)
+        response = lawyer_page.goto(self_filing_url, wait_until="domcontentloaded")
+        assert response is not None and response.status == 200
+        expect(lawyer_page.get_by_text("для адвоката Гамза Д.Г.")).to_be_visible()
+        # The responsible lawyer can mutate the Case in principle, but stale
+        # review/approval controls must still be disabled once payment is pending.
+        expect(lawyer_page.get_by_role("button", name="Начать проверку")).to_be_disabled()
+        expect(lawyer_page.get_by_role("button", name="Запросить документы")).to_be_disabled()
+        expect(
+            lawyer_page.get_by_role("button", name="Подтвердить комплект и открыть 15 000 ₽")
+        ).to_be_disabled()
+        expect(lawyer_page.get_by_role("button", name="Обновить")).to_be_enabled()
+        expect(lawyer_page.get_by_role("link", name="Мои дела")).to_be_visible()
+        expect(lawyer_page.get_by_role("link", name="Дела клиентов")).to_be_hidden()
+        expect(lawyer_page.get_by_role("link", name="Готовность услуги")).to_be_hidden()
+        _assert_no_horizontal_overflow(lawyer_page)
+
+        case_response = lawyer_page.goto(
+            f"{BASE_URL}/lawyer/cases/{case_id}/ui",
+            wait_until="domcontentloaded",
+        )
+        assert case_response is not None and case_response.status == 200
+        expect(lawyer_page).to_have_title("Карточка дела юриста")
+        expect(lawyer_page.get_by_text("+79990001122")).to_be_visible()
+        expect(lawyer_page.get_by_text("10 000 000,00 RUB")).to_be_visible()
+        expect(lawyer_page.get_by_text("350 000,00 RUB")).to_be_visible()
+        expect(lawyer_page.get_by_role("heading", name="История процесса")).to_be_visible()
+        expect(lawyer_page.get_by_role("heading", name="Коммуникации")).to_be_visible()
+        _assert_no_horizontal_overflow(lawyer_page)
+        lawyer_context.close()
+
         browser.close()
 
 

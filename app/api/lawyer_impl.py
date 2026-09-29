@@ -81,6 +81,7 @@ async def lawyer_cases(
                 Case.status.notin_(
                     [
                         CaseStatus.M1_CLOSED,
+                        CaseStatus.M1_SELF_FILING_CLOSED,
                         CaseStatus.M2_CLOSED,
                         CaseStatus.ARCHIVED,
                     ]

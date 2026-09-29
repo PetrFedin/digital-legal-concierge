@@ -20,6 +20,13 @@ class Case(Base, TimestampMixin):
         index=True,
     )
     route: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    # M1 is one legal route with more than one commercial service mode.
+    # SELF_FILING_PACKAGE must never be represented as a third route.
+    service_mode: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+        index=True,
+    )
     status: Mapped[str] = mapped_column(String(100), index=True)
     # Monotonic aggregate version used by CaseService for optimistic/stale-action
     # protection. It advances exactly once for each persisted process transition.
@@ -110,10 +117,17 @@ class Case(Base, TimestampMixin):
     retention_record = relationship(
         "CaseRetentionRecord", back_populates="case", uselist=False
     )
+    self_filing_package = relationship(
+        "SelfFilingPackage",
+        back_populates="case",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
 
 
 _BUSINESS_CLOSED = {
     "M1_CLOSED": "M1_COMPLETED",
+    "M1_SELF_FILING_CLOSED": "M1_SELF_FILING_COMPLETED",
     "M2_CLOSED": "M2_COMPLETED",
 }
 _TERMINAL = frozenset({*_BUSINESS_CLOSED, "ARCHIVED"})

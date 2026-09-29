@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +17,7 @@ _INTEGER_BOUNDS: dict[str, tuple[int, int]] = {
     "sla.next_lawyer_action_hours": (1, 24 * 90),
     "sla.escalation_repeat_hours": (1, 24 * 30),
     "consultations.slot_hold_minutes": (5, 24 * 60),
+    "self_filing.delivery_calendar_days": (1, 30),
 }
 _SENSITIVE_KEY_MARKERS = ("secret", "token", "password", "credential", "api_key")
 
@@ -61,6 +63,36 @@ def _coerce_value(key: str, value):
         if result < lower or result > upper:
             raise ValueError(f"{title}: допустимый диапазон {lower}–{upper}")
         return result
+
+    if kind == "date":
+        clean = str(value or "").strip()
+        try:
+            return date.fromisoformat(clean).isoformat()
+        except ValueError as error:
+            raise ValueError(f"{title}: требуется дата YYYY-MM-DD") from error
+
+    if kind == "date_list":
+        if isinstance(value, (list, tuple)):
+            raw_items = list(value)
+        else:
+            raw_items = [
+                item.strip()
+                for item in str(value or "").replace(";", ",").split(",")
+                if item.strip()
+            ]
+        result: list[str] = []
+        for raw_item in raw_items:
+            try:
+                normalized = date.fromisoformat(str(raw_item).strip()).isoformat()
+            except ValueError as error:
+                raise ValueError(
+                    f"{title}: каждая дата должна быть YYYY-MM-DD"
+                ) from error
+            if normalized not in result:
+                result.append(normalized)
+        if len(result) > 366:
+            raise ValueError(f"{title}: не более 366 дат")
+        return sorted(result)
 
     if kind == "list":
         if isinstance(value, (list, tuple)):

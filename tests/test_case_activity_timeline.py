@@ -229,3 +229,96 @@ def test_staff_endpoint_and_case_card_use_same_shared_timeline():
     assert "Показать более ранние" in ui
     assert "if(selected!==id)return" in ui
     assert "Повторить историю" in ui
+
+
+def test_self_filing_history_exposes_customer_milestones_but_keeps_internal_failures_staff_only():
+    selected = present_case_activity(
+        audit("SELF_FILING_SERVICE_MODE_SELECTED", actor_type="client"),
+        audience="client",
+    )
+    prepared = present_case_activity(
+        audit("SELF_FILING_PACKAGE_READY", actor_type="lawyer"),
+        audience="client",
+    )
+    internal_failure_client = present_case_activity(
+        audit(
+            "SELF_FILING_EMAIL_DELIVERY_FAILED",
+            comment="SMTP diagnostic must stay staff-only",
+        ),
+        audience="client",
+    )
+    internal_failure_staff = present_case_activity(
+        audit(
+            "SELF_FILING_EMAIL_DELIVERY_FAILED",
+            comment="SMTP diagnostic must stay staff-only",
+        ),
+        audience="staff",
+    )
+
+    assert selected is not None
+    assert selected.title == "Выбран пакет для самостоятельной подачи"
+    assert prepared is not None
+    assert prepared.title == "Пакет документов готов"
+    assert internal_failure_client is None
+    assert internal_failure_staff is not None
+    assert internal_failure_staff.title == "Email-доставка пакета требует внимания"
+
+
+def test_lawyer_history_keeps_staff_milestone_but_hides_admin_operational_comment():
+    item = present_case_activity(
+        audit(
+            "SELF_FILING_PAYMENT_REVIEW_RESOLVED",
+            comment="Бухгалтерская сверка: внутренний референс 12345",
+            actor_type="admin",
+        ),
+        audience="lawyer",
+    )
+
+    assert item is not None
+    assert item.title == "Финансовая сверка пакета завершена"
+    assert item.detail is None
+    assert "внутренний референс" not in str(item.as_dict())
+
+
+def test_admin_history_still_keeps_bounded_operational_comment():
+    item = present_case_activity(
+        audit(
+            "SELF_FILING_PAYMENT_REVIEW_RESOLVED",
+            comment="Бухгалтерская сверка завершена",
+            actor_type="admin",
+        ),
+        audience="staff",
+    )
+
+    assert item is not None
+    assert item.detail == "Бухгалтерская сверка завершена"
+
+
+def test_self_filing_email_retry_is_a_staff_milestone_with_role_scoped_detail():
+    staff = present_case_activity(
+        audit(
+            "SELF_FILING_EMAIL_RETRY_REQUESTED",
+            comment="Администратор запустил повторную email-доставку готового пакета",
+            actor_type="admin_user",
+        ),
+        audience="staff",
+    )
+    lawyer = present_case_activity(
+        audit(
+            "SELF_FILING_EMAIL_RETRY_REQUESTED",
+            comment="Внутренний операционный комментарий",
+            actor_type="admin_user",
+        ),
+        audience="lawyer",
+    )
+    client = present_case_activity(
+        audit("SELF_FILING_EMAIL_RETRY_REQUESTED", actor_type="admin_user"),
+        audience="client",
+    )
+
+    assert staff is not None
+    assert staff.title == "Администратор запустил повторную email-доставку"
+    assert staff.detail is not None
+    assert lawyer is not None
+    assert lawyer.detail is None
+    assert client is None

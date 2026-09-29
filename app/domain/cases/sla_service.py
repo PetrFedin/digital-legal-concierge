@@ -26,6 +26,7 @@ CLOSED_CASE_STATUSES = {
     "CANCELLED",
     "COMPLETED",
     "M1_CLOSED",
+    "M1_SELF_FILING_CLOSED",
     "M2_CLOSED",
 }
 
@@ -38,6 +39,13 @@ PAUSED_CASE_STATUSES = {
     "M1_WAITING_PAYMENT_70000",
     "M1_ENFORCEMENT",
     "M1_WAITING_SUCCESS_FEE",
+    "M1_SELF_FILING_DOCS_REQUESTED",
+    "M1_SELF_FILING_PAYMENT_PENDING",
+    # PREPARATION has its own authoritative three-calendar-day-after-payment delivery deadline.
+    "M1_SELF_FILING_PREPARATION",
+    # READY/DELIVERED are controlled by durable delivery state, not generic lawyer SLA.
+    "M1_SELF_FILING_READY",
+    "M1_SELF_FILING_DELIVERED",
     "M2_PAYMENT_PENDING",
     "M2_CONSULTATION_BOOKED",
 }

@@ -33,7 +33,7 @@ For one frozen candidate SHA execute strictly in this order:
 2. execute full CI and required PR checks, including the living process-map maintenance contract;
 3. execute dedicated PostgreSQL concurrency → Redis/Telegram runtime → browser staff E2E workflows;
 4. execute one complete LIVE_REQUIRED run and retain its SHA/run/attempt-bound manifest;
-5. execute real Telegram M1 and M2 persona walkthroughs and reconcile UI ↔ PostgreSQL ↔ Audit/PaymentEvent evidence;
+5. execute real Telegram personas for M1 full representation, M1 self-filing and M2; for self-filing use at least three distinct client chats and reconcile UI ↔ PostgreSQL ↔ Audit/PaymentEvent evidence;
 6. execute encrypted backup → separate empty staging/restore DB and storage → application restore evidence → normal restored-runtime usability;
 7. only then deliberately expand YooKassa **test-shop** proof to provider-side paid/refund scenarios that are safely supported without any production operation;
 8. make the release/merge decision.
@@ -110,7 +110,7 @@ If Telegram delivery fails **after** a committed mutation, do not repeat the dom
 
 ## Real Telegram persona operation
 
-The post-LIVE persona gate uses dedicated non-production acceptance identities/chats. Run M1 and M2 end to end, including documented recovery paths. At each material write reconcile the client/staff UI result with PostgreSQL Case/Document/Payment state, Case/Audit history and `PaymentEvent` evidence.
+The post-LIVE persona gate uses dedicated non-production acceptance identities/chats. Run M1 full representation, M1 self-filing and M2 end to end, including documented recovery paths. The self-filing access check must use at least three distinct client Telegram accounts/chats; a candidate that only works for one operator/tester fails acceptance. At each material write reconcile the client/staff UI result with PostgreSQL Case/Document/Payment state, Case/Audit history and `PaymentEvent` evidence.
 
 Screenshots alone are not acceptance evidence. Do not record bot tokens, document plaintext or payment credentials in the evidence package.
 
@@ -134,11 +134,38 @@ For stale M1/M2 money:
 
 Provider timeout after create is an idempotency/reconciliation case, not permission to create unlimited replacement payments.
 
+## Self-filing controlled acceptance activation
+
+Keep `SELF_FILING_NEW_SALES_ENABLED=false` by default. Do not turn it on in production merely because source/migrations exist.
+
+For a controlled non-production acceptance environment:
+
+1. deploy the exact candidate image to both the HTTP container and the host-network Telegram worker; verify the worker owns the polling singleton and can reach Telegram through the current Timeweb IPv6 route;
+2. provision real SMTP acceptance credentials and a mailbox whose receipt can be independently observed;
+3. verify the exact customer-approved bar-association bank requisites and mandatory payment-purpose marker shown by the candidate; do not configure YooKassa/Robokassa/SBP for self-filing;
+4. set `SELF_FILING_NEW_SALES_ENABLED=true` only after `/self-filing/readiness` reports the source/configuration gates ready;
+5. have at least three different client Telegram accounts open `/start` and perform a persisted action. Record Telegram user/chat identity only as non-secret acceptance identifiers; do not add code/user allowlists;
+6. complete one self-filing path with `transfer_act_signed=true` and one with `transfer_act_signed=false` far enough to prove both cutoff branches; at least one path must complete a real controlled bank-transfer/reconciliation + email-delivery boundary;
+7. verify Telegram displays the snapshotted recipient/bank requisites, exact 15 000 ₽ and the mandatory marker `для адвоката Гамза Д.Г.`; confirm the actual bank receipt through the authenticated financial reconciliation path;
+8. verify `sla_due_at` is exactly payment receipt + 3 calendar days, all four approved documents are attached, the email lands on the confirmed profile address and the Case closes only after send evidence;
+9. turn the self-filing sales flag back off after acceptance until the full release evidence chain permits controlled production activation.
+
+Role check during the same acceptance pass:
+
+- **Admin/Superadmin:** open the self-filing staff card and generic Case card; verify only operational navigation is shown. Admin may inspect/reconcile payment and request a technical reupload, but legal review/approval controls are not available.
+- **Responsible Lawyer:** open the self-filing staff card and role-scoped Lawyer Case card; verify client/calculation/documents/payments/history/communications agree. Legal review/completeness/final-document controls are available only when state permits, while admin financial reconciliation controls and admin-only readiness navigation are absent.
+- **Foreign Lawyer:** exact Case URL/API must fail the responsibility check.
+- **Closed Case:** both roles see read-only/terminal behavior; no old message/document/payment control may reactivate the Case.
+
+Do not use the standard M1 30k/70k/success-fee dashboard as evidence for self-filing. Its financial contract is the frozen 15 000 ₽ bank-transfer obligation plus reconciliation and delivery evidence.
+
+There is no source-level per-user Telegram allowlist in the current bot path. If a colleague cannot use the deployed bot while another user can, treat that as a runtime/deployment/configuration incident and inspect the exact deployed SHA, bot token/username, polling worker, singleton lease, Telegram delivery logs and PostgreSQL user/case creation evidence before changing product logic.
+
 ## Payment provider enable/disable and sandbox sequence
 
 ### Offline production mode
 
-The current no-provider production path is `PAYMENT_PROVIDER=offline`, not `disabled`.
+The current no-provider production path for full-representation/consultation is `PAYMENT_PROVIDER=offline`, not `disabled`. Self-filing also uses bank transfer, but with a stricter fixed bar-association requisites contract rather than generic team-approved instructions.
 
 In offline mode:
 

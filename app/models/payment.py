@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, event, inspect, text
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Numeric, String, event, inspect, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -45,6 +45,8 @@ class Payment(Base, TimestampMixin):
     provider: Mapped[str | None] = mapped_column(String(100), nullable=True)
     provider_payment_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     payment_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    payment_purpose: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    payment_details_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     reservation_key: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
 
     # These timestamps are business facts, not presentation metadata. updated_at

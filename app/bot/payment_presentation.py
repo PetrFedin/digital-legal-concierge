@@ -46,9 +46,19 @@ def offline_m1_payment_presentation(view) -> OfflinePaymentPresentation | None:
     pending.
     """
 
-    if not payments_offline():
-        return None
     if str(getattr(view, "route", "") or "") != "M1":
+        return None
+    if str(getattr(view, "case_status", "") or "") == "M1_SELF_FILING_PAYMENT_PENDING":
+        return OfflinePaymentPresentation(
+            next_action=(
+                "Переведите 15 000 ₽ по реквизитам коллегии адвокатов. "
+                "Обязательная пометка в назначении: «для адвоката Гамза Д.Г.». "
+                "После сверки поступления результат будет отправлен на подтверждённый "
+                "email в течение 3 календарных дней."
+            ),
+            button_label="💳 Реквизиты для оплаты",
+        )
+    if not payments_offline():
         return None
     return OFFLINE_M1_PAYMENT_PRESENTATIONS.get(
         str(getattr(view, "case_status", "") or "")

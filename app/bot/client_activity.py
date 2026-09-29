@@ -12,7 +12,7 @@ from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
-_TERMINAL_CASE_VALUES = {"M1_CLOSED", "M2_CLOSED", "ARCHIVED"}
+_TERMINAL_CASE_VALUES = {"M1_CLOSED", "M1_SELF_FILING_CLOSED", "M2_CLOSED", "ARCHIVED"}
 
 
 def _telegram_id(event) -> int | None:

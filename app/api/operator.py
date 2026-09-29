@@ -28,12 +28,25 @@ def _payment_state() -> tuple[str, str, str]:
         return (
             "ЮKassa подключена",
             "ok",
-            "Онлайн-платежи принимаются через ЮKassa.",
+            "Онлайн-платежи принимаются через ЮKassa для тех услуг, где этот способ отдельно включён.",
+        )
+    if provider == "offline":
+        return (
+            "Банковская оплата",
+            "ok",
+            "Поступления подтверждаются сотрудником после сверки банка. "
+            "Для пакета самостоятельной подачи используются отдельные реквизиты коллегии адвокатов.",
+        )
+    if provider == "fake" and settings.app_env in {"local", "test"}:
+        return (
+            "Тестовая оплата",
+            "warn",
+            "Используется только для локальной или тестовой среды.",
         )
     return (
-        f"Провайдер: {provider or 'не задан'}",
+        "Оплата требует настройки",
         "warn",
-        "Проверьте платёжные настройки до приёма реальных оплат.",
+        "Проверьте режим оплаты до приёма реальных платежей.",
     )
 
 
@@ -90,7 +103,7 @@ async def operator_page(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Digital Legal Concierge — рабочее пространство</title>
+<title>Рабочий кабинет</title>
 <style>
 :root{
   --bg:#f4f6fa;--surface:#fff;--ink:#172033;--muted:#667085;--line:#e4e7ec;
@@ -120,7 +133,7 @@ button{border:0;border-radius:10px;padding:9px 12px;color:#fff;background:var(--
 <header>
   <div class="header-inner">
     <div>
-      <h1>⚖ Digital Legal Concierge</h1>
+      <h1>⚖ Рабочий кабинет</h1>
       <p>Рабочие разделы показываются в соответствии с вашей ролью.</p>
       <div class="env">Среда: __ENV__</div>
     </div>
@@ -161,7 +174,7 @@ button{border:0;border-radius:10px;padding:9px 12px;color:#fff;background:var(--
       <div class="section-title"><h2>Рабочие разделы без JavaScript</h2><div class="muted">Откройте только раздел, разрешённый вашей ролью.</div></div>
       <article class="workspace">
         <div class="links">
-          <a class="link" href="/admin/workdesk/ui"><b>Единый рабочий стол</b><span>Операционная очередь администратора</span></a>
+          <a class="link" href="/admin/workdesk/ui"><b>Дела клиентов</b><span>Операционная очередь администратора</span></a>
           <a class="link" href="/lawyer/workspace/ui"><b>Рабочий кабинет юриста</b><span>Дела, документы и сроки</span></a>
           <a class="link" href="/lawyer/consultation-desk/ui"><b>Подготовка консультаций</b><span>Вопрос, материалы, встреча и результат</span></a>
           <a class="link" href="/document-access/review/ui"><b>Проверка документов</b><span>Решение по документам</span></a>
@@ -191,7 +204,7 @@ function renderRoles(roles){
     link('/message-center/ui','Переписка','Диалоги клиентов по конкретным делам')
   ]))}
   if(isAdmin){groups.push(group('Операционная работа','Очередь обращений, денег и действий администратора по конкретным делам',[
-    link('/admin/workdesk/ui','Единый рабочий стол','Что требует внимания сейчас и какое действие выполнить','primary'),
+    link('/admin/workdesk/ui','Дела клиентов','Что требует внимания сейчас и какое действие выполнить','primary'),
     link('/message-center/ui','Сообщения','Непрочитанные обращения и ответы команды'),
     link('/document-access/review/ui','Документы','Проверка и контроль версий'),
     link('/consultation-slots/ui','Расписание консультаций','Свободные интервалы, резервы и занятость'),

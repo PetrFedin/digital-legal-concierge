@@ -4,6 +4,9 @@ from sqlalchemy import select
 
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
+from app.domain.cases.self_filing_email_sender import SelfFilingEmailConfigurationError
+from app.domain.cases.self_filing_service import SelfFilingError, SelfFilingService
+from app.domain.cases.service_modes import M1ServiceMode
 from app.domain.consultations.consultation_service import ConsultationService
 from app.domain.consultations.slot_service import SlotUnavailableError
 from app.domain.notifications.notification_engine import NotificationEngine
@@ -32,6 +35,7 @@ M1_EXPECTED_PAYMENT_CASE_STATUSES = {
     PaymentCode.M1_INITIAL_PAYMENT: CaseStatus.M1_WAITING_PAYMENT_30000,
     PaymentCode.M1_COURT_PAYMENT: CaseStatus.M1_WAITING_PAYMENT_70000,
     PaymentCode.M1_SUCCESS_FEE: CaseStatus.M1_WAITING_SUCCESS_FEE,
+    PaymentCode.M1_SELF_FILING_PACKAGE: CaseStatus.M1_SELF_FILING_PAYMENT_PENDING,
 }
 
 
@@ -99,6 +103,74 @@ class PaymentWebhookService:
                 "payment_id": payment.id,
                 "reason": reason,
             },
+        )
+        await self.db.flush()
+        return payment
+
+    async def _mark_self_filing_payment_review(
+        self,
+        *,
+        payment: Payment,
+        case,
+        reason: str,
+        provider_payload: dict | None,
+        actor_type: str,
+        actor_id: int | None,
+        occurred_at: datetime | None = None,
+    ) -> Payment:
+        """Preserve received-money truth when package activation cannot complete.
+
+        The provider-confirmed money fact must survive even if the legal/package
+        side cannot start the customer delivery obligation atomically (for example
+        because the configured commercial contract or delivery channel is unsafe). The Case deliberately
+        remains on PAYMENT_PENDING until an administrator reconciles the exact
+        received payment through the self-filing product.
+        """
+
+        transition = PaymentLifecycleService.transition(
+            payment,
+            to_status=PaymentStatus.PAID_REVIEW,
+            occurred_at=payment.paid_at or occurred_at,
+        )
+        await add_case_history_event(
+            self.db,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            case_id=case.id,
+            action="SELF_FILING_PAYMENT_REVIEW_REQUIRED",
+            old_value={
+                "payment_id": payment.id,
+                "payment_status": transition.old_status.value,
+                "case_status": str(case.status),
+            },
+            new_value={
+                "payment_id": payment.id,
+                "payment_code": payment.payment_code,
+                "payment_status": transition.new_status.value,
+                "money_received_at": (
+                    payment.paid_at.isoformat() if payment.paid_at else None
+                ),
+                "case_status_preserved": str(case.status),
+                "reason": reason,
+                "payload": provider_payload or {},
+            },
+            comment=(
+                "Деньги получены, но автоматический запуск подготовки пакета и "
+                "трёхдневного срока выдачи остановлен безопасностью. Повторная оплата "
+                "заблокирована; требуется финансовая сверка администратора."
+            ),
+        )
+        await self.notifications.emit(
+            event_code="SELF_FILING_PAYMENT_REVIEW_REQUIRED",
+            case_id=case.id,
+            user_id=case.client_id,
+            payload={
+                "case_number": case.case_number,
+                "payment_id": payment.id,
+                "amount": str(payment.amount),
+                "reason": reason,
+            },
+            dedupe_key=f"payment:{payment.id}:self-filing-review",
         )
         await self.db.flush()
         return payment
@@ -335,9 +407,15 @@ class PaymentWebhookService:
                 return payment
 
             expected_status = M1_EXPECTED_PAYMENT_CASE_STATUSES.get(payment.payment_code)
+            self_filing_mode_mismatch = bool(
+                payment.payment_code == PaymentCode.M1_SELF_FILING_PACKAGE
+                and str(getattr(case, "service_mode", "") or "")
+                != M1ServiceMode.SELF_FILING_PACKAGE.value
+            )
             if expected_status is not None and (
                 str(case.route or "") != "M1"
                 or str(case.status) != expected_status.value
+                or self_filing_mode_mismatch
             ):
                 return await self._mark_stale_m1_payment_refund(
                     payment=payment,
@@ -356,41 +434,90 @@ class PaymentWebhookService:
                 actor_id=actor_id,
                 occurred_at=occurred_at,
             )
-            mapping = {
-                PaymentCode.M1_INITIAL_PAYMENT: [
-                    CaseStatus.M1_PAYMENT_30000_RECEIVED,
-                    CaseStatus.M1_POWER_OF_ATTORNEY,
-                ],
-                PaymentCode.M1_COURT_PAYMENT: [
-                    CaseStatus.M1_PAYMENT_70000_RECEIVED,
-                    CaseStatus.M1_ENFORCEMENT,
-                ],
-                PaymentCode.M1_SUCCESS_FEE: [
-                    CaseStatus.M1_SUCCESS_FEE_RECEIVED,
-                    CaseStatus.M1_CLOSED,
-                ],
-            }
-            if payment.payment_code == PaymentCode.M1_SUCCESS_FEE:
-                case.close_reason = "M1_SUCCESS_FEE_PAID"
-            for status in mapping.get(payment.payment_code, []):
-                await self.cases.change_status(
-                    case=case,
-                    next_status=status,
-                    actor_type="system",
-                    actor_id=None,
-                    comment=f"Автопереход после оплаты {payment.payment_code}",
-                )
-            await self._emit_m1_paid_next_step(payment=payment, case=case)
-            if (
-                payment.payment_code == PaymentCode.M1_SUCCESS_FEE
-                and case.status == CaseStatus.M1_CLOSED
-            ):
-                await self.notifications.emit(
-                    event_code="M1_CLOSED",
-                    case_id=case.id,
-                    payload={"case_number": case.case_number},
-                    dedupe_key=f"payment:{payment.id}:m1-closed",
-                )
+            if payment.payment_code == PaymentCode.M1_SELF_FILING_PACKAGE:
+                # The provider-confirmed money fact is outside the savepoint.
+                # Package/SLA activation is inside it. If a legal/operational
+                # precondition changed after link creation, only package state
+                # rolls back; received money becomes PAID_REVIEW and remains
+                # visible for controlled reconciliation.
+                try:
+                    async with self.db.begin_nested():
+                        package = await SelfFilingService(
+                            self.db
+                        ).start_preparation_after_payment(
+                            case=case,
+                            payment=payment,
+                            actor_type=actor_type,
+                            actor_id=actor_id,
+                            occurred_at=occurred_at,
+                        )
+                except (
+                    SelfFilingError,
+                    SelfFilingEmailConfigurationError,
+                    KeyError,
+                    ValueError,
+                ) as error:
+                    await self._mark_self_filing_payment_review(
+                        payment=payment,
+                        case=case,
+                        reason=str(error),
+                        provider_payload=provider_payload,
+                        actor_type=actor_type,
+                        actor_id=actor_id,
+                        occurred_at=occurred_at,
+                    )
+                else:
+                    await self.notifications.emit(
+                        event_code="SELF_FILING_PAYMENT_CONFIRMED",
+                        case_id=case.id,
+                        user_id=case.client_id,
+                        payload={
+                            "case_number": case.case_number,
+                            "payment_id": payment.id,
+                            "sla_due_at": (
+                                package.sla_due_at.isoformat()
+                                if package.sla_due_at
+                                else None
+                            ),
+                        },
+                        dedupe_key=f"payment:{payment.id}:self-filing-confirmed",
+                    )
+            else:
+                mapping = {
+                    PaymentCode.M1_INITIAL_PAYMENT: [
+                        CaseStatus.M1_PAYMENT_30000_RECEIVED,
+                        CaseStatus.M1_POWER_OF_ATTORNEY,
+                    ],
+                    PaymentCode.M1_COURT_PAYMENT: [
+                        CaseStatus.M1_PAYMENT_70000_RECEIVED,
+                        CaseStatus.M1_ENFORCEMENT,
+                    ],
+                    PaymentCode.M1_SUCCESS_FEE: [
+                        CaseStatus.M1_SUCCESS_FEE_RECEIVED,
+                        CaseStatus.M1_CLOSED,
+                    ],
+                }
+                if payment.payment_code == PaymentCode.M1_SUCCESS_FEE:
+                    case.close_reason = "M1_SUCCESS_FEE_PAID"
+                for status in mapping.get(payment.payment_code, []):
+                    await self.cases.change_status(
+                        case=case,
+                        next_status=status,
+                        actor_type="system",
+                        actor_id=None,
+                        comment=f"Автопереход после оплаты {payment.payment_code}",
+                    )
+                await self._emit_m1_paid_next_step(payment=payment, case=case)
+                if (
+                    payment.payment_code == PaymentCode.M1_SUCCESS_FEE
+                    and case.status == CaseStatus.M1_CLOSED
+                ):
+                    await self.notifications.emit(
+                        event_code="M1_CLOSED",
+                        case_id=case.id,
+                        payload={"case_number": case.case_number},
+                        dedupe_key=f"payment:{payment.id}:m1-closed",
+                    )
 
         await add_case_history_event(
             self.db,

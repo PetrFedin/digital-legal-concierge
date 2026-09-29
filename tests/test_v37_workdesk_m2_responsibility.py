@@ -43,3 +43,30 @@ def test_workdesk_ui_removes_m1_assignment_sla_shortcut_for_m2_without_literal_r
     assert "_M1_SLA_SHORTCUT" not in runtime_ui
     assert "_ROUTE_AWARE_SLA_SHORTCUT" not in runtime_ui
     assert "WORKDESK_HTML.replace(" not in runtime_ui
+
+
+def test_base_admin_case_workspace_also_uses_effective_m2_responsibility():
+    source = read("app/api/web_admin.py")
+    ui = read("app/api/workdesk_ui.py")
+
+    assert "effective_lawyer_id_for_case" in source
+    assert "effective_lawyer_ids_for_cases" in source
+    assert '"responsibility_label": (' in source
+    assert '"Ответственный по выбранному слоту"' in source
+    assert 'select(Consultation)' in source
+    assert '"consultation": (' in source
+    assert "CONSULTATION_STATUS_LABELS" in source
+
+    assert "consult=d.consultation||null" in ui
+    assert "Контроль консультации" in ui
+    assert "Время консультации" in ui
+    assert "consult?.status_label" in ui
+    assert "consult?.scheduled_at" in ui
+
+
+def test_runtime_m2_patch_updates_route_aware_cells_without_reintroducing_assignment_semantics():
+    runtime_ui = read("app/api/workdesk_runtime_ui.py")
+
+    assert "caseCell('Контроль консультации')||caseCell('SLA')" in runtime_ui
+    assert "caseCell('Время консультации')||caseCell('Срок')" in runtime_ui
+    assert "responsibility.lawyer_name||'будет определён выбранным слотом'" in runtime_ui
