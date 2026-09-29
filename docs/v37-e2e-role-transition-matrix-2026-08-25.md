@@ -1,7 +1,7 @@
 # v37 E2E role-transition matrix — Case, documents, money, M2, messages and close
 
 Date: 2026-08-25  
-Scope: existing M1/M2 product only. Client cabinet remains Telegram. No M3/M4, no new CRM/payment/calendar product.
+Scope: M1/M2 product only, including `SELF_FILING_PACKAGE` as an M1 service mode. Client cabinet remains Telegram. No M3/M4, no new CRM/payment/calendar product.
 
 ## Evidence rule
 
@@ -18,7 +18,7 @@ This document is a regression contract, not a release certificate.
 | Client | Own Telegram identity and own Case context only. May create/input client facts and initiate allowed actions for the exact selected Case. Never establishes lawyer/provider/admin facts. |
 | Operator | **Auxiliary label only**, not a standalone product authority. It must be combined with a base Admin/Superadmin/Lawyer role. `operator` alone must fail closed. `lawyer+operator` remains lawyer-scoped; the label must not broaden responsibility. |
 | Lawyer | Legal responsibility only. M1 actions require the assigned Case. M2 result/no-show is tied to the lawyer of the exact booked consultation/slot. Does not confirm provider/admin financial facts. |
-| Admin | Operational responsibility: assignment, payment/refund review, lawyer-no-show resolution, operational queues. Generic status editing is not a second state machine. |
+| Admin | Operational responsibility: assignment, payment/refund review, lawyer-no-show resolution, operational queues, technical document presence/readability checks and replacement requests. Admin does **not** approve/reject documents on legal substance, establish lawyer-review facts, confirm completeness/jurisdiction or author final legal deliverables. Generic status editing is not a second state machine. |
 | Superadmin | Administrative authority plus access-management/security duties. Admin checks treat Superadmin as admin; sensitive document/access surfaces require personal session/MFA where specified. |
 
 The source account model deliberately rejects a standalone Operator/Tester workspace role and rejects one personal account that combines Lawyer with Admin/Superadmin responsibility.
@@ -32,7 +32,7 @@ The source account model deliberately rejects a standalone Operator/Tester works
 | Case assignment | Admin/Superadmin; assigned Lawyer can then see work | Admin/Superadmin | Case row/current assignment snapshot | conflicting assignment must not silently overwrite | SOURCE_OK / LIVE_REQUIRED |
 | Generic Case status selector | Admin/Superadmin | **No generic owner** except `M1_REJECTED -> M1_CLOSED` compatibility close | `admin_manual_status_policy`; every `CaseStatus` has explicit domain ownership | all other business/lifecycle transitions fail closed | SOURCE_OK |
 | Client document upload | Client own Case | Client | exact selected Case + upload FSM provenance | old Case upload entry cannot attach to newly selected Case | SOURCE_OK / LIVE_REQUIRED |
-| Document review | Admin/Superadmin or responsible Lawyer | Admin/Superadmin/responsible Lawyer according to review policy | personal staff account, Case responsibility, Document+Case locks, expected status/version/update snapshot | competing review returns conflict; typed comment must remain locally | SOURCE_OK / LIVE_REQUIRED |
+| Document review | Admin/Superadmin broad; responsible Lawyer scoped | **Responsible Lawyer** owns `approve/reject` and legal-review facts. Admin/Superadmin may only perform the operational presence/readability check and `request_reupload` | personal staff account, Case responsibility for Lawyer, Document+Case locks, expected status/version/update snapshot | competing review returns conflict; admin legal decision is rejected; typed comment must remain locally | SOURCE_OK / LIVE_REQUIRED |
 | Protected document download | Admin/Superadmin/responsible Lawyer | none (read grant) | personal session; Superadmin MFA; lawyer responsibility; verified+encrypted document; short-lived one-time grant | reused/foreign/expired grant fails closed | SOURCE_OK / LIVE_REQUIRED |
 | Client M1/M2 payment entry | Client own selected Case | Client initiates only | `:v2:<case_id>` / exact payment-to-Case ownership | stale A button while B selected cannot reconcile/create B or A payment implicitly | SOURCE_OK / LIVE_REQUIRED |
 | Provider payment fact | Client may view own payment | Provider lifecycle / explicitly allowed offline admin path | PaymentLifecycle boundary + provider/audit provenance | duplicate webhook/retry idempotent; conflicting status reconciled/reviewed | SOURCE_OK / LIVE_REQUIRED |
@@ -42,6 +42,10 @@ The source account model deliberately rejects a standalone Operator/Tester works
 | M1 claim prepare/sent | relevant staff can view | Assigned Lawyer | exact assigned Case + expected status/update snapshot | stale/foreign lawyer cannot advance | SOURCE_OK / LIVE_REQUIRED |
 | M1 court open/payment open | relevant staff can view | Assigned Lawyer | exact assigned Case + legal evidence/comment + expected snapshot | stale/foreign lawyer cannot advance | SOURCE_OK / LIVE_REQUIRED |
 | M1 money actually received | relevant staff can view | Assigned Lawyer | exact assigned Case + expected snapshot; financial service creates resulting success-fee obligation | generic admin cannot manufacture recovered-money fact | SOURCE_OK / LIVE_REQUIRED |
+| M1 self-filing completeness / jurisdiction / transfer-act fact | Admin/Superadmin may view; responsible Lawyer acts | **Responsible Lawyer** | exact M1 `SELF_FILING_PACKAGE` Case, current package version, approved source documents, verified email | stale package version or foreign lawyer fails closed; admin cannot establish legal completeness | SOURCE_OK / LIVE_REQUIRED |
+| M1 self-filing bank receipt / reconciliation | Client may view own obligation; Admin/Superadmin operates | **Admin/Superadmin** confirms factual receipt/review/refund path | exact Payment+Case, frozen 15 000 ₽ requisites/purpose, row lock and reconciliation provenance | duplicate/ambiguous money stays in review; Lawyer cannot manufacture receipt | SOURCE_OK / LIVE_REQUIRED |
+| M1 self-filing final four deliverables | Client may read after delivery; Admin/Superadmin may inspect | **Responsible Lawyer** approves/uploads exactly four legal deliverables | exact package version, encrypted/versioned Documents, SHA-256, all four required types | incomplete/stale set cannot become READY or be emailed | SOURCE_OK / LIVE_REQUIRED |
+| M1 self-filing email delivery / close | Client/staff according to case access | **System delivery lifecycle** after real send evidence | verified delivery email, exact four attachments, package state and delivery audit | send failure stays actionable; generic admin/lawyer status edit cannot fake delivery/close | SOURCE_OK / LIVE_REQUIRED |
 | M2 description / optional docs | Client own Case | Client | exact Case+Consultation/FSM provenance | stale draft/callback cannot write to another Case | SOURCE_OK / LIVE_REQUIRED |
 | M2 slot hold / booking / reschedule / cancel | Client own Case | Client within allowed lifecycle | exact Case+Consultation+message/slot provenance; slot row concurrency | lost slot race refreshes current options without changing another booking | SOURCE_OK / LIVE_REQUIRED |
 | M2 consultation result | Client can read own result | Assigned consultation Lawyer | consultation row lock; assigned lawyer check before terminal retry | exact same stored result/decision may retry; changed result/decision conflicts | SOURCE_OK / LIVE_REQUIRED |
@@ -81,6 +85,11 @@ The source account model deliberately rejects a standalone Operator/Tester works
 | ROLE-18 | Terminal Case A archive while active B exists | archive remains read-only; no active-context switch/mutation | SOURCE_OK / LIVE_REQUIRED |
 | ROLE-19 | Superadmin sensitive document/access path without MFA | fail closed where MFA is required | SOURCE_OK / LIVE_REQUIRED |
 | ROLE-20 | Two staff tabs update same document/dialog/payment decision | loser gets conflict/reload path, not false success | SOURCE_OK / LIVE_REQUIRED |
+| ROLE-21 | Admin/Superadmin tries `approve` or `reject` in document review | rejected; only responsible Lawyer may make the legal decision | SOURCE_OK / LIVE_REQUIRED |
+| ROLE-22 | Admin/Superadmin finds unreadable self-filing file | may request a new readable version without starting lawyer review or approving legal substance | SOURCE_OK / LIVE_REQUIRED |
+| ROLE-23 | Lawyer opens self-filing Case assigned to another lawyer | legal review/completeness/deliverable actions denied; no Case/package mutation | SOURCE_OK / LIVE_REQUIRED |
+| ROLE-24 | Standard M1 financial-final projection is requested for self-filing | projection is non-applicable; 30k/70k/success-fee chain is never shown as self-filing truth | SOURCE_OK / LIVE_REQUIRED |
+| ROLE-25 | Closed self-filing Case remains in old staff/client tab | terminal/read-only semantics apply to queues, messages, document decisions, integrity and Telegram archive | SOURCE_OK / LIVE_REQUIRED |
 
 ## Source regression added in this pass
 
