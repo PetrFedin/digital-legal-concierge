@@ -23,6 +23,7 @@ from app.api.guided_lawyer_ui import (
 from app.api.lawyer_consultation_decision_guard import guarded_complete_consultation
 from app.api.lawyer_consultation_desk import consultation_desk_data
 from app.api.lawyer_consultation_runtime_ui import lawyer_consultation_runtime_ui
+from app.api.lawyer_case_card import router as lawyer_case_card_router
 from app.api.lawyer_m1_rejection import router as lawyer_m1_rejection_router
 from app.api.lawyer_poa import router as lawyer_poa_router
 from app.db.session import get_db
@@ -39,6 +40,7 @@ router = APIRouter(tags=["lawyer-product"])
 # composite remain mounted here as domain action routers.
 router.include_router(lawyer_m1_rejection_router)
 router.include_router(lawyer_poa_router)
+router.include_router(lawyer_case_card_router)
 
 
 def _parse_utc_datetime(value: object) -> datetime | None:
