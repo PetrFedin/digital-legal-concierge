@@ -172,7 +172,12 @@ def test_self_filing_staff_card_has_state_aware_role_controls_and_neutral_refres
     )[1].split(";", 1)[0]
     assert "document.querySelectorAll('button')" not in source
     assert '<button class="secondary" onclick="load()">Обновить</button>' in source
-    assert ">Дела клиентов</a>" in source
+    assert 'id="lawyerHome"' in source
+    assert 'id="adminHome"' in source
+    assert 'id="readinessLink"' in source
+    assert "lawyerNav.style.display=a.role==='lawyer'" in source
+    assert "adminNav.style.display=['admin','superadmin'].includes" in source
+    assert "readinessNav.style.display=['admin','superadmin'].includes" in source
 
 
 def test_admin_detailed_case_link_has_a_registered_authenticated_page_owner():
