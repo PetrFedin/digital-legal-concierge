@@ -756,7 +756,7 @@ button,.button{border:0;border-radius:9px;background:var(--blue);color:#fff;padd
 <div class="card"><div class="eyebrow">Документы</div><div id="docs"></div><div class="actions"><a id="materials" class="button secondary" href="#">Открыть защищённые материалы</a><a id="messages" class="button secondary" href="#">Переписка</a></div></div>
 <div class="card" id="uploadCard"><div class="eyebrow">Судебный комплект: ровно 4 документа</div><div class="muted">Загружайте финальные версии по отдельности: претензия, исковое заявление, расчёт суммы иска и дорожная карта клиента. Email-доставка откроется только когда утверждены все четыре.</div><label>Тип документа</label><select id="deliverableType"><option value="SELF_FILING_PRETRIAL_CLAIM">Претензия</option><option value="SELF_FILING_STATEMENT_OF_CLAIM">Исковое заявление</option><option value="SELF_FILING_CLAIM_CALCULATION">Расчёт суммы иска</option><option value="SELF_FILING_CLIENT_ROADMAP">Дорожная карта клиента</option></select><input id="file" type="file"><div class="actions"><button class="lawyer-action" onclick="uploadPackage()">Утвердить документ</button></div></div>
 </section><aside>
-<div class="card"><div class="eyebrow">Действие юриста</div><div class="actions"><button id="startReviewButton" class="lawyer-action" onclick="startReview()">Начать проверку</button></div>
+<div class="card" id="lawyerActionCard"><div class="eyebrow">Действие юриста</div><div class="actions"><button id="startReviewButton" class="lawyer-action" onclick="startReview()">Начать проверку</button></div>
 <label>Что нужно дополнить</label><textarea id="reason" placeholder="Конкретно укажите отсутствующий документ или исправление"></textarea><button id="requestDocsButton" class="lawyer-action" onclick="requestDocs()">Запросить документы</button>
 <hr style="border:0;border-top:1px solid var(--line);margin:16px 0">
 <label>Суд</label><input id="court" placeholder="Полное наименование суда">
@@ -802,7 +802,11 @@ function render(){
  adminNav.style.display=['admin','superadmin'].includes(String(a.role||''))?'':'none';
  readinessNav.style.display=['admin','superadmin'].includes(String(a.role||''))?'':'none';
  document.getElementById('status').textContent=c.status_label||'Статус требует уточнения';
- const roleNote=a.can_mutate?'Вы отвечаете за это обращение. Все решения ниже привязаны к текущей версии карточки.':'Режим просмотра: юридические решения доступны только ответственному юристу.';
+ const roleNote=a.can_mutate
+  ?'Вы отвечаете за это обращение. Юридические решения привязаны к текущей версии карточки.'
+  :(a.can_financial_reconcile
+    ?'Операционная роль: можно сверять фактическую оплату и контролировать состояние услуги. Юридические решения доступны только ответственному юристу.'
+    :'Режим просмотра: юридические решения доступны только ответственному юристу.');
  document.getElementById('now').innerHTML='<b>Главное следующее действие:</b> '+esc(c.next_action||'Уточнить статус')+'<br>'+esc(roleNote);
  document.getElementById('facts').innerHTML=[
   ['Регион',p.region],
@@ -844,7 +848,7 @@ function render(){
  document.getElementById('delivery').innerHTML='Адрес подтверждён: <b>'+(p.email_verified?'да':'нет')+'</b>'+(p.email_verification_pending?'<br>Код действует до: '+esc(dt(p.email_verification_expires_at))+'<br>Ошибочных попыток: '+p.email_verification_attempts:'')+'<br><br>Доставка пакета: <b>'+esc(p.email_delivery_status)+'</b><br>Попыток доставки: '+p.email_delivery_attempts+'<br>Message-ID: '+esc(p.email_message_id||'—')+'<br>Последняя ошибка: '+esc(p.email_last_error||'—')+'<br>Email provider: '+(data.capabilities.email_delivery_configured?'готов':'НЕ НАСТРОЕН')+(data.capabilities.email_delivery_configuration_error?'<br><span class="bad">'+esc(data.capabilities.email_delivery_configuration_error)+'</span>':'');
  const reviewPayment=[...data.payments].reverse().find(x=>x.code==='M1_SELF_FILING_PACKAGE'&&['PAID_REVIEW','REFUND_PENDING','REFUND_DECLINED'].includes(String(x.status)));
  const reviewCard=document.getElementById('paymentReviewCard');
- if(reviewPayment){
+ if(reviewPayment&&a.can_financial_reconcile){
    reviewCard.style.display='block';
    document.getElementById('paymentReview').innerHTML='Платёж #'+reviewPayment.id+' · '+esc(reviewPayment.amount)+' RUB · <b>'+esc(reviewPayment.status)+'</b><br>'+(reviewPayment.status==='PAID_REVIEW'?'Деньги получены, но SLA не запущен. Повторно брать оплату нельзя: администратор должен либо восстановить запуск по исходному времени поступления, либо направить деньги на возврат.':'Повторная оплата заблокирована до завершения финансовой сверки/возврата.');
    reviewCard.dataset.paymentId=String(reviewPayment.id);
@@ -853,6 +857,7 @@ function render(){
    reviewCard.dataset.paymentId='';
  }
  const status=String(c.status||'');
+ document.getElementById('lawyerActionCard').style.display=a.can_mutate?'block':'none';
  const canStartReview=Boolean(a.can_mutate&&['M1_SELF_FILING_DOCUMENTS_RECEIVED','M1_SELF_FILING_DOCS_REQUESTED'].includes(status));
  const canReviewDecision=Boolean(a.can_mutate&&['M1_SELF_FILING_DOCUMENTS_RECEIVED','M1_SELF_FILING_LAWYER_REVIEW'].includes(status));
  const canFinance=Boolean(a.can_financial_reconcile&&reviewPayment&&reviewPayment.status==='PAID_REVIEW');
@@ -862,7 +867,9 @@ function render(){
  ['reason','court','courtAddress','basis','note','completeConfirm','actSigned'].forEach(id=>{document.getElementById(id).disabled=!canReviewDecision});
  document.querySelectorAll('.finance-action').forEach(el=>{el.disabled=!canFinance});
  document.getElementById('financialComment').disabled=!canFinance;
- document.getElementById('retryEmailButton').disabled=!(a.can_mutate&&['FAILED','QUEUED'].includes(String(p.email_delivery_status||'')));
+ const retryEmailButton=document.getElementById('retryEmailButton');
+ retryEmailButton.style.display=a.can_mutate?'':'none';
+ retryEmailButton.disabled=!(a.can_mutate&&['FAILED','QUEUED'].includes(String(p.email_delivery_status||'')));
  document.getElementById('file').disabled=!(status==='M1_SELF_FILING_PREPARATION'&&a.can_mutate);
  document.getElementById('deliverableType').disabled=!(status==='M1_SELF_FILING_PREPARATION'&&a.can_mutate);
  document.getElementById('uploadCard').style.display=(status==='M1_SELF_FILING_PREPARATION'&&a.can_mutate)?'block':'none';
