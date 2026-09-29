@@ -181,7 +181,8 @@ def test_self_filing_staff_card_has_state_aware_role_controls_and_neutral_refres
     assert 'id="lawyerActionCard"' in source
     assert "lawyerActionCard').style.display=a.can_mutate?'block':'none'" in source
     assert "if(reviewPayment&&a.can_financial_reconcile)" in source
-    assert "retryEmailButton.style.display=a.can_mutate?'':'none'" in source
+    assert "retryEmailButton.style.display=a.can_retry_delivery?'':'none'" in source
+    assert '"can_retry_delivery": actor.role in {ROLE_ADMIN, ROLE_SUPERADMIN}' in source
     assert "Операционная роль: можно сверять фактическую оплату" in source
 
 
