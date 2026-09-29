@@ -19,6 +19,8 @@ from app.bot.case_callback_scope import (
     bound_case_callback,
     resolve_case_callback_scope,
 )
+from app.domain.cases.m1_financial_summary import M1FinancialSummaryService
+from app.domain.cases.self_filing_service import SelfFilingService
 from app.domain.cases.admin_manual_status_policy import (
     DOMAIN_MANAGED_STATUSES,
     manual_status_change_allowed,
@@ -28,6 +30,7 @@ from app.domain.consultations.client_no_show_resolution_service import (
 )
 from app.domain.consultations.no_show_resolution_service import NoShowResolutionService
 from app.domain.consultations.outcome_service import ConsultationOutcomeService
+from app.domain.documents.document_review_service import DocumentReviewService
 from app.domain.statuses.case_statuses import CaseStatus
 from app.security.access_control import (
     ROLE_ADMIN,
@@ -92,6 +95,30 @@ def test_documents_allow_only_staff_base_roles_and_scope_lawyer_to_responsibilit
     assert "role_denied" in actor_source
     assert "lawyer_can_access_case" in document_source
     assert "lawyer_not_responsible" in document_source
+
+
+def test_document_legal_decision_is_lawyer_owned_while_admin_is_reupload_only():
+    review = _source(DocumentReviewService.review)
+    start = _source(DocumentReviewService._start_m1_review_if_needed)
+    request = _source(DocumentReviewService._request_new_version)
+    self_filing_request = _source(SelfFilingService.request_more_documents)
+
+    assert 'actor.role != "lawyer" and normalized != "request_reupload"' in review
+    assert "Юридическое решение по документу доступно только юристу" in review
+    assert 'if actor.role != "lawyer":' in start
+    assert "SelfFilingService(self.db).begin_lawyer_review" in start
+    assert 'if actor.role == "lawyer":' in request
+    assert 'actor_type="admin"' in request
+    assert 'normalized_actor == "admin"' in self_filing_request
+    assert "actor_type=normalized_actor" in self_filing_request
+
+
+def test_self_filing_does_not_inherit_standard_m1_success_fee_projection():
+    source = _source(M1FinancialSummaryService.build)
+
+    assert "M1ServiceMode.SELF_FILING_PACKAGE.value" in source
+    assert '"applicable": False' in source
+    assert "Финансовый финал стандартного ведения M1" in source
 
 
 def test_m1_legal_facts_are_owned_by_the_assigned_lawyer_with_stale_snapshot_checks():
