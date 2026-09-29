@@ -15,6 +15,7 @@ from app.api.admin import (
 )
 from app.config import settings
 from app.db.session import get_db
+from app.domain.cases.assignment_policy import automatic_assignment_required
 from app.domain.cases.case_activity import CaseActivityService
 from app.domain.cases.admin_manual_status_policy import (
     M1_FINANCIAL_MANAGED_STATUSES,
@@ -93,10 +94,16 @@ def _document_status_label(status: str | None) -> str:
 
 
 def _recommended_action(case: Case) -> str:
-    if case.assigned_lawyer_id is None:
+    if case.assigned_lawyer_id is None and automatic_assignment_required(case.status):
         return "Назначить ответственного юриста"
     if str(case.sla_status or "") in {"FIRST_RESPONSE_OVERDUE", "ACTION_OVERDUE"}:
-        return "Устранить просрочку и зафиксировать результат"
+        return (
+            "Назначить ответственного юриста для устранения просрочки"
+            if case.assigned_lawyer_id is None
+            else "Устранить просрочку и зафиксировать результат"
+        )
+    if case.assigned_lawyer_id is None:
+        return case.next_action or "Ожидать следующий шаг клиента"
     return case.next_action or "Проверить карточку и определить следующий этап"
 
 
@@ -129,6 +136,7 @@ def _case_row(
         "id": case.id,
         "number": case.case_number,
         "route": case.route,
+        "service_mode": case.service_mode,
         "route_label": _case_route_label(case),
         "status": case.status,
         "status_label": get_client_visible_status(case.status),
