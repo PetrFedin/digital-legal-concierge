@@ -51,3 +51,33 @@ def test_workdesk_case_card_keeps_exact_safe_workflows_after_visual_polish():
     assert "/admin/workdesk/cases/${id}/action/sla" in source
     assert "/advance" not in source
     assert "force=True" not in source
+
+
+def test_workdesk_case_context_is_route_aware_for_self_filing_and_m2():
+    source = read("app/api/workdesk_ui.py")
+
+    assert "function caseControlCells(d)" in source
+    assert "function caseWorkflowLinks(id,d)" in source
+    assert "x.self_filing_sla_due_at" in source
+    assert "Пакет выдать до" in source
+    assert "Срок пакета" in source
+    assert "Email-доставка" in source
+    assert "Пакет самостоятельной подачи" in source
+    assert "/self-filing/ui?case_id=" in source
+    assert "if(x.route==='M2')" in source
+    assert "Рабочие действия" in source
+    assert "/admin/cases/${id}/ui" in source
+
+
+def test_workdesk_self_filing_card_does_not_offer_m2_consultation_or_fake_sla_assignment():
+    source = read("app/api/workdesk_ui.py")
+    links = source.split("function caseWorkflowLinks(id,d)", 1)[1].split(
+        "function financialAttention", 1
+    )[0]
+
+    self_filing_branch = links.split("if(sf)return", 1)[1].split(
+        "if(x.route==='M2')", 1
+    )[0]
+    assert "/self-filing/ui?case_id=" in self_filing_branch
+    assert "/action/consultation" not in self_filing_branch
+    assert "Назначить перед SLA" not in self_filing_branch
