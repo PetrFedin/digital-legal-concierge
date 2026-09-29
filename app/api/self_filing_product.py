@@ -750,7 +750,7 @@ button,.button{border:0;border-radius:9px;background:var(--blue);color:#fff;padd
 @media(max-width:760px){.grid{grid-template-columns:1fr}.kv{grid-template-columns:1fr}.top{align-items:flex-start}.actions>*{flex:1;text-align:center}}
 </style></head>
 <body>
-<header><div class="top"><div><h1>📄 Пакет для самостоятельной подачи</h1><div id="sub" class="muted" style="color:#d0d5dd"></div></div><div class="links"><a href="/lawyer/workspace/ui">Кабинет юриста</a><a href="/admin/workdesk/ui">Дела клиентов</a><a href="/self-filing/readiness">Готовность услуги</a></div></div></header>
+<header><div class="top"><div><h1>📄 Пакет для самостоятельной подачи</h1><div id="sub" class="muted" style="color:#d0d5dd"></div></div><div class="links"><a id="lawyerHome" href="/lawyer/workspace/ui" style="display:none">Мои дела</a><a id="adminHome" href="/admin/workdesk/ui" style="display:none">Дела клиентов</a><a id="readinessLink" href="/self-filing/readiness" style="display:none">Готовность услуги</a></div></div></header>
 <main><div id="feedback"></div><div class="grid"><section>
 <div class="card"><div class="eyebrow">Сейчас</div><div id="status" class="status">Загрузка…</div><div id="now" class="muted"></div><div id="facts" class="kv"></div></div>
 <div class="card"><div class="eyebrow">Документы</div><div id="docs"></div><div class="actions"><a id="materials" class="button secondary" href="#">Открыть защищённые материалы</a><a id="messages" class="button secondary" href="#">Переписка</a></div></div>
@@ -797,6 +797,10 @@ async function load(){
 function render(){
  const c=data.case,p=data.package,a=data.actor;
  document.getElementById('sub').textContent='Обращение '+c.number+' · '+data.client.name;
+ const lawyerNav=document.getElementById('lawyerHome'),adminNav=document.getElementById('adminHome'),readinessNav=document.getElementById('readinessLink');
+ lawyerNav.style.display=a.role==='lawyer'?'':'none';
+ adminNav.style.display=['admin','superadmin'].includes(String(a.role||''))?'':'none';
+ readinessNav.style.display=['admin','superadmin'].includes(String(a.role||''))?'':'none';
  document.getElementById('status').textContent=c.status_label||'Статус требует уточнения';
  const roleNote=a.can_mutate?'Вы отвечаете за это обращение. Все решения ниже привязаны к текущей версии карточки.':'Режим просмотра: юридические решения доступны только ответственному юристу.';
  document.getElementById('now').innerHTML='<b>Главное следующее действие:</b> '+esc(c.next_action||'Уточнить статус')+'<br>'+esc(roleNote);
