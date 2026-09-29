@@ -28,6 +28,7 @@ from app.models.audit_log import AuditLog
 from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
+from app.models.calculation import Calculation
 from app.models.calculation_rule_revision import CalculationRuleRevision
 from app.models.lawyer import Lawyer
 from app.models.payment import Payment
@@ -264,6 +265,7 @@ async def _seed_self_filing_staff_case() -> tuple[int, int]:
         user = User(
             telegram_id=8_910_000_000_000 + (uuid.uuid4().int % 1_000_000_000),
             full_name="Browser Self Filing Client",
+            phone="+79990001122",
             email="browser-self-filing@example.test",
         )
         db.add(user)
@@ -281,6 +283,20 @@ async def _seed_self_filing_staff_case() -> tuple[int, int]:
         )
         db.add(case)
         await db.flush()
+
+        calculation = Calculation(
+            case_id=int(case.id),
+            contract_price=Decimal("10000000.00"),
+            planned_transfer_date=date(2026, 1, 15),
+            calculation_date=date(2026, 9, 20),
+            object_transferred=False,
+            delay_days=248,
+            delay_days_total=248,
+            delay_days_chargeable=248,
+            penalty_amount=Decimal("350000.00"),
+            is_preliminary=True,
+        )
+        db.add(calculation)
 
         package = SelfFilingPackage(
             case_id=int(case.id),
@@ -628,6 +644,11 @@ def test_self_filing_staff_card_is_role_safe_and_shows_frozen_bank_contract() ->
         )
         assert case_response is not None and case_response.status == 200
         expect(admin_page).to_have_title("Карточка дела")
+        expect(admin_page.get_by_text("+79990001122")).to_be_visible()
+        expect(admin_page.get_by_text("10 000 000,00 RUB")).to_be_visible()
+        expect(admin_page.get_by_text("350 000,00 RUB")).to_be_visible()
+        expect(admin_page.get_by_role("heading", name="История процесса")).to_be_visible()
+        expect(admin_page.get_by_role("heading", name="Коммуникации")).to_be_visible()
         expect(admin_page.get_by_role("button", name="Подтвердить поступление")).to_be_visible()
         _assert_no_horizontal_overflow(admin_page)
         admin_context.close()
