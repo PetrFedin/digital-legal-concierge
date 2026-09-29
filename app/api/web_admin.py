@@ -112,6 +112,10 @@ def _document_status_label(status: str | None) -> str:
 
 
 def _recommended_action(case: Case) -> str:
+    if str(case.route or "") == "M2":
+        if str(case.sla_status or "") in {"FIRST_RESPONSE_OVERDUE", "ACTION_OVERDUE"}:
+            return case.next_action or "Устранить просрочку по консультации"
+        return case.next_action or "Проверить актуальное состояние консультации"
     if case.assigned_lawyer_id is None and automatic_assignment_required(case.status):
         return "Назначить ответственного юриста"
     if str(case.sla_status or "") in {"FIRST_RESPONSE_OVERDUE", "ACTION_OVERDUE"}:
@@ -159,7 +163,7 @@ def _case_row(
         "route_label": _case_route_label(case),
         "status": case.status,
         "status_label": get_client_visible_status(case.status),
-        "lawyer_id": lawyer_id if lawyer_id is not None else case.assigned_lawyer_id,
+        "lawyer_id": lawyer_id,
         "lawyer_name": lawyer_name,
         "responsibility_label": (
             "Ответственный по выбранному слоту"
