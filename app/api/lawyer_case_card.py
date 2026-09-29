@@ -238,7 +238,7 @@ async def lawyer_case_workspace(
                     if consultation.scheduled_at
                     else None
                 ),
-                "result": consultation.result,
+                "result": consultation.lawyer_result,
                 "decision": consultation.decision,
             }
             if consultation
