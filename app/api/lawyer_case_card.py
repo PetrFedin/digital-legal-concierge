@@ -138,7 +138,7 @@ async def lawyer_case_workspace(
         ).scalar_one_or_none()
     activity = await CaseActivityService(db).page(
         case_id=int(case.id),
-        audience="staff",
+        audience="lawyer",
         limit=12,
     )
 
