@@ -107,3 +107,16 @@ def test_action_forms_keep_internal_ids_only_as_machine_context():
     assert re.search(r'data-consultation-id="\$\{id\}"', CASE_ACTION_HTML)
     assert "<h3>Консультация · ${esc(dt(x.starts_at))}</h3>" in CASE_ACTION_HTML
     assert "Оплата направлена в процесс возврата" in CASE_ACTION_HTML
+
+
+def test_admin_exact_case_document_ui_is_technical_reupload_only():
+    assert "Роль администратора." in CASE_ACTION_HTML
+    assert "Принять или отклонить документ по существу может только ответственный юрист" in CASE_ACTION_HTML
+    assert ">Принять</button>" not in CASE_ACTION_HTML
+    assert ">Отклонить</button>" not in CASE_ACTION_HTML
+    assert "Запросить новую версию" in CASE_ACTION_HTML
+
+    body = _function_body("submitDoc")
+    assert "decision!=='request_reupload'" in body
+    assert "Администратор может только запросить новую версию файла" in body
+    assert "Подтвердить запрос" in CASE_ACTION_HTML
