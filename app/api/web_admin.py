@@ -17,6 +17,10 @@ from app.config import settings
 from app.db.session import get_db
 from app.domain.cases.assignment_policy import automatic_assignment_required
 from app.domain.cases.case_activity import CaseActivityService
+from app.domain.cases.case_responsibility import (
+    effective_lawyer_id_for_case,
+    effective_lawyer_ids_for_cases,
+)
 from app.domain.cases.admin_manual_status_policy import (
     M1_FINANCIAL_MANAGED_STATUSES,
     manual_status_change_allowed,
@@ -55,6 +59,20 @@ SLA_LABELS = {
     "ACTION_PENDING": "Ожидается действие",
     "ACTION_OK": "Действие выполнено в срок",
     "ACTION_OVERDUE": "Действие просрочено",
+}
+CONSULTATION_STATUS_LABELS = {
+    "DESCRIPTION_PENDING": "Ожидается описание ситуации",
+    "DOCUMENTS_OPTIONAL": "Можно добавить документы",
+    "SLOT_PENDING": "Ожидается выбор времени",
+    "SLOT_RESERVED": "Время зарезервировано",
+    "PAYMENT_PENDING": "Ожидается оплата консультации",
+    "BOOKED": "Консультация подтверждена",
+    "DONE": "Консультация проведена",
+    "CLIENT_NO_SHOW": "Клиент не явился",
+    "LAWYER_NO_SHOW": "Зафиксирована неявка юриста",
+    "CANCELLED": "Консультация отменена",
+    "RESCHEDULED": "Консультация перенесена",
+    "CLOSED": "Консультация завершена",
 }
 DOCUMENT_STATUS_LABELS = {
     "UPLOADED": "Ожидает передачи юристу",
@@ -131,6 +149,7 @@ def _case_row(
     *,
     queue: str,
     lawyer_name: str | None = None,
+    lawyer_id: int | None = None,
 ) -> dict[str, object]:
     return {
         "id": case.id,
@@ -140,8 +159,13 @@ def _case_row(
         "route_label": _case_route_label(case),
         "status": case.status,
         "status_label": get_client_visible_status(case.status),
-        "lawyer_id": case.assigned_lawyer_id,
+        "lawyer_id": lawyer_id if lawyer_id is not None else case.assigned_lawyer_id,
         "lawyer_name": lawyer_name,
+        "responsibility_label": (
+            "Ответственный по выбранному слоту"
+            if str(case.route or "") == "M2"
+            else "Ответственный юрист"
+        ),
         "next_action": _recommended_action(case),
         "sla_status": case.sla_status,
         "sla_label": _sla_label(case.sla_status),
@@ -198,7 +222,12 @@ async def work_queue(
 
     result = await db.execute(stmt.limit(200))
     cases = list(result.scalars().unique().all())
-    lawyer_ids = {case.assigned_lawyer_id for case in cases if case.assigned_lawyer_id}
+    responsibility = await effective_lawyer_ids_for_cases(db, cases)
+    lawyer_ids = {
+        int(lawyer_id)
+        for lawyer_id in responsibility.values()
+        if lawyer_id is not None
+    }
     lawyer_names: dict[int, str] = {}
     if lawyer_ids:
         lawyers = (
@@ -213,7 +242,10 @@ async def work_queue(
             _case_row(
                 case,
                 queue=queue_name,
-                lawyer_name=lawyer_names.get(case.assigned_lawyer_id),
+                lawyer_id=responsibility.get(int(case.id)),
+                lawyer_name=lawyer_names.get(
+                    int(responsibility.get(int(case.id)) or 0)
+                ),
             )
             for case in cases
         ],
@@ -233,9 +265,10 @@ async def case_workspace(
         raise HTTPException(status_code=404, detail="Дело не найдено")
 
     client = await db.get(User, case.client_id)
+    effective_lawyer_id = await effective_lawyer_id_for_case(db, case)
     lawyer = (
-        await db.get(Lawyer, case.assigned_lawyer_id)
-        if case.assigned_lawyer_id
+        await db.get(Lawyer, effective_lawyer_id)
+        if effective_lawyer_id is not None
         else None
     )
     documents = (
@@ -271,6 +304,14 @@ async def case_workspace(
                 )
             )
         ).scalar_one_or_none()
+    consultation = (
+        await db.execute(
+            select(Consultation)
+            .where(Consultation.case_id == int(case.id))
+            .order_by(Consultation.created_at.desc(), Consultation.id.desc())
+            .limit(1)
+        )
+    ).scalars().first()
     message_count = int(
         await db.scalar(
             select(func.count(Message.id)).where(Message.case_id == case.id)
@@ -329,8 +370,13 @@ async def case_workspace(
             "status": case.status,
             "status_label": get_client_visible_status(case.status),
             "next_action": _recommended_action(case),
-            "lawyer_id": case.assigned_lawyer_id,
+            "lawyer_id": effective_lawyer_id,
             "lawyer_name": lawyer.full_name if lawyer else None,
+            "responsibility_label": (
+                "Ответственный по выбранному слоту"
+                if str(case.route or "") == "M2"
+                else "Ответственный юрист"
+            ),
             "sla_status": case.sla_status,
             "sla_label": _sla_label(case.sla_status),
             "sla_due_at": case.sla_due_at.isoformat() if case.sla_due_at else None,
@@ -424,6 +470,7 @@ async def case_workspace(
         "self_filing": (
             {
                 "status": self_filing.status,
+                "status_label": get_client_visible_status(case.status),
                 "version": int(self_filing.version or 1),
                 "delivery_email": self_filing.delivery_email,
                 "email_confirmed_at": (
@@ -471,6 +518,28 @@ async def case_workspace(
                 "product_url": f"/self-filing/ui?case_id={int(case.id)}",
             }
             if self_filing
+            else None
+        ),
+        "consultation": (
+            {
+                "id": int(consultation.id),
+                "status": str(consultation.status),
+                "status_label": CONSULTATION_STATUS_LABELS.get(
+                    str(consultation.status),
+                    "Статус консультации уточняется",
+                ),
+                "consultation_type": consultation.consultation_type,
+                "scheduled_at": (
+                    consultation.scheduled_at.isoformat()
+                    if consultation.scheduled_at
+                    else None
+                ),
+                "client_description": consultation.client_description,
+                "lawyer_result": consultation.lawyer_result,
+                "decision": consultation.decision,
+                "lawyer_id": consultation.lawyer_id,
+            }
+            if consultation
             else None
         ),
         "communications": {
