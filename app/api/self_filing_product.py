@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db.session import get_db
+from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_responsibility import lawyer_can_access_case
 from app.domain.cases.self_filing_documents import (
     SELF_FILING_DELIVERABLE_FIELDS,
@@ -345,7 +346,11 @@ async def self_filing_context(
             "email_sent_at": (
                 package.email_sent_at.isoformat() if package.email_sent_at else None
             ),
-            "email_last_error": package.email_last_error,
+            "email_last_error": (
+                package.email_last_error
+                if actor.role in {ROLE_ADMIN, ROLE_SUPERADMIN}
+                else None
+            ),
         },
         "documents": [_document_payload(item) for item in documents],
         "payments": [
@@ -367,11 +372,14 @@ async def self_filing_context(
             "lawyer_id": actor.lawyer_id,
             "can_mutate": can_mutate,
             "can_financial_reconcile": actor.role in {ROLE_ADMIN, ROLE_SUPERADMIN},
+            "can_retry_delivery": actor.role in {ROLE_ADMIN, ROLE_SUPERADMIN},
         },
         "capabilities": {
             "email_delivery_configured": email_delivery_configured(),
             "email_delivery_configuration_error": (
                 email_delivery_configuration_error()
+                if actor.role in {ROLE_ADMIN, ROLE_SUPERADMIN}
+                else None
             ),
             "jurisdiction_bases": sorted(JURISDICTION_BASES),
             "bank_requisites": bank_requisites_snapshot(),
@@ -706,10 +714,15 @@ async def retry_self_filing_email(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    actor, case = await _lawyer_case(
-        request,
+    actor = await _actor(request, db, x_admin_token)
+    if actor.role not in {ROLE_ADMIN, ROLE_SUPERADMIN}:
+        raise HTTPException(
+            status_code=403,
+            detail="Повторная email-доставка доступна администратору",
+        )
+    case, _user = await _case_for_staff(
         db,
-        x_admin_token,
+        actor=actor,
         case_id=case_id,
     )
     service = SelfFilingService(db)
@@ -721,6 +734,18 @@ async def retry_self_filing_email(
             detail="Повторная email-доставка сейчас не требуется",
         )
     try:
+        await add_case_history_event(
+            db,
+            actor_type="admin_user",
+            actor_id=int(actor.account_id),
+            case_id=int(case.id),
+            action="SELF_FILING_EMAIL_RETRY_REQUESTED",
+            new_value={
+                "package_id": int(package.id),
+                "attempt_before_retry": int(package.email_delivery_attempts or 0),
+            },
+            comment="Администратор запустил повторную email-доставку готового пакета",
+        )
         sent = await SelfFilingEmailSender(db).send_one(int(package.id))
         await db.commit()
     except Exception as error:
@@ -729,7 +754,8 @@ async def retry_self_filing_email(
     return {
         "ok": bool(sent),
         "case_id": int(case.id),
-        "lawyer_id": int(actor.lawyer.id),
+        "actor_id": int(actor.account_id),
+        "actor_role": actor.role,
         "processed_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -772,7 +798,7 @@ button,.button{border:0;border-radius:9px;background:var(--blue);color:#fff;padd
 </div>
 <div class="card"><div class="eyebrow">Оплата клиента</div><div id="bankPayment" class="muted">Загрузка…</div></div>
 <div class="card" id="paymentReviewCard"><div class="eyebrow">Финансовая сверка</div><div id="paymentReview" class="muted"></div><label>Комментарий администратора</label><textarea id="financialComment" placeholder="Причина возобновления либо возврата, минимум 10 символов"></textarea><div class="actions"><button class="finance-action" onclick="resolvePayment('resume')">Запустить подготовку по полученным деньгам</button><button class="danger finance-action" onclick="resolvePayment('refund_pending')">Направить на контролируемый возврат</button></div></div>
-<div class="card"><div class="eyebrow">Доставка</div><div id="delivery" class="muted"></div><div class="actions"><button id="retryEmailButton" class="secondary lawyer-action" onclick="retryEmail()">Повторить email-доставку</button><button class="secondary" onclick="load()">Обновить</button></div></div>
+<div class="card"><div class="eyebrow">Доставка</div><div id="delivery" class="muted"></div><div class="actions"><button id="retryEmailButton" class="secondary delivery-action" onclick="retryEmail()">Повторить email-доставку</button><button class="secondary" onclick="load()">Обновить</button></div></div>
 </aside></div></main>
 <script>
 const qs=new URLSearchParams(location.search);const caseId=Number(qs.get('case_id'));let data=null;
@@ -868,8 +894,8 @@ function render(){
  document.querySelectorAll('.finance-action').forEach(el=>{el.disabled=!canFinance});
  document.getElementById('financialComment').disabled=!canFinance;
  const retryEmailButton=document.getElementById('retryEmailButton');
- retryEmailButton.style.display=a.can_mutate?'':'none';
- retryEmailButton.disabled=!(a.can_mutate&&['FAILED','QUEUED'].includes(String(p.email_delivery_status||'')));
+ retryEmailButton.style.display=a.can_retry_delivery?'':'none';
+ retryEmailButton.disabled=!(a.can_retry_delivery&&['FAILED','QUEUED'].includes(String(p.email_delivery_status||'')));
  document.getElementById('file').disabled=!(status==='M1_SELF_FILING_PREPARATION'&&a.can_mutate);
  document.getElementById('deliverableType').disabled=!(status==='M1_SELF_FILING_PREPARATION'&&a.can_mutate);
  document.getElementById('uploadCard').style.display=(status==='M1_SELF_FILING_PREPARATION'&&a.can_mutate)?'block':'none';
