@@ -208,16 +208,28 @@ class DocumentReviewService:
         # review fact merely by performing an operational file check.
         if actor.role != "lawyer":
             return
-        if (
-            str(case.route or "") != "M1"
-            or CaseStatus(str(case.status)) != CaseStatus.M1_DOCUMENTS_RECEIVED
-        ):
+        if str(case.route or "") != "M1":
+            return
+        if str(getattr(case, "service_mode", "") or "") == "SELF_FILING_PACKAGE":
+            if CaseStatus(str(case.status)) not in {
+                CaseStatus.M1_SELF_FILING_DOCUMENTS_RECEIVED,
+                CaseStatus.M1_SELF_FILING_DOCS_REQUESTED,
+            }:
+                return
+            from app.domain.cases.self_filing_service import SelfFilingService
+
+            await SelfFilingService(self.db).begin_lawyer_review(
+                case_id=int(case.id),
+                lawyer_id=int(actor.lawyer_id or 0),
+            )
+            return
+        if CaseStatus(str(case.status)) != CaseStatus.M1_DOCUMENTS_RECEIVED:
             return
         await CaseService(self.db).change_status(
             case=case,
             next_status=CaseStatus.M1_LAWYER_REVIEW,
-            actor_type="lawyer" if actor.role == "lawyer" else "admin_user",
-            actor_id=actor.lawyer_id or actor.account_id,
+            actor_type="lawyer",
+            actor_id=actor.lawyer_id,
             comment=(
                 "Юридическая проверка начата первым валидным решением по переданному документу"
             ),
@@ -232,12 +244,36 @@ class DocumentReviewService:
         comment: str,
     ) -> None:
         case_status = CaseStatus(str(case.status))
-        if case.route != "M1" or case_status not in {
+        if case.route != "M1":
+            return
+        request_comment = f"{document.title}: {comment}"
+        if str(getattr(case, "service_mode", "") or "") == "SELF_FILING_PACKAGE":
+            if case_status not in {
+                CaseStatus.M1_SELF_FILING_DOCUMENTS_RECEIVED,
+                CaseStatus.M1_SELF_FILING_LAWYER_REVIEW,
+            }:
+                return
+            from app.domain.cases.self_filing_service import SelfFilingService
+
+            if actor.role == "lawyer":
+                await SelfFilingService(self.db).request_more_documents(
+                    case_id=int(case.id),
+                    lawyer_id=int(actor.lawyer_id or 0),
+                    reason=request_comment,
+                )
+            else:
+                await SelfFilingService(self.db).request_more_documents(
+                    case_id=int(case.id),
+                    reason=request_comment,
+                    actor_type="admin",
+                    actor_id=int(actor.account_id),
+                )
+            return
+        if case_status not in {
             CaseStatus.M1_DOCUMENTS_RECEIVED,
             CaseStatus.M1_LAWYER_REVIEW,
         }:
             return
-        request_comment = f"{document.title}: {comment}"
         if actor.role == "lawyer":
             await LawyerDecisionService(self.db).request_more_documents(
                 case=case,
