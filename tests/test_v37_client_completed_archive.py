@@ -122,3 +122,13 @@ def test_archive_payment_guard_is_physically_imported_and_precedes_legacy_paymen
 
     assert "client_archive_payment_guard," in bot
     assert bot.index("client_archive_payment_guard.router,") < bot.index("payments.router,")
+
+
+def test_self_filing_archive_keeps_service_label_in_selector_and_buttons():
+    source = read("app/bot/screens/client_archive.py")
+
+    assert "def _archive_route_label(case)" in source
+    assert '"SELF_FILING_PACKAGE"' in source
+    assert '"Пакет для самостоятельной подачи"' in source
+    assert 'f"{case.case_number} · {_archive_route_label(case)}"' in source
+    assert 'f"🗄 {case.case_number} · {_archive_route_label(case)}"' in source
