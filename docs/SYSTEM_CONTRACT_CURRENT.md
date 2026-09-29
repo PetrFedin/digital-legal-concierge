@@ -67,13 +67,15 @@ Documents are versioned domain records. Active and archived versions are distinc
 
 File upload controls include size/type/content checks, quarantine, hashing, encryption-at-rest/key versioning and protected download grants. File authorization is checked at access time; stale grants and revoked roles must not preserve access.
 
-Document review decisions belong to staff role/domain services, not the client.
+Document review is role-split. The responsible Lawyer owns legal `approve/reject` decisions and the lawyer-review fact. Admin/Superadmin may perform the operational presence/readability check and request a replacement version, but that action must not approve legal substance or start lawyer review. The client never establishes either staff fact.
 
 ### Self-filing document authority
 
 For new `SELF_FILING_PACKAGE` work, the deliverable set is closed and exact: `SELF_FILING_PRETRIAL_CLAIM`, `SELF_FILING_STATEMENT_OF_CLAIM`, `SELF_FILING_CLAIM_CALCULATION`, `SELF_FILING_CLIENT_ROADMAP`. A legacy `SELF_FILING_PACKAGE` document pointer may remain readable for historical rows but is not a fifth deliverable.
 
 Each deliverable is an individually versioned, hashed, encrypted, lawyer-approved `Document`. The package may move to READY/email queue only when all four exact pointers resolve to usable APPROVED documents. Email delivery attaches those four documents and no legacy substitute.
+
+Self-filing staff responsibility is deliberately split: Lawyer owns legal source-document review, completeness, jurisdiction/transfer-act confirmation and the four final deliverables; Admin/Superadmin owns factual bank/payment reconciliation and may request a technical reupload when a file is absent/unreadable. Delivery/close is established only by the email-delivery lifecycle after real send evidence. Standard full-representation M1 financial-final semantics (30k/70k/recovered amount/success fee) do not apply to this service mode.
 
 The responsible lawyer also owns the transfer-act fact used for the claim-calculation cutoff. `transfer_act_signed`, `transfer_act_date`, confirmer and confirmation time are persisted before payment opens. If signed, the cutoff is the confirmed act date. If not signed, the cutoff is the received service-payment date in the configured business timezone and `claim_update_in_court_required=true`. The resulting calculator snapshot remains source material (`is_preliminary=true`) for the lawyer-authored claim-calculation document, not an automatic legal conclusion.
 
