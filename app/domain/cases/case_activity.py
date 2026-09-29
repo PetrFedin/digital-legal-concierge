@@ -12,7 +12,7 @@ from app.domain.cases.case_timeline import get_client_visible_status
 from app.models.audit_log import AuditLog
 from app.presentation_time import format_business_datetime
 
-ActivityAudience = Literal["client", "staff"]
+ActivityAudience = Literal["client", "staff", "lawyer"]
 
 CLIENT_VISIBLE_ACTIONS = frozenset(
     {
@@ -364,6 +364,13 @@ def _safe_detail(log: AuditLog, audience: ActivityAudience) -> str | None:
     if audience == "staff" and action in STAFF_ONLY_ACTIONS:
         return _clean_text(log.comment, 220)
 
+    # Lawyers may need the business milestone in their own Case history, but
+    # administrator/payment/delivery diagnostic comments are not part of the
+    # lawyer role contract. The title/category remain visible without leaking
+    # operational free text from another staff authority.
+    if audience == "lawyer" and action in STAFF_ONLY_ACTIONS:
+        return None
+
     return None
 
 
@@ -374,7 +381,7 @@ def present_case_activity(
 ) -> CaseActivityItem | None:
     action = str(log.action)
     allowed = CLIENT_VISIBLE_ACTIONS | (
-        STAFF_ONLY_ACTIONS if audience == "staff" else frozenset()
+        STAFF_ONLY_ACTIONS if audience in {"staff", "lawyer"} else frozenset()
     )
     if action not in allowed:
         return None
@@ -407,7 +414,7 @@ class CaseActivityService:
     ) -> dict[str, object]:
         bounded_limit = min(max(int(limit), 1), 20)
         actions = CLIENT_VISIBLE_ACTIONS | (
-            STAFF_ONLY_ACTIONS if audience == "staff" else frozenset()
+            STAFF_ONLY_ACTIONS if audience in {"staff", "lawyer"} else frozenset()
         )
         statement = (
             select(AuditLog)
