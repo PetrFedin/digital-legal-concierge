@@ -668,6 +668,19 @@ def test_self_filing_staff_card_is_role_safe_and_shows_frozen_bank_contract() ->
         ).to_be_disabled()
         expect(lawyer_page.get_by_role("button", name="Обновить")).to_be_enabled()
         _assert_no_horizontal_overflow(lawyer_page)
+
+        case_response = lawyer_page.goto(
+            f"{BASE_URL}/lawyer/cases/{case_id}/ui",
+            wait_until="domcontentloaded",
+        )
+        assert case_response is not None and case_response.status == 200
+        expect(lawyer_page).to_have_title("Карточка дела юриста")
+        expect(lawyer_page.get_by_text("+79990001122")).to_be_visible()
+        expect(lawyer_page.get_by_text("10 000 000,00 RUB")).to_be_visible()
+        expect(lawyer_page.get_by_text("350 000,00 RUB")).to_be_visible()
+        expect(lawyer_page.get_by_role("heading", name="История процесса")).to_be_visible()
+        expect(lawyer_page.get_by_role("heading", name="Коммуникации")).to_be_visible()
+        _assert_no_horizontal_overflow(lawyer_page)
         lawyer_context.close()
 
         browser.close()
