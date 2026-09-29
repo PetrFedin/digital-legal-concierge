@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.case_detail_page import CASE_DETAIL_HTML
@@ -15,18 +15,23 @@ from app.api.admin import (
 )
 from app.config import settings
 from app.db.session import get_db
+from app.domain.cases.case_activity import CaseActivityService
 from app.domain.cases.admin_manual_status_policy import (
     M1_FINANCIAL_MANAGED_STATUSES,
     manual_status_change_allowed,
 )
 from app.domain.cases.case_timeline import get_client_visible_status
 from app.domain.cases.m1_financial_summary import M1FinancialSummaryService
+from app.domain.cases.service_modes import M1ServiceMode
 from app.domain.documents.document_workflow import ACTIONABLE_REVIEW_STATUSES
 from app.domain.statuses.case_statuses import CaseStatus
+from app.models.calculation import Calculation
 from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.document import Document
 from app.models.lawyer import Lawyer
+from app.models.message import Message
+from app.models.notification import Notification
 from app.models.payment import Payment
 from app.models.user import User
 
@@ -67,6 +72,15 @@ DOCUMENT_STATUS_LABELS = {
 
 def _route_label(route: str | None) -> str:
     return ROUTE_LABELS.get(str(route or ""), "Юридическое обращение")
+
+
+def _case_route_label(case: Case) -> str:
+    if (
+        str(case.route or "") == "M1"
+        and str(case.service_mode or "") == M1ServiceMode.SELF_FILING_PACKAGE.value
+    ):
+        return "Пакет для самостоятельной подачи"
+    return _route_label(case.route)
 
 
 def _sla_label(status: str | None) -> str:
@@ -114,7 +128,7 @@ def _case_row(
         "id": case.id,
         "number": case.case_number,
         "route": case.route,
-        "route_label": _route_label(case.route),
+        "route_label": _case_route_label(case),
         "status": case.status,
         "status_label": get_client_visible_status(case.status),
         "lawyer_id": case.assigned_lawyer_id,
@@ -231,13 +245,69 @@ async def case_workspace(
     ).scalars().all()
     financial_final = await M1FinancialSummaryService(db).build(case)
     manual_status_options = _manual_status_options(case)
+    calculation = (
+        await db.execute(
+            select(Calculation)
+            .where(Calculation.case_id == case.id)
+            .order_by(Calculation.created_at.desc(), Calculation.id.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+    message_count = int(
+        await db.scalar(
+            select(func.count(Message.id)).where(Message.case_id == case.id)
+        )
+        or 0
+    )
+    unread_client_messages = int(
+        await db.scalar(
+            select(func.count(Message.id)).where(
+                Message.case_id == case.id,
+                Message.sender_type == "client",
+                Message.is_read.is_(False),
+            )
+        )
+        or 0
+    )
+    recent_messages = list(
+        (
+            await db.execute(
+                select(Message)
+                .where(Message.case_id == case.id)
+                .order_by(Message.id.desc())
+                .limit(8)
+            )
+        ).scalars().all()
+    )
+    notification_count = int(
+        await db.scalar(
+            select(func.count(Notification.id)).where(Notification.case_id == case.id)
+        )
+        or 0
+    )
+    recent_notifications = list(
+        (
+            await db.execute(
+                select(Notification)
+                .where(Notification.case_id == case.id)
+                .order_by(Notification.id.desc())
+                .limit(8)
+            )
+        ).scalars().all()
+    )
+    activity = await CaseActivityService(db).page(
+        case_id=int(case.id),
+        audience="staff",
+        limit=10,
+    )
 
     return {
         "case": {
             "id": case.id,
             "number": case.case_number,
             "route": case.route,
-            "route_label": _route_label(case.route),
+            "service_mode": case.service_mode,
+            "route_label": _case_route_label(case),
             "status": case.status,
             "status_label": get_client_visible_status(case.status),
             "next_action": _recommended_action(case),
@@ -246,6 +316,7 @@ async def case_workspace(
             "sla_status": case.sla_status,
             "sla_label": _sla_label(case.sla_status),
             "sla_due_at": case.sla_due_at.isoformat() if case.sla_due_at else None,
+            "created_at": case.created_at.isoformat() if case.created_at else None,
             "updated_at": case.updated_at.isoformat(),
             "manual_status_options": manual_status_options,
             "manual_status_locked": not bool(manual_status_options),
@@ -255,7 +326,11 @@ async def case_workspace(
             {
                 "id": client.id,
                 "name": client.full_name,
+                "phone": client.phone,
+                "email": client.email,
+                "telegram_id": client.telegram_id,
                 "username": client.telegram_username,
+                "profile_url": f"/search-center/ui?q={client.telegram_id}",
             }
             if client
             else None
@@ -294,6 +369,80 @@ async def case_workspace(
             }
             for payment in payments
         ],
+        "calculation": (
+            {
+                "id": calculation.id,
+                "contract_price": float(calculation.contract_price)
+                if calculation.contract_price is not None
+                else None,
+                "planned_transfer_date": (
+                    calculation.planned_transfer_date.isoformat()
+                    if calculation.planned_transfer_date
+                    else None
+                ),
+                "actual_transfer_date": (
+                    calculation.actual_transfer_date.isoformat()
+                    if calculation.actual_transfer_date
+                    else None
+                ),
+                "calculation_date": (
+                    calculation.calculation_date.isoformat()
+                    if calculation.calculation_date
+                    else None
+                ),
+                "object_transferred": calculation.object_transferred,
+                "delay_days": calculation.delay_days_chargeable
+                if calculation.delay_days_chargeable is not None
+                else calculation.delay_days,
+                "penalty_amount": float(calculation.penalty_amount)
+                if calculation.penalty_amount is not None
+                else None,
+                "is_preliminary": bool(calculation.is_preliminary),
+                "manual_review_required": calculation.manual_review_required,
+            }
+            if calculation
+            else None
+        ),
+        "communications": {
+            "message_count": message_count,
+            "unread_client_messages": unread_client_messages,
+            "notification_count": notification_count,
+            "recent_messages": [
+                {
+                    "id": message.id,
+                    "sender_type": message.sender_type,
+                    "text": message.text,
+                    "is_read": bool(message.is_read),
+                    "created_at": (
+                        message.created_at.isoformat() if message.created_at else None
+                    ),
+                }
+                for message in recent_messages
+            ],
+            "recent_notifications": [
+                {
+                    "id": notification.id,
+                    "event_code": notification.event_code,
+                    "title": notification.title,
+                    "text": notification.text,
+                    "status": notification.status,
+                    "sent_at": (
+                        notification.sent_at.isoformat()
+                        if notification.sent_at
+                        else None
+                    ),
+                    "created_at": (
+                        notification.created_at.isoformat()
+                        if notification.created_at
+                        else None
+                    ),
+                }
+                for notification in recent_notifications
+            ],
+        },
+        "activity": activity,
+        "business_timezone": settings.business_timezone,
+        "business_timezone_label": settings.business_timezone_label,
         "financial_final": financial_final,
     }
 
