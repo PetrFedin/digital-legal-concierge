@@ -292,3 +292,33 @@ def test_admin_history_still_keeps_bounded_operational_comment():
 
     assert item is not None
     assert item.detail == "Бухгалтерская сверка завершена"
+
+
+def test_self_filing_email_retry_is_a_staff_milestone_with_role_scoped_detail():
+    staff = present_case_activity(
+        audit(
+            "SELF_FILING_EMAIL_RETRY_REQUESTED",
+            comment="Администратор запустил повторную email-доставку готового пакета",
+            actor_type="admin_user",
+        ),
+        audience="staff",
+    )
+    lawyer = present_case_activity(
+        audit(
+            "SELF_FILING_EMAIL_RETRY_REQUESTED",
+            comment="Внутренний операционный комментарий",
+            actor_type="admin_user",
+        ),
+        audience="lawyer",
+    )
+    client = present_case_activity(
+        audit("SELF_FILING_EMAIL_RETRY_REQUESTED", actor_type="admin_user"),
+        audience="client",
+    )
+
+    assert staff is not None
+    assert staff.title == "Администратор запустил повторную email-доставку"
+    assert staff.detail is not None
+    assert lawyer is not None
+    assert lawyer.detail is None
+    assert client is None
