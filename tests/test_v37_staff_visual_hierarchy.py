@@ -185,3 +185,34 @@ def test_admin_detailed_case_link_has_a_registered_authenticated_page_owner():
     assert 'CASE_DETAIL_HTML.replace("__CASE_ID__", str(int(case_id)))' in source
     assert "<title>Карточка дела</title>" in page
     assert "Подтвердить поступление" in page
+
+
+def test_admin_case_workspace_contains_the_specification_context_without_chat_reconstruction():
+    source = read("app/api/web_admin.py")
+    page = read("app/admin/case_detail_page.py")
+
+    for token in (
+        '"phone": client.phone',
+        '"email": client.email',
+        '"telegram_id": client.telegram_id',
+        '"calculation": (',
+        '"communications": {',
+        '"activity": activity',
+        'CaseActivityService(db).page(',
+        'select(Calculation)',
+    ):
+        assert token in source
+
+    for label in (
+        "Клиент и дело",
+        "Расчёт",
+        "Документы",
+        "Платежи",
+        "История процесса",
+        "Коммуникации",
+        "Ближайшее действие",
+    ):
+        assert label in page
+
+    assert "Кабинет юриста" not in page
+    assert "не принимает юридическое решение по делу" in page
