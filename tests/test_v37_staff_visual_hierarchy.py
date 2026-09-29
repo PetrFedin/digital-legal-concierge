@@ -212,6 +212,9 @@ def test_admin_case_workspace_contains_the_specification_context_without_chat_re
         'select(Calculation)',
         'select(SelfFilingPackage)',
         '"self_filing": (',
+        '"consultation": (',
+        'effective_lawyer_id_for_case',
+        '"responsibility_label": (',
     ):
         assert token in source
 
@@ -226,6 +229,8 @@ def test_admin_case_workspace_contains_the_specification_context_without_chat_re
         "Пакет самостоятельной подачи",
         "Выдать пакет до",
         "Открыть рабочую карточку пакета",
+        "Консультация",
+        "Открыть контур консультации",
     ):
         assert label in page
 
