@@ -89,3 +89,8 @@ def test_closed_case_document_decisions_are_read_only_even_for_admin():
 
     with pytest.raises(DocumentReviewError, match="только для просмотра"):
         asyncio.run(service.ensure_actor_can_review(actor, case))
+
+
+def test_self_filing_closed_is_terminal_for_role_scoped_case_access():
+    source = read("app/domain/cases/case_responsibility.py")
+    assert "CaseStatus.M1_SELF_FILING_CLOSED.value" in source
