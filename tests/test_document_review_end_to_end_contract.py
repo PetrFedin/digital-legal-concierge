@@ -149,3 +149,23 @@ def test_document_review_center_is_visible_from_operator_workspace():
     assert 'href="/document-access/review/ui"' in source
     assert "Проверка документов" in source
     assert '"document_review": "/document-access/review/ui"' in source
+
+
+def test_self_filing_document_decisions_advance_the_same_package_authority():
+    service = read("app/domain/documents/document_review_service.py")
+    package = read("app/domain/cases/self_filing_service.py")
+
+    assert '"SELF_FILING_PACKAGE"' in service
+    assert "SelfFilingService(self.db).begin_lawyer_review" in service
+    assert "SelfFilingService(self.db).request_more_documents" in service
+    assert 'actor_type="admin"' in service
+    assert "CaseStatus.M1_SELF_FILING_DOCUMENTS_RECEIVED" in service
+    assert "CaseStatus.M1_SELF_FILING_LAWYER_REVIEW" in service
+
+    request = package.split("async def request_more_documents", 1)[1].split(
+        "async def _approved_document_gate", 1
+    )[0]
+    assert 'normalized_actor == "lawyer"' in request
+    assert 'normalized_actor == "admin"' in request
+    assert "actor_type=normalized_actor" in request
+    assert "actor_id=effective_actor_id" in request
