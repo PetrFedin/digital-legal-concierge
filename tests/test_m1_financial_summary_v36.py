@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.domain.cases.m1_enforcement_service import M1EnforcementService
 from app.domain.cases.m1_financial_summary import M1FinancialSummaryService
+from app.domain.cases.service_modes import M1ServiceMode
 from app.domain.payments.payment_webhook_service import PaymentWebhookService
 from app.domain.statuses.case_statuses import CaseStatus
 from app.models import Base
@@ -155,3 +156,22 @@ def test_canonical_admin_workspace_and_case_page_render_financial_final():
     assert "Этот блок только для контроля" in page_source
     assert "не исправляются отсюда вручную" in page_source
     assert "financialFinal(d.financial_final)" in page_source
+
+
+@pytest.mark.asyncio
+async def test_self_filing_m1_does_not_render_standard_representation_financial_final():
+    case = Case(
+        case_number="M1-SELF-FILING-FINANCIAL-BOUNDARY",
+        client_id=1,
+        route="M1",
+        service_mode=M1ServiceMode.SELF_FILING_PACKAGE.value,
+        status=CaseStatus.M1_SELF_FILING_PAYMENT_PENDING,
+        title="Пакет самостоятельной подачи",
+    )
+
+    summary = await M1FinancialSummaryService(None).build(case)  # type: ignore[arg-type]
+
+    assert summary["applicable"] is False
+    assert summary["health"] == "ok"
+    assert summary["steps"] == []
+    assert "стандартного ведения M1" in summary["recommended_action"]
