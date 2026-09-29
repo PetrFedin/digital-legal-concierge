@@ -203,6 +203,11 @@ class DocumentReviewService:
         actor: DocumentActor,
         case: Case,
     ) -> None:
+        # Starting the legal-review stage is a lawyer decision. An administrator
+        # may request a readable replacement, but must never create a legal
+        # review fact merely by performing an operational file check.
+        if actor.role != "lawyer":
+            return
         if (
             str(case.route or "") != "M1"
             or CaseStatus(str(case.status)) != CaseStatus.M1_DOCUMENTS_RECEIVED
@@ -311,6 +316,11 @@ class DocumentReviewService:
     ) -> ReviewResult:
         target, clean_comment = self.validate_decision(decision, comment)
         normalized = str(decision).strip().lower()
+        if actor.role != "lawyer" and normalized != "request_reupload":
+            raise DocumentReviewError(
+                "Юридическое решение по документу доступно только юристу. "
+                "Администратор может проверить наличие/читаемость файла и запросить новую версию."
+            )
         document = (
             await self.db.execute(
                 select(Document)
