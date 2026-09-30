@@ -284,7 +284,7 @@ async def payments(callback: CallbackQuery, db):
         await callback.message.edit_text(
             "💳 Оплаты\n\nАктивного или завершённого дела нет. Платёжная история появится после создания обращения.",
             reply_markup=one(
-                ("🧮 Рассчитать неустойку", "calc_start"),
+                ("🧮 Рассчитать неустойку", "preview_calc_start"),
                 ("🏠 Главная", "nav_home"),
             ),
         )
