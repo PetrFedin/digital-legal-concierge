@@ -20,6 +20,16 @@ def test_access_ui_exposes_create_update_deactivate_password_and_mfa_reset_paths
     assert "/mfa/reset" in html
 
 
+def test_access_ui_sends_exact_account_snapshot_for_update_and_mfa_reset():
+    source = read("app/api/access_management.py")
+    html = source.split('ACCESS_HTML = r"""', 1)[1]
+
+    assert "expected_account_version:Number(u.account_version)" in html
+    assert "body:JSON.stringify({expected_account_version:Number(u.account_version)})" in html
+    assert "Учётная запись уже изменена другим действием" in source
+    assert "user.account_version = int(user.account_version or 1) + 1" in source
+
+
 def test_access_ui_requires_explicit_confirmation_for_session_sensitive_changes():
     source = read("app/api/access_management.py")
 
