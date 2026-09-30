@@ -43,9 +43,14 @@ class SelfFilingEmailDeliveryAttempt(Base, TimestampMixin):
     state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     documents_snapshot: Mapped[list[dict]] = mapped_column(JSON, nullable=False)
 
-    sending_at: Mapped[datetime] = mapped_column(
+    prepared_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
+        index=True,
+    )
+    sending_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
         index=True,
     )
     sent_at: Mapped[datetime | None] = mapped_column(
