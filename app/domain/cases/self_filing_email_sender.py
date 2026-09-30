@@ -7,7 +7,7 @@ from email.message import EmailMessage
 from email.policy import SMTP
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.config import settings
 from app.domain.cases.case_history import add_case_history_event
@@ -884,6 +884,9 @@ class SelfFilingEmailSender:
 
         unknown_reconciled = await self.reconcile_stale_sending()
         max_attempts = max(1, int(settings.self_filing_email_max_attempts))
+        prepared_package_ids = select(
+            SelfFilingEmailDeliveryAttempt.package_id
+        ).where(SelfFilingEmailDeliveryAttempt.state == ATTEMPT_PREPARED)
         ids = list(
             (
                 await self.db.execute(
@@ -892,7 +895,10 @@ class SelfFilingEmailSender:
                         SelfFilingPackage.email_delivery_status.in_(
                             {EMAIL_QUEUED, EMAIL_FAILED}
                         ),
-                        SelfFilingPackage.email_delivery_attempts < max_attempts,
+                        or_(
+                            SelfFilingPackage.email_delivery_attempts < max_attempts,
+                            SelfFilingPackage.id.in_(prepared_package_ids),
+                        ),
                     )
                     .order_by(SelfFilingPackage.id.asc())
                     .limit(25)
