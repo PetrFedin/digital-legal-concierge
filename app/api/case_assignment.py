@@ -41,6 +41,47 @@ def _comment(payload: dict, default: str, *, minimum: int = 0) -> str:
     return value
 
 
+def _required_assignment_snapshot(
+    payload: dict,
+    *,
+    require_assigned_lawyer: bool,
+) -> tuple[int | None, str]:
+    if "expected_lawyer_id" not in payload:
+        raise HTTPException(
+            status_code=409,
+            detail="Экран назначения устарел: обновите текущего ответственного",
+        )
+    raw_lawyer = payload.get("expected_lawyer_id")
+    if raw_lawyer in (None, ""):
+        expected_lawyer_id = None
+    else:
+        try:
+            expected_lawyer_id = int(raw_lawyer)
+        except (TypeError, ValueError) as error:
+            raise HTTPException(
+                status_code=409,
+                detail="Некорректный снимок текущего ответственного",
+            ) from error
+        if expected_lawyer_id <= 0:
+            raise HTTPException(
+                status_code=409,
+                detail="Некорректный снимок текущего ответственного",
+            )
+    if require_assigned_lawyer and expected_lawyer_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Для снятия назначения нужен актуальный ответственный юрист",
+        )
+
+    expected_status = str(payload.get("expected_status") or "").strip()
+    if not expected_status:
+        raise HTTPException(
+            status_code=409,
+            detail="Экран назначения устарел: отсутствует текущий статус дела",
+        )
+    return expected_lawyer_id, expected_status
+
+
 @assignment_router.get("/lawyers")
 async def list_lawyer_workload(
     request: Request,
@@ -74,11 +115,10 @@ async def assign_case(
         minimum=10 if allow_overload else 0,
     )
 
-    assignment_kwargs: dict[str, object] = {}
-    if "expected_lawyer_id" in payload:
-        assignment_kwargs["expected_lawyer_id"] = payload.get("expected_lawyer_id")
-    if payload.get("expected_status") is not None:
-        assignment_kwargs["expected_status"] = str(payload.get("expected_status"))
+    expected_lawyer_id, expected_status = _required_assignment_snapshot(
+        payload,
+        require_assigned_lawyer=False,
+    )
 
     try:
         case = await CaseAssignmentService(db).assign_case(
@@ -88,7 +128,8 @@ async def assign_case(
             actor_id=int(actor.account_id),
             comment=comment,
             allow_overload=allow_overload,
-            **assignment_kwargs,
+            expected_lawyer_id=expected_lawyer_id,
+            expected_status=expected_status,
         )
         response = {
             "ok": True,
@@ -125,12 +166,18 @@ async def unassign_case(
     actor = await _admin(request, db, x_admin_token)
     payload = payload or {}
     comment = _comment(payload, "Администратор снял назначение юриста")
+    expected_lawyer_id, expected_status = _required_assignment_snapshot(
+        payload,
+        require_assigned_lawyer=True,
+    )
     try:
         case = await CaseAssignmentService(db).unassign_case(
             case_id=case_id,
             actor_type="admin",
             actor_id=int(actor.account_id),
             comment=comment,
+            expected_lawyer_id=expected_lawyer_id,
+            expected_status=expected_status,
         )
         response = {
             "ok": True,
