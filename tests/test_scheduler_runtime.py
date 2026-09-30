@@ -125,8 +125,78 @@ async def test_scheduler_isolates_job_transactions_and_continues_after_failure(
     assert (sessions[0].commits, sessions[0].rollbacks) == (1, 0)
     assert (sessions[1].commits, sessions[1].rollbacks) == (0, 1)
     assert (sessions[2].commits, sessions[2].rollbacks) == (1, 0)
-    assert FakeLease.instance.assertions == 3
+    assert FakeLease.instance.assertions == 5
     assert FakeLease.instance.released is True
+
+
+@pytest.mark.asyncio
+async def test_scheduler_rolls_back_and_stops_when_lease_is_lost_before_commit(
+    monkeypatch,
+):
+    sessions: list[FakeSession] = []
+    calls: list[str] = []
+
+    def session_factory():
+        session = FakeSession()
+        sessions.append(session)
+        return session
+
+    class CommitFenceJobs:
+        def __init__(self, db):
+            self.db = db
+
+        async def first(self):
+            calls.append("first")
+            return {"value": 1}
+
+        async def last(self):
+            calls.append("last")
+            return {"value": 2}
+
+    class LosingLease:
+        instance = None
+
+        def __init__(self):
+            self.assertions = 0
+            self.released = False
+            LosingLease.instance = self
+
+        async def acquire(self):
+            return True
+
+        async def assert_held(self):
+            self.assertions += 1
+            # First assertion authorizes job start; the second is the exact
+            # pre-commit fence and simulates loss of the advisory-lock session.
+            if self.assertions == 2:
+                raise SchedulerLeaseError("lease lost before commit")
+
+        async def release(self):
+            self.released = True
+
+    monkeypatch.setattr(scheduler_module, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(scheduler_module, "SchedulerJobs", CommitFenceJobs)
+    monkeypatch.setattr(scheduler_module, "SchedulerCycleLease", LosingLease)
+    monkeypatch.setattr(
+        scheduler_module,
+        "JOB_SPECS",
+        (
+            ("first", "scheduler", "first"),
+            ("last", "scheduler", "last"),
+        ),
+    )
+
+    result = await AppScheduler().run_cycle()
+
+    assert result.acquired is True
+    assert result.ok is False
+    assert calls == ["first"]
+    assert len(result.jobs) == 1
+    assert result.jobs[0].name == "first"
+    assert result.jobs[0].error_type == "SchedulerLeaseError"
+    assert len(sessions) == 1
+    assert (sessions[0].commits, sessions[0].rollbacks) == (0, 1)
+    assert LosingLease.instance.released is True
 
 
 @pytest.mark.asyncio

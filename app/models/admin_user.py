@@ -37,3 +37,8 @@ class AdminUser(Base, TimestampMixin):
     )
     mfa_last_totp_step: Mapped[int | None] = mapped_column(Integer, nullable=True)
     session_version: Mapped[int] = mapped_column(Integer, default=1, index=True)
+    # Access-management optimistic concurrency is intentionally independent
+    # from session_version. session_version revokes authentication tokens;
+    # account_version proves which staff-account snapshot an administrator
+    # actually reviewed before applying a security mutation.
+    account_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)

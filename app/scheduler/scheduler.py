@@ -14,7 +14,7 @@ from app.domain.notifications.client_inactivity_service import (
 )
 from app.domain.notifications.notification_sender import NotificationSender
 from app.scheduler.jobs import SchedulerJobs
-from app.scheduler.lease import SchedulerCycleLease
+from app.scheduler.lease import SchedulerCycleLease, SchedulerLeaseError
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +124,7 @@ class AppScheduler:
         result_name: str,
         service_type: str,
         method_name: str,
+        lease: SchedulerCycleLease,
     ) -> SchedulerJobOutcome:
         started = time.monotonic()
         async with AsyncSessionLocal() as db:
@@ -142,6 +143,12 @@ class AppScheduler:
                     getattr(service, method_name)(),
                     timeout=SCHEDULER_JOB_TIMEOUT_SECONDS,
                 )
+                # The singleton lease must still belong to this scheduler at the
+                # exact database commit boundary. The lease connection is
+                # independent from this job session, so checking only before
+                # the job would allow a stale worker to commit after its
+                # PostgreSQL advisory-lock connection died.
+                await lease.assert_held()
                 await db.commit()
                 outcome = SchedulerJobOutcome(
                     name=result_name,
@@ -160,6 +167,22 @@ class AppScheduler:
             except asyncio.CancelledError:
                 await db.rollback()
                 raise
+            except SchedulerLeaseError as error:
+                await db.rollback()
+                outcome = SchedulerJobOutcome(
+                    name=result_name,
+                    ok=False,
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                    error_type=type(error).__name__,
+                )
+                logger.error(
+                    "scheduler_job_aborted_lease_lost",
+                    extra={
+                        "scheduler_job": result_name,
+                        "duration_ms": outcome.duration_ms,
+                    },
+                )
+                return outcome
             except Exception as error:
                 await db.rollback()
                 outcome = SchedulerJobOutcome(
@@ -198,14 +221,32 @@ class AppScheduler:
         outcomes: list[SchedulerJobOutcome] = []
         try:
             for result_name, service_type, method_name in JOB_SPECS:
-                await lease.assert_held()
-                outcomes.append(
-                    await self._run_job(
-                        result_name=result_name,
-                        service_type=service_type,
-                        method_name=method_name,
+                try:
+                    await lease.assert_held()
+                except SchedulerLeaseError as error:
+                    outcomes.append(
+                        SchedulerJobOutcome(
+                            name=result_name,
+                            ok=False,
+                            duration_ms=0,
+                            error_type=type(error).__name__,
+                        )
                     )
+                    logger.error(
+                        "scheduler_cycle_aborted_lease_lost",
+                        extra={"scheduler_job": result_name},
+                    )
+                    break
+
+                outcome = await self._run_job(
+                    result_name=result_name,
+                    service_type=service_type,
+                    method_name=method_name,
+                    lease=lease,
                 )
+                outcomes.append(outcome)
+                if outcome.error_type == SchedulerLeaseError.__name__:
+                    break
         finally:
             await lease.release()
 

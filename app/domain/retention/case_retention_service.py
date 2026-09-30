@@ -114,8 +114,18 @@ class CaseRetentionService:
             raise CaseRetentionError("Дело не найдено")
         return case
 
-    async def _load_record(self, record_id: int) -> CaseRetentionRecord:
-        record = await self.db.get(CaseRetentionRecord, int(record_id))
+    async def _load_record(
+        self,
+        record_id: int,
+        *,
+        for_update: bool = False,
+    ) -> CaseRetentionRecord:
+        query = select(CaseRetentionRecord).where(
+            CaseRetentionRecord.id == int(record_id)
+        )
+        if for_update:
+            query = query.with_for_update()
+        record = (await self.db.execute(query)).scalar_one_or_none()
         if not record:
             raise CaseRetentionError("Запись политики хранения не найдена")
         return record
@@ -132,14 +142,18 @@ class CaseRetentionService:
     def retention_due_at(self, case: Case) -> datetime:
         return self._closed_at(case) + timedelta(days=self.retention_days)
 
-    async def ensure_record(self, case: Case) -> CaseRetentionRecord:
-        existing = (
-            await self.db.execute(
-                select(CaseRetentionRecord).where(
-                    CaseRetentionRecord.case_id == case.id
-                )
-            )
-        ).scalar_one_or_none()
+    async def ensure_record(
+        self,
+        case: Case,
+        *,
+        for_update: bool = False,
+    ) -> CaseRetentionRecord:
+        query = select(CaseRetentionRecord).where(
+            CaseRetentionRecord.case_id == case.id
+        )
+        if for_update:
+            query = query.with_for_update()
+        existing = (await self.db.execute(query)).scalar_one_or_none()
         due_at = self.retention_due_at(case)
         if existing:
             if existing.status == STATUS_DISCOVERED and not existing.legal_hold:
@@ -281,7 +295,7 @@ class CaseRetentionService:
         reason: str,
     ) -> CaseRetentionRecord:
         case = await self._load_case(case_id)
-        record = await self.ensure_record(case)
+        record = await self.ensure_record(case, for_update=True)
         if record.status == STATUS_COMPLETED:
             raise CaseRetentionError("Нельзя установить hold после удаления содержимого")
         if record.status == STATUS_EXECUTING:
@@ -322,7 +336,7 @@ class CaseRetentionService:
         reason: str,
     ) -> CaseRetentionRecord:
         case = await self._load_case(case_id)
-        record = await self.ensure_record(case)
+        record = await self.ensure_record(case, for_update=True)
         if record.status == STATUS_EXECUTING:
             raise CaseRetentionError("Нельзя изменить hold во время удаления")
         if not record.legal_hold:
@@ -354,7 +368,7 @@ class CaseRetentionService:
         now: datetime | None = None,
     ) -> CaseRetentionRecord:
         case = await self._load_case(case_id)
-        record = await self.ensure_record(case)
+        record = await self.ensure_record(case, for_update=True)
         if record.status == STATUS_COMPLETED:
             return record
         await self._assert_eligible(record, case, now=now)
@@ -397,7 +411,7 @@ class CaseRetentionService:
         comment: str,
         now: datetime | None = None,
     ) -> CaseRetentionRecord:
-        record = await self._load_record(record_id)
+        record = await self._load_record(record_id, for_update=True)
         case = await self._load_case(record.case_id)
         if record.status == STATUS_COMPLETED:
             return record
@@ -481,7 +495,7 @@ class CaseRetentionService:
         now: datetime | None = None,
     ) -> CaseRetentionRecord:
         current = _utc(now or _now())
-        record = await self._load_record(record_id)
+        record = await self._load_record(record_id, for_update=True)
         case = await self._load_case(record.case_id)
         if record.status == STATUS_COMPLETED and case.content_deleted_at is not None:
             return record
@@ -589,11 +603,26 @@ class CaseRetentionService:
         )
         # Persist EXECUTING before touching the filesystem. If the process stops
         # after unlink but before the final commit, a retry accepts missing files.
+        execution_attempt = int(record.attempt_count or 0)
         await self.db.commit()
 
+        # The destructive phase owns the retention row for its full transaction.
+        # A legal-hold/request/approval mutation must either win before the claim
+        # or wait until this phase has completed. Re-check the durable claim after
+        # the commit so a stale ORM snapshot can never authorize filesystem work.
+        record = await self._load_record(record_id, for_update=True)
+        if (
+            record.status != STATUS_EXECUTING
+            or record.legal_hold
+            or int(record.attempt_count or 0) != execution_attempt
+        ):
+            await self.db.rollback()
+            raise CaseRetentionError(
+                "Execution fence потерян; содержимое не удалено. Обновите состояние"
+            )
+        case = await self._load_case(record.case_id)
+
         try:
-            record = await self._load_record(record_id)
-            case = await self._load_case(record.case_id)
             documents = (
                 await self.db.execute(
                     select(Document)
@@ -696,8 +725,12 @@ class CaseRetentionService:
             return record
         except Exception as error:
             await self.db.rollback()
-            record = await self._load_record(record_id)
+            record = await self._load_record(record_id, for_update=True)
             case = await self._load_case(record.case_id)
+            if record.status != STATUS_EXECUTING:
+                raise CaseRetentionError(
+                    "Execution fence изменился; отказано в перезаписи состояния retention"
+                ) from error
             record.status = STATUS_FAILED
             record.failed_at = _now()
             record.last_error = f"{_error_code(error)}: {_safe_error_message(error)}"
