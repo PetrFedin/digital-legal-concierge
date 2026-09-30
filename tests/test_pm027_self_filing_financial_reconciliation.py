@@ -14,7 +14,7 @@ from app.bot.client_case_view import (
     _payment_aware_projection,
 )
 from app.config import settings
-from app.domain.cases.self_filing_service import SelfFilingService
+from app.domain.cases.self_filing_service import SelfFilingError, SelfFilingService
 from app.domain.cases.service_modes import M1ServiceMode
 from app.domain.payments.bank_requisites import (
     GAMZA_COLLEGIUM_REQUISITES,
@@ -374,6 +374,37 @@ async def test_admin_refund_keeps_case_out_of_preparation_and_blocks_client_repa
             assert case.status == CaseStatus.M1_SELF_FILING_PAYMENT_PENDING
             assert package.sla_started_at is None
             assert package.sla_due_at is None
+
+            # Exact replay is accepted only for the same durable command.
+            retry_package, retry_payment = await SelfFilingService(
+                session
+            ).resolve_received_payment_review(
+                case_id=int(case.id),
+                payment_id=int(payment.id),
+                actor_id=7003,
+                decision="refund_pending",
+                comment="Услугу по полученному платежу не запускаем, оформляем возврат",
+            )
+            assert retry_payment.status == PaymentStatus.REFUND_PENDING
+            assert retry_package.id == package.id
+
+            with pytest.raises(SelfFilingError, match="другим администратором|другими данными"):
+                await SelfFilingService(session).resolve_received_payment_review(
+                    case_id=int(case.id),
+                    payment_id=int(payment.id),
+                    actor_id=7003,
+                    decision="refund_pending",
+                    comment="Повторная команда с другим обоснованием возврата",
+                )
+
+            with pytest.raises(SelfFilingError, match="другим администратором|другими данными"):
+                await SelfFilingService(session).resolve_received_payment_review(
+                    case_id=int(case.id),
+                    payment_id=int(payment.id),
+                    actor_id=7999,
+                    decision="refund_pending",
+                    comment="Услугу по полученному платежу не запускаем, оформляем возврат",
+                )
 
             base = ClientStageProjection(
                 status_label="Ожидается оплата",

@@ -617,3 +617,9 @@ def test_email_retry_is_admin_operational_authority_not_lawyer_legal_authority()
     assert '"can_retry_delivery": actor.role in {ROLE_ADMIN, ROLE_SUPERADMIN}' in context
     assert "package.email_last_error" in context
     assert "if actor.role in {ROLE_ADMIN, ROLE_SUPERADMIN}" in context
+    assert "EMAIL_UNKNOWN" in source
+    assert "confirm_unknown_delivery_retry" in source
+    assert "expected_message_id" in source
+    assert "allow_unknown_retry=allow_unknown_retry" in source
+    assert "SelfFilingEmailDeliveryAttempt" in context
+    assert '"delivery_attempt"' in context
