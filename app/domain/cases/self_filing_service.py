@@ -74,6 +74,7 @@ EMAIL_QUEUED = "QUEUED"
 EMAIL_SENDING = "SENDING"
 EMAIL_SENT = "SENT"
 EMAIL_FAILED = "FAILED"
+EMAIL_UNKNOWN = "UNKNOWN"
 
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
@@ -1555,6 +1556,7 @@ __all__ = [
     "EMAIL_QUEUED",
     "EMAIL_SENDING",
     "EMAIL_SENT",
+    "EMAIL_UNKNOWN",
     "JURISDICTION_BASES",
     "SELF_FILING_REQUIRED_TYPES",
     "SelfFilingEmailVerificationError",
