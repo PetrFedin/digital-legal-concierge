@@ -89,14 +89,14 @@ def upgrade() -> None:
     )
 
     for name, columns in (
-        ("ix_self_filing_email_attempts_package_id", ["package_id"]),
-        ("ix_self_filing_email_attempts_case_id", ["case_id"]),
-        ("ix_self_filing_email_attempts_message_id", ["message_id"]),
-        ("ix_self_filing_email_attempts_state", ["state"]),
-        ("ix_self_filing_email_attempts_prepared_at", ["prepared_at"]),
-        ("ix_self_filing_email_attempts_sending_at", ["sending_at"]),
-        ("ix_self_filing_email_attempts_sent_at", ["sent_at"]),
-        ("ix_self_filing_email_attempts_unknown_at", ["unknown_at"]),
+        ("ix_self_filing_email_delivery_attempts_package_id", ["package_id"]),
+        ("ix_self_filing_email_delivery_attempts_case_id", ["case_id"]),
+        ("ix_self_filing_email_delivery_attempts_message_id", ["message_id"]),
+        ("ix_self_filing_email_delivery_attempts_state", ["state"]),
+        ("ix_self_filing_email_delivery_attempts_prepared_at", ["prepared_at"]),
+        ("ix_self_filing_email_delivery_attempts_sending_at", ["sending_at"]),
+        ("ix_self_filing_email_delivery_attempts_sent_at", ["sent_at"]),
+        ("ix_self_filing_email_delivery_attempts_unknown_at", ["unknown_at"]),
     ):
         op.create_index(
             name,
