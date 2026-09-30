@@ -154,7 +154,25 @@ def user_snapshot(user: AdminUser) -> dict:
         ),
         "recovery_codes_remaining": recovery_code_count(user.mfa_recovery_codes),
         "session_version": int(user.session_version or 1),
+        "account_version": int(user.account_version or 1),
     }
+
+
+def _require_expected_account_version(user: AdminUser, payload: dict) -> int:
+    try:
+        expected = int(payload.get("expected_account_version"))
+    except (TypeError, ValueError):
+        raise HTTPException(
+            409,
+            "Экран устарел: обновите учётную запись перед изменением доступа",
+        )
+    current = int(user.account_version or 1)
+    if expected != current:
+        raise HTTPException(
+            409,
+            "Учётная запись уже изменена другим действием. Обновите данные и повторите решение",
+        )
+    return expected
 
 
 async def write_audit(
@@ -264,6 +282,7 @@ async def create_user(
         role=serialize_roles(roles),
         is_active=bool(payload.get("is_active", True)),
         session_version=1,
+        account_version=1,
     )
     db.add(user)
     await db.flush()
@@ -302,6 +321,7 @@ async def update_user(
     ).scalars().first()
     if user is None:
         raise HTTPException(404, "Пользователь не найден")
+    _require_expected_account_version(user, payload)
 
     old = user_snapshot(user)
     old_roles = normalize_roles(user.role)
@@ -353,6 +373,7 @@ async def update_user(
         session_sensitive_change = True
     if session_sensitive_change:
         user.session_version = int(user.session_version or 1) + 1
+    user.account_version = int(user.account_version or 1) + 1
 
     await sync_lawyer(db, user, roles)
     await write_audit(
@@ -375,6 +396,7 @@ async def update_user(
         "roles": roles,
         "is_active": bool(user.is_active),
         "sessions_revoked": session_sensitive_change,
+        "account_version": int(user.account_version or 1),
     }
 
 
@@ -382,6 +404,7 @@ async def update_user(
 async def reset_user_mfa(
     user_id: int,
     request: Request,
+    payload: dict,
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
@@ -393,6 +416,7 @@ async def reset_user_mfa(
     ).scalar_one_or_none()
     if user is None:
         raise HTTPException(404, "Пользователь не найден")
+    _require_expected_account_version(user, payload)
     if ROLE_SUPERADMIN not in normalize_roles(user.role):
         raise HTTPException(409, "MFA обязательна только для суперадминистратора")
 
@@ -405,6 +429,7 @@ async def reset_user_mfa(
     user.mfa_failed_attempts = 0
     user.mfa_locked_until = None
     user.session_version = int(user.session_version or 1) + 1
+    user.account_version = int(user.account_version or 1) + 1
     await write_audit(
         db,
         actor_id=actor.account_id,
@@ -415,7 +440,12 @@ async def reset_user_mfa(
         comment="Все сессии отозваны; при следующем входе требуется новая настройка MFA",
     )
     await db.commit()
-    return {"ok": True, "user_id": int(user.id), "mfa_setup_required": True}
+    return {
+        "ok": True,
+        "user_id": int(user.id),
+        "mfa_setup_required": True,
+        "account_version": int(user.account_version or 1),
+    }
 
 
 @router.get("/ui", response_class=HTMLResponse)
@@ -475,8 +505,8 @@ function roleEditor(u){return Object.entries(roleLabels).map(([role,label])=>`<l
 function renderUser(u){const self=String(u.username||'')===sessionUsername;const conflict=u.role_conflict?'<div class="conflict">Конфликт продуктовых ролей — требуется разделить административную и юридическую ответственность</div>':'';const mfa=(u.roles||[]).includes('superadmin')?`<span>MFA: ${u.mfa_enabled?'включена':'требует настройки'} · recovery-кодов: ${esc(u.recovery_codes_remaining)}</span>`:'<span>MFA для этой роли не требуется</span>';return `<article class="user"><b>#${u.id} ${esc(u.full_name||u.username)}${self?' · вы':''}</b>${conflict}<div class="chips">${(u.roles||[]).map(x=>`<span class="chip">${esc(roleLabels[x]||x)}</span>`).join('')}</div><div class="muted">${esc(u.username||'')} · ${esc(u.email||'')} · ${u.is_active?'активен':'отключён'} · ${mfa}</div><details><summary>Управлять учётной записью</summary><div class="edit-grid"><label>ФИО<input id="name-${u.id}" value="${esc(u.full_name||'')}"></label><label>Telegram ID<input id="tg-${u.id}" value="${esc(u.telegram_id||'')}"></label><label>Новый пароль, если нужен<input id="pw-${u.id}" type="password" autocomplete="new-password" placeholder="не менять"></label><label style="display:flex;align-items:center;gap:8px;margin-top:24px"><input id="active-${u.id}" type="checkbox" style="width:auto;margin:0" ${u.is_active?'checked':''}>Учётная запись активна</label></div><div class="roles">${roleEditor(u)}</div><div class="notice muted">Логин и email здесь не переименовываются. Изменение ролей, активности или пароля сразу отзывает прежние сессии.</div><div class="actions"><button onclick="saveUser(${u.id},this)">Сохранить изменения</button>${(u.roles||[]).includes('superadmin')?`<button class="danger" onclick="resetMfa(${u.id},this)">Сбросить MFA</button>`:''}</div><div id="user-msg-${u.id}" class="muted"></div></details></article>`}
 function updateSummary(rows){const active=rows.filter(x=>x.is_active).length;const supers=rows.filter(x=>x.is_active&&(x.roles||[]).includes('superadmin')).length;const lawyers=rows.filter(x=>x.is_active&&(x.roles||[]).includes('lawyer')).length;const conflicts=rows.filter(x=>x.role_conflict).length;summary.innerHTML=`<div class="metric"><b>${rows.length}</b><span class="muted">учётных записей</span></div><div class="metric"><b>${active}</b><span class="muted">активны</span></div><div class="metric"><b>${supers}</b><span class="muted">активных superadmin</span></div><div class="metric"><b>${conflicts}</b><span class="muted">конфликтов ролей</span></div>`;mainStep.innerHTML=conflicts?'<b>Главный следующий шаг</b><div class="bad">Разделите конфликтующие административные и юридические роли. Система не меняет их автоматически.</div>':supers<1?'<b>Главный следующий шаг</b><div class="bad">Нет активного суперадминистратора. Не отключайте текущую сессию и восстановите резервный доступ.</div>':`<b>Главный следующий шаг</b><div class="good">Критических конфликтов ролей не обнаружено. Поддерживайте минимум один доступный профиль суперадминистратора; активных юристов: ${lawyers}.</div>`}
 async function loadUsers(){const rows=await api('/access/users');rowsById=new Map(rows.map(u=>[Number(u.id),u]));users.innerHTML=rows.map(renderUser).join('')||'<p class="muted">Пользователей нет.</p>';updateSummary(rows)}
-async function saveUser(id,btn){const u=rowsById.get(Number(id));if(!u)return;const msg=document.getElementById(`user-msg-${id}`);const roles=selectedEditRoles(id);const isActive=document.getElementById(`active-${id}`).checked;const password=document.getElementById(`pw-${id}`).value;const rolesChanged=JSON.stringify([...roles].sort())!==JSON.stringify([...(u.roles||[])].sort());const activeChanged=isActive!==Boolean(u.is_active);if((rolesChanged||activeChanged||password)&&!confirm(`Изменить доступ для ${u.full_name||u.username}? Активные сессии будут отозваны.`))return;btn.disabled=true;msg.textContent='Сохраняем…';try{const payload={full_name:document.getElementById(`name-${id}`).value.trim(),telegram_id:document.getElementById(`tg-${id}`).value.trim()||null,roles,is_active:isActive};if(password)payload.password=password;const result=await api(`/access/users/${id}`,{method:'PATCH',body:JSON.stringify(payload)});if(result.sessions_revoked&&String(u.username||'')===sessionUsername){alert('Ваши права или пароль изменены. Текущая сессия отозвана — войдите заново.');location.href='/login';return}msg.textContent=result.sessions_revoked?'Изменения сохранены. Прежние сессии пользователя отозваны.':'Изменения сохранены.';await loadUsers()}catch(e){msg.textContent=e.message}finally{btn.disabled=false}}
-async function resetMfa(id,btn){const u=rowsById.get(Number(id));if(!u)return;if(!confirm(`Сбросить MFA для ${u.full_name||u.username}? Все его активные сессии будут отозваны, при следующем входе потребуется новая настройка.`))return;btn.disabled=true;const msg=document.getElementById(`user-msg-${id}`);msg.textContent='Сбрасываем MFA…';try{await api(`/access/users/${id}/mfa/reset`,{method:'POST',body:'{}'});if(String(u.username||'')===sessionUsername){alert('MFA вашей учётной записи сброшена. Текущая сессия отозвана — войдите и настройте MFA заново.');location.href='/login';return}msg.textContent='MFA сброшена. При следующем входе пользователь настроит её заново.';await loadUsers()}catch(e){msg.textContent=e.message}finally{btn.disabled=false}}
+async function saveUser(id,btn){const u=rowsById.get(Number(id));if(!u)return;const msg=document.getElementById(`user-msg-${id}`);const roles=selectedEditRoles(id);const isActive=document.getElementById(`active-${id}`).checked;const password=document.getElementById(`pw-${id}`).value;const rolesChanged=JSON.stringify([...roles].sort())!==JSON.stringify([...(u.roles||[])].sort());const activeChanged=isActive!==Boolean(u.is_active);if((rolesChanged||activeChanged||password)&&!confirm(`Изменить доступ для ${u.full_name||u.username}? Активные сессии будут отозваны.`))return;btn.disabled=true;msg.textContent='Сохраняем…';try{const payload={full_name:document.getElementById(`name-${id}`).value.trim(),telegram_id:document.getElementById(`tg-${id}`).value.trim()||null,roles,is_active:isActive,expected_account_version:Number(u.account_version)};if(password)payload.password=password;const result=await api(`/access/users/${id}`,{method:'PATCH',body:JSON.stringify(payload)});if(result.sessions_revoked&&String(u.username||'')===sessionUsername){alert('Ваши права или пароль изменены. Текущая сессия отозвана — войдите заново.');location.href='/login';return}msg.textContent=result.sessions_revoked?'Изменения сохранены. Прежние сессии пользователя отозваны.':'Изменения сохранены.';await loadUsers()}catch(e){msg.textContent=e.message}finally{btn.disabled=false}}
+async function resetMfa(id,btn){const u=rowsById.get(Number(id));if(!u)return;if(!confirm(`Сбросить MFA для ${u.full_name||u.username}? Все его активные сессии будут отозваны, при следующем входе потребуется новая настройка.`))return;btn.disabled=true;const msg=document.getElementById(`user-msg-${id}`);msg.textContent='Сбрасываем MFA…';try{await api(`/access/users/${id}/mfa/reset`,{method:'POST',body:JSON.stringify({expected_account_version:Number(u.account_version)})});if(String(u.username||'')===sessionUsername){alert('MFA вашей учётной записи сброшена. Текущая сессия отозвана — войдите и настройте MFA заново.');location.href='/login';return}msg.textContent='MFA сброшена. При следующем входе пользователь настроит её заново.';await loadUsers()}catch(e){msg.textContent=e.message}finally{btn.disabled=false}}
 boot().catch(e=>{users.textContent=e.message});
 </script>
 </body>
