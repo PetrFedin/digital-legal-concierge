@@ -168,6 +168,7 @@ async def test_only_assigned_lawyer_can_complete_consultation(tmp_path):
                 lawyer_id=other_lawyer_id,
                 result="Подробный результат консультации с дальнейшими шагами.",
                 decision="other",
+                expected_slot_id=context["slot"].id,
             )
         await session.rollback()
 
@@ -191,6 +192,7 @@ async def test_complete_consultation_closes_case_and_slot(tmp_path):
                 "Клиенту разъяснены риски, сроки и порядок дальнейших действий."
             ),
             decision="close",
+            expected_slot_id=context["slot"].id,
         )
         await session.commit()
         slot = await session.get(ConsultationSlot, context["slot"].id)
@@ -234,6 +236,7 @@ async def test_client_no_show_requires_fifteen_minutes(tmp_path):
                 consultation_id=consultation_id,
                 lawyer_id=lawyer_id,
                 comment="Клиент не подключился к назначенному времени",
+                expected_slot_id=context["slot"].id,
             )
         await session.rollback()
         consultation = await session.get(Consultation, consultation_id)
@@ -259,6 +262,7 @@ async def test_client_no_show_is_recorded_after_delay(tmp_path):
             consultation_id=context["consultation"].id,
             lawyer_id=context["lawyer"].id,
             comment="Клиент не подключился и не ответил на сообщение",
+            expected_slot_id=context["slot"].id,
         )
         await session.commit()
         slot = await session.get(ConsultationSlot, context["slot"].id)
