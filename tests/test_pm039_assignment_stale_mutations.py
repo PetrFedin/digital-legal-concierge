@@ -86,12 +86,16 @@ async def test_stale_unassign_cannot_remove_newer_reassignment(tmp_path):
     async with factory() as session:
         case, admin, lawyer1, lawyer2 = await seed(session, 1)
         service = CaseAssignmentService(session)
+        case_id = int(case.id)
+        admin_id = int(admin.id)
+        lawyer1_id = int(lawyer1.id)
+        lawyer2_id = int(lawyer2.id)
 
         await service.assign_case(
-            case_id=int(case.id),
-            lawyer_id=int(lawyer1.id),
+            case_id=case_id,
+            lawyer_id=lawyer1_id,
             actor_type="admin",
-            actor_id=int(admin.id),
+            actor_id=admin_id,
             comment="Initial assignment",
             expected_lawyer_id=None,
             expected_status=str(case.status),
@@ -101,10 +105,10 @@ async def test_stale_unassign_cannot_remove_newer_reassignment(tmp_path):
         stale_lawyer = int(lawyer1.id)
         stale_status = str(case.status)
         await service.assign_case(
-            case_id=int(case.id),
-            lawyer_id=int(lawyer2.id),
+            case_id=case_id,
+            lawyer_id=lawyer2_id,
             actor_type="admin",
-            actor_id=int(admin.id),
+            actor_id=admin_id,
             comment="Current reassignment",
             expected_lawyer_id=stale_lawyer,
             expected_status=stale_status,
@@ -113,16 +117,16 @@ async def test_stale_unassign_cannot_remove_newer_reassignment(tmp_path):
 
         with pytest.raises(ValueError, match="Назначение дела изменилось"):
             await service.unassign_case(
-                case_id=int(case.id),
+                case_id=case_id,
                 actor_type="admin",
-                actor_id=int(admin.id),
+                actor_id=admin_id,
                 comment="Stale old-tab unassign",
                 expected_lawyer_id=stale_lawyer,
                 expected_status=stale_status,
             )
         await session.rollback()
         await session.refresh(case)
-        assert int(case.assigned_lawyer_id) == int(lawyer2.id)
+        assert int(case.assigned_lawyer_id) == lawyer2_id
 
     await engine.dispose()
 
@@ -133,13 +137,16 @@ async def test_exact_manual_assign_and_unassign_retries_are_idempotent(tmp_path)
     async with factory() as session:
         case, admin, lawyer1, _lawyer2 = await seed(session, 2)
         service = CaseAssignmentService(session)
+        case_id = int(case.id)
+        admin_id = int(admin.id)
+        lawyer1_id = int(lawyer1.id)
         status = str(case.status)
 
         assigned = await service.assign_case(
-            case_id=int(case.id),
-            lawyer_id=int(lawyer1.id),
+            case_id=case_id,
+            lawyer_id=lawyer1_id,
             actor_type="admin",
-            actor_id=int(admin.id),
+            actor_id=admin_id,
             comment="Exact assignment command",
             expected_lawyer_id=None,
             expected_status=status,
@@ -147,10 +154,10 @@ async def test_exact_manual_assign_and_unassign_retries_are_idempotent(tmp_path)
         await session.commit()
 
         retry = await service.assign_case(
-            case_id=int(case.id),
-            lawyer_id=int(lawyer1.id),
+            case_id=case_id,
+            lawyer_id=lawyer1_id,
             actor_type="admin",
-            actor_id=int(admin.id),
+            actor_id=admin_id,
             comment="Exact assignment command",
             expected_lawyer_id=None,
             expected_status=status,
@@ -160,10 +167,10 @@ async def test_exact_manual_assign_and_unassign_retries_are_idempotent(tmp_path)
 
         with pytest.raises(ValueError, match="Назначение дела изменилось"):
             await service.assign_case(
-                case_id=int(case.id),
-                lawyer_id=int(lawyer1.id),
+                case_id=case_id,
+                lawyer_id=lawyer1_id,
                 actor_type="admin",
-                actor_id=int(admin.id) + 1,
+                actor_id=admin_id + 1,
                 comment="Different stale command",
                 expected_lawyer_id=None,
                 expected_status=status,
@@ -171,33 +178,33 @@ async def test_exact_manual_assign_and_unassign_retries_are_idempotent(tmp_path)
         await session.rollback()
 
         unassigned = await service.unassign_case(
-            case_id=int(case.id),
+            case_id=case_id,
             actor_type="admin",
-            actor_id=int(admin.id),
+            actor_id=admin_id,
             comment="Exact unassign command",
-            expected_lawyer_id=int(lawyer1.id),
+            expected_lawyer_id=lawyer1_id,
             expected_status=status,
         )
         await session.commit()
         assert unassigned.assigned_lawyer_id is None
 
         retry_unassign = await service.unassign_case(
-            case_id=int(case.id),
+            case_id=case_id,
             actor_type="admin",
-            actor_id=int(admin.id),
+            actor_id=admin_id,
             comment="Exact unassign command",
-            expected_lawyer_id=int(lawyer1.id),
+            expected_lawyer_id=lawyer1_id,
             expected_status=status,
         )
         assert retry_unassign.assigned_lawyer_id is None
 
         with pytest.raises(ValueError, match="Назначение дела изменилось"):
             await service.unassign_case(
-                case_id=int(case.id),
+                case_id=case_id,
                 actor_type="admin",
-                actor_id=int(admin.id),
+                actor_id=admin_id,
                 comment="Different stale unassign",
-                expected_lawyer_id=int(lawyer1.id),
+                expected_lawyer_id=lawyer1_id,
                 expected_status=status,
             )
 
