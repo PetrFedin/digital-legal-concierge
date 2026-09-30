@@ -117,7 +117,8 @@ def test_current_telegram_source_emits_zero_raw_legacy_calc_start_callbacks():
 
     # The one allowed occurrence is the legacy callback handler declaration in
     # calculator.py for keyboards that were already delivered before PM-028.
-    assert occurrences == [("calculator.py", occurrences[0][1])]
+    assert len(occurrences) == 1
+    assert occurrences[0][0] == "calculator.py"
     calculator = read("app/bot/screens/calculator.py")
     assert '@router.callback_query(lambda c: c.data == "calc_start")' in calculator
     assert calculator.count('"calc_start"') == 1
