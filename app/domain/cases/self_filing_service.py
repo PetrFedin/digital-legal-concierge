@@ -47,6 +47,7 @@ from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.document_statuses import DocumentStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
+from app.models.audit_log import AuditLog
 from app.models.calculation import Calculation
 from app.models.case import Case
 from app.models.document import Document
@@ -1137,6 +1138,61 @@ class SelfFilingService:
         await self.db.flush()
         return package
 
+    async def _latest_payment_review_resolution(
+        self,
+        *,
+        case_id: int,
+        payment_id: int,
+    ) -> AuditLog | None:
+        events = list(
+            (
+                await self.db.execute(
+                    select(AuditLog)
+                    .where(
+                        AuditLog.entity_type == "case",
+                        AuditLog.entity_id == int(case_id),
+                        AuditLog.action == "SELF_FILING_PAYMENT_REVIEW_RESOLVED",
+                    )
+                    .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+                )
+            ).scalars().all()
+        )
+        for event in events:
+            value = event.new_value or {}
+            try:
+                event_payment_id = int(value.get("payment_id") or 0)
+            except (TypeError, ValueError):
+                event_payment_id = 0
+            if event_payment_id == int(payment_id):
+                return event
+        return None
+
+    async def _require_exact_payment_review_retry(
+        self,
+        *,
+        case_id: int,
+        payment_id: int,
+        actor_id: int,
+        decision: str,
+        comment: str,
+    ) -> None:
+        event = await self._latest_payment_review_resolution(
+            case_id=case_id,
+            payment_id=payment_id,
+        )
+        value = event.new_value or {} if event is not None else {}
+        if (
+            event is None
+            or event.actor_type != "admin"
+            or int(event.actor_id or 0) != int(actor_id)
+            or str(event.comment or "").strip() != comment
+            or str(value.get("decision") or "").strip().lower() != decision
+        ):
+            raise SelfFilingError(
+                "Финансовая сверка уже была завершена другим администратором "
+                "или с другими данными. Старое действие не применено; обновите карточку."
+            )
+
     async def resolve_received_payment_review(
         self,
         *,
@@ -1192,6 +1248,13 @@ class SelfFilingService:
                 == CaseStatus.M1_SELF_FILING_PREPARATION
                 and package.sla_started_at is not None
             ):
+                await self._require_exact_payment_review_retry(
+                    case_id=int(case.id),
+                    payment_id=int(payment.id),
+                    actor_id=int(actor_id),
+                    decision="resume",
+                    comment=clean_comment,
+                )
                 return package, payment
             if current_status != PaymentStatus.PAID_REVIEW:
                 raise SelfFilingError(
@@ -1267,6 +1330,13 @@ class SelfFilingService:
             return package, payment
 
         if current_status == PaymentStatus.REFUND_PENDING:
+            await self._require_exact_payment_review_retry(
+                case_id=int(case.id),
+                payment_id=int(payment.id),
+                actor_id=int(actor_id),
+                decision="refund_pending",
+                comment=clean_comment,
+            )
             return package, payment
         if current_status != PaymentStatus.PAID_REVIEW:
             raise SelfFilingError(
