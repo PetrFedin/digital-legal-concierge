@@ -230,7 +230,8 @@ async def send_self_filing_email_verification(
 class SelfFilingEmailSender:
     """Crash-safe SMTP delivery authority for approved self-filing packages.
 
-    SMTP cannot provide transactional exactly-once semantics. The sender therefore
+    SMTP itself cannot provide transactional exactly-once semantics. The sender
+    therefore
     freezes one durable PREPARED attempt, commits SENDING before external I/O and
     never automatically retries an ambiguous outcome. A delivery whose outcome
     cannot be proven becomes UNKNOWN and requires an explicit admin decision.
@@ -415,7 +416,7 @@ class SelfFilingEmailSender:
         case: Case,
         documents: list[Document],
         allow_unknown_retry: bool,
-    ) -> tuple[SelfFilingEmailDeliveryAttempt, EmailMessage]:
+    ) -> tuple[int, EmailMessage]:
         snapshot = self._documents_snapshot(documents)
         latest = await self._latest_attempt(int(package.id), for_update=True)
 
@@ -485,8 +486,9 @@ class SelfFilingEmailSender:
 
         # PREPARED is durable before the process moves toward external I/O. A
         # crash here is safely resumable because SMTP has not been called.
+        attempt_id = int(attempt.id)
         await self.db.commit()
-        return attempt, message
+        return attempt_id, message
 
     async def _start_sending(
         self,
@@ -729,21 +731,29 @@ class SelfFilingEmailSender:
             EMAIL_UNKNOWN,
         }:
             return False
-        if int(package.email_delivery_attempts or 0) >= int(
-            settings.self_filing_email_max_attempts
+        latest = await self._latest_attempt(int(package.id))
+        if (
+            int(package.email_delivery_attempts or 0)
+            >= int(settings.self_filing_email_max_attempts)
+            and not (
+                latest is not None
+                and latest.state == ATTEMPT_PREPARED
+            )
         ):
             return False
 
+        package_id_value = int(package.id)
         case, documents = await self._case_and_documents(package)
-        attempt, message = await self._prepare_attempt(
+        case_id_value = int(case.id)
+        attempt_id, message = await self._prepare_attempt(
             package=package,
             case=case,
             documents=documents,
             allow_unknown_retry=allow_unknown_retry,
         )
         started = await self._start_sending(
-            package_id=int(package.id),
-            attempt_id=int(attempt.id),
+            package_id=package_id_value,
+            attempt_id=attempt_id,
         )
         if started is None:
             return False
@@ -752,17 +762,17 @@ class SelfFilingEmailSender:
             await asyncio.to_thread(_smtp_send, message)
         except SelfFilingSMTPDefinitiveFailure as error:
             await self._mark_definitive_failure(
-                package_id=int(package.id),
-                attempt_id=int(attempt.id),
-                case_id=int(case.id),
+                package_id=package_id_value,
+                attempt_id=attempt_id,
+                case_id=case_id_value,
                 error=error,
             )
             return False
         except Exception as error:
             await self._mark_unknown(
-                package_id=int(package.id),
-                attempt_id=int(attempt.id),
-                case_id=int(case.id),
+                package_id=package_id_value,
+                attempt_id=attempt_id,
+                case_id=case_id_value,
                 error=error,
                 reason="SMTP transport outcome is ambiguous",
             )
@@ -772,15 +782,15 @@ class SelfFilingEmailSender:
 
         try:
             return await self._finalize_sent(
-                package_id=int(package.id),
-                attempt_id=int(attempt.id),
-                case_id=int(case.id),
+                package_id=package_id_value,
+                attempt_id=attempt_id,
+                case_id=case_id_value,
             )
         except Exception as error:
             committed = await self._mark_unknown(
-                package_id=int(package.id),
-                attempt_id=int(attempt.id),
-                case_id=int(case.id),
+                package_id=package_id_value,
+                attempt_id=attempt_id,
+                case_id=case_id_value,
                 error=error,
                 reason="SMTP accepted message but delivery commit did not complete cleanly",
             )
