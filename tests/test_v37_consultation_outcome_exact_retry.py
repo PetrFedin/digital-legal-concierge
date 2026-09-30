@@ -23,6 +23,7 @@ def _service(consultation):
 def test_exact_completed_consultation_retry_is_idempotent():
     consultation = SimpleNamespace(
         id=501,
+        slot_id=701,
         lawyer_id=71,
         status=ConsultationStatus.DONE,
         lawyer_result="Подробный итог консультации уже сохранён клиенту.",
@@ -36,6 +37,7 @@ def test_exact_completed_consultation_retry_is_idempotent():
             lawyer_id=71,
             result="Подробный итог консультации уже сохранён клиенту.",
             decision="close",
+            expected_slot_id=701,
         )
     )
 
@@ -52,6 +54,7 @@ def test_exact_completed_consultation_retry_is_idempotent():
 def test_completed_consultation_stale_different_result_or_decision_conflicts(result, decision):
     consultation = SimpleNamespace(
         id=502,
+        slot_id=702,
         lawyer_id=71,
         status=ConsultationStatus.DONE,
         lawyer_result="Подробный итог консультации уже сохранён клиенту.",
@@ -66,6 +69,7 @@ def test_completed_consultation_stale_different_result_or_decision_conflicts(res
                 lawyer_id=71,
                 result=result,
                 decision=decision,
+                expected_slot_id=702,
             )
         )
 
@@ -73,6 +77,7 @@ def test_completed_consultation_stale_different_result_or_decision_conflicts(res
 def test_completed_consultation_retry_from_foreign_lawyer_is_denied_first():
     consultation = SimpleNamespace(
         id=503,
+        slot_id=703,
         lawyer_id=71,
         status=ConsultationStatus.DONE,
         lawyer_result="Подробный итог консультации уже сохранён клиенту.",
@@ -87,6 +92,7 @@ def test_completed_consultation_retry_from_foreign_lawyer_is_denied_first():
                 lawyer_id=72,
                 result="Подробный итог консультации уже сохранён клиенту.",
                 decision="close",
+                expected_slot_id=703,
             )
         )
 
@@ -94,6 +100,7 @@ def test_completed_consultation_retry_from_foreign_lawyer_is_denied_first():
 def test_exact_client_no_show_retry_is_idempotent():
     consultation = SimpleNamespace(
         id=504,
+        slot_id=704,
         lawyer_id=71,
         status=ConsultationStatus.CLIENT_NO_SHOW,
         lawyer_result="Клиент не подключился, связь проверена.",
@@ -106,6 +113,7 @@ def test_exact_client_no_show_retry_is_idempotent():
             consultation_id=504,
             lawyer_id=71,
             comment="Клиент не подключился, связь проверена.",
+            expected_slot_id=704,
         )
     )
 
@@ -115,6 +123,7 @@ def test_exact_client_no_show_retry_is_idempotent():
 def test_client_no_show_retry_with_changed_comment_conflicts():
     consultation = SimpleNamespace(
         id=505,
+        slot_id=705,
         lawyer_id=71,
         status=ConsultationStatus.CLIENT_NO_SHOW,
         lawyer_result="Клиент не подключился, связь проверена.",
@@ -128,6 +137,52 @@ def test_client_no_show_retry_with_changed_comment_conflicts():
                 consultation_id=505,
                 lawyer_id=71,
                 comment="Старая вкладка отправляет иное описание неявки.",
+                expected_slot_id=705,
+            )
+        )
+
+
+def test_completed_consultation_retry_for_old_slot_conflicts_before_result_retry():
+    consultation = SimpleNamespace(
+        id=508,
+        slot_id=708,
+        lawyer_id=71,
+        status=ConsultationStatus.DONE,
+        lawyer_result="Подробный итог консультации уже сохранён клиенту.",
+        decision="close",
+    )
+    service = _service(consultation)
+
+    with pytest.raises(ConsultationOutcomeError, match="Время консультации изменилось"):
+        asyncio.run(
+            service.complete(
+                consultation_id=508,
+                lawyer_id=71,
+                result="Подробный итог консультации уже сохранён клиенту.",
+                decision="close",
+                expected_slot_id=707,
+            )
+        )
+
+
+def test_client_no_show_retry_for_old_slot_conflicts_before_comment_retry():
+    consultation = SimpleNamespace(
+        id=509,
+        slot_id=709,
+        lawyer_id=71,
+        status=ConsultationStatus.CLIENT_NO_SHOW,
+        lawyer_result="Клиент не подключился, связь проверена.",
+        decision="client_no_show",
+    )
+    service = _service(consultation)
+
+    with pytest.raises(ConsultationOutcomeError, match="Время консультации изменилось"):
+        asyncio.run(
+            service.mark_client_no_show(
+                consultation_id=509,
+                lawyer_id=71,
+                comment="Клиент не подключился, связь проверена.",
+                expected_slot_id=708,
             )
         )
 
