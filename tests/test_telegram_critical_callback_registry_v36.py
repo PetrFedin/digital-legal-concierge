@@ -16,15 +16,23 @@ CRITICAL_EXACT_CALLBACKS = {
     "message_history",
     "consultation_result_open",
     "consultation_booked_open",
-    "calc_start",
+    "preview_calc_start",
 }
 
 CRITICAL_PREFIX_CALLBACKS = {
     "next_action:",
     "pay_open:",
+    "preview_calc_save:v2:",
+}
+
+LEGACY_COMPAT_EXACT_CALLBACKS = {
+    # Already-sent keyboards may still deliver this callback. Current source
+    # must not emit it; the compatibility owner remains in calculator.py.
+    "calc_start",
 }
 
 CRITICAL_ROUTER_REGISTRATIONS = {
+    "calculator_preview.router",
     "common.router",
     "calculator.router",
     "my_case.router",
@@ -72,10 +80,17 @@ def _has_exact_callback_handler(decorators: list[tuple[Path, str]], callback: st
 
 def _has_prefix_callback_handler(decorators: list[tuple[Path, str]], prefix: str) -> bool:
     quoted = re.escape(prefix)
-    pattern = re.compile(
-        rf"\b[A-Za-z_]\w*\.data\.startswith\(\s*['\"]{quoted}['\"]\s*\)"
+    patterns = (
+        re.compile(
+            rf"\b[A-Za-z_]\w*\.data\.startswith\(\s*['\"]{quoted}['\"]\s*\)"
+        ),
+        re.compile(rf"\.startswith\(\s*['\"]{quoted}['\"]\s*\)"),
     )
-    return any(pattern.search(segment) for _, segment in decorators)
+    return any(
+        pattern.search(segment)
+        for _, segment in decorators
+        for pattern in patterns
+    )
 
 
 def test_all_critical_exact_callbacks_have_router_handlers():
@@ -86,6 +101,13 @@ def test_all_critical_exact_callbacks_have_router_handlers():
         if not _has_exact_callback_handler(decorators, callback)
     ]
     assert not missing, f"Critical Telegram callbacks without handlers: {missing}"
+
+
+def test_legacy_calc_start_keeps_one_compatibility_handler_but_is_not_canonical():
+    decorators = _callback_decorators()
+    for callback in LEGACY_COMPAT_EXACT_CALLBACKS:
+        assert _has_exact_callback_handler(decorators, callback)
+        assert callback not in CRITICAL_EXACT_CALLBACKS
 
 
 def test_all_critical_prefix_callbacks_have_router_handlers():
