@@ -145,7 +145,7 @@ def _archive_selector(
             "Откройте текущее дело или начните новое обращение.",
             [
                 ("📁 Моё дело", "my_case_open"),
-                ("🧮 Новое обращение", "calc_start"),
+                ("🧮 Новое обращение", "preview_calc_start"),
                 ("🏠 Главная", "nav_home"),
             ],
         )
@@ -189,7 +189,7 @@ def _archive_selector(
     buttons.extend(
         [
             ("📁 Активное дело", "my_case_open"),
-            ("🧮 Новое обращение", "calc_start"),
+            ("🧮 Новое обращение", "preview_calc_start"),
             ("🏠 Главная", "nav_home"),
         ]
     )
@@ -235,7 +235,7 @@ def _archive_case_buttons(case_id: int, *, has_result: bool) -> list[tuple[str, 
             ("🕘 История дела", f"case_history_open:v2:{case_id}"),
             ("🗄 Другие завершённые", "my_case_archive_open"),
             ("📁 Активное дело", "my_case_open"),
-            ("🧮 Новое обращение", "calc_start"),
+            ("🧮 Новое обращение", "preview_calc_start"),
             ("🏠 Главная", "nav_home"),
         ]
     )
