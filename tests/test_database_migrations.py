@@ -5,7 +5,7 @@ from pathlib import Path
 
 from app.db.migrations import run_database_migrations
 
-HEAD_REVISION = "20261001_0030"
+HEAD_REVISION = "20261001_0031"
 RETENTION_TRIGGER = "trg_retention_destroy_document_keys"
 MESSAGE_SOURCE_INDEX = "uq_messages_sender_source_message"
 DOCUMENT_REVIEW_STARTED_INDEX = "ix_documents_review_started_at"
@@ -77,6 +77,7 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "document_access_grants",
         "case_retention_records",
         "self_filing_packages",
+        "self_filing_email_delivery_attempts",
         "alembic_version",
     }.issubset(tables)
     assert current_revision(database_path) == HEAD_REVISION
@@ -168,6 +169,24 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "email_last_error",
     }.issubset(column_names(database_path, "self_filing_packages"))
     assert "ix_cases_service_mode" in index_names(database_path, "cases")
+    assert {
+        "package_id",
+        "case_id",
+        "package_version",
+        "attempt_number",
+        "recipient_email",
+        "message_id",
+        "state",
+        "documents_snapshot",
+        "sending_at",
+        "sent_at",
+        "failed_at",
+        "unknown_at",
+        "last_error",
+        "provider_receipt",
+    }.issubset(
+        column_names(database_path, "self_filing_email_delivery_attempts")
+    )
 
     assert {
         "provider",
