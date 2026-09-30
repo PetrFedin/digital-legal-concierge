@@ -224,7 +224,7 @@ async def consultation_action_center(callback: CallbackQuery, db):
             "Активная или завершённая M2-консультация не найдена. Новая консультация не создана автоматически.",
             reply_markup=one(
                 ("💬 Юридическая помощь", "contact_lawyer"),
-                ("🧮 Рассчитать неустойку", "calc_start"),
+                ("🧮 Рассчитать неустойку", "preview_calc_start"),
                 ("🏠 Главная", "nav_home"),
             ),
         )
