@@ -225,7 +225,7 @@ async def _present_committed_result(
 
 def _new_case_buttons() -> tuple[tuple[str, str], ...]:
     return (
-        ("🧮 Рассчитать неустойку", "calc_start"),
+        ("🧮 Рассчитать неустойку", "preview_calc_start"),
         ("💬 Связаться с юристом", "contact_lawyer"),
         ("🏠 Главная", "nav_home"),
     )
