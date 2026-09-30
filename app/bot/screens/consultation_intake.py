@@ -244,7 +244,7 @@ async def contact_lawyer(callback: CallbackQuery, db, state: FSMContext):
         "добавить документы и выбрать свободное время.",
         reply_markup=one(
             ("▶️ Начать: описать вопрос", "consult_subject_start"),
-            ("🧮 Рассчитать неустойку", "calc_start"),
+            ("🧮 Рассчитать неустойку", "preview_calc_start"),
             ("🏠 Главная", "nav_home"),
         ),
     )

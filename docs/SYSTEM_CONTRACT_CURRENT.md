@@ -22,7 +22,8 @@ Physical/implemented mapping:
 | self-filing aggregate | one `self_filing_packages` row per Case with confirmed email, lawyer-confirmed act/jurisdiction, payment/delivery evidence and exact four deliverable pointers |
 | Case → Calculations = one-to-many | `calculations.case_id` non-unique; latest calculation selected by query order |
 | Telegram selected Case | `client_case_contexts(client_id, selected_case_id)` |
-| idempotent Case creation for same source action | `case_creation_requests` unique `(client_id, operation_key)` |
+| non-persistent calculator preview | `PreviewCalculatorStates` in Telegram FSM/Redis; no durable Case/intake/result before explicit save |
+| idempotent preview materialization | `case_creation_requests` unique `(client_id, operation_key)` using the stable `preview_calc_save:v2:<preview_id>` operation |
 | exact consent evidence | `consent_acceptances` with version/text/SHA/time/Telegram provenance |
 | current payment projection | `payments` |
 | provider receipt ledger | `payment_webhook_events` |
@@ -30,11 +31,13 @@ Physical/implemented mapping:
 
 No implementation may reintroduce a client-wide unique active-Case invariant.
 
-Calculator creation and calculator recovery are intentionally different commands:
+Calculator preview, materialization and durable-Case recovery are intentionally different commands:
 
-- `calc_start` is the global **new calculation / new Case** action. It remains available when another Case, including an unfinished calculator Case, already exists. Duplicate delivery of the same source action is deduplicated by the source operation key.
-- recovery of an unfinished calculation in an existing Case uses the distinct Case-bound action `calc_recover:v2:<case_id>` (followed by the existing draft-resume actions inside that exact Case).
-- router precedence must never reinterpret an explicit `calc_start` as recovery of the currently selected Case. Likewise, a stale recovery action must never create a replacement Case implicitly; it fails closed and offers an explicit new calculation separately.
+- `preview_calc_start` is the canonical global **new calculation / new inquiry** entry. It is non-persistent: no Case, `CalculationIntake`, `Calculation` or Case history is created while the client is only previewing.
+- `preview_calc_save:v2:<preview_id>` is the only canonical durable materialization boundary. Its stable preview id is converted to the `CaseCreationRequest.operation_key`, so duplicate save deliveries converge to one Case even when Telegram callback ids differ.
+- `calc_recover:v2:<case_id>` resumes an unfinished calculation in one exact already-durable Case (followed by Case-bound draft-resume actions).
+- raw `calc_start` is legacy compatibility for already-sent keyboards only. Current source must not emit it. Its handler must remain behind `calculator_preview.router` and must never be described as the canonical new-calculation entry.
+- a stale Case-bound recovery action must never create a replacement Case implicitly; it fails closed and offers `preview_calc_start` separately.
 
 ## 3. Telegram exact-Case mutation contract
 

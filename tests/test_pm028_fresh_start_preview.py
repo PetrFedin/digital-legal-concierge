@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -102,6 +103,30 @@ def test_canonical_new_calculation_buttons_use_preview_not_case_creation():
     direct_handler = direct[direct_start:direct_end]
     assert "create_case" not in direct_handler
     assert "_home_text" not in direct_handler
+
+
+def test_current_telegram_source_emits_zero_raw_legacy_calc_start_callbacks():
+    occurrences: list[tuple[str, int]] = []
+    for path in sorted((ROOT / "app/bot/screens").glob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or node.value != "calc_start":
+                continue
+            occurrences.append((path.name, int(getattr(node, "lineno", 0))))
+
+    # The one allowed occurrence is the legacy callback handler declaration in
+    # calculator.py for keyboards that were already delivered before PM-028.
+    assert len(occurrences) == 1
+    assert occurrences[0][0] == "calculator.py"
+    calculator = read("app/bot/screens/calculator.py")
+    assert '@router.callback_query(lambda c: c.data == "calc_start")' in calculator
+    assert calculator.count('"calc_start"') == 1
+
+
+def test_preview_router_precedes_legacy_calculator_router():
+    bot = read("app/bot/bot.py")
+    assert bot.index("calculator_preview.router") < bot.index("calculator.router")
 
 
 def test_neutral_home_and_preview_do_not_refresh_selected_case_activity():

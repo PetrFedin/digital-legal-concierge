@@ -39,7 +39,7 @@ def _stale_step_buttons(case_id: int) -> list[tuple[str, str]]:
     buttons.extend(
         [
             ("📁 Моё дело", "my_case_open"),
-            ("🧮 Новый расчёт", "calc_start"),
+            ("🧮 Новый расчёт", "preview_calc_start"),
             ("🏠 Главная", "nav_home"),
         ]
     )

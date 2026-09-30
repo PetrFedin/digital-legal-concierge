@@ -146,7 +146,7 @@ async def decision_open(callback: CallbackQuery, db):
             callback,
             "Сохранённое активное дело больше не найдено. Начните новый расчёт или вернитесь на главную.",
             reply_markup=one(
-                ("🧮 Новый расчёт", "calc_start"),
+                ("🧮 Новый расчёт", "preview_calc_start"),
                 ("🏠 Главная", "nav_home"),
             ),
         )

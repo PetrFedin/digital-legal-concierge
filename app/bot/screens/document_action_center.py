@@ -162,7 +162,7 @@ async def _active_case(callback: CallbackQuery, db):
 def _no_case_markup():
     return one(
         ("📁 Выбрать дело", "my_case_open"),
-        ("🧮 Рассчитать неустойку", "calc_start"),
+        ("🧮 Рассчитать неустойку", "preview_calc_start"),
         ("💬 Связаться с юристом", "contact_lawyer"),
         ("🏠 Главная", "nav_home"),
     )

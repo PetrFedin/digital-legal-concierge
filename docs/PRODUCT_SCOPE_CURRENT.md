@@ -21,9 +21,13 @@ A Client can have multiple Cases. Each individual Case can have only one active 
 
 A Case can have multiple Calculations. The current/latest calculation is selected by business logic; historical calculations remain part of the Case history.
 
-The global **Calculate** action is always available. Starting a new calculation is a new legal inquiry and can create a new Case without closing, mutating or replacing the client's other active Cases.
+The global **Calculate** action is always available, but its canonical visible entry is deliberately **non-persistent**. Every current “new calculation / new inquiry” surface enters `preview_calc_start` and stores only temporary `PreviewCalculatorStates` data until the client explicitly saves the preview result.
 
-Delivery retries of the **same source operation** are idempotent through `CaseCreationRequest (client_id, operation_key)`. A different source operation may create a different Case.
+Before explicit save, the preview must create **no** `Case`, `CalculationIntake`, `Calculation`, Case history or other durable legal inquiry record. Leaving the preview is therefore not equivalent to opening a matter.
+
+Durable materialization begins only from the explicit stable-token action `preview_calc_save:v2:<preview_id>`. That action uses `CaseCreationRequest (client_id, operation_key)` to idempotently create one new Case for the saved preview, then persists the Case-bound intake and immutable Calculation. Distinct explicitly saved previews may create distinct Cases without closing, mutating or replacing the client's other active Cases.
+
+Historical raw `calc_start` remains a compatibility handler for already-sent Telegram keyboards only. Current runtime source must not emit it as a new-calculation action. Recovery of an unfinished **already durable** calculator Case remains exact-Case through `calc_recover:v2:<case_id>` and related Case-bound actions.
 
 No database or application invariant may enforce “one active Case per client”.
 

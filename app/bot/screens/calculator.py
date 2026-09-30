@@ -205,7 +205,7 @@ def _unique_object_keyboard(case_id: int):
 
 def _result_recovery_keyboard():
     return one(
-        ("🧮 Новый расчёт", "calc_start"),
+        ("🧮 Новый расчёт", "preview_calc_start"),
         ("📁 Моё дело", "my_case_open"),
         ("🏠 Главная", "nav_home"),
     )
@@ -515,7 +515,7 @@ async def calc_start(callback: CallbackQuery, state: FSMContext, db):
         await callback.message.edit_text(
             "⚠️ Не удалось начать расчёт. Новое обращение не создано. Повторите действие.",
             reply_markup=one(
-                ("🔄 Повторить", "calc_start"),
+                ("🔄 Повторить", "preview_calc_start"),
                 ("🏠 Главная", "nav_home"),
             ),
         )
@@ -534,7 +534,7 @@ async def calc_start(callback: CallbackQuery, state: FSMContext, db):
             "Этот запуск расчёта уже был обработан. Откройте дело, чтобы увидеть текущий этап.",
             reply_markup=one(
                 ("📁 Моё дело", "my_case_open"),
-                ("🧮 Новый расчёт", "calc_start"),
+                ("🧮 Новый расчёт", "preview_calc_start"),
                 ("🏠 Главная", "nav_home"),
             ),
         )
@@ -550,7 +550,7 @@ async def calc_start(callback: CallbackQuery, state: FSMContext, db):
             "Текущее выбранное дело и незавершённый расчёт не изменены.",
             reply_markup=one(
                 ("📁 Моё дело", "my_case_open"),
-                ("🧮 Новый расчёт", "calc_start"),
+                ("🧮 Новый расчёт", "preview_calc_start"),
                 ("🏠 Главная", "nav_home"),
             ),
         )
@@ -1527,7 +1527,7 @@ async def legacy_unbound_result_action(callback: CallbackQuery):
         "Откройте «Моё дело» — там будет показан актуальный шаг без риска изменить другое обращение.",
         reply_markup=one(
             ("📁 Моё дело", "my_case_open"),
-            ("🧮 Новый расчёт", "calc_start"),
+            ("🧮 Новый расчёт", "preview_calc_start"),
             ("🏠 Главная", "nav_home"),
         ),
     )
@@ -1542,7 +1542,7 @@ async def legacy_unbound_calculator_flow_action(callback: CallbackQuery):
         "Действие не выполнено. Откройте нужное дело и продолжите его актуальный расчёт.",
         reply_markup=one(
             ("📁 Моё дело", "my_case_open"),
-            ("🧮 Новый расчёт", "calc_start"),
+            ("🧮 Новый расчёт", "preview_calc_start"),
             ("🏠 Главная", "nav_home"),
         ),
     )

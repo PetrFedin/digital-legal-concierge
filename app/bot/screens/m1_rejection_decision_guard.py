@@ -253,7 +253,7 @@ async def guarded_rejected_m1_close(callback: CallbackQuery, db):
         "Действий по закрытому обращению не требуется. Новое обращение создаётся отдельно.",
         reply_markup=one(
             ("📁 Открыть архив обращения", "my_case_open"),
-            ("🧮 Новое обращение", "calc_start"),
+            ("🧮 Новое обращение", "preview_calc_start"),
             ("🏠 Главная", "nav_home"),
         ),
     )

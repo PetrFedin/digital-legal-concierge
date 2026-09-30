@@ -151,7 +151,7 @@ async def _render_current_message_history(
             callback,
             "💬 История переписки появится после создания обращения.",
             reply_markup=one(
-                ("🧮 Рассчитать неустойку", "calc_start"),
+                ("🧮 Рассчитать неустойку", "preview_calc_start"),
                 ("🏠 Главная", "nav_home"),
             ),
         )

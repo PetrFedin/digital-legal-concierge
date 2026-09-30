@@ -179,7 +179,7 @@ async def recover_selected_calculation(
             "Данные не изменены и новое дело не создано.",
             reply_markup=one(
                 ("📁 Моё дело", "my_case_open"),
-                ("🧮 Новый расчёт", "calc_start"),
+                ("🧮 Новый расчёт", "preview_calc_start"),
                 ("🏠 Главная", "nav_home"),
             ),
         )
@@ -205,7 +205,7 @@ async def recover_selected_calculation(
             "Выберите дело заново и повторите действие.",
             reply_markup=one(
                 ("📁 Выбрать обращение", "my_cases_open"),
-                ("🧮 Новый расчёт", "calc_start"),
+                ("🧮 Новый расчёт", "preview_calc_start"),
                 ("🏠 Главная", "nav_home"),
             ),
         )
