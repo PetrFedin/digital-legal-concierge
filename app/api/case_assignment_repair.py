@@ -128,6 +128,8 @@ async def repair_unreachable_assignment(
             actor_type="admin",
             actor_id=int(actor.account_id),
             comment=f"Аварийное снятие недоступного назначения: {comment}",
+            expected_lawyer_id=expected_lawyer_id,
+            expected_status=expected_status,
         )
         if automatic_assignment_required(case.status):
             try:

@@ -246,6 +246,84 @@ class CaseAssignmentService:
             and recorded_lawyer_id == int(case.assigned_lawyer_id)
         )
 
+    async def _is_exact_manual_assign_retry(
+        self,
+        *,
+        case: Case,
+        lawyer_id: int,
+        actor_type: str,
+        actor_id: int | None,
+        comment: str | None,
+        expected_lawyer_id,
+        expected_status: str | None,
+    ) -> bool:
+        normalized_expected = self._normalized_expected_lawyer(expected_lawyer_id)
+        if (
+            normalized_expected is _UNSET
+            or case.assigned_lawyer_id != int(lawyer_id)
+            or expected_status is None
+            or str(case.status) != str(expected_status)
+        ):
+            return False
+        event = await self._latest_assignment_mutation(case.id)
+        if event is None or event.action not in {
+            "case_lawyer_assigned",
+            "case_lawyer_reassigned",
+        }:
+            return False
+        old_value = event.old_value or {}
+        new_value = event.new_value or {}
+        try:
+            recorded_old = old_value.get("assigned_lawyer_id")
+            recorded_old = (
+                int(recorded_old) if recorded_old is not None else None
+            )
+            recorded_new = int(new_value.get("assigned_lawyer_id"))
+        except (TypeError, ValueError):
+            return False
+        return (
+            event.actor_type == actor_type
+            and event.actor_id == actor_id
+            and event.comment == comment
+            and recorded_old == normalized_expected
+            and recorded_new == int(lawyer_id)
+        )
+
+    async def _is_exact_unassign_retry(
+        self,
+        *,
+        case: Case,
+        actor_type: str,
+        actor_id: int | None,
+        comment: str | None,
+        expected_lawyer_id,
+        expected_status: str | None,
+    ) -> bool:
+        normalized_expected = self._normalized_expected_lawyer(expected_lawyer_id)
+        if (
+            normalized_expected in {_UNSET, None}
+            or case.assigned_lawyer_id is not None
+            or expected_status is None
+            or str(case.status) != str(expected_status)
+        ):
+            return False
+        event = await self._latest_assignment_mutation(case.id)
+        if event is None or event.action != "case_lawyer_unassigned":
+            return False
+        old_value = event.old_value or {}
+        new_value = event.new_value or {}
+        try:
+            recorded_old = int(old_value.get("assigned_lawyer_id"))
+        except (TypeError, ValueError):
+            return False
+        return (
+            event.actor_type == actor_type
+            and event.actor_id == actor_id
+            and event.comment == comment
+            and recorded_old == int(normalized_expected)
+            and new_value.get("assigned_lawyer_id") is None
+        )
+
     async def assign_case(
         self,
         *,
@@ -259,6 +337,16 @@ class CaseAssignmentService:
         expected_status: str | None = None,
     ) -> Case:
         case = await self._get_case(case_id, for_update=True)
+        if await self._is_exact_manual_assign_retry(
+            case=case,
+            lawyer_id=lawyer_id,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            comment=comment,
+            expected_lawyer_id=expected_lawyer_id,
+            expected_status=expected_status,
+        ):
+            return case
         self._assert_expected_snapshot(
             case,
             expected_lawyer_id=expected_lawyer_id,
@@ -406,8 +494,24 @@ class CaseAssignmentService:
         actor_type: str,
         actor_id: int | None,
         comment: str | None = None,
+        expected_lawyer_id=_UNSET,
+        expected_status: str | None = None,
     ) -> Case:
         case = await self._get_case(case_id, for_update=True)
+        if await self._is_exact_unassign_retry(
+            case=case,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            comment=comment,
+            expected_lawyer_id=expected_lawyer_id,
+            expected_status=expected_status,
+        ):
+            return case
+        self._assert_expected_snapshot(
+            case,
+            expected_lawyer_id=expected_lawyer_id,
+            expected_status=expected_status,
+        )
         previous_lawyer_id = case.assigned_lawyer_id
         if previous_lawyer_id is None:
             return case

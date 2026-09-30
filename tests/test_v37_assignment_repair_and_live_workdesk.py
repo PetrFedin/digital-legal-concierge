@@ -33,6 +33,8 @@ def test_unreachable_assignee_repair_is_snapshot_locked_and_not_manual_status_ed
     assert "str(case.status) != expected_status" in source
     assert "expected_lawyer_id in operational_ids" in source
     assert "await service.unassign_case(" in source
+    assert "expected_lawyer_id=expected_lawyer_id" in source
+    assert "expected_status=expected_status" in source
     assert "automatic_assignment_required(case.status)" in source
     assert "await service.auto_assign_case(" in source
     assert "CaseService" not in source

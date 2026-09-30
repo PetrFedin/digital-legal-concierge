@@ -426,6 +426,7 @@ async def guided_complete_consultation(
             lawyer_id=actor.lawyer.id,
             result=payload.get("result") or "",
             decision=payload.get("decision") or "",
+            expected_slot_id=payload.get("expected_slot_id"),
         )
         case = await _case_after_consultation_outcome(
             db,
@@ -469,6 +470,7 @@ async def guided_client_no_show(
             consultation_id=consultation_id,
             lawyer_id=actor.lawyer.id,
             comment=payload.get("comment") or "",
+            expected_slot_id=payload.get("expected_slot_id"),
         )
         case = await _case_after_consultation_outcome(
             db,

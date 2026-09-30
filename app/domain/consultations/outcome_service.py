@@ -140,6 +140,24 @@ class ConsultationOutcomeService:
                 "Неявку можно зафиксировать не ранее чем через 15 минут после начала"
             )
 
+    @staticmethod
+    def _require_expected_slot(
+        consultation: Consultation,
+        expected_slot_id: int | None,
+    ) -> int:
+        try:
+            expected = int(expected_slot_id or 0)
+        except (TypeError, ValueError) as error:
+            raise ConsultationOutcomeError(
+                "Экран консультации устарел: обновите запись перед действием"
+            ) from error
+        if expected <= 0 or int(consultation.slot_id or 0) != expected:
+            raise ConsultationOutcomeError(
+                "Время консультации изменилось после загрузки экрана. "
+                "Старое действие не применено; обновите карточку."
+            )
+        return expected
+
     async def complete(
         self,
         *,
@@ -147,6 +165,7 @@ class ConsultationOutcomeService:
         lawyer_id: int,
         result: str,
         decision: str,
+        expected_slot_id: int | None,
     ) -> Consultation:
         normalized_result = str(result or "").strip()
         normalized_decision = str(decision or "").strip().lower()
@@ -161,6 +180,7 @@ class ConsultationOutcomeService:
 
         consultation = await self._lock_consultation(consultation_id)
         self._require_assigned_lawyer(consultation, lawyer_id)
+        self._require_expected_slot(consultation, expected_slot_id)
         if consultation.status == ConsultationStatus.DONE:
             stored_result = str(consultation.lawyer_result or "").strip()
             stored_decision = str(consultation.decision or "").strip().lower()
@@ -272,6 +292,7 @@ class ConsultationOutcomeService:
         consultation_id: int,
         lawyer_id: int,
         comment: str,
+        expected_slot_id: int | None,
     ) -> Consultation:
         normalized_comment = str(comment or "").strip()
         if len(normalized_comment) < 5:
@@ -281,6 +302,7 @@ class ConsultationOutcomeService:
 
         consultation = await self._lock_consultation(consultation_id)
         self._require_assigned_lawyer(consultation, lawyer_id)
+        self._require_expected_slot(consultation, expected_slot_id)
         if consultation.status == ConsultationStatus.CLIENT_NO_SHOW:
             stored_comment = str(consultation.lawyer_result or "").strip()
             stored_decision = str(consultation.decision or "").strip().lower()
