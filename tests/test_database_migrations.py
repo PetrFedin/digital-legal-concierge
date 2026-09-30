@@ -178,6 +178,7 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "message_id",
         "state",
         "documents_snapshot",
+        "prepared_at",
         "sending_at",
         "sent_at",
         "failed_at",
