@@ -17,6 +17,7 @@ from app.domain.cases.self_filing_documents import (
     publish_self_filing_package,
 )
 from app.domain.cases.self_filing_email_sender import (
+    SelfFilingEmailDeliveryUnknownError,
     SelfFilingEmailSender,
     email_delivery_configuration_error,
     email_delivery_configured,
@@ -26,6 +27,7 @@ from app.domain.cases.self_filing_service import (
     EMAIL_FAILED,
     EMAIL_QUEUED,
     EMAIL_SENT,
+    EMAIL_UNKNOWN,
     JURISDICTION_BASES,
     SelfFilingError,
     SelfFilingService,
@@ -39,6 +41,7 @@ from app.models.calculation import Calculation
 from app.models.case import Case
 from app.models.document import Document
 from app.models.payment import Payment
+from app.models.self_filing_email_delivery_attempt import SelfFilingEmailDeliveryAttempt
 from app.models.self_filing_package import SelfFilingPackage
 from app.models.user import User
 from app.security.access_control import ROLE_ADMIN, ROLE_LAWYER, ROLE_SUPERADMIN
@@ -222,6 +225,21 @@ async def self_filing_context(
             )
         ).scalars().all()
     )
+    delivery_attempt = None
+    if actor.role in {ROLE_ADMIN, ROLE_SUPERADMIN}:
+        delivery_attempt = (
+            await db.execute(
+                select(SelfFilingEmailDeliveryAttempt)
+                .where(
+                    SelfFilingEmailDeliveryAttempt.package_id == int(package.id)
+                )
+                .order_by(
+                    SelfFilingEmailDeliveryAttempt.attempt_number.desc(),
+                    SelfFilingEmailDeliveryAttempt.id.desc(),
+                )
+                .limit(1)
+            )
+        ).scalars().first()
     can_mutate = bool(
         actor.role == ROLE_LAWYER
         and await lawyer_can_access_case(
@@ -367,6 +385,46 @@ async def self_filing_context(
             }
             for item in payments
         ],
+        "delivery_attempt": (
+            {
+                "id": int(delivery_attempt.id),
+                "attempt_number": int(delivery_attempt.attempt_number),
+                "package_version": int(delivery_attempt.package_version),
+                "state": delivery_attempt.state,
+                "recipient_email": delivery_attempt.recipient_email,
+                "message_id": delivery_attempt.message_id,
+                "documents": list(delivery_attempt.documents_snapshot or []),
+                "prepared_at": (
+                    delivery_attempt.prepared_at.isoformat()
+                    if delivery_attempt.prepared_at
+                    else None
+                ),
+                "sending_at": (
+                    delivery_attempt.sending_at.isoformat()
+                    if delivery_attempt.sending_at
+                    else None
+                ),
+                "sent_at": (
+                    delivery_attempt.sent_at.isoformat()
+                    if delivery_attempt.sent_at
+                    else None
+                ),
+                "failed_at": (
+                    delivery_attempt.failed_at.isoformat()
+                    if delivery_attempt.failed_at
+                    else None
+                ),
+                "unknown_at": (
+                    delivery_attempt.unknown_at.isoformat()
+                    if delivery_attempt.unknown_at
+                    else None
+                ),
+                "last_error": delivery_attempt.last_error,
+                "provider_receipt": delivery_attempt.provider_receipt,
+            }
+            if delivery_attempt is not None
+            else None
+        ),
         "actor": {
             "role": actor.role,
             "lawyer_id": actor.lawyer_id,
@@ -728,7 +786,23 @@ async def retry_self_filing_email(
     service = SelfFilingService(db)
     package = await service.require_package(case_id=case_id, for_update=True)
     _expect_version(package, payload)
-    if package.email_delivery_status not in {EMAIL_FAILED, EMAIL_QUEUED}:
+    allow_unknown_retry = False
+    if package.email_delivery_status == EMAIL_UNKNOWN:
+        expected_message_id = str(payload.get("expected_message_id") or "").strip()
+        if (
+            payload.get("confirm_unknown_delivery_retry") is not True
+            or not expected_message_id
+            or expected_message_id != str(package.email_message_id or "")
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Исход прошлой SMTP-попытки неизвестен. Перед повтором "
+                    "подтвердите точный Message-ID после ручной сверки доставки."
+                ),
+            )
+        allow_unknown_retry = True
+    elif package.email_delivery_status not in {EMAIL_FAILED, EMAIL_QUEUED}:
         raise HTTPException(
             status_code=409,
             detail="Повторная email-доставка сейчас не требуется",
@@ -743,11 +817,23 @@ async def retry_self_filing_email(
             new_value={
                 "package_id": int(package.id),
                 "attempt_before_retry": int(package.email_delivery_attempts or 0),
+                "prior_status": package.email_delivery_status,
+                "prior_message_id": package.email_message_id,
+                "unknown_override": allow_unknown_retry,
             },
             comment="Администратор запустил повторную email-доставку готового пакета",
         )
-        sent = await SelfFilingEmailSender(db).send_one(int(package.id))
+        sent = await SelfFilingEmailSender(db).send_one(
+            int(package.id),
+            allow_unknown_retry=allow_unknown_retry,
+        )
         await db.commit()
+    except SelfFilingEmailDeliveryUnknownError as error:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=str(error),
+        ) from error
     except Exception as error:
         await db.rollback()
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -757,6 +843,11 @@ async def retry_self_filing_email(
         "actor_id": int(actor.account_id),
         "actor_role": actor.role,
         "processed_at": datetime.now(timezone.utc).isoformat(),
+        "delivery_status": (
+            (
+                await SelfFilingService(db).require_package(case_id=case_id)
+            ).email_delivery_status
+        ),
     }
 
 
@@ -871,7 +962,8 @@ function render(){
    'БИК: '+esc(bank.bik||'—')+'<br><br>'+
    '<b>Обязательная пометка:</b> '+esc((bankPayment&&bankPayment.payment_purpose)||bank.mandatory_purpose||'—')+
    (bankPayment?'<br><br>Платёж #'+bankPayment.id+' · '+esc(bankPayment.amount)+' RUB · '+esc(bankPayment.status):'');
- document.getElementById('delivery').innerHTML='Адрес подтверждён: <b>'+(p.email_verified?'да':'нет')+'</b>'+(p.email_verification_pending?'<br>Код действует до: '+esc(dt(p.email_verification_expires_at))+'<br>Ошибочных попыток: '+p.email_verification_attempts:'')+'<br><br>Доставка пакета: <b>'+esc(p.email_delivery_status)+'</b><br>Попыток доставки: '+p.email_delivery_attempts+'<br>Message-ID: '+esc(p.email_message_id||'—')+'<br>Последняя ошибка: '+esc(p.email_last_error||'—')+'<br>Email provider: '+(data.capabilities.email_delivery_configured?'готов':'НЕ НАСТРОЕН')+(data.capabilities.email_delivery_configuration_error?'<br><span class="bad">'+esc(data.capabilities.email_delivery_configuration_error)+'</span>':'');
+ const da=data.delivery_attempt||null;
+ document.getElementById('delivery').innerHTML='Адрес подтверждён: <b>'+(p.email_verified?'да':'нет')+'</b>'+(p.email_verification_pending?'<br>Код действует до: '+esc(dt(p.email_verification_expires_at))+'<br>Ошибочных попыток: '+p.email_verification_attempts:'')+'<br><br>Доставка пакета: <b>'+esc(p.email_delivery_status)+'</b><br>Попыток доставки: '+p.email_delivery_attempts+'<br>Message-ID: '+esc(p.email_message_id||'—')+'<br>Последняя ошибка: '+esc(p.email_last_error||'—')+(da?'<br><br><b>Durable attempt #'+esc(da.attempt_number)+'</b> · '+esc(da.state)+'<br>Подготовлен: '+esc(dt(da.prepared_at))+'<br>SMTP начат: '+esc(dt(da.sending_at))+'<br>UNKNOWN: '+esc(dt(da.unknown_at)):'')+'<br>Email provider: '+(data.capabilities.email_delivery_configured?'готов':'НЕ НАСТРОЕН')+(data.capabilities.email_delivery_configuration_error?'<br><span class="bad">'+esc(data.capabilities.email_delivery_configuration_error)+'</span>':'');
  const reviewPayment=[...data.payments].reverse().find(x=>x.code==='M1_SELF_FILING_PACKAGE'&&['PAID_REVIEW','REFUND_PENDING','REFUND_DECLINED'].includes(String(x.status)));
  const reviewCard=document.getElementById('paymentReviewCard');
  if(reviewPayment&&a.can_financial_reconcile){
@@ -895,7 +987,8 @@ function render(){
  document.getElementById('financialComment').disabled=!canFinance;
  const retryEmailButton=document.getElementById('retryEmailButton');
  retryEmailButton.style.display=a.can_retry_delivery?'':'none';
- retryEmailButton.disabled=!(a.can_retry_delivery&&['FAILED','QUEUED'].includes(String(p.email_delivery_status||'')));
+ retryEmailButton.disabled=!(a.can_retry_delivery&&['FAILED','QUEUED','UNKNOWN'].includes(String(p.email_delivery_status||'')));
+ retryEmailButton.textContent=String(p.email_delivery_status||'')==='UNKNOWN'?'Сверить и повторить доставку':'Повторить email-доставку';
  document.getElementById('file').disabled=!(status==='M1_SELF_FILING_PREPARATION'&&a.can_mutate);
  document.getElementById('deliverableType').disabled=!(status==='M1_SELF_FILING_PREPARATION'&&a.can_mutate);
  document.getElementById('uploadCard').style.display=(status==='M1_SELF_FILING_PREPARATION'&&a.can_mutate)?'block':'none';
@@ -907,7 +1000,19 @@ async function requestDocs(){try{await post('/self-filing/cases/'+caseId+'/reque
 async function approve(){const confirmed=document.getElementById('completeConfirm').checked,signed=document.getElementById('actSigned').checked,actDate=document.getElementById('actDate').value;if(!confirmed){feedback('Сначала явно подтвердите полноту комплекта документов.',true);return}if(signed&&!actDate){feedback('Укажите дату подписания акта передачи.',true);return}try{await post('/self-filing/cases/'+caseId+'/approve-for-payment',payload({court_name:document.getElementById('court').value,court_address:document.getElementById('courtAddress').value,jurisdiction_basis:document.getElementById('basis').value,jurisdiction_note:document.getElementById('note').value,completeness_confirmed:confirmed,transfer_act_signed:signed,transfer_act_date:signed?actDate:null}))}catch(e){feedback(e.message,true)}}
 async function resolvePayment(decision){const card=document.getElementById('paymentReviewCard'),paymentId=Number(card.dataset.paymentId||0),comment=document.getElementById('financialComment').value;if(!paymentId){feedback('Платёж для сверки не найден',true);return}try{await post('/self-filing/cases/'+caseId+'/payment-review/'+paymentId+'/resolve',payload({decision,comment}));document.getElementById('financialComment').value=''}catch(e){feedback(e.message,true)}}
 async function uploadPackage(){const f=document.getElementById('file').files[0],dtype=document.getElementById('deliverableType').value;if(!f){feedback('Выберите файл',true);return}try{const out=await api('/self-filing/cases/'+caseId+'/package',{method:'POST',headers:{'x-file-name':f.name,'x-file-type':f.type||'application/octet-stream','x-deliverable-type':dtype,'x-package-version':String(data.package.version)},body:f});feedback('Документ утверждён. SHA '+String(out.sha256||'').slice(0,12));document.getElementById('file').value='';await load()}catch(e){feedback(e.message,true)}}
-async function retryEmail(){try{await post('/self-filing/cases/'+caseId+'/email/retry',payload())}catch(e){feedback(e.message,true)}}
+async function retryEmail(){
+ const p=data.package||{},status=String(p.email_delivery_status||''),extra={};
+ if(status==='UNKNOWN'){
+   const expected=String(p.email_message_id||'');
+   const typed=prompt('Исход прошлой SMTP-попытки неизвестен. Сначала проверьте почтовый ящик/SMTP-логи. Для осознанного повтора введите точный предыдущий Message-ID:\n\n'+expected,'');
+   if(typed===null)return;
+   if(String(typed).trim()!==expected){feedback('Message-ID не совпал. Повторная отправка не запущена.',true);return}
+   if(!confirm('Подтвердить повторную отправку после ручной сверки? Предыдущее письмо могло быть доставлено, поэтому повтор может создать дубликат.'))return;
+   extra.confirm_unknown_delivery_retry=true;
+   extra.expected_message_id=expected;
+ }
+ try{await post('/self-filing/cases/'+caseId+'/email/retry',payload(extra))}catch(e){feedback(e.message,true)}
+}
 load();
 </script></body></html>
 """
