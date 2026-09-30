@@ -27,3 +27,4 @@ from app.models.system_setting import SystemSetting
 from app.models.login_security_state import LoginSecurityState
 from app.models.revoked_access_token import RevokedAccessToken
 from app.models.self_filing_package import SelfFilingPackage
+from app.models.self_filing_email_delivery_attempt import SelfFilingEmailDeliveryAttempt
