@@ -86,32 +86,55 @@ Rules: multiple active Cases are allowed; stale/crafted callbacks cannot silentl
 
 State: `IMPLEMENTED / RUNTIME_PENDING`.
 
-## P-01 — Calculation and idempotent Case creation
+## P-01 — Non-persistent calculation preview and idempotent Case materialization
 
-Flow: `Calculate → source operation key → CaseCreationRequest → new Case → durable Case-bound CalculationIntake → schema-v2 legal rule authority → immutable Calculation evidence → client decision`.
+Canonical flow:
 
-Facts and exceptional-result rules:
+`Calculate → preview_calc_start → ephemeral PreviewCalculatorStates → rule-authority preview → preview result → explicit preview_calc_save:v2:<preview_id> → CaseCreationRequest → new Case → durable Case-bound CalculationIntake → immutable Calculation evidence → client decision`.
 
-- `(client_id, operation_key)` deduplicates the same source action;
-- distinct Calculate operations may create distinct Cases;
-- `Calculation.case_id` is one-to-many and newest stored Calculation is authoritative for current calculation outcome;
-- `calc_start` means a new matter;
-- `calc_recover:v2:<case_id>` resumes an exact existing matter; every resume/restart/back/transfer action emitted from recovery must also carry that exact Case id;
-- an actual transfer before or on the contractual date is a valid factual outcome: the calculation is saved with zero delay/zero amount, M1 is not offered, and the client may finish/postpone, correct data, or choose M2;
-- a contractual transfer date later than the current date is persisted before the informational boundary, no delay calculation is performed yet, and resume stays at the future-date boundary until the date arrives; after it arrives the same saved draft advances to transfer status;
+The materialization boundary is explicit. Before the client chooses **Save calculation and continue**, the preview creates no `Case`, `CalculationIntake`, `Calculation` or Case-history record. Redis/FSM contains presentation/recovery data for the temporary preview only; it is not a durable legal inquiry.
+
+Materialization and recovery rules:
+
+- `preview_calc_start` is the canonical visible “new calculation / new inquiry” action across Home, reply menu, archive and recovery/error escape surfaces;
+- `preview_calc_save:v2:<preview_id>` is the durable creation command. Its stable preview id becomes the source operation key, so two Telegram callback ids from one double tap converge to the same `CaseCreationRequest` and Case;
+- distinct explicitly saved previews may create distinct Cases; no client-wide one-active-Case invariant is allowed;
+- raw `calc_start` is retained only as a compatibility handler for keyboards already sent before PM-028. Current runtime source emits zero raw `calc_start` new-calculation buttons;
+- `calc_recover:v2:<case_id>` resumes an exact already-durable calculator Case; every resume/restart/back/transfer mutation emitted from that recovery remains bound to that exact Case id;
+- a stale/legacy recovery action never materializes a replacement Case implicitly. Its “new calculation” escape returns to `preview_calc_start`;
+- preview save revalidates the exact published rule revision key/SHA used for the preview before persisting; changed legal authority requires recalculation rather than silently saving a result on a different ruleset;
+- a failed durable commit leaves the unsaved preview in FSM so the client can retry instead of losing the temporary inputs.
+
+Saved-calculation facts and exceptional-result rules:
+
+- `Calculation.case_id` is one-to-many and the newest stored Calculation is authoritative for the current saved calculation outcome;
+- an actual transfer before or on the contractual date is a valid factual outcome: the saved Calculation records zero delay/zero amount, M1 is not offered, and the client may finish, correct data or choose M2;
+- a contractual transfer date later than the calculation date is an informational boundary rather than a fabricated positive claim; no positive M1 continuation is offered from a non-positive saved result;
 - M1 continuation is permitted only when the **latest stored Calculation** for that Case has both positive delay days and positive penalty amount; a stale positive-result Telegram button cannot override a newer zero-delay result;
-- accepted calculator facts are persisted to the Case-scoped `CalculationIntake`; Redis FSM is recovery/presentation state rather than the sole business source. PM-017 remains open only for exact final runtime proof of loss/restart, multi-Case isolation and the complete operational handoff, not for creation of a durable intake model;
-- PM-016 v2 makes participant type (`consumer/other`) and unique-object status explicit facts. An unknown legally significant fact never receives a hidden default: it records a manual-review flag and routes to the lawyer path;
+- PM-016 v2 makes participant type (`consumer/other`) and unique-object status explicit facts. An unknown legally significant fact receives no hidden default and the preview fails closed/routes to lawyer help without creating a Case;
 - a new automatic amount can be produced only from one published `PRODUCTION` schema-v2 revision. The engine fixes the base rate on the contractual due date, then applies configured moratoria/excluded periods, rate caps, participant coefficient and the unique-object branch/amount cap. Missing/ambiguous authority, CBR coverage gaps, tampered hashes and configured stop factors fail closed;
-- each completed calculation keeps the immutable rule key/SHA-256, applied/excluded segments and source references. Staff see only the calculation-relevant provenance; the client can reopen `Основания и детализация расчёта` from the result and from `Моё дело`/archive.
+- each completed saved Calculation keeps the immutable rule key/SHA-256, applied/excluded segments and source references. Staff see only calculation-relevant provenance; the client can reopen `Основания и детализация расчёта` from the saved result and from `Моё дело`/archive.
 
-Canonical path: `NEW → CALCULATOR_STARTED → CALCULATED → CLIENT_DECISION` plus explicit exceptional completion/M2 branches and compatibility transitions from `case_transition_policy.py`.
+Durable Case path starts **after explicit preview save**:
 
-Anchors: `app/domain/calculator/*`, `app/api/calculator_builder.py`, `app/api/workdesk_calculator_projection.py`, `app/bot/calculator_durable.py`, `app/bot/calculator_draft.py`, `app/bot/screens/calculator.py`, `app/bot/screens/calculator_active_case_recovery.py`, `app/domain/cases/case_service.py`, `CalculationIntake`, `Calculation`, `CalculationRuleRevision`, `CaseCreationRequest`.
+`NEW → CALCULATOR_STARTED → CALCULATED → CLIENT_DECISION`, plus explicit exceptional completion/M2 branches and compatibility transitions from `case_transition_policy.py`.
 
-Evidence added by the 2026-09-09 audit batch: `tests/test_calculator.py`, `tests/test_calculator_route_eligibility.py`, `tests/test_telegram_calculator_recovery_flow.py`, `tests/test_v37_calculator_active_case_recovery.py`, `tests/test_v37_calculator_draft_recovery.py`. These are source/regression additions only until an exact-head runner executes them.
+Source-of-truth matrix:
 
-State: `IMPLEMENTED / FIXED_PENDING_RUNTIME / DEBT_OPEN`.
+| Fact | Authority before save | Authority after save |
+| --- | --- | --- |
+| preview answers | `PreviewCalculatorStates` / Redis FSM only | copied into Case-bound intake during materialization |
+| preview legal-rule revision/hash | resolved published rule for preview; temporary snapshot | revalidated at save and frozen on `Calculation` |
+| durable legal inquiry | **none** | `Case` created via `CaseCreationRequest` |
+| durable calculator intake | **none** | `CalculationIntake` bound to exact Case |
+| immutable calculation result | **none** | `Calculation` bound to exact Case |
+| exact saved-Case recovery | not applicable | `calc_recover:v2:<case_id>` |
+
+Anchors: `app/bot/screens/calculator_preview.py`, `app/bot/screens/calculator.py` (legacy/durable compatibility), `app/bot/screens/calculator_active_case_recovery.py`, `app/domain/calculator/*`, `app/api/calculator_builder.py`, `app/api/workdesk_calculator_projection.py`, `app/domain/cases/case_service.py`, `PreviewCalculatorStates`, `CalculationIntake`, `Calculation`, `CalculationRuleRevision`, `CaseCreationRequest`.
+
+Static evidence includes `tests/test_pm028_fresh_start_preview.py`, the critical callback registry/ownership contracts and the PM-030 CURRENT-contract regression. These are source/regression evidence only until an exact-head runner executes them.
+
+State: `IMPLEMENTED / PM-028 CONTRACT_ALIGNED / RUNTIME_PENDING`.
 
 ## P-02 — M1 services: full representation and self-filing
 
