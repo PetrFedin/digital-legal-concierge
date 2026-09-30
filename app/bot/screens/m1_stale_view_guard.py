@@ -125,7 +125,7 @@ async def _render_stale(callback: CallbackQuery, db, *, old_stage: str) -> None:
         "ГЛАВНЫЙ СЛЕДУЮЩИЙ ШАГ\n"
         "Вернитесь на главную или начните новое обращение отдельным действием.",
         reply_markup=one(
-            ("🧮 Новое обращение", "calc_start"),
+            ("🧮 Новое обращение", "preview_calc_start"),
             ("🏠 Главная", "nav_home"),
         ),
     )
