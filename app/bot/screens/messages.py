@@ -411,7 +411,7 @@ async def message_history(callback: CallbackQuery, db, state: FSMContext):
             "💬 История переписки появится после создания обращения.\n\n"
             "Начните с предварительного расчёта или откройте связь с юридической командой.",
             reply_markup=one(
-                ("🧮 Рассчитать неустойку", "calc_start"),
+                ("🧮 Рассчитать неустойку", "preview_calc_start"),
                 ("💬 Связаться с юристом", "contact_lawyer"),
                 ("🏠 Главная", "nav_home"),
             ),
@@ -511,7 +511,7 @@ async def message_create(
         "подтвердите новый запрос отдельным действием.",
         reply_markup=one(
             ("🆕 Создать новое обращение", "message_new_request"),
-            ("🧮 Рассчитать неустойку", "calc_start"),
+            ("🧮 Рассчитать неустойку", "preview_calc_start"),
             ("🏠 Главная", "nav_home"),
         ),
     )
