@@ -373,6 +373,8 @@ jobs:
             app/storage.py \
             app/domain/documents/document_service.py \
             app/bot/screens/documents.py \
+            app/main.py \
+            scripts/production_preflight.py \
             tests/test_dlc_int_00_secure_ingest.py \
             tests/test_document_upload_security.py
 
