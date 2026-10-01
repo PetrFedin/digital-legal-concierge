@@ -338,6 +338,101 @@ jobs:
             tests/test_pm027_self_filing_package.py \
             tests/test_pm027_self_filing_financial_reconciliation.py
 
+  dlc-int-00-secure-ingest-proof:
+    name: DLC-INT-00 secure ingest proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      APP_ENV: test
+      DATABASE_URL: sqlite+aiosqlite:///./dlc_int_00_ci.db
+      BOT_TOKEN: CHANGE_ME
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+      DOCUMENT_ENCRYPTION_KEY_ID: ci-dlc-int-00-documents
+      DOCUMENT_ENCRYPTION_KEY: ci-dlc-int-00-document-key-012345678901234567890123456789
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[test]"
+
+      - name: Compile secure ingest boundary
+        run: |
+          python -m compileall -q \
+            app/security/malware_scanning.py \
+            app/security/file_uploads.py \
+            app/security/document_scanning.py \
+            app/storage.py \
+            app/domain/documents/document_service.py \
+            app/domain/documents/staff_upload_storage.py \
+            app/bot/screens/documents.py \
+            app/main.py \
+            scripts/production_preflight.py \
+            tests/test_dlc_int_00_secure_ingest.py \
+            tests/test_dlc_int_00_legacy_rescan_fence.py \
+            tests/test_document_upload_security.py \
+            tests/test_document_storage_portability.py
+
+      - name: Run DLC-INT-00 bounded regression proof
+        run: |
+          pytest -q \
+            tests/test_dlc_int_00_secure_ingest.py \
+            tests/test_dlc_int_00_legacy_rescan_fence.py \
+            tests/test_document_upload_security.py \
+            tests/test_document_storage_portability.py \
+            tests/test_docker_only_deployment_contract.py
+
+  dlc-int-00-clamav-sidecar:
+    name: DLC-INT-00 ClamAV sidecar integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      clamav:
+        image: clamav/clamav:1.5.4-debian
+        ports:
+          - 3310:3310
+        options: >-
+          --health-start-period 120s
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 36
+    env:
+      APP_ENV: production
+      CLAMAV_INTEGRATION: "1"
+      DOCUMENT_MALWARE_SCANNER: clamav
+      CLAMAV_HOST: 127.0.0.1
+      CLAMAV_PORT: "3310"
+      CLAMAV_TIMEOUT_SECONDS: "15"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[test]"
+
+      - name: Compile live ClamAV integration proof
+        run: python -m compileall -q app/security/malware_scanning.py tests/test_dlc_int_00_clamav_integration.py
+
+      - name: Prove real clamd clean and infected verdicts
+        run: pytest -q tests/test_dlc_int_00_clamav_integration.py
+
   sqlite-tests:
     name: SQLite application tests
     runs-on: ubuntu-24.04

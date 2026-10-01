@@ -12,7 +12,9 @@ from app.security.file_uploads import (
     inspect_upload,
     preflight_upload,
     quarantine_file,
+    validate_downloaded_size,
 )
+from app.security.malware_scanning import assert_malware_scan_admitted
 from app.storage import LocalStorageService, StoredFile
 
 
@@ -63,6 +65,11 @@ async def save_staff_upload(
             destination.flush()
             os.fsync(destination.fileno())
 
+        # Mirror Telegram admission: bound real bytes, then require an explicit
+        # malware verdict before structural/type parsing.
+        validate_downloaded_size(temporary, max_bytes=storage.max_upload_bytes)
+        malware_scan = await storage.malware_scanner.scan(temporary)
+        assert_malware_scan_admitted(malware_scan)
         inspection = inspect_upload(
             temporary,
             original_name=preflight.safe_name,
@@ -70,6 +77,14 @@ async def save_staff_upload(
             declared_size=total,
             max_bytes=storage.max_upload_bytes,
         )
+        if malware_scan.sha256 != inspection.sha256:
+            raise UploadSecurityError(
+                "malware_scan_hash_mismatch",
+                "Файл изменился во время проверки безопасности. Загрузите его повторно.",
+                technical_message="Malware and structural admission hashes differ",
+                sha256=inspection.sha256,
+                security_reason=malware_scan.security_reason,
+            )
         case_dir = storage.base_dir / "cases" / str(int(case_id))
         case_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -96,7 +111,8 @@ async def save_staff_upload(
             sha256=inspection.sha256,
             detected_type=inspection.detected_type,
             security_status="VERIFIED",
-            scanned_at=inspection.scanned_at,
+            security_reason=malware_scan.security_reason,
+            scanned_at=max(inspection.scanned_at, malware_scan.scanned_at),
             encryption_status=ENCRYPTION_STATUS,
             encryption_key_id=encryption.key_id,
             encryption_format_version=FORMAT_V2,
@@ -107,7 +123,9 @@ async def save_staff_upload(
         )
     except UploadSecurityError as error:
         if temporary.exists():
-            if settings.quarantine_rejected_uploads:
+            if error.code in {"empty_file", "file_too_large"}:
+                temporary.unlink(missing_ok=True)
+            elif settings.quarantine_rejected_uploads:
                 try:
                     error.quarantine_path = quarantine_file(
                         temporary,
@@ -116,7 +134,7 @@ async def save_staff_upload(
                         safe_name=preflight.safe_name,
                         case_id=case_id,
                     )
-                except OSError:
+                except Exception:
                     temporary.unlink(missing_ok=True)
             else:
                 temporary.unlink(missing_ok=True)

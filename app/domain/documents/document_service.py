@@ -122,6 +122,7 @@ class DocumentService:
         sha256: str | None = None,
         detected_type: str | None = None,
         security_status: str = "VERIFIED",
+        security_reason: str | None = None,
         scanned_at: datetime | None = None,
         encryption_status: str = ENCRYPTION_STATUS,
         encryption_key_id: str | None = None,
@@ -201,6 +202,7 @@ class DocumentService:
             sha256=sha256,
             detected_type=detected_type,
             security_status=security_status,
+            security_reason=security_reason,
             scanned_at=scanned_at,
             encryption_status=encryption_status,
             encryption_key_id=encryption_key_id,
@@ -260,6 +262,7 @@ class DocumentService:
                 "detected_type": detected_type,
                 "size_bytes": file_size,
                 "security_status": security_status,
+                "security_reason": security_reason,
                 "encryption_status": encryption_status,
                 "encryption_key_id": encryption_key_id,
                 "encryption_format_version": encryption_format_version,
@@ -278,6 +281,7 @@ class DocumentService:
         file_name: str,
         reason_code: str,
         sha256: str | None,
+        security_reason: str | None = None,
     ) -> None:
         await add_case_history_event(
             self.db,
@@ -290,6 +294,7 @@ class DocumentService:
                 "file_name": file_name,
                 "reason_code": reason_code,
                 "sha256": sha256,
+                "security_reason": security_reason,
             },
         )
 

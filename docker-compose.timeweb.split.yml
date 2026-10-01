@@ -7,12 +7,17 @@ services:
     ports:
       - "127.0.0.1:6379:6379"
 
+  clamav:
+    ports:
+      - "127.0.0.1:3310:3310"
+
   app:
     container_name: legal-concierge
     environment:
       RUNTIME_ROLE: web
       RUN_BOT: "false"
       RUN_SCHEDULER: "false"
+      CLAMAV_HOST: clamav
     volumes:
       - "${PRODUCTION_RUNTIME_DIR:-/home/deploy/dlc-production-v46}/data:/app/data"
       - "${PRODUCTION_RUNTIME_DIR:-/home/deploy/dlc-production-v46}/storage:/app/storage"
@@ -33,6 +38,7 @@ services:
       RUN_SCHEDULER: "true"
       DATABASE_URL: "${BOT_DATABASE_URL:?BOT_DATABASE_URL is required for the host-network Telegram worker}"
       REDIS_URL: "${BOT_REDIS_URL:?BOT_REDIS_URL is required for the host-network Telegram worker}"
+      CLAMAV_HOST: 127.0.0.1
     network_mode: host
     extra_hosts:
       api.telegram.org: "${TELEGRAM_API_IPV6:?TELEGRAM_API_IPV6 is required on Timeweb while Telegram IPv4 is unreachable}"
@@ -54,6 +60,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      clamav:
         condition: service_healthy
     logging:
       driver: json-file

@@ -179,12 +179,22 @@ State: `IMPLEMENTED / FIXED_PENDING_RUNTIME`.
 
 ## P-03 — Documents, encrypted storage, review, access and deletion
 
-Flow: `required/upload → validation/scanning → quarantine when unsafe → hash → encrypt → portable storage key → Document version → review → protected grant → authorized decrypt/read → retention deletion when approved`.
+Canonical admission flow:
+
+`required/upload → preflight → isolated .incoming bytes → malware admission → structural/type validation → SHA-256 agreement → encrypted immutable source → portable storage key → Document version → review → protected grant → authorized decrypt/read → retention deletion when approved`.
 
 Storage contract: `cases/<case_id>/<32hex>.dlcenc`.
 
-Rules:
+DLC-INT-00 rules:
 
+- no structural parser, OCR, extraction or search component may receive downloaded bytes before malware admission allows them;
+- production admission requires the configured ClamAV/clamd sidecar and is fail-closed when the scanner is disabled, unavailable, timed out or returns an unknown/error verdict;
+- malware admission and structural validation compute independent SHA-256 values; a mismatch rejects the upload before Case source storage;
+- the accepted original is encrypted only after both admission gates pass; the original source is not silently rewritten;
+- rejected bytes never remain as long-lived plaintext: when quarantine retention is enabled they are envelope-encrypted under a random quarantine container, otherwise they are deleted;
+- accepted documents persist normalized scanner provenance in `Document.security_reason` and Case audit evidence; rejected uploads persist normalized scanner evidence/reason without exposing raw file content;
+- `/ready` reports the malware dependency and becomes not-ready when the required production scanner is unavailable; production preflight separately rejects non-ClamAV configuration;
+- local/test may use the explicit disabled scanner path for deterministic fixtures, but that mode cannot admit a production upload;
 - new DB paths are portable keys, never host-specific absolute paths;
 - a legacy absolute row may be reduced only to terminal canonical Case key and rebound to **current** `STORAGE_DIR`;
 - historical source prefix is never dereferenced;
@@ -192,11 +202,11 @@ Rules:
 - normal authorized download passes authorized `Case.id` into storage resolution;
 - retention uses the same `LocalStorageService` resolver/delete contract.
 
-Anchors: `app/storage.py`, `app/domain/documents/*`, `app/api/document_access.py`, document security modules, `app/domain/retention/case_retention_service.py`.
+Anchors: `app/security/malware_scanning.py`, `app/security/file_uploads.py`, `app/storage.py`, `app/domain/documents/*`, `app/api/document_access.py`, `app/domain/retention/case_retention_service.py`.
 
-Evidence: `test_document_storage_portability.py`, `test_document_download_storage_scope_contract.py`, `test_case_retention_storage_portability.py`, `test_post_live_restore_evidence.py`.
+Evidence: `tests/test_dlc_int_00_secure_ingest.py`, `tests/test_document_upload_security.py`, `tests/test_docker_only_deployment_contract.py`, plus the existing storage/download/retention/restore proofs.
 
-State: `SOURCE_AUDITED / RUNTIME_PENDING`.
+State: `IMPLEMENTED / DLC-INT-00 SOURCE_COMPLETE / EXACT_RUNTIME_PENDING`.
 
 ## P-04 — M1 lawyer assignment and SLA
 
@@ -943,3 +953,65 @@ Whenever anything changes:
 - Matched diagnostic stack-04 head `67371af8b3f7e912a030984b454a5474927f12e1` carried the same common PM-042 repairs but excluded PM-032. Locked full-suite differential was **0 current-only failing node ids**: final 285 failures versus base 290. The four retired PM-032 source-contract tests disappeared only on the final branch as intended.
 - The normal full suite produced one current-only warning-attributed node on `test_message_service.py::test_read_marking_is_scoped_to_case`; both that test and `app/domain/messages/message_service.py` have identical Git blobs on final/base, and the failure is an unraisable aiosqlite cursor warning rather than a business assertion. Locked execution does not reproduce it. A separate Payment Review teardown thread warning attached to a test that fails on both heads. These are resource/order diagnostics, not evidence of a PM-032 product regression.
 - PM-032 and PM-042 are therefore bounded complete by differential proof, while the inherited release baseline remains red. This governance-only commit becomes the final exact candidate and must itself rerun the six required workflows before any merge/release decision.
+
+
+## 2026-10-01 — DLC-INT-00 secure document admission implementation
+
+- Started the first post-PM-042 integration layer from exact correction candidate `6f1277eb4547f78d4cbbab5038c4c3e4b7c836b3`; the integration remains a separate stacked change and does not rewrite CaseService, payment, consultation, encryption or document-review authority.
+- Added `app/security/malware_scanning.py` with a small application protocol and ClamAV `INSTREAM` adapter. Production disabled/unavailable/timeout/error states fail closed; local/test disabled mode is explicit and cannot silently become a production authorization.
+- Inserted the admission seam exactly before existing structural parsing: Telegram download → isolated `.incoming` → malware verdict → existing `inspect_upload(...)` → SHA agreement → existing envelope encryption. Infected/unverified bytes cannot reach the structural parser or Case ciphertext.
+- Reworked rejected-byte retention so quarantine payloads are envelope-encrypted instead of permission-only plaintext. Quarantine metadata keeps normalized reason/provenance and wrapped-key metadata, not document plaintext.
+- Accepted `Document` rows and `DOCUMENT_UPLOADED` audit evidence now retain normalized scanner provenance through `security_reason`; rejected-upload audit events receive the corresponding normalized scanner evidence.
+- Added a privacy-safe ClamAV readiness probe to `/ready`; production readiness is false when the mandatory scanner is disabled or unreachable. Strict production preflight also requires ClamAV mode/host/port/timeout.
+- Added the ClamAV service to the Timeweb compose contour. The normal app reaches it on the private compose network; the host-network Telegram worker uses only a loopback `127.0.0.1:3310` publication. The official `clamav/clamav:1.5.4-debian` image supplies its own health check.
+- Added bounded CI proof `DLC-INT-00 secure ingest proof` and regressions for clean admission, infected fail-closed ordering, disabled production scanner, hash mismatch, encrypted quarantine, clamd framing, readiness and deployment/preflight contracts.
+- PM-043 / #170 separately tracks the intermittent `aiosqlite` lifecycle/event-loop teardown leak. It is test-infrastructure debt and must not be mixed into DLC-INT-00 or used as a reason to weaken warning policy.
+- Status: `SOURCE_COMPLETE / EXACT_PR_RUNTIME_REQUIRED`. Freeze the map-final PR head and execute the dedicated DLC-INT-00 job plus the existing ordered workflow family before any merge or deployment decision.
+
+
+## 2026-10-01 — DLC-INT-00 first exact PR run / portable-key proof correction
+
+- Exact PR head `ae56bd9501c9fed72f8a2cd96fe224a5c408385f` executed real GitHub-hosted runners. Deployment Readiness, PostgreSQL Concurrency, Telegram Runtime Contracts and Browser Staff E2E passed; Process Map, PM-016, PM-018, PM-019, PM-027, PM-028, PostgreSQL migration/backup/restore and container startup jobs also passed.
+- The dedicated `DLC-INT-00 secure ingest proof` compiled successfully and then failed only two inherited document-upload assertions. Both treated canonical portable `StoredFile.storage_path` values such as `cases/<case_id>/<random>.dlcenc` as host-relative filesystem paths by calling `Path(storage_path)` directly.
+- Production storage behavior was already correct and predates DLC-INT-00: `LocalStorageService` returns portable DB keys and resolves them through `resolve_storage_path(..., expected_case_id=...)`. The two tests were corrected to use that authoritative resolver; no storage/encryption/admission behavior changed.
+- Because test content changed, `ae56bd...` is diagnostic only. The new map-final head must rerun the exact workflow family; no PASS is inherited across the changed SHA.
+
+
+## 2026-10-01 — DLC-INT-00 second exact run / portability fixture hash correction
+
+- Exact map-final head `c5ff5dce1a306c2d245b88cb0c6ddfa25a66ff13` proved the dedicated `DLC-INT-00 secure ingest proof` green: **46 passed**. Deployment Readiness, PostgreSQL Concurrency and Telegram Runtime Contracts also passed; all bounded PM-016/018/019/027/028 jobs, Process Map, PostgreSQL migration/backup/restore and container startup passed on the same SHA.
+- Plain SQLite differential against PM-042 base `244985cc322126f0fce7d8d00c40ffd7aafca423` reduced the inherited baseline from 285 to 283 failures but exposed one current-only node: `test_client_upload_returns_portable_storage_key`.
+- That node was a stale fixture, not a product/storage regression. It mocked structural SHA-256 as `"c" * 64` while the newly inserted malware gate correctly hashed the actual downloaded bytes `b"data"`; the independent-hash agreement therefore failed by design.
+- The fixture now supplies the SHA-256 of the actual downloaded bytes so it still proves portable storage keys while respecting the new admission invariant. No malware, storage, encryption, Case, Payment or Consultation runtime behavior changed.
+- Because test content changed, `c5ff5dce...` remains diagnostic evidence only. Freeze the new map-final head and rerun the exact workflow family before classifying DLC-INT-00 complete.
+
+
+## 2026-10-01 — DLC-INT-00 admission hardening before final exact proof
+
+- Added an actual downloaded-byte limit immediately after Telegram download and **before** ClamAV or structural parsing. Declared Telegram metadata is no longer the only pre-scanner size guard; empty/oversized bytes are deleted from `.incoming` immediately and are not copied into quarantine, preventing out-of-policy payloads from consuming scanner/quarantine resources.
+- `inspect_upload(...)` now reuses the same downloaded-size validator, preserving the second-gate invariant without duplicate policy logic.
+- Added regression proof that an oversized actual payload with a deceptively small declared size never reaches the malware scanner, never creates Case ciphertext and leaves no incoming/quarantine residue.
+- Added a dedicated real-sidecar CI job `DLC-INT-00 ClamAV sidecar integration` using the pinned official `clamav/clamav:1.5.4-debian` image. It verifies live clamd clean admission, production readiness/PING and rejection of the harmless EICAR antivirus test signature through the actual INSTREAM adapter.
+- Existing unit/protocol tests remain as deterministic negative-path proof; the real-sidecar job closes the gap between mocked protocol behavior and the deployment-side ClamAV process.
+- All previous exact heads are now diagnostic only. Freeze this map-final commit and rerun the complete workflow family; do not inherit PASS across the changed source/test/workflow SHA.
+
+
+## 2026-10-01 — DLC-INT-00 unified client/staff admission boundary
+
+- Closed the remaining ingress inconsistency: staff HTTP uploads now use the same malware-admission authority as Telegram uploads before any structural/type parser runs.
+- Both client and staff paths now enforce the same sequence: real-byte limit → scanner verdict → explicit admissibility check → structural/type validation → independent SHA-256 agreement → envelope encryption → portable Case storage key.
+- A scanner result object is no longer implicitly trusted merely because `scan(...)` returned. `assert_malware_scan_admitted(...)` permits only `CLEAN`, plus the explicitly configured non-production bypass outside production; every other returned verdict fails closed.
+- Staff accepted uploads now persist the same normalized scanner provenance in `StoredFile.security_reason`; staff hash-mismatch rejection also preserves scanner provenance.
+- Telegram hash-mismatch rejection now preserves scanner provenance as well, so rejected evidence remains attributable to the exact scanner state even when structural and scanner hashes disagree.
+- Added bounded regressions proving infected staff uploads never reach `inspect_upload(...)`, accepted staff uploads preserve malware provenance, and the existing portable-key storage contract remains intact.
+- The previous exact head `042b31792df34c9f9c064add66b4d3967c8dcc72` is diagnostic only because the ingress source and tests changed after it. Freeze this process-map commit as the next exact candidate and rerun the complete workflow family; do not inherit PASS across the changed SHA.
+
+
+## 2026-10-01 — DLC-INT-00 legacy rescan safety fence
+
+- Repository audit found one pre-DLC-INT-00 scheduler path that violated the new admission invariant: `app/security/document_scanning.py::rescan_legacy_documents` could structurally inspect historical filesystem bytes without first obtaining an admissible malware verdict.
+- The historical rescan has been disabled fail-closed. It no longer imports/calls the structural parser and can no longer silently promote `LEGACY_UNVERIFIED` / `SCAN_ERROR` rows to `VERIFIED`.
+- Scheduler compatibility is preserved through a non-destructive result containing `blocked_pending_controlled_readmission=1`; no historical file is dereferenced, parsed, moved or deleted by this fenced path.
+- Issue #172 owns a separate controlled legacy re-admission workflow: protected storage resolution/decryption → ClamAV admission → structural validation → independent SHA agreement → canonical DLCENC2 Case storage → explicit audit. This is deliberately not folded into the live ingestion PR.
+- Added bounded regression `tests/test_dlc_int_00_legacy_rescan_fence.py` and included it in the DLC-INT-00 CI proof.
+- All prior DLC-INT-00 exact heads are diagnostic only after this source/test change. Freeze this map-final commit and rerun the complete workflow family before classifying the parent integration layer.

@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import struct
 import unicodedata
 import uuid
@@ -12,6 +11,8 @@ import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
+
+from app.security.document_encryption import encrypt_file
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,7 @@ class UploadSecurityError(ValueError):
         technical_message: str | None = None,
         sha256: str | None = None,
         quarantine_path: str | None = None,
+        security_reason: str | None = None,
     ):
         super().__init__(technical_message or user_message)
         self.code = code
@@ -111,6 +113,7 @@ class UploadSecurityError(ValueError):
         self.technical_message = technical_message or user_message
         self.sha256 = sha256
         self.quarantine_path = quarantine_path
+        self.security_reason = security_reason
 
 
 @dataclass(frozen=True)
@@ -206,6 +209,20 @@ def _sha256(path: Path) -> str:
         while chunk := source.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def validate_downloaded_size(path: Path, *, max_bytes: int) -> int:
+    """Enforce the real downloaded-byte limit before malware scanning/parsing."""
+
+    size = path.stat().st_size
+    if size <= 0:
+        raise UploadSecurityError("empty_file", "Файл пустой. Прикрепите другой документ.")
+    if size > max_bytes:
+        raise UploadSecurityError(
+            "file_too_large",
+            f"Файл слишком большой. Максимальный размер — {max_bytes // (1024 * 1024)} МБ.",
+        )
+    return size
 
 
 def _detect_type(header: bytes) -> AllowedUploadType | None:
@@ -416,14 +433,7 @@ def inspect_upload(
         declared_size=declared_size,
         max_bytes=max_bytes,
     )
-    size = path.stat().st_size
-    if size <= 0:
-        raise UploadSecurityError("empty_file", "Файл пустой. Прикрепите другой документ.")
-    if size > max_bytes:
-        raise UploadSecurityError(
-            "file_too_large",
-            f"Файл слишком большой. Максимальный размер — {max_bytes // (1024 * 1024)} МБ.",
-        )
+    size = validate_downloaded_size(path, max_bytes=max_bytes)
 
     digest = _sha256(path)
     with path.open("rb") as source:
@@ -478,23 +488,45 @@ def quarantine_file(
     safe_name: str,
     case_id: int,
 ) -> str:
+    """Move rejected bytes into encrypted quarantine, never plaintext retention."""
+
     quarantine_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        quarantine_dir.chmod(0o700)
+    except OSError:
+        pass
+
     identifier = uuid.uuid4().hex
-    target = quarantine_dir / f"{identifier}.quarantine"
+    target = quarantine_dir / f"{identifier}.quarantine.dlcenc"
     metadata_path = quarantine_dir / f"{identifier}.json"
-    shutil.move(str(source), target)
+
+    encryption = encrypt_file(
+        source,
+        target,
+        expected_sha256=error.sha256,
+    )
+    source.unlink(missing_ok=True)
     try:
         target.chmod(0o600)
     except OSError:
         pass
+
     metadata = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "case_id": int(case_id),
         "safe_name": safe_name,
         "reason_code": error.code,
+        "security_reason": error.security_reason,
         "technical_message": error.technical_message[:500],
-        "sha256": error.sha256,
+        "sha256": encryption.sha256,
         "quarantine_file": target.name,
+        "encryption_status": "ENCRYPTED",
+        "encryption_key_id": encryption.key_id,
+        "encryption_format_version": encryption.format_version,
+        "encryption_envelope_id": encryption.envelope_id,
+        "encrypted_data_key": encryption.encrypted_data_key,
+        "encrypted_data_key_nonce": encryption.encrypted_data_key_nonce,
+        "encrypted_at": encryption.encrypted_at.isoformat(),
     }
     metadata_path.write_text(
         json.dumps(metadata, ensure_ascii=False, separators=(",", ":")),

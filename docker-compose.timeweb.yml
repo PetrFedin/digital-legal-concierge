@@ -43,6 +43,17 @@ services:
         max-size: 10m
         max-file: "3"
 
+  clamav:
+    image: clamav/clamav:1.5.4-debian
+    volumes:
+      - concierge_clamav:/var/lib/clamav
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "3"
+
   app:
     image: "${APP_IMAGE_REPOSITORY:-digital-legal-concierge}:${APP_IMAGE_TAG:-timeweb}"
     build:
@@ -60,6 +71,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      clamav:
         condition: service_healthy
     ports:
       - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8000}:8000"
@@ -93,3 +106,4 @@ volumes:
   concierge_logs:
   concierge_backups:
   concierge_redis:
+  concierge_clamav:

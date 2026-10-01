@@ -128,6 +128,10 @@ def test_production_template_is_fail_closed_and_restart_safe():
     assert "BOT_REDIS_URL=redis://127.0.0.1:6379/0" in template
     assert "TELEGRAM_API_IPV6=" in template
     assert "TELEGRAM_EXPECTED_USERNAME=DL_Concierge_bot" in template
+    assert "DOCUMENT_MALWARE_SCANNER=clamav" in template
+    assert "CLAMAV_HOST=clamav" in template
+    assert "CLAMAV_PORT=3310" in template
+    assert "CLAMAV_TIMEOUT_SECONDS=15" in template
     assert "APP_BIND_ADDRESS=127.0.0.1" in template
 
 
@@ -192,6 +196,14 @@ def _configure_preflight_paths(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(production_preflight.settings, "app_env", "production")
     monkeypatch.setattr(
         production_preflight.settings,
+        "document_malware_scanner",
+        "clamav",
+    )
+    monkeypatch.setattr(production_preflight.settings, "clamav_host", "clamav")
+    monkeypatch.setattr(production_preflight.settings, "clamav_port", 3310)
+    monkeypatch.setattr(production_preflight.settings, "clamav_timeout_seconds", 15)
+    monkeypatch.setattr(
+        production_preflight.settings,
         "storage_dir",
         str(tmp_path / "storage"),
     )
@@ -200,6 +212,30 @@ def _configure_preflight_paths(monkeypatch, tmp_path) -> None:
         "backup_dir",
         str(tmp_path / "backups"),
     )
+
+
+def test_timeweb_production_compose_keeps_clamd_private_and_split_bot_loopback_only():
+    timeweb = read("docker-compose.timeweb.yml")
+    split = read("docker-compose.timeweb.split.yml")
+
+    assert "clamav/clamav:1.5.4-debian" in timeweb
+    assert "concierge_clamav:/var/lib/clamav" in timeweb
+    assert "clamav:\n        condition: service_healthy" in timeweb
+    assert '127.0.0.1:3310:3310' not in timeweb
+
+    assert '127.0.0.1:3310:3310' in split
+    assert "CLAMAV_HOST: clamav" in split
+    assert "CLAMAV_HOST: 127.0.0.1" in split
+
+
+def test_production_preflight_requires_fail_closed_malware_scanner(monkeypatch, tmp_path):
+    _configure_preflight_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(production_preflight.settings, "document_malware_scanner", "disabled")
+
+    report = production_preflight.build_report()
+
+    assert report["checks"]["document_malware_scanner_is_clamav"] is False
+    assert "document_malware_scanner_is_clamav" in report["failed"]
 
 
 def test_production_preflight_accepts_offline_but_rejects_disabled_and_fake(
