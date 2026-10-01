@@ -36,6 +36,7 @@ multidict==6.7.1
 packaging==26.2
 ocrmypdf==17.13.0
 pikepdf==10.16.0
+pdfminer.six==20260107
 pillow==12.3.0
 playwright==1.62.0
 pluggy==1.6.0
