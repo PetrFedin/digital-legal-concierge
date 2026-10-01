@@ -760,13 +760,15 @@ async def upload(message: Message, state: FSMContext, db):
             file_name=safe_filename(name),
             reason_code=error.code,
             sha256=error.sha256,
+            security_reason=error.security_reason,
         )
         await db.commit()
         logger.warning(
-            "Document upload rejected: case=%s code=%s sha256=%s quarantined=%s",
+            "Document upload rejected: case=%s code=%s sha256=%s security=%s quarantined=%s",
             case.id,
             error.code,
             error.sha256,
+            error.security_reason,
             bool(error.quarantine_path),
         )
         await message.answer(
