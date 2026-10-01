@@ -79,6 +79,48 @@ async def _staff_actor(
     return actor
 
 
+def _staff_access_recovery_html() -> str:
+    """Fail-closed recovery for authenticated accounts without a product workspace role."""
+
+    return """
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Нужно настроить рабочий доступ</title>
+<style>
+:root{--bg:#f4f6fa;--surface:#fff;--ink:#172033;--muted:#667085;--line:#e4e7ec;--primary:#3157d5;--warn:#a15c00;--warn-bg:#fff7e6}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;padding:20px;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif}
+.card{width:min(620px,100%);background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:28px;box-shadow:0 18px 48px rgba(16,24,40,.10)}
+.badge{display:inline-flex;border-radius:999px;background:var(--warn-bg);color:var(--warn);padding:6px 10px;font-size:12px;font-weight:800;margin-bottom:14px}
+h1{font-size:clamp(24px,5vw,32px);margin:0 0 12px}
+p{line-height:1.55;margin:0 0 12px;color:var(--muted)}
+.notice{border:1px solid #fedf89;background:var(--warn-bg);border-radius:13px;padding:13px;margin:18px 0;color:#7a4700}
+button{border:0;border-radius:11px;background:var(--primary);color:#fff;padding:12px 16px;font-size:15px;font-weight:800;cursor:pointer}
+button:focus-visible{outline:3px solid #c7d2fe;outline-offset:2px}
+</style>
+</head>
+<body>
+<main class="card">
+  <div class="badge">Доступ ограничен</div>
+  <h1>Нужно настроить рабочий доступ</h1>
+  <p>Сессия подтверждена, но для этой учётной записи не назначена рабочая роль продукта.</p>
+  <div class="notice">
+    Доступ к данным клиентов закрыт. Техническая или историческая роль сама по себе
+    не даёт доступ к кабинету администратора или юриста.
+  </div>
+  <p>Обратитесь к суперадминистратору, чтобы он проверил назначение роли. После изменения прав выполните вход заново.</p>
+  <form method="post" action="/logout">
+    <button type="submit">Выйти и войти заново</button>
+  </form>
+</main>
+</body>
+</html>
+"""
+
+
 @router.get("/operator", response_class=HTMLResponse)
 async def operator_page(
     request: Request,
@@ -91,7 +133,11 @@ async def operator_page(
     if actor is None:
         return RedirectResponse(url="/login", status_code=303)
     if actor == "staff_landing":
-        return RedirectResponse(url="/admin-ui", status_code=303)
+        return HTMLResponse(
+            _staff_access_recovery_html(),
+            status_code=403,
+            headers={"Cache-Control": "no-store"},
+        )
 
     bot_label, bot_class = _state(settings.run_bot)
     scheduler_label, scheduler_class = _state(settings.run_scheduler)
