@@ -1005,3 +1005,13 @@ Whenever anything changes:
 - Telegram hash-mismatch rejection now preserves scanner provenance as well, so rejected evidence remains attributable to the exact scanner state even when structural and scanner hashes disagree.
 - Added bounded regressions proving infected staff uploads never reach `inspect_upload(...)`, accepted staff uploads preserve malware provenance, and the existing portable-key storage contract remains intact.
 - The previous exact head `042b31792df34c9f9c064add66b4d3967c8dcc72` is diagnostic only because the ingress source and tests changed after it. Freeze this process-map commit as the next exact candidate and rerun the complete workflow family; do not inherit PASS across the changed SHA.
+
+
+## 2026-10-01 — DLC-INT-00 legacy rescan safety fence
+
+- Repository audit found one pre-DLC-INT-00 scheduler path that violated the new admission invariant: `app/security/document_scanning.py::rescan_legacy_documents` could structurally inspect historical filesystem bytes without first obtaining an admissible malware verdict.
+- The historical rescan has been disabled fail-closed. It no longer imports/calls the structural parser and can no longer silently promote `LEGACY_UNVERIFIED` / `SCAN_ERROR` rows to `VERIFIED`.
+- Scheduler compatibility is preserved through a non-destructive result containing `blocked_pending_controlled_readmission=1`; no historical file is dereferenced, parsed, moved or deleted by this fenced path.
+- Issue #172 owns a separate controlled legacy re-admission workflow: protected storage resolution/decryption → ClamAV admission → structural validation → independent SHA agreement → canonical DLCENC2 Case storage → explicit audit. This is deliberately not folded into the live ingestion PR.
+- Added bounded regression `tests/test_dlc_int_00_legacy_rescan_fence.py` and included it in the DLC-INT-00 CI proof.
+- All prior DLC-INT-00 exact heads are diagnostic only after this source/test change. Freeze this map-final commit and rerun the complete workflow family before classifying the parent integration layer.
