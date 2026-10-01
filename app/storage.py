@@ -337,6 +337,7 @@ class LocalStorageService:
                     "Файл изменился во время проверки безопасности. Загрузите его повторно.",
                     technical_message="Malware and structural admission hashes differ",
                     sha256=inspection.sha256,
+                    security_reason=malware_scan.security_reason,
                 )
 
             case_dir = self.base_dir / "cases" / str(int(case_id))
