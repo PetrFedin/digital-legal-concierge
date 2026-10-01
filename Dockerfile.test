@@ -17,7 +17,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml constraints.txt README.md alembic.ini ./
-COPY Dockerfile Dockerfile.test docker-compose.yml docker-compose.timeweb.yml ./
+COPY Dockerfile Dockerfile.test docker-compose.yml docker-compose.timeweb.yml docker-compose.timeweb.split.yml ./
 COPY .gitignore .dockerignore .env.example .env.production.example ./
 COPY .github/workflows ./.github/workflows
 COPY docker-entrypoint.sh run.sh check-and-run.sh bot-control.sh ./
