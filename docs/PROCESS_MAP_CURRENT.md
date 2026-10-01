@@ -888,3 +888,11 @@ Whenever anything changes:
 - Updated the role-transition and persona E2E matrices with explicit PM-027 authority: Lawyer owns legal review/completeness/jurisdiction/four deliverables; Admin/Superadmin owns factual bank reconciliation and technical reupload requests; delivery close belongs to the delivery lifecycle; terminal state is read-only for every role.
 - Added/updated source regressions for admin-vs-lawyer document decisions, self-filing document authority, terminal responsibility, shared history, full admin/lawyer Case cards, self-filing archive identity and standard-M1 financial-final exclusion.
 - Runtime truth is unchanged: current exact-head GitHub Actions jobs still do not provide an executable application result, so this batch remains **FIXED_PENDING_RUNTIME**. Required release evidence remains executable CI/migrations, real multi-user Telegram access, real bank receipt reconciliation, both transfer-act cutoff branches and a real four-attachment SMTP receipt.
+
+## 2026-10-01 — PM-042 diagnostic differential base only
+
+- This branch is a non-merge diagnostic baseline stacked on `c6a9d97126231391b7c1a00747f0736f647a0f35` (correction stack 04).
+- It carries the same PM-042 evidence-unblock repairs as the final correction candidate: inherited Python syntax repairs, exact-slot/preview/snapshot proof alignment, isolated split-compose test-image fix and the bounded PM-027 focused-proof/copy corrections.
+- It deliberately excludes PM-032 stack-05 source and its staff-recovery regressions. Its only purpose is exact-node differential classification against the final candidate.
+- Do not promote or merge this branch. All PASS/FAIL data from it is comparison evidence only.
+- Differential baseline carries the same PM-027 canonical-deliverable-set proof alignment as the final candidate so node-id comparison does not classify a test-only literal duplication expectation as PM-032 behavior.

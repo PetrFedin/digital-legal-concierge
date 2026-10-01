@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -315,7 +316,7 @@ async def test_admin_resume_uses_original_money_time_and_starts_sla_once(
                 payment_id=int(payment.id),
                 actor_id=7002,
                 decision="resume",
-                comment="Повтор команды после подтверждённого запуска пакета",
+                comment="Календарь и канал доставки проверены администратором",
             )
             assert retry_payment.status == PaymentStatus.PAID
             assert retry_package.sla_started_at == package.sla_started_at
@@ -433,14 +434,13 @@ def test_self_filing_review_has_dedicated_admin_route_and_m2_review_is_scoped():
         "app.api.self_filing_product",
         fromlist=["SELF_FILING_HTML"],
     )
-    source = open(product.__file__, encoding="utf-8").read()
-    payment_review_source = open(
+    source = Path(product.__file__).read_text(encoding="utf-8")
+    payment_review_source = Path(
         __import__(
             "app.api.payment_review_center",
             fromlist=["router"],
-        ).__file__,
-        encoding="utf-8",
-    ).read()
+        ).__file__
+    ).read_text(encoding="utf-8")
 
     assert "/payment-review/{payment_id}/resolve" in source
     assert "can_financial_reconcile" in source

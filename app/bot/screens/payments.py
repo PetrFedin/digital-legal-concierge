@@ -549,7 +549,7 @@ async def start_payment(
 
     if is_m1_payment and not _m1_payment_context_matches(case, code):
         await callback.message.edit_text(
-            Эта кнопка оплаты относится к другому или уже завершённому действию. "
+            "Эта кнопка оплаты относится к другому или уже завершённому действию. "
             "Новый платёж не создавался.",
             reply_markup=one(
                 ("💳 Оплаты", "payments_open"),
@@ -685,7 +685,7 @@ async def start_payment(
             )
         elif code == PaymentCode.M1_SUCCESS_FEE:
             next_step = (
-                После подтверждения фактического поступления расчёты "
+                "После подтверждения фактического поступления расчёты "
                 "будет завершён и дело сможет закрыться."
             )
         else:
