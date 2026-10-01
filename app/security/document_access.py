@@ -16,6 +16,7 @@ from app.models.admin_user import AdminUser
 from app.models.case import Case
 from app.models.document import Document
 from app.models.document_access_grant import DocumentAccessGrant
+from app.models.document_derivative import DERIVATIVE_READY, DocumentDerivative
 from app.security.access_control import (
     ROLE_ADMIN,
     ROLE_LAWYER,
@@ -158,6 +159,65 @@ async def load_authorized_document(
             "envelope_migration_required",
         )
     return document, case
+
+
+async def load_authorized_derivative(
+    db: AsyncSession,
+    *,
+    actor: DocumentActor,
+    derivative_id: int,
+) -> tuple[DocumentDerivative, Document, Case]:
+    """Authorize a derivative only through its immutable source Document/Case."""
+
+    derivative = await db.get(DocumentDerivative, int(derivative_id))
+    if not derivative:
+        raise DocumentAccessError(
+            404,
+            "Производный документ не найден",
+            "derivative_not_found",
+        )
+    source, case = await load_authorized_document(
+        db,
+        actor=actor,
+        document_id=int(derivative.source_document_id),
+    )
+    if (
+        int(derivative.case_id) != int(case.id)
+        or str(derivative.source_sha256 or "") != str(source.sha256 or "")
+    ):
+        raise DocumentAccessError(
+            409,
+            "Связь производного документа с исходником нарушена",
+            "derivative_lineage_mismatch",
+        )
+    if derivative.status != DERIVATIVE_READY:
+        raise DocumentAccessError(
+            409,
+            "Производный документ ещё не готов",
+            "derivative_not_ready",
+        )
+    if (
+        derivative.encryption_status != ENCRYPTION_STATUS
+        or int(derivative.encryption_format_version or 0) != FORMAT_V2
+        or not derivative.file_path
+        or not derivative.sha256
+        or not derivative.encryption_key_id
+        or not derivative.encryption_envelope_id
+        or not derivative.encrypted_data_key
+        or not derivative.encrypted_data_key_nonce
+    ):
+        raise DocumentAccessError(
+            409,
+            "Производный документ не прошёл защищённое хранение",
+            "derivative_envelope_invalid",
+        )
+    if derivative.data_key_destroyed_at is not None:
+        raise DocumentAccessError(
+            410,
+            "Ключ производного документа уничтожен",
+            "derivative_key_destroyed",
+        )
+    return derivative, source, case
 
 
 async def issue_document_grant(
