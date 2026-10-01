@@ -23,6 +23,7 @@ from app.security.file_uploads import (
     preflight_upload,
     quarantine_file,
     safe_filename,
+    validate_downloaded_size,
 )
 from app.security.malware_scanning import MalwareScanner, malware_scanner_from_settings
 
@@ -304,6 +305,15 @@ class LocalStorageService:
         try:
             telegram_file = await bot.get_file(telegram_file_id)
             await bot.download_file(telegram_file.file_path, destination=temporary)
+
+            # Enforce the real byte limit before handing untrusted content to
+            # any scanner or parser. Oversized/empty payloads are deleted
+            # immediately rather than copied into quarantine.
+            try:
+                validate_downloaded_size(temporary, max_bytes=self.max_upload_bytes)
+            except UploadSecurityError:
+                temporary.unlink(missing_ok=True)
+                raise
 
             # DLC-INT-00: bytes stay isolated in .incoming until the malware
             # scanner has returned an admissible verdict. Structural/type checks
