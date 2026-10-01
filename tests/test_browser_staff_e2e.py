@@ -37,6 +37,7 @@ from app.models.user import User
 from app.security.access_control import (
     ROLE_ADMIN,
     ROLE_LAWYER,
+    ROLE_OPERATOR,
     ROLE_SUPERADMIN,
     create_access_token,
     hash_password,
@@ -52,6 +53,9 @@ LAWYER_PASSWORD = "Browser-E2E-Lawyer-2026!"
 LAWYER_EMAIL = "browser-e2e-lawyer@example.test"
 SUPERADMIN_USERNAME = "browser-e2e-superadmin"
 SUPERADMIN_EMAIL = "browser-e2e-superadmin@example.test"
+TECHNICAL_USERNAME = "browser-e2e-technical"
+TECHNICAL_PASSWORD = "Browser-E2E-Technical-2026!"
+TECHNICAL_EMAIL = "browser-e2e-technical@example.test"
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("BROWSER_E2E") != "1",
@@ -104,6 +108,28 @@ async def _upsert_staff() -> None:
             lawyer_account.role = ROLE_LAWYER
             lawyer_account.is_active = True
             lawyer_account.mfa_enabled = False
+
+        technical = await db.scalar(
+            select(AdminUser).where(AdminUser.username == TECHNICAL_USERNAME)
+        )
+        if technical is None:
+            technical = AdminUser(
+                full_name="Browser E2E Technical",
+                username=TECHNICAL_USERNAME,
+                email=TECHNICAL_EMAIL,
+                password_hash=hash_password(TECHNICAL_PASSWORD),
+                role=ROLE_OPERATOR,
+                is_active=True,
+                mfa_enabled=False,
+                session_version=1,
+            )
+            db.add(technical)
+        else:
+            technical.email = TECHNICAL_EMAIL
+            technical.password_hash = hash_password(TECHNICAL_PASSWORD)
+            technical.role = ROLE_OPERATOR
+            technical.is_active = True
+            technical.mfa_enabled = False
 
         superadmin = await db.scalar(
             select(AdminUser).where(AdminUser.username == SUPERADMIN_USERNAME)
@@ -520,6 +546,64 @@ def test_lawyer_browser_is_role_scoped_and_cannot_enter_admin_workdesk() -> None
         page.goto(f"{BASE_URL}/admin/workdesk/ui", wait_until="domcontentloaded")
         assert page.url != f"{BASE_URL}/admin/workdesk/ui"
         assert page.url.startswith((f"{BASE_URL}/admin-ui", f"{BASE_URL}/operator"))
+
+        context.close()
+        browser.close()
+
+
+def test_unsupported_staff_role_has_bounded_recovery_and_safe_logout() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context()
+        page = context.new_page()
+
+        page.goto(f"{BASE_URL}/login", wait_until="domcontentloaded")
+        page.locator('input[name="username"]').fill(TECHNICAL_USERNAME)
+        page.locator('input[name="password"]').fill(TECHNICAL_PASSWORD)
+        page.get_by_role("button", name="Войти в кабинет").click()
+        page.wait_for_url(f"{BASE_URL}/operator")
+
+        expect(page).to_have_title("Нужно настроить рабочий доступ")
+        expect(
+            page.get_by_role("heading", name="Нужно настроить рабочий доступ")
+        ).to_be_visible()
+        expect(
+            page.get_by_text("Техническая или историческая роль", exact=False)
+        ).to_be_visible()
+        assert page.get_by_role("link", name="Дела клиентов").count() == 0
+        assert page.get_by_role("link", name="Рабочий кабинет юриста").count() == 0
+
+        # The recovery owner itself is a bounded 403 page, not a redirect hop.
+        response = page.goto(f"{BASE_URL}/operator", wait_until="domcontentloaded")
+        assert response is not None and response.status == 403
+        assert page.url == f"{BASE_URL}/operator"
+        expect(
+            page.get_by_role("heading", name="Нужно настроить рабочий доступ")
+        ).to_be_visible()
+
+        # /admin-ui remains admin/superadmin-only. Middleware may redirect once
+        # to /operator, but the request must terminate on the same recovery page.
+        response = page.goto(f"{BASE_URL}/admin-ui", wait_until="domcontentloaded")
+        assert response is not None and response.status == 403
+        assert page.url == f"{BASE_URL}/operator"
+        expect(
+            page.get_by_role("heading", name="Нужно настроить рабочий доступ")
+        ).to_be_visible()
+
+        # A technical-only account also cannot render the operational client queue.
+        # This endpoint fails closed instead of exposing the Workdesk HTML/data.
+        response = page.goto(
+            f"{BASE_URL}/admin/workdesk/ui",
+            wait_until="domcontentloaded",
+        )
+        assert response is not None and response.status == 403
+        expect(page.locator("body")).not_to_contain_text("⚖ Дела клиентов")
+
+        page.goto(f"{BASE_URL}/operator", wait_until="domcontentloaded")
+        page.get_by_role("button", name="Выйти и войти заново").click()
+        page.wait_for_url(f"{BASE_URL}/login")
+        page.goto(f"{BASE_URL}/operator", wait_until="domcontentloaded")
+        assert page.url.startswith(f"{BASE_URL}/login")
 
         context.close()
         browser.close()
