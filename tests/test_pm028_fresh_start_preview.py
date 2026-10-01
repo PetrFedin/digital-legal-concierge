@@ -41,7 +41,7 @@ def test_preview_steps_are_isolated_from_durable_case_calculator():
     assert bot.index("calculator_preview.router") < bot.index("common.router")
     assert "👀 БЫСТРЫЙ РАСЧЁТ · БЕЗ СОХРАНЕНИЯ" in preview
 
-    pre_save = preview[: preview.index('@router.callback_query(lambda c: c.data == "preview_calc_save")')]
+    pre_save = preview[: preview.index("async def preview_save(")]
     # Reading the current production rule is allowed. Persistent Case/intake/result
     # materialization is deliberately owned only by preview_save below this split.
     assert "create_case_from_callback(" not in pre_save
