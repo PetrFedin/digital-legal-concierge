@@ -203,8 +203,11 @@ def create_app():
     async def ready():
         from pathlib import Path
 
+        from app.security.malware_scanning import malware_scanner_readiness
+
         key_status = security_key_status()
         backup_freshness = await asyncio.to_thread(backup_freshness_status)
+        malware_scanner = await malware_scanner_readiness()
         provider = payment_provider_name()
         payment_disabled = payments_disabled()
         payment_offline = payments_offline()
@@ -248,6 +251,9 @@ def create_app():
             ),
             "quarantine_retention_valid": (
                 1 <= int(settings.upload_quarantine_retention_days) <= 90
+            ),
+            "document_malware_scanner_ready": bool(
+                malware_scanner.get("available")
             ),
             "document_access_ttl_valid": (
                 30 <= int(settings.document_access_grant_ttl_seconds) <= 300
@@ -350,6 +356,7 @@ def create_app():
                     settings.upload_quarantine_retention_days
                 ),
                 "allowed_formats": ["pdf", "docx", "jpeg", "png"],
+                "malware_scanner": malware_scanner,
                 "encryption_at_rest": True,
                 "encryption_key_id": key_status["active_key_ids"].get(
                     "document_encryption"
