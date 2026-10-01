@@ -226,3 +226,73 @@ Do not:
 11. DLC-INT-10 Optional tamper anchor.
 
 **Implementation instruction:** every external component must remain subordinate to the encrypted case/evidence authority.
+
+## Additional wave — signature evidence, release provenance and tracing
+
+### pyHanko digital-signature verification — ADOPT
+
+Reference: https://github.com/MatthiasValvekens/pyHanko
+
+Add a bounded verification pipeline for PDFs that already contain digital signatures.
+
+Flow:
+
+`admitted source PDF -> signature discovery -> cryptographic verification -> certificate/path/timestamp/revocation evidence -> verification record -> case/document UI`
+
+Persist:
+
+- signature field/index;
+- signer certificate subject/issuer identifiers;
+- digest/signature algorithm;
+- signing/timestamp time where available;
+- validation status;
+- trust/revocation evidence status;
+- validator version;
+- source document checksum.
+
+Important distinction: cryptographic verification can prove that a signature validates against a certificate/trust policy; it does **not** by itself determine the legal effect, authority of the signer or admissibility of the document. Those remain legal/business interpretation.
+
+Never rewrite the original signed PDF before verification.
+
+### Sigstore Cosign release signing — ADOPT/CI
+
+Reference: https://github.com/sigstore/cosign
+
+Sign container/release artefacts after the existing security/test gates.
+
+Target chain:
+
+`source SHA -> CI tests/security scans -> image/build artefact -> SBOM/attestation -> Cosign signature -> deployment`
+
+Production deployment should be able to identify the exact signed artefact digest.
+
+Cosign proves artefact provenance/integrity; it does not replace application-level document signatures or case audit.
+
+### OpenTelemetry Python — ADOPT
+
+Reference: https://github.com/open-telemetry/opentelemetry-python
+
+Trace privacy-safe operational paths:
+
+`request -> auth -> CaseService command -> DB/Redis -> document processor -> provider -> response`
+
+Useful spans:
+
+- document admission;
+- OCR/Docling;
+- timeline rebuild;
+- payment/consultation provider;
+- scheduled retention/deletion job;
+- search indexing.
+
+Do not put extracted legal text, document bodies, authentication tokens or PII into span attributes/events.
+
+### Acceptance extension
+
+- signed PDF verification is reproducible from original checksum + trust policy + validator version;
+- invalid/unknown trust is represented explicitly rather than coerced into valid/invalid legal meaning;
+- deployed release digest has a verifiable signature;
+- traces correlate processing failures without leaking document contents.
+
+**Sequencing:** PDF signature verification follows secure document admission; Cosign follows Trivy/SBOM/release integrity; OpenTelemetry can be added incrementally around the current CaseService and processors.
+
