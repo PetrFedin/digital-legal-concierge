@@ -27,6 +27,23 @@ def _tables(bind) -> set[str]:
 
 def upgrade() -> None:
     bind = op.get_bind()
+
+    if "case_retention_records" in _tables(bind):
+        retention_columns = {
+            item["name"]
+            for item in inspect(bind).get_columns("case_retention_records")
+        }
+        if "derivatives_deleted" not in retention_columns:
+            op.add_column(
+                "case_retention_records",
+                sa.Column(
+                    "derivatives_deleted",
+                    sa.Integer(),
+                    nullable=False,
+                    server_default=sa.text("0"),
+                ),
+            )
+
     if "document_derivatives" in _tables(bind):
         return
 
