@@ -281,6 +281,7 @@ class DocumentService:
         file_name: str,
         reason_code: str,
         sha256: str | None,
+        security_reason: str | None = None,
     ) -> None:
         await add_case_history_event(
             self.db,
@@ -293,6 +294,7 @@ class DocumentService:
                 "file_name": file_name,
                 "reason_code": reason_code,
                 "sha256": sha256,
+                "security_reason": security_reason,
             },
         )
 
