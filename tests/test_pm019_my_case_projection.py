@@ -173,6 +173,7 @@ def test_projection_snapshot_changes_when_payment_or_case_version_changes() -> N
         documents=document_overview,
         consultation=None,
         payments=[payment],
+        self_filing_package=None,
         history_event_id=44,
     )
     payment.status = "PAID"
@@ -182,6 +183,7 @@ def test_projection_snapshot_changes_when_payment_or_case_version_changes() -> N
         documents=document_overview,
         consultation=None,
         payments=[payment],
+        self_filing_package=None,
         history_event_id=44,
     )
     third = _action_key(
@@ -190,6 +192,7 @@ def test_projection_snapshot_changes_when_payment_or_case_version_changes() -> N
         documents=document_overview,
         consultation=None,
         payments=[payment],
+        self_filing_package=None,
         history_event_id=44,
     )
 

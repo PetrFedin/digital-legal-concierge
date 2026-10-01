@@ -924,7 +924,7 @@ function render(){
   :(a.can_financial_reconcile
     ?'Операционная роль: можно сверять фактическую оплату и контролировать состояние услуги. Юридические решения доступны только ответственному юристу.'
     :'Режим просмотра: юридические решения доступны только ответственному юристу.');
- document.getElementById('now').innerHTML='<b>Главное следующее действие:</b> '+esc(c.next_action||'Уточнить статус')+'<br>'+esc(roleNote);
+ document.getElementById('now').innerHTML='<b>Главный следующий шаг:</b> '+esc(c.next_action||'Уточнить статус')+'<br>'+esc(roleNote);
  document.getElementById('facts').innerHTML=[
   ['Регион',p.region],
   ['Email',p.delivery_email],
