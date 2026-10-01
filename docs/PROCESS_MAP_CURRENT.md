@@ -967,3 +967,11 @@ Whenever anything changes:
 - Added bounded CI proof `DLC-INT-00 secure ingest proof` and regressions for clean admission, infected fail-closed ordering, disabled production scanner, hash mismatch, encrypted quarantine, clamd framing, readiness and deployment/preflight contracts.
 - PM-043 / #170 separately tracks the intermittent `aiosqlite` lifecycle/event-loop teardown leak. It is test-infrastructure debt and must not be mixed into DLC-INT-00 or used as a reason to weaken warning policy.
 - Status: `SOURCE_COMPLETE / EXACT_PR_RUNTIME_REQUIRED`. Freeze the map-final PR head and execute the dedicated DLC-INT-00 job plus the existing ordered workflow family before any merge or deployment decision.
+
+
+## 2026-10-01 — DLC-INT-00 first exact PR run / portable-key proof correction
+
+- Exact PR head `ae56bd9501c9fed72f8a2cd96fe224a5c408385f` executed real GitHub-hosted runners. Deployment Readiness, PostgreSQL Concurrency, Telegram Runtime Contracts and Browser Staff E2E passed; Process Map, PM-016, PM-018, PM-019, PM-027, PM-028, PostgreSQL migration/backup/restore and container startup jobs also passed.
+- The dedicated `DLC-INT-00 secure ingest proof` compiled successfully and then failed only two inherited document-upload assertions. Both treated canonical portable `StoredFile.storage_path` values such as `cases/<case_id>/<random>.dlcenc` as host-relative filesystem paths by calling `Path(storage_path)` directly.
+- Production storage behavior was already correct and predates DLC-INT-00: `LocalStorageService` returns portable DB keys and resolves them through `resolve_storage_path(..., expected_case_id=...)`. The two tests were corrected to use that authoritative resolver; no storage/encryption/admission behavior changed.
+- Because test content changed, `ae56bd...` is diagnostic only. The new map-final head must rerun the exact workflow family; no PASS is inherited across the changed SHA.
