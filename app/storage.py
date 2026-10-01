@@ -24,6 +24,7 @@ from app.security.file_uploads import (
     quarantine_file,
     safe_filename,
 )
+from app.security.malware_scanning import MalwareScanner, malware_scanner_from_settings
 
 
 _DOCUMENT_CIPHERTEXT_NAME = re.compile(r"^[0-9a-fA-F]{32}\.dlcenc$")
@@ -38,6 +39,7 @@ class StoredFile:
     sha256: str | None = None
     detected_type: str | None = None
     security_status: str = "VERIFIED"
+    security_reason: str | None = None
     scanned_at: datetime | None = None
     encryption_status: str = ENCRYPTION_STATUS
     encryption_key_id: str | None = None
@@ -67,7 +69,12 @@ class LocalStorageService:
     database layer and is deliberately not embedded in the encrypted file.
     """
 
-    def __init__(self, base_dir: str | None = None):
+    def __init__(
+        self,
+        base_dir: str | None = None,
+        *,
+        malware_scanner: MalwareScanner | None = None,
+    ):
         requested = Path(base_dir or settings.storage_dir)
         if requested.is_symlink():
             raise DocumentEncryptionError(
@@ -77,6 +84,7 @@ class LocalStorageService:
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.incoming_dir = self.base_dir / ".incoming"
         self.incoming_dir.mkdir(parents=True, exist_ok=True)
+        self.malware_scanner = malware_scanner or malware_scanner_from_settings()
         try:
             self.base_dir.chmod(0o700)
             self.incoming_dir.chmod(0o700)
@@ -296,6 +304,11 @@ class LocalStorageService:
         try:
             telegram_file = await bot.get_file(telegram_file_id)
             await bot.download_file(telegram_file.file_path, destination=temporary)
+
+            # DLC-INT-00: bytes stay isolated in .incoming until the malware
+            # scanner has returned an admissible verdict. Structural/type checks
+            # remain a separate second gate and the hashes must agree.
+            malware_scan = await self.malware_scanner.scan(temporary)
             inspection = inspect_upload(
                 temporary,
                 original_name=preflight.safe_name,
@@ -303,6 +316,13 @@ class LocalStorageService:
                 declared_size=file_size,
                 max_bytes=self.max_upload_bytes,
             )
+            if malware_scan.sha256 != inspection.sha256:
+                raise UploadSecurityError(
+                    "malware_scan_hash_mismatch",
+                    "Файл изменился во время проверки безопасности. Загрузите его повторно.",
+                    technical_message="Malware and structural admission hashes differ",
+                    sha256=inspection.sha256,
+                )
 
             case_dir = self.base_dir / "cases" / str(int(case_id))
             case_dir.mkdir(parents=True, exist_ok=True)
@@ -334,7 +354,8 @@ class LocalStorageService:
                 sha256=inspection.sha256,
                 detected_type=inspection.detected_type,
                 security_status="VERIFIED",
-                scanned_at=inspection.scanned_at,
+                security_reason=malware_scan.security_reason,
+                scanned_at=max(inspection.scanned_at, malware_scan.scanned_at),
                 encryption_status=ENCRYPTION_STATUS,
                 encryption_key_id=encryption.key_id,
                 encryption_format_version=encryption.format_version,
@@ -354,7 +375,9 @@ class LocalStorageService:
                             safe_name=preflight.safe_name,
                             case_id=case_id,
                         )
-                    except OSError:
+                    except Exception:
+                        # A failed quarantine operation must never leave rejected
+                        # plaintext in .incoming.
                         temporary.unlink(missing_ok=True)
                 else:
                     temporary.unlink(missing_ok=True)
