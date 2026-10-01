@@ -135,7 +135,7 @@ async def test_stale_transfer_buttons_recover_instead_of_using_missing_data(call
 
     assert "больше не актуален" in callback.message.edits[-1][0]
     assert _callbacks(callback.message.edits[-1][1]) == [
-        "calc_start",
+        "preview_calc_start",
         "my_case_open",
         "nav_home",
     ]
@@ -306,7 +306,7 @@ def test_positive_calculation_result_exposes_case_bound_m1_m2_postpone_and_recal
     callbacks = _callbacks(markup)
 
     assert texts == [
-        "Продолжить ведение дела",
+        "⚖️ Полное ведение дела",
         "🔎 Основания и детализация",
         "💬 Перейти к консультации",
         "Пока изучаю вопрос",
@@ -328,7 +328,7 @@ def test_zero_delay_result_does_not_offer_m1_but_keeps_safe_outcomes():
     callbacks = _callbacks(markup)
     texts = [button.text for row in markup.inline_keyboard for button in row]
 
-    assert "Продолжить ведение дела" not in texts
+    assert "⚖️ Полное ведение дела" not in texts
     assert "calc_continue_m1:v2:77" not in callbacks
     assert callbacks == [
         "calc_details:v2:77",
