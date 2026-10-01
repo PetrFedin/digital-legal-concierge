@@ -590,6 +590,16 @@ def test_unsupported_staff_role_has_bounded_recovery_and_safe_logout() -> None:
             page.get_by_role("heading", name="Нужно настроить рабочий доступ")
         ).to_be_visible()
 
+        # A technical-only account also cannot render the operational client queue.
+        # This endpoint fails closed instead of exposing the Workdesk HTML/data.
+        response = page.goto(
+            f"{BASE_URL}/admin/workdesk/ui",
+            wait_until="domcontentloaded",
+        )
+        assert response is not None and response.status == 403
+        expect(page.locator("body")).not_to_contain_text("⚖ Дела клиентов")
+
+        page.goto(f"{BASE_URL}/operator", wait_until="domcontentloaded")
         page.get_by_role("button", name="Выйти и войти заново").click()
         page.wait_for_url(f"{BASE_URL}/login")
         page.goto(f"{BASE_URL}/operator", wait_until="domcontentloaded")
