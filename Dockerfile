@@ -25,7 +25,7 @@ LABEL org.opencontainers.image.title="Digital Legal Concierge" \
       org.opencontainers.image.created="${BUILD_TIMESTAMP}"
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends postgresql-client ca-certificates \
+    && apt-get install -y --no-install-recommends postgresql-client ca-certificates tesseract-ocr tesseract-ocr-rus \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml constraints.txt README.md alembic.ini ./
