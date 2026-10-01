@@ -19,6 +19,7 @@ from app.models.case_retention import CaseRetentionRecord
 from app.models.consultation import Consultation
 from app.models.document import Document
 from app.models.document_access_grant import DocumentAccessGrant
+from app.models.document_derivative import DocumentDerivative
 from app.models.message import Message
 from app.models.notification import Notification
 from app.models.payment import Payment
@@ -473,16 +474,69 @@ class CaseRetentionService:
             except DocumentEncryptionError as error:
                 raise self._storage_error(error) from error
 
+    def _preflight_derivatives(
+        self,
+        derivatives: list[DocumentDerivative],
+    ) -> None:
+        storage = LocalStorageService()
+        for derivative in derivatives:
+            if not derivative.file_path:
+                continue
+            try:
+                resolved = storage.resolve_storage_path(
+                    derivative.file_path,
+                    expected_case_id=int(derivative.case_id),
+                )
+            except DocumentEncryptionError as error:
+                raise self._storage_error(error) from error
+            if resolved.exists() and not resolved.is_file():
+                raise CaseRetentionError(
+                    "Путь производного документа не является обычным файлом"
+                )
+
+    def _delete_derivative_files(
+        self,
+        derivatives: list[DocumentDerivative],
+    ) -> None:
+        storage = LocalStorageService()
+        for derivative in derivatives:
+            if not derivative.file_path:
+                continue
+            try:
+                storage.discard_stored_file(
+                    derivative.file_path,
+                    expected_case_id=int(derivative.case_id),
+                )
+            except DocumentEncryptionError as error:
+                raise self._storage_error(error) from error
+
     @staticmethod
-    def _content_digest(documents: list[Document]) -> str:
+    def _content_digest(
+        documents: list[Document],
+        derivatives: list[DocumentDerivative] | tuple[()] = (),
+    ) -> str:
         payload = [
             {
+                "kind": "source_document",
                 "document_id": int(document.id),
                 "sha256": str(document.sha256 or ""),
                 "size": int(document.file_size or 0),
             }
             for document in sorted(documents, key=lambda item: int(item.id))
         ]
+        payload.extend(
+            {
+                "kind": "document_derivative",
+                "derivative_id": int(derivative.id),
+                "source_document_id": int(derivative.source_document_id),
+                "derivative_type": str(derivative.derivative_type),
+                "source_sha256": str(derivative.source_sha256 or ""),
+                "sha256": str(derivative.sha256 or ""),
+                "size": int(derivative.file_size or 0),
+                "recipe_id": str(derivative.recipe_id or ""),
+            }
+            for derivative in sorted(derivatives, key=lambda item: int(item.id))
+        )
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
@@ -523,9 +577,19 @@ class CaseRetentionService:
                 .order_by(Document.id.asc())
             )
         ).scalars().all()
+        preflight_derivatives = (
+            await self.db.execute(
+                select(DocumentDerivative)
+                .where(DocumentDerivative.case_id == case.id)
+                .order_by(DocumentDerivative.id.asc())
+            )
+        ).scalars().all()
         try:
             await asyncio.to_thread(
                 self._preflight_documents, list(preflight_documents)
+            )
+            await asyncio.to_thread(
+                self._preflight_derivatives, list(preflight_derivatives)
             )
         except Exception as error:
             record.status = STATUS_FAILED
@@ -630,13 +694,35 @@ class CaseRetentionService:
                     .order_by(Document.id.asc())
                 )
             ).scalars().all()
+            derivatives = (
+                await self.db.execute(
+                    select(DocumentDerivative)
+                    .where(DocumentDerivative.case_id == case.id)
+                    .order_by(DocumentDerivative.id.asc())
+                )
+            ).scalars().all()
             await asyncio.to_thread(self._preflight_documents, list(documents))
-            digest = self._content_digest(list(documents))
+            await asyncio.to_thread(
+                self._preflight_derivatives, list(derivatives)
+            )
+            digest = self._content_digest(
+                list(documents),
+                list(derivatives),
+            )
+            await asyncio.to_thread(
+                self._delete_derivative_files,
+                list(derivatives),
+            )
             await asyncio.to_thread(self._delete_document_files, list(documents))
 
             await self.db.execute(
                 delete(DocumentAccessGrant).where(
                     DocumentAccessGrant.case_id == case.id
+                )
+            )
+            await self.db.execute(
+                delete(DocumentDerivative).where(
+                    DocumentDerivative.case_id == case.id
                 )
             )
             await self.db.execute(delete(Document).where(Document.case_id == case.id))
@@ -695,6 +781,7 @@ class CaseRetentionService:
             record.failed_at = None
             record.last_error = None
             record.documents_deleted = len(documents)
+            record.derivatives_deleted = len(derivatives)
             record.messages_deleted = int(message_result.rowcount or 0)
             record.notifications_deleted = int(notification_result.rowcount or 0)
             record.consultations_anonymized = len(primary_consultations)
@@ -709,6 +796,7 @@ class CaseRetentionService:
                 new_value={
                     "record_id": record.id,
                     "documents_deleted": record.documents_deleted,
+                    "derivatives_deleted": record.derivatives_deleted,
                     "messages_deleted": record.messages_deleted,
                     "notifications_deleted": record.notifications_deleted,
                     "consultations_anonymized": record.consultations_anonymized,
