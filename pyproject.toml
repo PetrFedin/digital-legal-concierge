@@ -25,6 +25,8 @@ dependencies = [
   "cryptography>=42",
   "qrcode[pil]>=7.4",
   "packaging>=26.2",
+  "pikepdf[pdfa]>=10.16,<10.17",
+  "ocrmypdf>=17.13,<17.14",
 ]
 
 [project.optional-dependencies]
