@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.config import settings
+from app.domain.documents import staff_upload_storage
 from app.security.document_encryption import is_encrypted_file
 from app.security.file_uploads import UploadSecurityError
 from app.security.malware_scanning import (
@@ -169,6 +170,79 @@ async def test_infected_file_never_reaches_structural_parser_or_case_storage(
         "malware=INFECTED;engine=test-scanner;version=1;signatures=fixture"
     )
     assert not (storage_root / "cases" / "12").exists()
+    assert not any((storage_root / ".incoming").iterdir())
+
+
+@pytest.mark.asyncio
+async def test_clean_staff_upload_uses_same_malware_before_structural_boundary(
+    tmp_path,
+    monkeypatch,
+):
+    configure_keys(monkeypatch)
+    payload = valid_pdf()
+    storage = LocalStorageService(
+        str(tmp_path / "storage"),
+        malware_scanner=CleanScanner(),
+    )
+    monkeypatch.setattr(staff_upload_storage, "LocalStorageService", lambda: storage)
+
+    async def chunks():
+        yield payload
+
+    stored = await staff_upload_storage.save_staff_upload(
+        chunks=chunks(),
+        case_id=21,
+        original_name="staff-evidence.pdf",
+        mime_type="application/pdf",
+        declared_size=len(payload),
+    )
+
+    assert stored.sha256 == hashlib.sha256(payload).hexdigest()
+    assert stored.security_reason == (
+        "malware=CLEAN;engine=test-scanner;version=1;signatures=fixture"
+    )
+    target = storage.resolve_storage_path(
+        stored.storage_path,
+        expected_case_id=21,
+    )
+    assert is_encrypted_file(target)
+
+
+@pytest.mark.asyncio
+async def test_infected_staff_upload_never_reaches_structural_parser(
+    tmp_path,
+    monkeypatch,
+):
+    configure_keys(monkeypatch)
+    payload = valid_pdf()
+    storage_root = tmp_path / "storage"
+    storage = LocalStorageService(
+        str(storage_root),
+        malware_scanner=InfectedScanner(),
+    )
+    monkeypatch.setattr(staff_upload_storage, "LocalStorageService", lambda: storage)
+
+    def parser_must_not_run(*args, **kwargs):
+        raise AssertionError("staff structural parser ran before malware admission")
+
+    monkeypatch.setattr(staff_upload_storage, "inspect_upload", parser_must_not_run)
+
+    async def chunks():
+        yield payload
+
+    with pytest.raises(UploadSecurityError) as error:
+        await staff_upload_storage.save_staff_upload(
+            chunks=chunks(),
+            case_id=22,
+            original_name="infected-staff.pdf",
+            mime_type="application/pdf",
+            declared_size=len(payload),
+        )
+
+    assert error.value.code == "malware_detected"
+    assert error.value.quarantine_path
+    assert is_encrypted_file(Path(error.value.quarantine_path))
+    assert not (storage_root / "cases" / "22").exists()
     assert not any((storage_root / ".incoming").iterdir())
 
 
