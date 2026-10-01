@@ -370,6 +370,7 @@ jobs:
           python -m compileall -q \
             app/security/malware_scanning.py \
             app/security/file_uploads.py \
+            app/security/document_scanning.py \
             app/storage.py \
             app/domain/documents/document_service.py \
             app/domain/documents/staff_upload_storage.py \
@@ -377,6 +378,7 @@ jobs:
             app/main.py \
             scripts/production_preflight.py \
             tests/test_dlc_int_00_secure_ingest.py \
+            tests/test_dlc_int_00_legacy_rescan_fence.py \
             tests/test_document_upload_security.py \
             tests/test_document_storage_portability.py
 
@@ -384,6 +386,7 @@ jobs:
         run: |
           pytest -q \
             tests/test_dlc_int_00_secure_ingest.py \
+            tests/test_dlc_int_00_legacy_rescan_fence.py \
             tests/test_document_upload_security.py \
             tests/test_document_storage_portability.py \
             tests/test_docker_only_deployment_contract.py
