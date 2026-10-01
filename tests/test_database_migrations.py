@@ -5,7 +5,7 @@ from pathlib import Path
 
 from app.db.migrations import run_database_migrations
 
-HEAD_REVISION = "20261001_0031"
+HEAD_REVISION = "20261001_0032"
 RETENTION_TRIGGER = "trg_retention_destroy_document_keys"
 MESSAGE_SOURCE_INDEX = "uq_messages_sender_source_message"
 DOCUMENT_REVIEW_STARTED_INDEX = "ix_documents_review_started_at"
@@ -63,6 +63,7 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "lawyers",
         "cases",
         "documents",
+        "document_derivatives",
         "messages",
         "payments",
         "payment_webhook_events",
@@ -110,6 +111,31 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "encrypted_at",
         "review_started_at",
     }.issubset(column_names(database_path, "documents"))
+    assert {
+        "case_id",
+        "source_document_id",
+        "derivative_type",
+        "status",
+        "source_sha256",
+        "file_path",
+        "sha256",
+        "tool_name",
+        "tool_version",
+        "recipe_id",
+        "provenance",
+        "page_count",
+        "has_usable_text",
+        "encryption_status",
+        "encryption_key_id",
+        "encryption_format_version",
+        "encryption_envelope_id",
+        "encrypted_data_key",
+        "encrypted_data_key_nonce",
+        "data_key_destroyed_at",
+        "encrypted_at",
+        "error_code",
+        "error_detail",
+    }.issubset(column_names(database_path, "document_derivatives"))
     assert "source_message_id" in column_names(database_path, "messages")
     assert MESSAGE_SOURCE_INDEX in index_names(database_path, "messages")
     assert "service_mode" in column_names(database_path, "cases")
@@ -126,6 +152,7 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "executed_at",
         "attempt_count",
         "documents_deleted",
+        "derivatives_deleted",
         "content_digest",
     }.issubset(column_names(database_path, "case_retention_records"))
     assert {
