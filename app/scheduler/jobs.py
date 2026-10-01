@@ -227,7 +227,7 @@ class SchedulerJobs:
     async def build_document_derivatives(self) -> dict[str, int]:
         return await DocumentDerivativeService(
             self.db
-        ).build_missing_pdf_derivatives(limit=10)
+        ).build_missing_pdf_derivatives(limit=5)
 
     async def cleanup_security_state(self) -> dict[str, object]:
         return {
