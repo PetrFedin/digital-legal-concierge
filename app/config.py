@@ -81,6 +81,12 @@ class Settings(BaseSettings):
     clamav_port: int = 3310
     clamav_timeout_seconds: int = 15
 
+    # DLC-INT-01 PDF derivative authority. OCR is invoked only when pikepdf
+    # content inspection cannot establish a usable searchable text layer.
+    document_pdf_min_text_bytes: int = 32
+    document_ocr_languages: str = "rus+eng"
+    document_ocr_timeout_seconds: int = 180
+
     document_access_grant_ttl_seconds: int = 180
     document_access_max_active_grants: int = 5
     payment_webhook_secret: str = "dev-payment-secret"
