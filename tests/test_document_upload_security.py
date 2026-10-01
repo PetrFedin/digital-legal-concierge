@@ -236,7 +236,10 @@ async def test_storage_uses_random_container_and_envelope_encryption(tmp_path, m
     )
 
     expected_hash = hashlib.sha256(payload).hexdigest()
-    target = Path(stored.storage_path)
+    target = storage.resolve_storage_path(
+        stored.storage_path,
+        expected_case_id=42,
+    )
     assert stored.sha256 == expected_hash
     assert stored.security_status == "VERIFIED"
     assert stored.security_reason == (
@@ -296,10 +299,21 @@ async def test_identical_uploads_never_share_ciphertext_and_can_be_discarded(
     assert first.sha256 == second.sha256
     assert first.storage_path != second.storage_path
     assert first.encryption_envelope_id != second.encryption_envelope_id
-    assert Path(first.storage_path).read_bytes() != Path(second.storage_path).read_bytes()
-    assert storage.discard_stored_file(second.storage_path) is True
-    assert not Path(second.storage_path).exists()
-    assert Path(first.storage_path).is_file()
+    first_path = storage.resolve_storage_path(
+        first.storage_path,
+        expected_case_id=9,
+    )
+    second_path = storage.resolve_storage_path(
+        second.storage_path,
+        expected_case_id=9,
+    )
+    assert first_path.read_bytes() != second_path.read_bytes()
+    assert storage.discard_stored_file(
+        second.storage_path,
+        expected_case_id=9,
+    ) is True
+    assert not second_path.exists()
+    assert first_path.is_file()
 
 
 @pytest.mark.asyncio
