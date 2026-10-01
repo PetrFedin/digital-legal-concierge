@@ -25,7 +25,11 @@ from app.security.file_uploads import (
     safe_filename,
     validate_downloaded_size,
 )
-from app.security.malware_scanning import MalwareScanner, malware_scanner_from_settings
+from app.security.malware_scanning import (
+    MalwareScanner,
+    assert_malware_scan_admitted,
+    malware_scanner_from_settings,
+)
 
 
 _DOCUMENT_CIPHERTEXT_NAME = re.compile(r"^[0-9a-fA-F]{32}\.dlcenc$")
@@ -319,6 +323,7 @@ class LocalStorageService:
             # scanner has returned an admissible verdict. Structural/type checks
             # remain a separate second gate and the hashes must agree.
             malware_scan = await self.malware_scanner.scan(temporary)
+            assert_malware_scan_admitted(malware_scan)
             inspection = inspect_upload(
                 temporary,
                 original_name=preflight.safe_name,
