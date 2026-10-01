@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 
+from app.security.document_encryption import encrypt_file
+
 
 @dataclass(frozen=True)
 class AllowedUploadType:
@@ -478,23 +480,44 @@ def quarantine_file(
     safe_name: str,
     case_id: int,
 ) -> str:
+    """Move rejected bytes into encrypted quarantine, never plaintext retention."""
+
     quarantine_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        quarantine_dir.chmod(0o700)
+    except OSError:
+        pass
+
     identifier = uuid.uuid4().hex
-    target = quarantine_dir / f"{identifier}.quarantine"
+    target = quarantine_dir / f"{identifier}.quarantine.dlcenc"
     metadata_path = quarantine_dir / f"{identifier}.json"
-    shutil.move(str(source), target)
+
+    encryption = encrypt_file(
+        source,
+        target,
+        expected_sha256=error.sha256,
+    )
+    source.unlink(missing_ok=True)
     try:
         target.chmod(0o600)
     except OSError:
         pass
+
     metadata = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "case_id": int(case_id),
         "safe_name": safe_name,
         "reason_code": error.code,
         "technical_message": error.technical_message[:500],
-        "sha256": error.sha256,
+        "sha256": encryption.sha256,
         "quarantine_file": target.name,
+        "encryption_status": "ENCRYPTED",
+        "encryption_key_id": encryption.key_id,
+        "encryption_format_version": encryption.format_version,
+        "encryption_envelope_id": encryption.envelope_id,
+        "encrypted_data_key": encryption.encrypted_data_key,
+        "encrypted_data_key_nonce": encryption.encrypted_data_key_nonce,
+        "encrypted_at": encryption.encrypted_at.isoformat(),
     }
     metadata_path.write_text(
         json.dumps(metadata, ensure_ascii=False, separators=(",", ":")),
