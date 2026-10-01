@@ -767,6 +767,37 @@ class DocumentDerivativeService:
             ocr_required=True,
         )
 
+    async def _needs_pdf_derivative_work(self, document_id: int) -> bool:
+        source = await self.db.get(Document, int(document_id))
+        if not source or not source.sha256:
+            return False
+        pike_version = str(getattr(pikepdf, "__version__", metadata.version("pikepdf")))
+        sanitized = await self._existing_ready(
+            source_document_id=int(source.id),
+            derivative_type=DERIVATIVE_SANITIZED_PDF,
+            source_sha256=str(source.sha256),
+            tool_name="pikepdf",
+            tool_version=pike_version,
+            recipe_id=SANITIZE_RECIPE_ID,
+        )
+        if sanitized is None:
+            return True
+        if bool(sanitized.has_usable_text):
+            return False
+        try:
+            ocr_version = self.ocr_executor.tool_version
+        except DocumentDerivativeError:
+            return True
+        ocr = await self._existing_ready(
+            source_document_id=int(source.id),
+            derivative_type=DERIVATIVE_OCR_PDF,
+            source_sha256=str(source.sha256),
+            tool_name="ocrmypdf",
+            tool_version=ocr_version,
+            recipe_id=_ocr_recipe_id(),
+        )
+        return ocr is None
+
     async def build_missing_pdf_derivatives(
         self,
         *,
@@ -799,6 +830,8 @@ class DocumentDerivativeService:
         for document_id in candidate_ids:
             if result["processed"] + result["failed"] >= max_items:
                 break
+            if not await self._needs_pdf_derivative_work(int(document_id)):
+                continue
             try:
                 built = await self.ensure_pdf_derivatives(int(document_id))
             except (DocumentDerivativeError, DocumentEncryptionError, OSError, ValueError):
