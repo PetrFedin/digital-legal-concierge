@@ -167,6 +167,7 @@ def test_real_consultation_outcome_to_m1_is_recoverable_and_idempotent() -> None
             lawyer_id = int(lawyer.id)
             case_id = int(case.id)
             consultation_id = int(consultation.id)
+            slot_id = int(slot.id)
             await db.commit()
 
         result_text = (
@@ -180,6 +181,7 @@ def test_real_consultation_outcome_to_m1_is_recoverable_and_idempotent() -> None
                 lawyer_id=lawyer_id,
                 result=result_text,
                 decision="to_m1",
+                expected_slot_id=slot_id,
             )
             assert completed.status == ConsultationStatus.DONE
             await db.commit()
@@ -191,6 +193,7 @@ def test_real_consultation_outcome_to_m1_is_recoverable_and_idempotent() -> None
                 lawyer_id=lawyer_id,
                 result=result_text,
                 decision="to_m1",
+                expected_slot_id=slot_id,
             )
             assert replay.status == ConsultationStatus.DONE
             await db.commit()
