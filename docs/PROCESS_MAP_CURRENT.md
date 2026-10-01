@@ -994,3 +994,14 @@ Whenever anything changes:
 - Added a dedicated real-sidecar CI job `DLC-INT-00 ClamAV sidecar integration` using the pinned official `clamav/clamav:1.5.4-debian` image. It verifies live clamd clean admission, production readiness/PING and rejection of the harmless EICAR antivirus test signature through the actual INSTREAM adapter.
 - Existing unit/protocol tests remain as deterministic negative-path proof; the real-sidecar job closes the gap between mocked protocol behavior and the deployment-side ClamAV process.
 - All previous exact heads are now diagnostic only. Freeze this map-final commit and rerun the complete workflow family; do not inherit PASS across the changed source/test/workflow SHA.
+
+
+## 2026-10-01 — DLC-INT-00 unified client/staff admission boundary
+
+- Closed the remaining ingress inconsistency: staff HTTP uploads now use the same malware-admission authority as Telegram uploads before any structural/type parser runs.
+- Both client and staff paths now enforce the same sequence: real-byte limit → scanner verdict → explicit admissibility check → structural/type validation → independent SHA-256 agreement → envelope encryption → portable Case storage key.
+- A scanner result object is no longer implicitly trusted merely because `scan(...)` returned. `assert_malware_scan_admitted(...)` permits only `CLEAN`, plus the explicitly configured non-production bypass outside production; every other returned verdict fails closed.
+- Staff accepted uploads now persist the same normalized scanner provenance in `StoredFile.security_reason`; staff hash-mismatch rejection also preserves scanner provenance.
+- Telegram hash-mismatch rejection now preserves scanner provenance as well, so rejected evidence remains attributable to the exact scanner state even when structural and scanner hashes disagree.
+- Added bounded regressions proving infected staff uploads never reach `inspect_upload(...)`, accepted staff uploads preserve malware provenance, and the existing portable-key storage contract remains intact.
+- The previous exact head `042b31792df34c9f9c064add66b4d3967c8dcc72` is diagnostic only because the ingress source and tests changed after it. Freeze this process-map commit as the next exact candidate and rerun the complete workflow family; do not inherit PASS across the changed SHA.
