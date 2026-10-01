@@ -37,6 +37,14 @@ from app.security.document_encryption import (
 from app.storage import LocalStorageService
 
 
+SANITIZE_RECIPE_ID = "dlc-int-01-pdf-sanitize-v1"
+
+
+def _ocr_recipe_id() -> str:
+    languages = str(settings.document_ocr_languages or "rus+eng").strip() or "rus+eng"
+    return f"dlc-int-01-ocr-v1:{languages}:pdf:o0:skip-text"[:128]
+
+
 class DocumentDerivativeError(RuntimeError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -371,6 +379,7 @@ class DocumentDerivativeService:
         source_sha256: str,
         tool_name: str,
         tool_version: str,
+        recipe_id: str,
     ) -> DocumentDerivative | None:
         return (
             await self.db.execute(
@@ -381,6 +390,7 @@ class DocumentDerivativeService:
                     DocumentDerivative.source_sha256 == source_sha256,
                     DocumentDerivative.tool_name == tool_name,
                     DocumentDerivative.tool_version == tool_version,
+                    DocumentDerivative.recipe_id == recipe_id,
                     DocumentDerivative.status == DERIVATIVE_READY,
                 )
                 .order_by(DocumentDerivative.id.desc())
@@ -424,6 +434,7 @@ class DocumentDerivativeService:
         sha256: str,
         tool_name: str,
         tool_version: str,
+        recipe_id: str,
         page_count: int,
         has_usable_text: bool,
         provenance: dict,
@@ -434,6 +445,7 @@ class DocumentDerivativeService:
             source_sha256=str(source.sha256),
             tool_name=tool_name,
             tool_version=tool_version,
+            recipe_id=recipe_id,
         )
         if existing:
             return existing
@@ -458,6 +470,7 @@ class DocumentDerivativeService:
                 sha256=sha256,
                 tool_name=tool_name,
                 tool_version=tool_version,
+                recipe_id=recipe_id,
                 provenance=provenance,
                 page_count=page_count,
                 has_usable_text=has_usable_text,
@@ -496,6 +509,7 @@ class DocumentDerivativeService:
                 "sha256": sha256,
                 "tool": tool_name,
                 "tool_version": tool_version,
+                "recipe_id": recipe_id,
                 "page_count": page_count,
                 "has_usable_text": has_usable_text,
             },
@@ -516,6 +530,7 @@ class DocumentDerivativeService:
             source_sha256=str(source.sha256),
             tool_name="pikepdf",
             tool_version=pike_version,
+            recipe_id=SANITIZE_RECIPE_ID,
         )
         if existing_sanitized:
             sanitized = existing_sanitized
@@ -528,6 +543,7 @@ class DocumentDerivativeService:
                 sha256=result.sha256,
                 tool_name="pikepdf",
                 tool_version=pike_version,
+                recipe_id=SANITIZE_RECIPE_ID,
                 page_count=result.page_count,
                 has_usable_text=result.has_usable_text,
                 provenance={
@@ -555,6 +571,7 @@ class DocumentDerivativeService:
             source_sha256=str(source.sha256),
             tool_name="ocrmypdf",
             tool_version=ocr_version,
+            recipe_id=_ocr_recipe_id(),
         )
         if existing_ocr:
             return DerivativeBuildResult(
@@ -592,6 +609,7 @@ class DocumentDerivativeService:
             sha256=ocr_result.sha256,
             tool_name="ocrmypdf",
             tool_version=ocr_result.tool_version,
+            recipe_id=_ocr_recipe_id(),
             page_count=ocr_result.page_count,
             has_usable_text=ocr_result.has_usable_text,
             provenance={
