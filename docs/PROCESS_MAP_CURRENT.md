@@ -895,4 +895,4 @@ Whenever anything changes:
 - It carries the same PM-042 evidence-unblock repairs as the final correction candidate: inherited Python syntax repairs, exact-slot/preview/snapshot proof alignment, isolated split-compose test-image fix and the bounded PM-027 focused-proof/copy corrections.
 - It deliberately excludes PM-032 stack-05 source and its staff-recovery regressions. Its only purpose is exact-node differential classification against the final candidate.
 - Do not promote or merge this branch. All PASS/FAIL data from it is comparison evidence only.
-
+- Differential baseline carries the same PM-027 canonical-deliverable-set proof alignment as the final candidate so node-id comparison does not classify a test-only literal duplication expectation as PM-032 behavior.
