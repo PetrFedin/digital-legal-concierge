@@ -809,6 +809,7 @@ async def upload(message: Message, state: FSMContext, db):
             sha256=stored.sha256,
             detected_type=stored.detected_type,
             security_status=stored.security_status,
+            security_reason=stored.security_reason,
             scanned_at=stored.scanned_at,
             encryption_status=stored.encryption_status,
             encryption_key_id=stored.encryption_key_id,
