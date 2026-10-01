@@ -27,6 +27,7 @@ dependencies = [
   "packaging>=26.2",
   "pikepdf[pdfa]>=10.16,<10.17",
   "ocrmypdf>=17.13,<17.14",
+  "pdfminer.six>=20260107,<20260108",
 ]
 
 [project.optional-dependencies]
