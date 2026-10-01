@@ -370,6 +370,7 @@ jobs:
           python -m compileall -q \
             app/security/malware_scanning.py \
             app/security/file_uploads.py \
+            app/security/document_scanning.py \
             app/storage.py \
             app/domain/documents/document_service.py \
             app/domain/documents/staff_upload_storage.py \
@@ -377,6 +378,7 @@ jobs:
             app/main.py \
             scripts/production_preflight.py \
             tests/test_dlc_int_00_secure_ingest.py \
+            tests/test_dlc_int_00_legacy_rescan_fence.py \
             tests/test_document_upload_security.py \
             tests/test_document_storage_portability.py
 
@@ -384,6 +386,7 @@ jobs:
         run: |
           pytest -q \
             tests/test_dlc_int_00_secure_ingest.py \
+            tests/test_dlc_int_00_legacy_rescan_fence.py \
             tests/test_document_upload_security.py \
             tests/test_document_storage_portability.py \
             tests/test_docker_only_deployment_contract.py
@@ -429,6 +432,92 @@ jobs:
 
       - name: Prove real clamd clean and infected verdicts
         run: pytest -q tests/test_dlc_int_00_clamav_integration.py
+
+  dlc-int-01-pdf-derivative-proof:
+    name: DLC-INT-01 PDF derivative authority
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      APP_ENV: test
+      DATABASE_URL: sqlite+aiosqlite:///./dlc_int_01_ci.db
+      STORAGE_DIR: /tmp/dlc-int-01-storage
+      BOT_TOKEN: CHANGE_ME
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+      DOCUMENT_ENCRYPTION_KEY_ID: ci-dlc-int-01-documents
+      DOCUMENT_ENCRYPTION_KEY: ci-dlc-int-01-document-key-012345678901234567890123456789
+      AUDIT_INTEGRITY_KEY_ID: ci-dlc-int-01-audit
+      AUDIT_INTEGRITY_KEY: ci-dlc-int-01-audit-key-012345678901234567890123456789
+      SECURITY_HMAC_KEY_ID: ci-dlc-int-01-hmac
+      SECURITY_HMAC_KEY: ci-dlc-int-01-hmac-key-012345678901234567890123456789
+      DOCUMENT_OCR_LANGUAGES: eng
+      DOCUMENT_PDF_MIN_TEXT_BYTES: "12"
+      DOCUMENT_OCR_TIMEOUT_SECONDS: "120"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[test]"
+
+      - name: Compile DLC-INT-01 authority
+        run: |
+          python -m compileall -q \
+            app/models/document_derivative.py \
+            app/domain/documents/document_derivative_service.py \
+            app/security/document_derivative_runtime.py \
+            app/security/document_access.py \
+            app/security/document_key_rotation.py \
+            app/domain/retention/case_retention_service.py \
+            migrations/versions/20261001_0032_document_derivatives.py \
+            tests/test_dlc_int_01_pdf_derivatives.py \
+            tests/test_dlc_int_01_derivative_authority.py
+
+      - name: Prove migration 0032 and ORM parity
+        run: |
+          rm -f dlc_int_01_ci.db
+          alembic upgrade head
+          alembic current
+          alembic check
+
+      - name: Run DLC-INT-01 bounded proof
+        run: |
+          pytest -q \
+            tests/test_dlc_int_01_pdf_derivatives.py \
+            tests/test_dlc_int_01_derivative_authority.py \
+            tests/test_database_migrations.py
+
+  dlc-int-01-ocr-runtime:
+    name: DLC-INT-01 real OCR runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Build isolated OCR-capable test image
+        run: docker build --pull -f Dockerfile.test -t digital-legal-concierge:dlc-int-01 .
+
+      - name: Verify Tesseract languages and OCRmyPDF image-only conversion
+        run: |
+          docker run --rm digital-legal-concierge:dlc-int-01 tesseract --list-langs
+          docker run --rm \
+            -e OCR_INTEGRATION=1 \
+            -e DOCUMENT_OCR_LANGUAGES=eng \
+            -e DOCUMENT_PDF_MIN_TEXT_BYTES=8 \
+            -e DOCUMENT_OCR_TIMEOUT_SECONDS=120 \
+            digital-legal-concierge:dlc-int-01 \
+            pytest -q tests/test_dlc_int_01_ocr_integration.py
 
   sqlite-tests:
     name: SQLite application tests
