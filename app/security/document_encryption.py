@@ -335,6 +335,21 @@ def encrypted_file_metadata(path: str | Path) -> EncryptionMetadata:
     raise DocumentEncryptionError("Файл не имеет поддерживаемого формата шифрования")
 
 
+def encrypt_bytes(
+    plaintext: bytes,
+    target: str | Path,
+    *,
+    expected_sha256: str | None = None,
+) -> EncryptionMetadata:
+    """Envelope-encrypt already-authorized derived bytes without plaintext temp files."""
+
+    return _write_v2_bytes(
+        bytes(plaintext),
+        Path(target),
+        expected_sha256=expected_sha256,
+    )
+
+
 def encrypt_file(
     source: str | Path,
     target: str | Path,
