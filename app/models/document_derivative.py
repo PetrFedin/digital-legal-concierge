@@ -32,6 +32,7 @@ class DocumentDerivative(Base, TimestampMixin):
             "source_sha256",
             "tool_name",
             "tool_version",
+            "recipe_id",
             name="uq_document_derivative_reproducible_identity",
         ),
         Index(
@@ -71,6 +72,7 @@ class DocumentDerivative(Base, TimestampMixin):
 
     tool_name: Mapped[str] = mapped_column(String(64), nullable=False)
     tool_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    recipe_id: Mapped[str] = mapped_column(String(128), nullable=False)
     provenance: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     has_usable_text: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
