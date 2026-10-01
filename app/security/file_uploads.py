@@ -211,6 +211,20 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def validate_downloaded_size(path: Path, *, max_bytes: int) -> int:
+    """Enforce the real downloaded-byte limit before malware scanning/parsing."""
+
+    size = path.stat().st_size
+    if size <= 0:
+        raise UploadSecurityError("empty_file", "Файл пустой. Прикрепите другой документ.")
+    if size > max_bytes:
+        raise UploadSecurityError(
+            "file_too_large",
+            f"Файл слишком большой. Максимальный размер — {max_bytes // (1024 * 1024)} МБ.",
+        )
+    return size
+
+
 def _detect_type(header: bytes) -> AllowedUploadType | None:
     if header.startswith(b"%PDF-"):
         return PDF
@@ -419,14 +433,7 @@ def inspect_upload(
         declared_size=declared_size,
         max_bytes=max_bytes,
     )
-    size = path.stat().st_size
-    if size <= 0:
-        raise UploadSecurityError("empty_file", "Файл пустой. Прикрепите другой документ.")
-    if size > max_bytes:
-        raise UploadSecurityError(
-            "file_too_large",
-            f"Файл слишком большой. Максимальный размер — {max_bytes // (1024 * 1024)} МБ.",
-        )
+    size = validate_downloaded_size(path, max_bytes=max_bytes)
 
     digest = _sha256(path)
     with path.open("rb") as source:
