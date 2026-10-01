@@ -296,3 +296,116 @@ Do not put extracted legal text, document bodies, authentication tokens or PII i
 
 **Sequencing:** PDF signature verification follows secure document admission; Cosign follows Trivy/SBOM/release integrity; OpenTelemetry can be added incrementally around the current CaseService and processors.
 
+## Additional wave — procedural deadlines, evidence bundles and legal-source versioning
+
+This wave adds operational legal controls around the existing CaseService and evidence authority. It must not turn the product into an autonomous legal-decision system.
+
+### Procedural Deadline Authority — ADOPT
+
+Calendar reference: https://github.com/workalendar/workalendar
+
+Create native deadline records linked to a case/event/legal basis:
+
+- deadline ID/type;
+- triggering event/date;
+- calculation rule/version;
+- jurisdiction/calendar;
+- business-day/holiday rule;
+- calculated due date;
+- manual override + reason;
+- source/legal-basis reference;
+- responsible person;
+- reminder/escalation state;
+- completed/missed status.
+
+Flow:
+
+timeline event -> applicable deadline rule -> calculated candidate -> human/CaseService confirmation -> reminders -> completion evidence
+
+Workalendar can provide business-day/holiday mechanics where its jurisdiction coverage is applicable, but the application must version the exact calendar/rule used.
+
+A calculated date is assistance. It must remain possible to override it with an explicit reason because contractual/judicial rules can differ from generic working-day calendars.
+
+### Court / Counsel Evidence Bundle — ADOPT
+
+Create a deterministic export package for an authorised case snapshot:
+
+case snapshot -> evidence selection -> chronology -> document manifest -> checksums -> generated index -> export bundle
+
+Bundle manifest should include:
+
+- case ID + snapshot version;
+- generated_at;
+- included document IDs;
+- original checksums;
+- signature-verification status where present;
+- timeline event references;
+- extracted-page anchors;
+- redaction status;
+- bundle checksum.
+
+The bundle is a derived export. It does not replace encrypted originals or alter retention/legal-hold state.
+
+### Legal Source Registry — ADOPT
+
+Create versioned references for laws, contract clauses, court/authority materials and internal templates used by calculations/explanations.
+
+Store:
+
+- source type;
+- title/identifier;
+- jurisdiction;
+- effective-from/to;
+- source URL/reference;
+- retrieved/verified date;
+- text excerpt/hash where legally permitted;
+- supersedes/superseded_by;
+- reviewer.
+
+Case projections and generated drafts should reference the exact source version used.
+
+Do not silently rewrite historical case reasoning when a law/template changes; new analysis gets a new source version.
+
+### Document Redline / Version Comparison — ADOPT
+
+Use a bounded text/structure comparison layer for:
+
+- contract version vs amendment;
+- claim draft revisions;
+- developer/counterparty response vs prior version;
+- generated document before/after counsel edits.
+
+Persist comparison metadata:
+
+- left/right document versions;
+- extraction versions;
+- diff engine/version;
+- created_at;
+- reviewer notes.
+
+The diff is a navigation aid. Legal meaning of a changed clause remains a human/legal interpretation.
+
+### Deadline + Timeline integration
+
+Deadline state should appear on My Case Projection & Next Action as:
+
+- next due item;
+- source trigger;
+- calculated/confirmed date;
+- confidence/status;
+- required action;
+- supporting source.
+
+Never state an unconfirmed procedural date as guaranteed where the rule depends on facts or court discretion.
+
+### Additional acceptance
+
+- deadline calculations are reproducible from trigger + rule/calendar version;
+- overrides are explicit/audited;
+- an evidence bundle can be regenerated from a case snapshot and reconciles to source checksums;
+- historical legal-source versions remain available;
+- redline never modifies original evidence;
+- reminders use existing notification/scheduler authority.
+
+**Sequencing:** Legal Timeline first -> Deadline Authority -> evidence bundles/source registry -> redline/UI. pyHanko/OCR/search remain subordinate evidence processors.
+
