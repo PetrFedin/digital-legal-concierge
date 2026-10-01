@@ -59,6 +59,7 @@ def upgrade() -> None:
         sa.Column("sha256", sa.String(length=64), nullable=True),
         sa.Column("tool_name", sa.String(length=64), nullable=False),
         sa.Column("tool_version", sa.String(length=64), nullable=False),
+        sa.Column("recipe_id", sa.String(length=128), nullable=False),
         sa.Column("provenance", sa.JSON(), nullable=False),
         sa.Column("page_count", sa.Integer(), nullable=True),
         sa.Column("has_usable_text", sa.Boolean(), nullable=True),
@@ -100,6 +101,7 @@ def upgrade() -> None:
             "source_sha256",
             "tool_name",
             "tool_version",
+            "recipe_id",
             name="uq_document_derivative_reproducible_identity",
         ),
     )
