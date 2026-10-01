@@ -372,17 +372,20 @@ jobs:
             app/security/file_uploads.py \
             app/storage.py \
             app/domain/documents/document_service.py \
+            app/domain/documents/staff_upload_storage.py \
             app/bot/screens/documents.py \
             app/main.py \
             scripts/production_preflight.py \
             tests/test_dlc_int_00_secure_ingest.py \
-            tests/test_document_upload_security.py
+            tests/test_document_upload_security.py \
+            tests/test_document_storage_portability.py
 
       - name: Run DLC-INT-00 bounded regression proof
         run: |
           pytest -q \
             tests/test_dlc_int_00_secure_ingest.py \
             tests/test_document_upload_security.py \
+            tests/test_document_storage_portability.py \
             tests/test_docker_only_deployment_contract.py
 
   dlc-int-00-clamav-sidecar:
