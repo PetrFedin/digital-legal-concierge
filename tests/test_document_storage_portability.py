@@ -263,7 +263,7 @@ def test_staff_upload_returns_portable_storage_key(
             safe_name="evidence.pdf",
             mime_type="application/pdf",
             size_bytes=4,
-            sha256="d" * 64,
+            sha256=hashlib.sha256(b"data").hexdigest(),
             detected_type="pdf",
             scanned_at=inspected_at,
         ),
