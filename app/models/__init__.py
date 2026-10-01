@@ -11,6 +11,7 @@ from app.models.calculation import Calculation
 from app.models.calculation_intake import CalculationIntake
 from app.models.calculation_rule_revision import CalculationRuleRevision
 from app.models.document import Document
+from app.models.document_derivative import DocumentDerivative
 from app.models.document_access_grant import DocumentAccessGrant
 from app.models.payment_event import PaymentEvent
 from app.models.payment import Payment
