@@ -72,6 +72,15 @@ class Settings(BaseSettings):
     max_document_upload_mb: int = 20
     quarantine_rejected_uploads: bool = True
     upload_quarantine_retention_days: int = 7
+
+    # DLC-INT-00 secure admission. Production must use the ClamAV sidecar;
+    # disabled mode exists only for local/test fixtures and fails closed in
+    # production at the storage boundary.
+    document_malware_scanner: str = "disabled"
+    clamav_host: str = "clamav"
+    clamav_port: int = 3310
+    clamav_timeout_seconds: int = 15
+
     document_access_grant_ttl_seconds: int = 180
     document_access_max_active_grants: int = 5
     payment_webhook_secret: str = "dev-payment-secret"
