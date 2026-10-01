@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import struct
 import unicodedata
 import uuid
@@ -106,6 +105,7 @@ class UploadSecurityError(ValueError):
         technical_message: str | None = None,
         sha256: str | None = None,
         quarantine_path: str | None = None,
+        security_reason: str | None = None,
     ):
         super().__init__(technical_message or user_message)
         self.code = code
@@ -113,6 +113,7 @@ class UploadSecurityError(ValueError):
         self.technical_message = technical_message or user_message
         self.sha256 = sha256
         self.quarantine_path = quarantine_path
+        self.security_reason = security_reason
 
 
 @dataclass(frozen=True)
@@ -508,6 +509,7 @@ def quarantine_file(
         "case_id": int(case_id),
         "safe_name": safe_name,
         "reason_code": error.code,
+        "security_reason": error.security_reason,
         "technical_message": error.technical_message[:500],
         "sha256": encryption.sha256,
         "quarantine_file": target.name,
