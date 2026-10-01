@@ -27,7 +27,10 @@ from app.security.backup_restore_fence import (
 from app.security.backup_retention import cleanup_authenticated_backups
 from app.security.backup_service import create_provider_encrypted_backup
 from app.security.document_access import cleanup_document_access_grants
-from app.security.document_key_rotation import migrate_document_encryption
+from app.security.document_key_rotation import (
+    migrate_document_derivative_encryption,
+    migrate_document_encryption,
+)
 from app.security.document_scanning import rescan_legacy_documents
 from app.security.file_uploads import cleanup_quarantine
 from app.security.key_rotation import reencrypt_mfa_secrets
@@ -228,6 +231,9 @@ class SchedulerJobs:
             "mfa_secrets_reencrypted": await reencrypt_mfa_secrets(self.db),
             "document_rescan": await rescan_legacy_documents(self.db),
             "document_encryption": await migrate_document_encryption(self.db),
+            "document_derivative_encryption": (
+                await migrate_document_derivative_encryption(self.db)
+            ),
             "encrypted_backups_removed": await asyncio.to_thread(
                 cleanup_authenticated_backups,
                 retention_days=settings.backup_retention_days,
