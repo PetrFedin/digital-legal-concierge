@@ -171,7 +171,7 @@ def test_customer_bank_payment_and_four_document_contract_are_explicit():
         "SELF_FILING_CLIENT_ROADMAP",
     ):
         assert document_type in documents
-        assert document_type in sender
+    assert "SELF_FILING_DELIVERABLE_TYPES" in sender
     assert "set(by_type) != set(SELF_FILING_DELIVERABLE_TYPES)" in sender
     assert "all(deliverable_ids.values())" in service
 
