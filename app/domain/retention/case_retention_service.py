@@ -513,7 +513,7 @@ class CaseRetentionService:
     @staticmethod
     def _content_digest(
         documents: list[Document],
-        derivatives: list[DocumentDerivative] | tuple[()] = (),
+        derivatives: list[DocumentDerivative] | tuple[DocumentDerivative, ...] = (),
     ) -> str:
         payload = [
             {
