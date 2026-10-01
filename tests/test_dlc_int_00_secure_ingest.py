@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from app.security.malware_scanning import (
     ClamAVScanner,
     MalwareScanResult,
     MalwareScanStatus,
+    malware_scanner_readiness,
 )
 from app.storage import LocalStorageService
 
@@ -57,6 +59,7 @@ class InfectedScanner:
             "Файл отклонён проверкой безопасности.",
             technical_message="test malware fixture",
             sha256=digest,
+            security_reason="malware=INFECTED;engine=test-scanner;version=1;signatures=fixture",
         )
 
 
@@ -149,6 +152,13 @@ async def test_infected_file_never_reaches_structural_parser_or_case_storage(
     quarantine = Path(error.value.quarantine_path)
     assert is_encrypted_file(quarantine)
     assert quarantine.read_bytes() != payload
+    metadata_files = list((storage_root / "quarantine").glob("*.json"))
+    assert len(metadata_files) == 1
+    metadata = json.loads(metadata_files[0].read_text(encoding="utf-8"))
+    assert metadata["reason_code"] == "malware_detected"
+    assert metadata["security_reason"] == (
+        "malware=INFECTED;engine=test-scanner;version=1;signatures=fixture"
+    )
     assert not (storage_root / "cases" / "12").exists()
     assert not any((storage_root / ".incoming").iterdir())
 
@@ -255,3 +265,66 @@ def test_clamav_client_uses_version_and_nul_framed_instream(tmp_path, monkeypatc
     assert scan.sent[0] == b"zINSTREAM\0"
     assert scan.sent[-1] == b"\x00\x00\x00\x00"
     assert result.sha256 == hashlib.sha256(sample.read_bytes()).hexdigest()
+
+
+
+@pytest.mark.asyncio
+async def test_readiness_is_false_when_production_scanner_is_disabled(monkeypatch):
+    monkeypatch.setattr(settings, "app_env", "production")
+    monkeypatch.setattr(settings, "document_malware_scanner", "disabled")
+
+    status = await malware_scanner_readiness()
+
+    assert status["required"] is True
+    assert status["available"] is False
+    assert status["engine"] == "disabled-production"
+
+
+@pytest.mark.asyncio
+async def test_readiness_probes_clamd_without_document_payload(monkeypatch):
+    monkeypatch.setattr(settings, "app_env", "production")
+    monkeypatch.setattr(settings, "document_malware_scanner", "clamav")
+    monkeypatch.setattr(settings, "clamav_host", "clamav")
+    monkeypatch.setattr(settings, "clamav_port", 3310)
+    monkeypatch.setattr(settings, "clamav_timeout_seconds", 2)
+
+    ping = _FakeConnection(b"PONG\0")
+    version = _FakeConnection(b"ClamAV 1.5.4/27890/Wed Oct 1 2026\0")
+    connections = iter([ping, version])
+
+    def fake_create_connection(address, timeout):
+        assert address == ("clamav", 3310)
+        assert timeout == 2
+        return next(connections)
+
+    monkeypatch.setattr(
+        "app.security.malware_scanning.socket.create_connection",
+        fake_create_connection,
+    )
+
+    status = await malware_scanner_readiness()
+
+    assert status["available"] is True
+    assert status["engine"] == "clamav/clamd"
+    assert status["engine_version"] == "ClamAV 1.5.4"
+    assert status["signature_info"] == "27890"
+    assert ping.sent == [b"zPING\0"]
+    assert version.sent == [b"zVERSION\0"]
+
+
+def test_ready_endpoint_exposes_scanner_dependency():
+    source = Path("app/main.py").read_text(encoding="utf-8")
+
+    assert "malware_scanner = await malware_scanner_readiness()" in source
+    assert '"document_malware_scanner_ready": bool(' in source
+    assert '"malware_scanner": malware_scanner' in source
+
+
+def test_rejected_upload_audit_receives_normalized_scanner_evidence():
+    bot_source = Path("app/bot/screens/documents.py").read_text(encoding="utf-8")
+    service_source = Path("app/domain/documents/document_service.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "security_reason=error.security_reason" in bot_source
+    assert '"security_reason": security_reason' in service_source
