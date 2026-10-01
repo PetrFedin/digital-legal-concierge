@@ -984,3 +984,13 @@ Whenever anything changes:
 - That node was a stale fixture, not a product/storage regression. It mocked structural SHA-256 as `"c" * 64` while the newly inserted malware gate correctly hashed the actual downloaded bytes `b"data"`; the independent-hash agreement therefore failed by design.
 - The fixture now supplies the SHA-256 of the actual downloaded bytes so it still proves portable storage keys while respecting the new admission invariant. No malware, storage, encryption, Case, Payment or Consultation runtime behavior changed.
 - Because test content changed, `c5ff5dce...` remains diagnostic evidence only. Freeze the new map-final head and rerun the exact workflow family before classifying DLC-INT-00 complete.
+
+
+## 2026-10-01 — DLC-INT-00 admission hardening before final exact proof
+
+- Added an actual downloaded-byte limit immediately after Telegram download and **before** ClamAV or structural parsing. Declared Telegram metadata is no longer the only pre-scanner size guard; empty/oversized bytes are deleted from `.incoming` immediately and are not copied into quarantine, preventing out-of-policy payloads from consuming scanner/quarantine resources.
+- `inspect_upload(...)` now reuses the same downloaded-size validator, preserving the second-gate invariant without duplicate policy logic.
+- Added regression proof that an oversized actual payload with a deceptively small declared size never reaches the malware scanner, never creates Case ciphertext and leaves no incoming/quarantine residue.
+- Added a dedicated real-sidecar CI job `DLC-INT-00 ClamAV sidecar integration` using the pinned official `clamav/clamav:1.5.4-debian` image. It verifies live clamd clean admission, production readiness/PING and rejection of the harmless EICAR antivirus test signature through the actual INSTREAM adapter.
+- Existing unit/protocol tests remain as deterministic negative-path proof; the real-sidecar job closes the gap between mocked protocol behavior and the deployment-side ClamAV process.
+- All previous exact heads are now diagnostic only. Freeze this map-final commit and rerun the complete workflow family; do not inherit PASS across the changed source/test/workflow SHA.
