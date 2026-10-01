@@ -338,6 +338,51 @@ jobs:
             tests/test_pm027_self_filing_package.py \
             tests/test_pm027_self_filing_financial_reconciliation.py
 
+  dlc-int-00-secure-ingest-proof:
+    name: DLC-INT-00 secure ingest proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      APP_ENV: test
+      DATABASE_URL: sqlite+aiosqlite:///./dlc_int_00_ci.db
+      BOT_TOKEN: CHANGE_ME
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+      DOCUMENT_ENCRYPTION_KEY_ID: ci-dlc-int-00-documents
+      DOCUMENT_ENCRYPTION_KEY: ci-dlc-int-00-document-key-012345678901234567890123456789
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[test]"
+
+      - name: Compile secure ingest boundary
+        run: |
+          python -m compileall -q \
+            app/security/malware_scanning.py \
+            app/security/file_uploads.py \
+            app/storage.py \
+            app/domain/documents/document_service.py \
+            app/bot/screens/documents.py \
+            tests/test_dlc_int_00_secure_ingest.py \
+            tests/test_document_upload_security.py
+
+      - name: Run DLC-INT-00 bounded regression proof
+        run: |
+          pytest -q \
+            tests/test_dlc_int_00_secure_ingest.py \
+            tests/test_document_upload_security.py \
+            tests/test_docker_only_deployment_contract.py
+
   sqlite-tests:
     name: SQLite application tests
     runs-on: ubuntu-24.04
