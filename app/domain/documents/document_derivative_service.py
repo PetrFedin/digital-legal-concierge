@@ -371,7 +371,7 @@ class DocumentDerivativeService:
             encrypted_data_key_nonce=document.encrypted_data_key_nonce,
         )
 
-    async def _existing_ready(
+    async def _identity_row(
         self,
         *,
         source_document_id: int,
@@ -391,11 +391,91 @@ class DocumentDerivativeService:
                     DocumentDerivative.tool_name == tool_name,
                     DocumentDerivative.tool_version == tool_version,
                     DocumentDerivative.recipe_id == recipe_id,
-                    DocumentDerivative.status == DERIVATIVE_READY,
                 )
                 .order_by(DocumentDerivative.id.desc())
             )
         ).scalars().first()
+
+    async def _existing_ready(
+        self,
+        *,
+        source_document_id: int,
+        derivative_type: str,
+        source_sha256: str,
+        tool_name: str,
+        tool_version: str,
+        recipe_id: str,
+    ) -> DocumentDerivative | None:
+        row = await self._identity_row(
+            source_document_id=source_document_id,
+            derivative_type=derivative_type,
+            source_sha256=source_sha256,
+            tool_name=tool_name,
+            tool_version=tool_version,
+            recipe_id=recipe_id,
+        )
+        return row if row and row.status == DERIVATIVE_READY else None
+
+    async def _record_failure(
+        self,
+        *,
+        source: Document,
+        derivative_type: str,
+        tool_name: str,
+        tool_version: str,
+        recipe_id: str,
+        error: DocumentDerivativeError,
+        provenance: dict | None = None,
+    ) -> DocumentDerivative:
+        row = await self._identity_row(
+            source_document_id=int(source.id),
+            derivative_type=derivative_type,
+            source_sha256=str(source.sha256),
+            tool_name=tool_name,
+            tool_version=tool_version,
+            recipe_id=recipe_id,
+        )
+        if row and row.status == DERIVATIVE_READY:
+            return row
+        if row is None:
+            row = DocumentDerivative(
+                case_id=int(source.case_id),
+                source_document_id=int(source.id),
+                derivative_type=derivative_type,
+                status="FAILED",
+                source_sha256=str(source.sha256),
+                tool_name=tool_name,
+                tool_version=tool_version,
+                recipe_id=recipe_id,
+                provenance=provenance or {},
+                encryption_status="PENDING",
+            )
+            self.db.add(row)
+        else:
+            row.status = "FAILED"
+            row.provenance = provenance or row.provenance or {}
+        row.error_code = error.code[:64]
+        row.error_detail = str(error)[:255]
+        await self.db.flush()
+        await add_case_history_event(
+            self.db,
+            actor_type="system",
+            actor_id=None,
+            case_id=int(source.case_id),
+            action="DOCUMENT_DERIVATIVE_FAILED",
+            new_value={
+                "source_document_id": int(source.id),
+                "derivative_id": int(row.id),
+                "derivative_type": derivative_type,
+                "source_sha256": str(source.sha256),
+                "tool": tool_name,
+                "tool_version": tool_version,
+                "recipe_id": recipe_id,
+                "error_code": error.code,
+            },
+            comment="Производный документ не создан; исходный документ не изменён",
+        )
+        return row
 
     def _encrypt_derivative(
         self,
@@ -439,7 +519,7 @@ class DocumentDerivativeService:
         has_usable_text: bool,
         provenance: dict,
     ) -> DocumentDerivative:
-        existing = await self._existing_ready(
+        identity = await self._identity_row(
             source_document_id=int(source.id),
             derivative_type=derivative_type,
             source_sha256=str(source.sha256),
@@ -447,8 +527,8 @@ class DocumentDerivativeService:
             tool_version=tool_version,
             recipe_id=recipe_id,
         )
-        if existing:
-            return existing
+        if identity and identity.status == DERIVATIVE_READY:
+            return identity
 
         storage_key: str | None = None
         try:
@@ -458,31 +538,36 @@ class DocumentDerivativeService:
                 payload=payload,
                 expected_sha256=sha256,
             )
-            derivative = DocumentDerivative(
+            derivative = identity or DocumentDerivative(
                 case_id=int(source.case_id),
                 source_document_id=int(source.id),
                 derivative_type=derivative_type,
-                status=DERIVATIVE_READY,
                 source_sha256=str(source.sha256),
-                file_path=storage_key,
-                mime_type="application/pdf",
-                file_size=len(payload),
-                sha256=sha256,
                 tool_name=tool_name,
                 tool_version=tool_version,
                 recipe_id=recipe_id,
                 provenance=provenance,
-                page_count=page_count,
-                has_usable_text=has_usable_text,
-                encryption_status=ENCRYPTION_STATUS,
-                encryption_key_id=encryption.key_id,
-                encryption_format_version=encryption.format_version,
-                encryption_envelope_id=encryption.envelope_id,
-                encrypted_data_key=encryption.encrypted_data_key,
-                encrypted_data_key_nonce=encryption.encrypted_data_key_nonce,
-                encrypted_at=encryption.encrypted_at,
             )
-            self.db.add(derivative)
+            if identity is None:
+                self.db.add(derivative)
+            derivative.status = DERIVATIVE_READY
+            derivative.file_path = storage_key
+            derivative.mime_type = "application/pdf"
+            derivative.file_size = len(payload)
+            derivative.sha256 = sha256
+            derivative.provenance = provenance
+            derivative.page_count = page_count
+            derivative.has_usable_text = has_usable_text
+            derivative.encryption_status = ENCRYPTION_STATUS
+            derivative.encryption_key_id = encryption.key_id
+            derivative.encryption_format_version = encryption.format_version
+            derivative.encryption_envelope_id = encryption.envelope_id
+            derivative.encrypted_data_key = encryption.encrypted_data_key
+            derivative.encrypted_data_key_nonce = encryption.encrypted_data_key_nonce
+            derivative.data_key_destroyed_at = None
+            derivative.encrypted_at = encryption.encrypted_at
+            derivative.error_code = None
+            derivative.error_detail = None
             await self.db.flush()
         except Exception:
             if storage_key:
@@ -535,7 +620,22 @@ class DocumentDerivativeService:
         if existing_sanitized:
             sanitized = existing_sanitized
         else:
-            result = await asyncio.to_thread(sanitize_pdf_bytes, source_payload)
+            try:
+                result = await asyncio.to_thread(sanitize_pdf_bytes, source_payload)
+            except DocumentDerivativeError as error:
+                await self._record_failure(
+                    source=source,
+                    derivative_type=DERIVATIVE_SANITIZED_PDF,
+                    tool_name="pikepdf",
+                    tool_version=pike_version,
+                    recipe_id=SANITIZE_RECIPE_ID,
+                    error=error,
+                    provenance={
+                        "source_document_id": int(source.id),
+                        "source_sha256": str(source.sha256),
+                    },
+                )
+                raise
             sanitized = await self._persist_ready(
                 source=source,
                 derivative_type=DERIVATIVE_SANITIZED_PDF,
@@ -564,7 +664,23 @@ class DocumentDerivativeService:
                 ocr_required=False,
             )
 
-        ocr_version = self.ocr_executor.tool_version
+        try:
+            ocr_version = self.ocr_executor.tool_version
+        except DocumentDerivativeError as error:
+            await self._record_failure(
+                source=source,
+                derivative_type=DERIVATIVE_OCR_PDF,
+                tool_name="ocrmypdf",
+                tool_version="unavailable",
+                recipe_id=_ocr_recipe_id(),
+                error=error,
+                provenance={
+                    "source_document_id": int(source.id),
+                    "source_sha256": str(source.sha256),
+                    "input_derivative_id": int(sanitized.id),
+                },
+            )
+            raise
         existing_ocr = await self._existing_ready(
             source_document_id=int(source.id),
             derivative_type=DERIVATIVE_OCR_PDF,
@@ -596,12 +712,33 @@ class DocumentDerivativeService:
             encrypted_data_key=sanitized.encrypted_data_key,
             encrypted_data_key_nonce=sanitized.encrypted_data_key_nonce,
         )
-        ocr_result = await asyncio.to_thread(self.ocr_executor.run, sanitized_payload)
-        if ocr_result.page_count != int(sanitized.page_count or 0):
-            raise DocumentDerivativeError(
-                "ocr_page_count_changed",
-                "Число страниц изменилось при OCR",
+        try:
+            ocr_result = await asyncio.to_thread(
+                self.ocr_executor.run,
+                sanitized_payload,
             )
+            if ocr_result.page_count != int(sanitized.page_count or 0):
+                raise DocumentDerivativeError(
+                    "ocr_page_count_changed",
+                    "Число страниц изменилось при OCR",
+                )
+        except DocumentDerivativeError as error:
+            await self._record_failure(
+                source=source,
+                derivative_type=DERIVATIVE_OCR_PDF,
+                tool_name="ocrmypdf",
+                tool_version=ocr_version,
+                recipe_id=_ocr_recipe_id(),
+                error=error,
+                provenance={
+                    "source_document_id": int(source.id),
+                    "source_sha256": str(source.sha256),
+                    "input_derivative_id": int(sanitized.id),
+                    "input_sha256": str(sanitized.sha256),
+                    "languages": str(settings.document_ocr_languages),
+                },
+            )
+            raise
         ocr = await self._persist_ready(
             source=source,
             derivative_type=DERIVATIVE_OCR_PDF,
@@ -629,6 +766,50 @@ class DocumentDerivativeService:
             ocr=ocr,
             ocr_required=True,
         )
+
+    async def build_missing_pdf_derivatives(
+        self,
+        *,
+        limit: int = 10,
+    ) -> dict[str, int]:
+        """Build a bounded batch; the scheduler owns retry cadence and commit."""
+
+        candidate_ids = list(
+            (
+                await self.db.execute(
+                    select(Document.id)
+                    .where(
+                        Document.security_status == "VERIFIED",
+                        Document.detected_type == "pdf",
+                        Document.encryption_status == ENCRYPTION_STATUS,
+                        Document.data_key_destroyed_at.is_(None),
+                    )
+                    .order_by(Document.id.asc())
+                    .limit(max(10, min(int(limit) * 20, 1000)))
+                )
+            ).scalars().all()
+        )
+        result = {
+            "processed": 0,
+            "searchable_without_ocr": 0,
+            "ocr_created": 0,
+            "failed": 0,
+        }
+        max_items = max(1, min(int(limit), 100))
+        for document_id in candidate_ids:
+            if result["processed"] + result["failed"] >= max_items:
+                break
+            try:
+                built = await self.ensure_pdf_derivatives(int(document_id))
+            except (DocumentDerivativeError, DocumentEncryptionError, OSError, ValueError):
+                result["failed"] += 1
+                continue
+            result["processed"] += 1
+            if built.ocr_required and built.ocr is not None:
+                result["ocr_created"] += 1
+            elif not built.ocr_required:
+                result["searchable_without_ocr"] += 1
+        return result
 
 
 __all__ = [
