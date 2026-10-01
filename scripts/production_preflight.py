@@ -115,6 +115,10 @@ def build_report() -> dict[str, object]:
         )
         runtime_role = str(settings.runtime_role or "all").strip().lower()
         role_valid = runtime_role in {"all", "web", "bot"}
+        malware_scanner = str(
+            settings.document_malware_scanner or "disabled"
+        ).strip().lower()
+        clamav_host = str(settings.clamav_host or "").strip()
         bot_expected = runtime_role in {"all", "bot"}
         scheduler_expected = runtime_role in {"all", "bot"}
         checks.update(
@@ -175,6 +179,16 @@ def build_report() -> dict[str, object]:
                     not settings.allow_legacy_security_key_fallback
                 ),
                 "recovery_actions_disabled": not settings.enable_recovery_actions,
+                "document_malware_scanner_is_clamav": malware_scanner == "clamav",
+                "clamav_host_ready": bool(
+                    clamav_host
+                    and clamav_host.lower()
+                    not in {"host", "change_me", "changeme"}
+                ),
+                "clamav_port_valid": 1 <= int(settings.clamav_port) <= 65535,
+                "clamav_timeout_valid": 1
+                <= int(settings.clamav_timeout_seconds)
+                <= 120,
                 "payment_provider_ready": payment_ready,
                 "retention_is_dry_run": bool(settings.case_retention_dry_run),
                 "telegram_wait_valid": 10
