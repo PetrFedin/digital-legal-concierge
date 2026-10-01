@@ -280,3 +280,11 @@ Timeweb compose по умолчанию публикует порт прилож
    запись на консультацию, кабинет юриста и административный контур.
 
 Старые plaintext `.tar.gz/.zip/.db` не допускаются к восстановлению новым механизмом.
+
+## Planned integration roadmap
+
+Canonical implementation plan:
+
+- [docs/DIGITAL_LEGAL_CONCIERGE_INTEGRATION_MASTER_PLAN_2026-10-01.md](./docs/DIGITAL_LEGAL_CONCIERGE_INTEGRATION_MASTER_PLAN_2026-10-01.md)
+
+This document is a planned implementation source. Future full-roadmap work should cite this filename explicitly and follow its phases, authority boundaries, dependencies and acceptance gates.
