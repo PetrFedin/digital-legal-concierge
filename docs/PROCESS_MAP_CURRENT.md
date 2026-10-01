@@ -975,3 +975,12 @@ Whenever anything changes:
 - The dedicated `DLC-INT-00 secure ingest proof` compiled successfully and then failed only two inherited document-upload assertions. Both treated canonical portable `StoredFile.storage_path` values such as `cases/<case_id>/<random>.dlcenc` as host-relative filesystem paths by calling `Path(storage_path)` directly.
 - Production storage behavior was already correct and predates DLC-INT-00: `LocalStorageService` returns portable DB keys and resolves them through `resolve_storage_path(..., expected_case_id=...)`. The two tests were corrected to use that authoritative resolver; no storage/encryption/admission behavior changed.
 - Because test content changed, `ae56bd...` is diagnostic only. The new map-final head must rerun the exact workflow family; no PASS is inherited across the changed SHA.
+
+
+## 2026-10-01 — DLC-INT-00 second exact run / portability fixture hash correction
+
+- Exact map-final head `c5ff5dce1a306c2d245b88cb0c6ddfa25a66ff13` proved the dedicated `DLC-INT-00 secure ingest proof` green: **46 passed**. Deployment Readiness, PostgreSQL Concurrency and Telegram Runtime Contracts also passed; all bounded PM-016/018/019/027/028 jobs, Process Map, PostgreSQL migration/backup/restore and container startup passed on the same SHA.
+- Plain SQLite differential against PM-042 base `244985cc322126f0fce7d8d00c40ffd7aafca423` reduced the inherited baseline from 285 to 283 failures but exposed one current-only node: `test_client_upload_returns_portable_storage_key`.
+- That node was a stale fixture, not a product/storage regression. It mocked structural SHA-256 as `"c" * 64` while the newly inserted malware gate correctly hashed the actual downloaded bytes `b"data"`; the independent-hash agreement therefore failed by design.
+- The fixture now supplies the SHA-256 of the actual downloaded bytes so it still proves portable storage keys while respecting the new admission invariant. No malware, storage, encryption, Case, Payment or Consultation runtime behavior changed.
+- Because test content changed, `c5ff5dce...` remains diagnostic evidence only. Freeze the new map-final head and rerun the exact workflow family before classifying DLC-INT-00 complete.
