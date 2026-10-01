@@ -9,6 +9,7 @@ from app.config import settings
 from app.domain.cases.m1_claim_service import M1ClaimService
 from app.domain.cases.sla_service import CaseSLAService
 from app.domain.consultations.slot_service import SlotService
+from app.domain.documents.document_derivative_service import DocumentDerivativeService
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.retention.case_retention_service import CaseRetentionService
 from app.domain.statuses.consultation_statuses import ConsultationStatus
@@ -222,6 +223,11 @@ class SchedulerJobs:
 
     async def discover_due_case_retention(self) -> dict[str, int | bool]:
         return await CaseRetentionService(self.db).discover_due_cases()
+
+    async def build_document_derivatives(self) -> dict[str, int]:
+        return await DocumentDerivativeService(
+            self.db
+        ).build_missing_pdf_derivatives(limit=10)
 
     async def cleanup_security_state(self) -> dict[str, object]:
         return {
