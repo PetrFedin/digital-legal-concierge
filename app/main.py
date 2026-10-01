@@ -203,11 +203,15 @@ def create_app():
     async def ready():
         from pathlib import Path
 
+        from app.security.document_derivative_runtime import (
+            document_derivative_runtime_status,
+        )
         from app.security.malware_scanning import malware_scanner_readiness
 
         key_status = security_key_status()
         backup_freshness = await asyncio.to_thread(backup_freshness_status)
         malware_scanner = await malware_scanner_readiness()
+        derivative_runtime = document_derivative_runtime_status()
         provider = payment_provider_name()
         payment_disabled = payments_disabled()
         payment_offline = payments_offline()
@@ -254,6 +258,9 @@ def create_app():
             ),
             "document_malware_scanner_ready": bool(
                 malware_scanner.get("available")
+            ),
+            "document_derivative_runtime_ready": bool(
+                derivative_runtime.get("available")
             ),
             "document_access_ttl_valid": (
                 30 <= int(settings.document_access_grant_ttl_seconds) <= 300
@@ -361,6 +368,13 @@ def create_app():
                 "encryption_key_id": key_status["active_key_ids"].get(
                     "document_encryption"
                 ),
+            },
+            "document_derivative_processing": {
+                **derivative_runtime,
+                "original_overwritten": False,
+                "encrypted_at_rest": True,
+                "ocr_only_without_usable_text": True,
+                "source_authority": "Document/Case",
             },
             "document_delivery_security": {
                 "enabled": True,
