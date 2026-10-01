@@ -938,4 +938,4 @@ Whenever anything changes:
 - The first implementation after PM-042 evidence classification is DLC-INT-00 secure ingest quarantine. No parser, OCR or search component may receive bytes before admission policy allows it; original evidence remains immutable.
 - PM-027 focused source/proof drift found by the executable correction run was corrected without weakening exact retry or role authority: effective route inventory is used, exact replay requires the same administrator provenance/comment, user copy explicitly preserves Russia-wide scope, and bank/self-filing staff copy uses the canonical mandatory-purpose / main-next-step hierarchy.
 - This map commit is the new governance boundary. All evidence from earlier heads is diagnostic only; the full evidence chain must start again from the SHA containing this commit.
-
+- The focused PM-027 rerun then exposed one stale assertion that expected all four literal deliverable codes to be duplicated inside the email sender. The sender correctly imports and iterates the canonical `SELF_FILING_DELIVERABLE_TYPES`; the proof now checks that single authority instead of requiring duplicate literals.
