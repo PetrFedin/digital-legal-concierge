@@ -75,6 +75,15 @@ class WrongHashScanner:
         )
 
 
+class MustNotScan:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def scan(self, path: Path) -> MalwareScanResult:
+        self.calls += 1
+        raise AssertionError("scanner must not receive payload rejected by byte limit")
+
+
 def configure_keys(monkeypatch, *, app_env: str = "production") -> None:
     monkeypatch.setattr(settings, "app_env", app_env)
     monkeypatch.setattr(settings, "document_encryption_key_id", "documents-dlc-int-00")
@@ -181,6 +190,35 @@ async def test_production_disabled_scanner_is_fail_closed(tmp_path, monkeypatch)
 
     assert error.value.code == "malware_scanner_not_configured"
     assert not (tmp_path / "storage" / "cases" / "13").exists()
+
+
+@pytest.mark.asyncio
+async def test_actual_oversize_is_deleted_before_malware_scanner(tmp_path, monkeypatch):
+    configure_keys(monkeypatch)
+    monkeypatch.setattr(settings, "max_document_upload_mb", 1)
+    scanner = MustNotScan()
+    payload = b"x" * (1024 * 1024 + 1)
+    storage_root = tmp_path / "storage"
+
+    with pytest.raises(UploadSecurityError) as error:
+        await LocalStorageService(
+            str(storage_root),
+            malware_scanner=scanner,
+        ).save_telegram_file(
+            bot=FakeBot(payload),
+            telegram_file_id="oversize-actual",
+            case_id=15,
+            original_name="contract.pdf",
+            mime_type="application/pdf",
+            file_size=4,
+        )
+
+    assert error.value.code == "file_too_large"
+    assert scanner.calls == 0
+    assert error.value.quarantine_path is None
+    assert not (storage_root / "cases" / "15").exists()
+    assert not any((storage_root / ".incoming").iterdir())
+    assert not (storage_root / "quarantine").exists()
 
 
 @pytest.mark.asyncio
