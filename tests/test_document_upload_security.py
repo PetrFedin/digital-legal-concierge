@@ -110,7 +110,7 @@ def inspect_bytes(
 
 
 def configure_document_keys(monkeypatch):
-    monkeypatch.setattr(settings, "app_env", "production")
+    monkeypatch.setattr(settings, "app_env", "test")
     monkeypatch.setattr(settings, "document_encryption_key_id", "documents-upload")
     monkeypatch.setattr(settings, "document_encryption_key", DOCUMENT_KEY)
     monkeypatch.setattr(settings, "document_encryption_previous_keys", "")
@@ -239,6 +239,9 @@ async def test_storage_uses_random_container_and_envelope_encryption(tmp_path, m
     target = Path(stored.storage_path)
     assert stored.sha256 == expected_hash
     assert stored.security_status == "VERIFIED"
+    assert stored.security_reason == (
+        "malware=BYPASSED_NON_PRODUCTION;engine=disabled-non-production"
+    )
     assert stored.encryption_status == ENCRYPTION_STATUS
     assert stored.encryption_format_version == FORMAT_V2
     assert stored.encryption_key_id == "documents-upload"
@@ -321,6 +324,8 @@ async def test_rejected_download_is_quarantined_without_case_file(tmp_path, monk
     assert error.value.code == "active_pdf_content"
     assert error.value.quarantine_path
     assert Path(error.value.quarantine_path).is_file()
+    assert is_encrypted_file(Path(error.value.quarantine_path))
+    assert Path(error.value.quarantine_path).read_bytes() != payload
     assert not (storage_root / "cases" / "7").exists()
     assert list((storage_root / "quarantine").glob("*.json"))
 
