@@ -8,6 +8,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
+from fastapi.routing import iter_route_contexts
 
 import app.api.self_filing_product as self_filing_product_module
 
@@ -546,8 +547,7 @@ def test_staff_surface_and_workdesk_are_registered_and_case_bound():
     app = create_app()
     routes = {
         (route.path, method)
-        for route in app.routes
-        if hasattr(route, "path") and hasattr(route, "methods")
+        for route in iter_route_contexts(app.routes)
         for method in (route.methods or set())
     }
     assert ("/self-filing/cases/{case_id}", "GET") in routes
@@ -598,7 +598,7 @@ def test_no_moscow_only_gate_is_introduced_for_self_filing_scope():
     intake = read("app/bot/screens/self_filing.py")
     service = read("app/domain/cases/self_filing_service.py")
 
-    assert "регион России" in intake.lower()
+    assert "регион россии" in intake.lower()
     assert "client_region" in service
     assert "Moscow" not in service
     assert "Moscow" not in intake
