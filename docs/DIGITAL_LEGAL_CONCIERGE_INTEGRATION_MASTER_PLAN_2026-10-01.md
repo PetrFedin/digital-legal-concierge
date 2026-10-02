@@ -409,3 +409,70 @@ Never state an unconfirmed procedural date as guaranteed where the rule depends 
 
 **Sequencing:** Legal Timeline first -> Deadline Authority -> evidence bundles/source registry -> redline/UI. pyHanko/OCR/search remain subordinate evidence processors.
 
+## Additional wave — archival PDF conformance and preservation export
+
+This wave improves long-term evidentiary portability without changing the encrypted original-document authority.
+
+### PDF/A conformance validation — CONDITIONAL SIDECAR
+
+Reference: https://github.com/veraPDF/veraPDF-library
+
+Use veraPDF as an external validation process for **derived archival PDFs**, not as an in-process library by default.
+
+Flow:
+
+original admitted PDF -> immutable evidence storage -> optional normalized/archival derivative -> veraPDF validation -> conformance report -> evidence metadata
+
+Persist:
+
+- source/derivative document ID;
+- checksum;
+- intended PDF/A profile;
+- validator version;
+- validation result;
+- failed rule IDs;
+- validation timestamp.
+
+Do not convert every source PDF to PDF/A automatically. A digitally signed PDF must first preserve/verify the original signature evidence because conversion can invalidate signatures or change bytes.
+
+### Archival Derivative Policy — ADOPT
+
+Create an explicit policy deciding when a derivative is appropriate:
+
+- scanned evidence after OCR;
+- generated claim/letter;
+- counsel/court evidence bundle index;
+- long-term reference copy;
+- signed original: retain original unchanged, derivative only as secondary copy.
+
+Every derivative stores source link + processor/version + checksum.
+
+### Preservation Export Manifest — ADOPT
+
+Extend the Court/Counsel Evidence Bundle with a preservation-oriented manifest:
+
+- original/derivative relationship;
+- original checksum;
+- derivative checksum;
+- OCR/normalization processor;
+- digital-signature verification state;
+- PDF/A validation state;
+- retention/legal-hold state;
+- export/bundle version.
+
+This makes it possible to distinguish legal original, readable derivative and archival-normalized copy.
+
+### License/deployment boundary
+
+veraPDF library is GPL-licensed in the verified upstream repository. Treat it as a replaceable CLI/service validation boundary unless a separate legal review approves another integration mode.
+
+### Additional acceptance
+
+- original signed/unsigned evidence is never overwritten;
+- PDF/A validation is reproducible from exact derivative checksum + validator version;
+- failure to meet PDF/A is visible and does not falsely mark the original evidence invalid;
+- preservation export clearly identifies which file is the original legal evidence;
+- licensing boundary is documented in deployment architecture.
+
+**Sequencing:** secure admission + signature verification first -> archival derivative policy -> veraPDF validation -> preservation manifest.
+
