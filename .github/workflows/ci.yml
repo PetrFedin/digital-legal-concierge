@@ -550,8 +550,7 @@ jobs:
           python -m compileall -q \
             tests/test_pm043_aiosqlite_lifecycle.py \
             tests/test_message_service.py \
-            tests/test_payment_presentation_commit_boundaries.py \
-            tests/test_payment_review_context_safety_v36.py
+            tests/test_mfa_key_rotation_batches.py
 
       - name: Repeat suspect SQLite cluster
         run: |
@@ -561,8 +560,7 @@ jobs:
             pytest -q \
               tests/test_pm043_aiosqlite_lifecycle.py \
               tests/test_message_service.py \
-              tests/test_payment_presentation_commit_boundaries.py \
-              tests/test_payment_review_context_safety_v36.py
+              tests/test_mfa_key_rotation_batches.py
           done
 
   sqlite-tests:
