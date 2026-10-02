@@ -52,7 +52,7 @@ def test_money_received_template_explains_amount_fee_and_terminal_effect():
 def test_money_received_callback_is_wired_to_real_bot_handler():
     stages = (ROOT / "app/bot/screens/m1_stages.py").read_text(encoding="utf-8")
 
-    assert 'c.data == "pay_success_fee"' in stages
+    assert 'callback_matches_action(c.data, "pay_success_fee")' in stages
     assert "PaymentCode.M1_SUCCESS_FEE" in stages
 
 
