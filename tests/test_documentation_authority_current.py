@@ -40,10 +40,10 @@ def test_start_here_is_container_first_and_does_not_restore_legacy_python_quicks
 def test_canonical_product_spec_keeps_two_route_boundary_and_telegram_cabinet():
     product = read("CANONICAL_PRODUCT_SPEC_2026-10-02.md")
 
-    assert "M1 — standard recovery" in product
-    assert "M2 — paid personal consultation" in product
-    assert "Telegram is the client cabinet" in product
-    assert "not a third route" in product
+    assert "М1 — стандартное взыскание" in product
+    assert "М2 — платная личная консультация" in product
+    assert "Telegram — клиентский кабинет" in product
+    assert "а не третий маршрут" in product
     assert "Case.status" in product
 
 
@@ -51,8 +51,8 @@ def test_technical_architecture_names_real_runtime_authorities():
     architecture = read("TECHNICAL_ARCHITECTURE_CURRENT.md")
 
     for required in (
-        "PostgreSQL 17 production authority",
-        "Redis 7.4 durable Telegram FSM/coordination",
+        "PostgreSQL 17 — основной production data authority",
+        "Redis 7.4 — долговременный Telegram FSM/coordination",
         "ClamAV sidecar",
         "Case.status",
         "PaymentEvent",
