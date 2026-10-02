@@ -1055,3 +1055,13 @@ Whenever anything changes:
 - Добавлен фактический `docs/CUSTOMER_HANDOVER_CHECKLIST_2026-10-02.md` по 20 пунктам передачи. Реализованный source/runtime-контур отделен от обязательных LIVE_REQUIRED/UAT/pilot/provider/staging доказательств; внешние credentials и реальные участники не симулируются.
 - Добавлен `tests/test_documentation_authority_current.py`, который защищает единую current-документацию, Docker-first entrypoint, границу М1/М2 и наличие замороженных business-source specs.
 - Эта ветка не объявляет staging/UAT/pilot/production завершенными. Их доказательства остаются LIVE_REQUIRED по `ACCEPTANCE_CURRENT.md` и `RUNBOOK_CURRENT.md`.
+
+
+## 2026-10-02 — PM-043 deterministic aiosqlite loop ownership
+
+- Full SQLite differential on DLC-INT-01 continued to show a nondeterministic `aiosqlite` worker-thread callback into a pytest event loop already closed between tests. The locked image did not reproduce the extra error, confirming test-lifecycle instability rather than a deterministic product failure.
+- `pytest-asyncio==1.4.0` officially supports `asyncio_default_test_loop_scope` and `asyncio_default_fixture_loop_scope` values through `session`. The test suite now assigns async tests/fixtures to one process-lifetime pytest-owned loop while keeping `filterwarnings = ["error"]`.
+- This does not relax application/session disposal. Test-created engines remain responsible for explicit `await engine.dispose()`; application test engine remains `NullPool` under `APP_ENV=test`.
+- Added `tests/test_pm043_aiosqlite_lifecycle.py`: repeatedly creates/uses/disposes independent aiosqlite engines with `NullPool`, forces finalizers while the owner loop is alive and keeps warnings fatal.
+- Added CI job `PM-043 aiosqlite lifecycle proof`, which repeats the previously suspect message/payment cluster three times in separate pytest processes.
+- Product Case/Payment/Telegram authorities are unchanged. Acceptance requires the focused PM-043 job plus stable full SQLite differential; session-loop configuration is not considered sufficient merely by source inspection.
