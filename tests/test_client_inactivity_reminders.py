@@ -126,3 +126,60 @@ def test_inactivity_service_sends_only_latest_due_reminder_after_long_outage() -
         await engine.dispose()
 
     asyncio.run(scenario())
+
+
+def test_inactivity_reminder_follows_24h_72h_7d_series() -> None:
+    async def scenario() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        anchor = datetime(2026, 10, 1, 9, 0, tzinfo=timezone.utc)
+
+        async with session_factory() as db:
+            user = User(telegram_id=990000103, full_name="Reminder Series")
+            db.add(user)
+            await db.flush()
+            case = Case(
+                case_number="INACTIVITY-CASE-3",
+                client_id=user.id,
+                route="M1",
+                status="M1_DOCUMENTS_PENDING",
+                next_action="Загрузить документы",
+                created_at=anchor,
+                updated_at=anchor,
+            )
+            db.add(case)
+            await db.commit()
+
+            service = ClientInactivityReminderService(db)
+
+            assert await service.run(now=anchor + timedelta(hours=25)) == 1
+            await db.commit()
+            assert await service.run(now=anchor + timedelta(hours=73)) == 1
+            await db.commit()
+            assert await service.run(now=anchor + timedelta(hours=169)) == 1
+            await db.commit()
+            assert await service.run(now=anchor + timedelta(hours=170)) == 0
+            await db.commit()
+
+            rows = (
+                await db.execute(
+                    select(Notification)
+                    .where(
+                        Notification.case_id == case.id,
+                        Notification.event_code == "CLIENT_INACTIVITY_REMINDER",
+                    )
+                    .order_by(Notification.id.asc())
+                )
+            ).scalars().all()
+            assert len(rows) == 3
+            keys = [row.dedupe_key or "" for row in rows]
+            assert any(":24h:" in key for key in keys)
+            assert any(":72h:" in key for key in keys)
+            assert any(":168h:" in key for key in keys)
+
+        await engine.dispose()
+
+    asyncio.run(scenario())
