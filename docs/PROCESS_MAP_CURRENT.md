@@ -1065,3 +1065,14 @@ Whenever anything changes:
 - Added `tests/test_pm043_aiosqlite_lifecycle.py`: repeatedly creates/uses/disposes independent aiosqlite engines with `NullPool`, forces finalizers while the owner loop is alive and keeps warnings fatal.
 - Added CI job `PM-043 aiosqlite lifecycle proof`, which repeats a bounded engine/message/MFA SQLite cluster three times in separate pytest processes. Historical payment-review tests are deliberately excluded from this focused job because they already contain independent product-contract failures; the full SQLite job remains the differential gate for cross-module lifecycle leakage.
 - Product Case/Payment/Telegram authorities are unchanged. Acceptance requires the focused PM-043 job plus stable full SQLite differential; session-loop configuration is not considered sufficient merely by source inspection.
+
+
+## 2026-10-02 — RELEASE-BASELINE-01 classified current-contract repairs
+
+- Began reducing the inherited full-suite debt by classification rather than by weakening/removing tests.
+- `tests/test_payment_review_context_safety_v36.py` was stale against the enforced persistence invariant `uq_consultations_one_active_per_case`. Historical/old consultations are now made terminal in the fixture before a newer active consultation is created; the business assertion remains that review/refund of an old payment cannot mutate the newer booked consultation.
+- The same payment-review tests now snapshot identifiers before rollback boundaries. SQLAlchemy rollback may expire ORM objects; tests must not trigger implicit asynchronous database IO merely by reading `.id` after rollback.
+- `tests/test_payment_presentation_commit_boundaries.py` now asserts the current fail-closed `PAYMENT_PROVIDER=disabled` contract: a provider RuntimeError/rollback presents a safe “service unavailable; Case data saved” message. The retired rich disabled-mode payment copy is not a current product contract.
+- `tests/test_database_migrations.py` now verifies the actual `payment_webhook_events` authority (`payload_summary`, first/last seen, processing timestamp, response code) rather than retired `payment_purpose/payment_details_snapshot` columns that belong to the Payment projection, not webhook evidence.
+- No production Case, Payment, Consultation or migration code changed in this batch. These are stale/fixture test-contract repairs only.
+- Added focused CI job `Release baseline 01 current-contract repairs`. Full SQLite/locked suites remain mandatory differential gates; this bounded job does not reclassify unrelated failures.
