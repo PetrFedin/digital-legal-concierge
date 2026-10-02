@@ -49,7 +49,7 @@ DEFAULT_SETTINGS = {
     },
     "consultations.slot_hold_minutes": {
         "title": "Удержание слота консультации",
-        "value": 1440,
+        "value": 1500,
         "type": "integer",
         "editable": True,
     },
