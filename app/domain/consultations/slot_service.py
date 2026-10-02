@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
+from app.system.settings_keys import SettingKey
+from app.system.settings_service import SettingsService
 
 
 class SlotUnavailableError(RuntimeError):
@@ -15,12 +17,22 @@ class SlotUnavailableError(RuntimeError):
 
 
 class SlotService:
-    HOLD_MINUTES = 10
+    DEFAULT_HOLD_MINUTES = 25 * 60
     TEST_SLOT_DURATION_MINUTES = 60
     TEST_SLOT_STEP_MINUTES = 90
 
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    async def hold_minutes(self) -> int:
+        try:
+            raw_value = await SettingsService(self.db).get_value(
+                SettingKey.SLOT_HOLD_MINUTES
+            )
+            value = int(raw_value)
+        except (KeyError, TypeError, ValueError):
+            value = self.DEFAULT_HOLD_MINUTES
+        return max(1, min(value, 7 * 24 * 60))
 
     @staticmethod
     def _bulk(statement):
@@ -138,7 +150,7 @@ class SlotService:
     ) -> ConsultationSlot:
         await self.release_expired_holds()
         now = datetime.now(timezone.utc)
-        hold_expires_at = now + timedelta(minutes=self.HOLD_MINUTES)
+        hold_expires_at = now + timedelta(minutes=await self.hold_minutes())
         result = await self.db.execute(
             self._bulk(
                 update(ConsultationSlot)
