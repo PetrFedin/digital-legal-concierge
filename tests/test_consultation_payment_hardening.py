@@ -211,7 +211,7 @@ async def test_payment_after_expired_hold_goes_to_manual_review(tmp_path):
         assert consultation.slot_id is None
         assert slot.status == "available"
         assert slot.consultation_id is None
-        assert case.status == CaseStatus.M2_PAYMENT_PENDING
+        assert case.status == CaseStatus.M2_SLOT_PENDING
 
     await engine.dispose()
 

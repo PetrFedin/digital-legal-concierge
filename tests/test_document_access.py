@@ -339,7 +339,7 @@ async def test_assigned_lawyer_access_and_unassigned_lawyer_denial(tmp_path, mon
                 actor=other_actor,
                 document_id=document.id,
             )
-        assert denied.value.reason == "lawyer_not_assigned"
+        assert denied.value.reason == "lawyer_not_responsible"
 
     await engine.dispose()
 
