@@ -26,18 +26,19 @@ def test_client_notification_lands_on_existing_court_payment_screen():
     assert 'if event_code == "COURT_PAYMENT_OPENED":' in actions
     assert '("💳 Перейти к оплате 70 000 ₽", "court_status")' in actions
     assert "CaseStatus.M1_WAITING_PAYMENT_70000" in stages
-    assert '("💳 Перейти к оплате", "pay_court_70000")' in stages
+    assert 'bound_case_callback("pay_court_70000", case.id)' in stages
 
 
 def test_client_court_payment_callback_creates_only_existing_court_payment_code():
     stages = read("app/bot/screens/m1_stages.py")
-    start = stages.index('c.data == "pay_court_70000"')
-    end = stages.index('c.data == "pay_success_fee"')
+    start = stages.index('callback_matches_action(c.data, "pay_court_70000")')
+    end = stages.index('callback_matches_action(c.data, "pay_success_fee")')
     block = stages[start:end]
 
     assert "CaseStatus.M1_WAITING_PAYMENT_70000" in block
     assert "payments_disabled()" in block
-    assert "await start_payment(callback, db, PaymentCode.M1_COURT_PAYMENT)" in block
+    assert "PaymentCode.M1_COURT_PAYMENT" in block
+    assert "scope=scope" in block
     assert "change_status(" not in block
 
 
@@ -45,9 +46,10 @@ def test_successful_court_payment_webhook_advances_to_enforcement():
     webhook = read("app/domain/payments/payment_webhook_service.py")
 
     assert "PaymentCode.M1_COURT_PAYMENT" in webhook
-    court_mapping = webhook[
-        webhook.index("PaymentCode.M1_COURT_PAYMENT") :
-        webhook.index("PaymentCode.M1_SUCCESS_FEE")
+    transition_mapping = webhook[webhook.index("mapping = {") :]
+    court_mapping = transition_mapping[
+        transition_mapping.index("PaymentCode.M1_COURT_PAYMENT") :
+        transition_mapping.index("PaymentCode.M1_SUCCESS_FEE")
     ]
     assert "CaseStatus.M1_PAYMENT_70000_RECEIVED" in court_mapping
     assert "CaseStatus.M1_ENFORCEMENT" in court_mapping
