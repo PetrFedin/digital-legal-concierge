@@ -594,3 +594,110 @@ The verified forwardemail/dkimpy repository is MIT-licensed but has lower recent
 
 **Sequencing:** secure file admission first -> raw email/web capture -> authenticity metadata -> timeline/source linkage -> evidence bundle export.
 
+## Additional wave — argument/evidence graph and long-term signature trust
+
+This wave makes the legal product materially more explainable and premium: not a folder of documents, but a navigable map of facts, claims, counterparty assertions and supporting evidence.
+
+### Case Argument / Evidence Graph — ADOPT
+
+Native node types may include:
+
+- factual assertion;
+- counterparty assertion;
+- legal issue/claim;
+- timeline event;
+- evidence item/document/page;
+- contract clause;
+- legal source/version;
+- deadline;
+- calculation;
+- requested remedy.
+
+Relations may include:
+
+- supports;
+- contradicts;
+- qualifies;
+- derived-from;
+- governed-by;
+- disputed-by;
+- supersedes;
+- missing-evidence-for.
+
+Every relation stores source, creator, review status and timestamps.
+
+This graph represents reviewed reasoning. It does not predict a court result.
+
+### Cytoscape.js Visual Graph — ADOPT
+
+Reference: https://github.com/cytoscape/cytoscape.js
+
+Use only as the interactive UI for:
+
+- why this next action?;
+- evidence supporting a claim;
+- disputed facts;
+- missing evidence;
+- legal-source dependencies;
+- timeline-to-document view.
+
+The graph UI is rebuildable from canonical case records.
+
+### AI-assisted Graph Suggestions — ADAPT
+
+AI/extraction may propose:
+
+- fact candidates;
+- evidence links;
+- contradiction candidates;
+- duplicates;
+- missing-evidence questions.
+
+Nothing becomes reviewed case reasoning until a human/operator confirms it.
+
+### PAdES / Long-Term Validation Policy — ADOPT
+
+Extend the existing pyHanko verification pipeline.
+
+Reference: https://github.com/MatthiasValvekens/pyHanko
+
+Persist where available:
+
+- signature/profile;
+- certificate-chain validation;
+- timestamp validation;
+- revocation evidence;
+- validation time;
+- trust-store/policy version;
+- long-term validation material status.
+
+Distinguish:
+
+- cryptographically valid now;
+- long-term validation evidence available;
+- incomplete trust/revocation evidence;
+- invalid/unverifiable.
+
+### Trust Policy Authority — ADOPT
+
+Version:
+
+- trust anchors;
+- validation-time rules;
+- revocation behavior;
+- timestamp policy;
+- verifier version.
+
+Policy changes create new validation records rather than rewriting old history.
+
+### Additional acceptance
+
+- every graph edge resolves to canonical case/evidence IDs;
+- AI cannot publish reviewed legal reasoning;
+- visual graph is not authority;
+- signature status identifies exact trust policy + verifier version;
+- original signed PDF is immutable;
+- cryptographic validity is not described as automatic legal effect.
+
+**Sequencing:** Timeline/Evidence/Search -> argument graph -> graph UI -> AI suggestion queue; pyHanko verification -> trust policy -> LTV/revalidation history.
+
