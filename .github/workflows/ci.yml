@@ -520,6 +520,38 @@ jobs:
             digital-legal-concierge:dlc-int-01 \
             pytest -q tests/test_dlc_int_01_ocr_integration.py
 
+  release-baseline-01:
+    name: Release baseline 01 current-contract repairs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      APP_ENV: test
+      DATABASE_URL: sqlite+aiosqlite:///./release_baseline_01.db
+      BOT_TOKEN: CHANGE_ME
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[test]"
+
+      - name: Run classified baseline repairs
+        run: |
+          pytest -q \
+            tests/test_payment_review_context_safety_v36.py \
+            tests/test_payment_presentation_commit_boundaries.py \
+            tests/test_database_migrations.py
+
   pm043-aiosqlite-lifecycle:
     name: PM-043 aiosqlite lifecycle proof
     runs-on: ubuntu-24.04
