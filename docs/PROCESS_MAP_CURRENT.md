@@ -1033,3 +1033,13 @@ Whenever anything changes:
 - Production/container runtime now declares pikepdf 10.16.x, OCRmyPDF 17.13.x, pdfminer.six 20260107, Tesseract English/Russian language data and DejaVu test/runtime fonts. Production preflight and `/ready` expose a cheap processor-runtime availability/configuration check.
 - Added deterministic tests for searchable PDF, recoverable structure, password protection, source immutability, derivative idempotency, scan-only OCR lineage, encrypted storage, source-bound access, retention deletion and envelope rotation, plus a real Docker OCRmyPDF/Tesseract image-only integration proof.
 - DLC-INT-01 remains **SOURCE_IMPLEMENTED / EXACT_PR_EVIDENCE_REQUIRED**. No merge/deploy classification may inherit from the parent SHA; freeze this map-final head and execute the exact workflow family plus the dedicated PDF/OCR proofs.
+
+
+## 2026-10-02 — DLC-INT-01 exact-proof repair and delivery handoff boundary
+
+- First runner-backed DLC-INT-01 exact execution proved the real OCR/Tesseract container path, migration 0032 application, PostgreSQL migration/backup/restore, Deployment Readiness, PostgreSQL Concurrency, Telegram Runtime Contracts and Browser Staff E2E. The focused derivative job exposed only migration-test-contract debt, not a failed PDF/OCR runtime.
+- The only DLC-INT-01-owned full-suite delta on the first exact candidate was the retention-trigger fixture omitting the newly non-null `case_retention_records.derivatives_deleted` column. The fixture now supplies that column; application retention code already deletes derivative rows/files under the same Case deletion authority.
+- Two other failures inside the historical `tests/test_database_migrations.py` file were already inherited on the DLC-INT-00 parent: stale payment-webhook schema assertions and the historical hard-coded audit key expectation. They are not used as the DLC-INT-01 bounded acceptance gate.
+- Added `tests/test_dlc_int_01_migration.py` as the bounded migration authority proof for revision `20261001_0032`: derivative table, recipe/provenance/envelope columns, retention counter and required indexes.
+- The dedicated DLC-INT-01 job now runs only DLC-INT-01-owned derivative/access/migration proofs. The complete SQLite and locked-image suites still run independently and remain the differential baseline gate; inherited failures are not hidden or suppressed.
+- Exact evidence collected before this map-final commit is diagnostic only. Freeze the SHA produced by this commit and classify all workflow families again before merge/deployment.
