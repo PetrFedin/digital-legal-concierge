@@ -1076,3 +1076,13 @@ Whenever anything changes:
 - `tests/test_database_migrations.py` now verifies the actual `payment_webhook_events` authority (`payload_summary`, first/last seen, processing timestamp, response code) rather than retired `payment_purpose/payment_details_snapshot` columns that belong to the Payment projection, not webhook evidence.
 - No production Case, Payment, Consultation or migration code changed in this batch. These are stale/fixture test-contract repairs only.
 - Added focused CI job `Release baseline 01 current-contract repairs`. Full SQLite/locked suites remain mandatory differential gates; this bounded job does not reclassify unrelated failures.
+
+
+## 2026-10-02 — RELEASE-BASELINE-02 Case-scope / consultation contract alignment
+
+- Continued inherited-suite classification with no production source mutation.
+- Consultation hold tests now follow the current live setting authority `consultations.slot_hold_minutes`; the repository default is 30 minutes. The approved UX requires a temporary reservation until payment but does not freeze an obsolete 10-minute constant.
+- Fresh My Case document entry is asserted as exact-Case callback `documents_open:v2:<case_id>`. This matches the current multi-Case safety contract: Case-sensitive read screens can expose subsequent mutations and therefore carry provenance.
+- Document-access denial for a lawyer who is not the current effective owner now asserts the unified `lawyer_not_responsible` reason. Responsibility is route-aware: M1 uses `Case.assigned_lawyer_id`; M2 uses the current consultation.
+- When an M2 hold expires before successful payment, the consultation and Case return to slot selection. A later provider success enters `PAID_REVIEW` but does not reopen the expired reservation; the test now expects `M2_SLOT_PENDING`, matching `SlotService.release_expired_holds()` and the current UX recovery path.
+- Added focused CI job `Release baseline 02 Case scope and consultation contracts`. Full suites remain the release differential.
