@@ -32,7 +32,7 @@ def test_case_bound_callback_contract() -> None:
     assert parse_bound_case_id("pay_start_30000", "pay_start_30000") == (True, None)
     assert bind_payment_case_action("pay_start_30000", 42) == token
     assert bind_payment_case_action("calc_recover", 42) == "calc_recover:v2:42"
-    assert bind_payment_case_action("documents_open", 42) == "documents_open"
+    assert bind_payment_case_action("documents_open", 42) == "documents_open:v2:42"
 
 
 def test_business_timezone_formatter_uses_configured_moscow_boundary() -> None:
