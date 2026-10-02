@@ -99,7 +99,7 @@ def test_m1_acceptance_notification_opens_real_contract_flow():
     assert all(len(value.encode("utf-8")) <= 64 for value in _callbacks(markup))
     stages = read("app/bot/screens/m1_stages.py")
     assert 'c.data == "contract_open"' in stages
-    assert 'c.data == "contract_sign"' in stages
+    assert 'callback_matches_action(c.data, "contract_sign")' in stages
 
 
 def test_m1_acceptance_navigation_is_never_attached_to_staff_notifications():
