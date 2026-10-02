@@ -4,6 +4,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import Document
+from app.models.document_derivative import DERIVATIVE_READY, DocumentDerivative
 from app.security.document_encryption import (
     ENCRYPTION_STATUS,
     FORMAT_V1,
@@ -161,6 +162,156 @@ async def migrate_document_encryption(
                     "sha256_prefix": str(document.sha256 or "")[:12] or None,
                 },
                 comment="Документ не удалось зашифровать или проверить",
+            )
+    await db.flush()
+    return result
+
+
+
+def _apply_derivative_metadata(derivative: DocumentDerivative, metadata) -> None:
+    derivative.encryption_status = ENCRYPTION_STATUS
+    derivative.encryption_key_id = metadata.key_id
+    derivative.encryption_format_version = metadata.format_version
+    derivative.encryption_envelope_id = metadata.envelope_id
+    derivative.encrypted_data_key = metadata.encrypted_data_key
+    derivative.encrypted_data_key_nonce = metadata.encrypted_data_key_nonce
+    derivative.data_key_destroyed_at = None
+    derivative.encrypted_at = metadata.encrypted_at
+    derivative.error_code = None
+    derivative.error_detail = None
+
+
+async def migrate_document_derivative_encryption(
+    db: AsyncSession,
+    *,
+    limit: int = 50,
+) -> dict[str, int]:
+    """Keep READY derivatives inside the same document master-key rotation authority."""
+
+    active = document_encryption_ring().require_active()
+    derivatives = (
+        await db.execute(
+            select(DocumentDerivative)
+            .where(
+                DocumentDerivative.status == DERIVATIVE_READY,
+                DocumentDerivative.sha256.is_not(None),
+                DocumentDerivative.file_path.is_not(None),
+                DocumentDerivative.data_key_destroyed_at.is_(None),
+                or_(
+                    DocumentDerivative.encryption_status != ENCRYPTION_STATUS,
+                    DocumentDerivative.encryption_key_id.is_(None),
+                    DocumentDerivative.encryption_key_id != active.key_id,
+                    DocumentDerivative.encryption_format_version != FORMAT_V2,
+                    DocumentDerivative.encryption_envelope_id.is_(None),
+                    DocumentDerivative.encrypted_data_key.is_(None),
+                    DocumentDerivative.encrypted_data_key_nonce.is_(None),
+                ),
+            )
+            .order_by(DocumentDerivative.id.asc())
+            .limit(max(1, int(limit)))
+            .with_for_update()
+        )
+    ).scalars().all()
+
+    storage = LocalStorageService()
+    result = {
+        "encrypted": 0,
+        "migrated_v1": 0,
+        "rewrapped": 0,
+        "repaired": 0,
+        "failed": 0,
+    }
+    for derivative in derivatives:
+        old_key_id = derivative.encryption_key_id
+        old_format = int(derivative.encryption_format_version or FORMAT_V1)
+        try:
+            path = storage.resolve_storage_path(
+                derivative.file_path,
+                expected_case_id=int(derivative.case_id),
+            )
+            file_format = encrypted_format_version(path)
+            if file_format == FORMAT_V2:
+                before = path.read_bytes()
+                metadata = rotate_encrypted_file(
+                    path,
+                    expected_sha256=derivative.sha256,
+                    encryption_key_id=derivative.encryption_key_id,
+                    encryption_envelope_id=derivative.encryption_envelope_id,
+                    encrypted_data_key=derivative.encrypted_data_key,
+                    encrypted_data_key_nonce=derivative.encrypted_data_key_nonce,
+                )
+                if metadata.key_id != old_key_id:
+                    result["rewrapped"] += 1
+                    action = "security.document_derivative_envelope_rewrapped"
+                    if path.read_bytes() != before:
+                        raise DocumentEncryptionError(
+                            "Ротация envelope производного документа изменила ciphertext"
+                        )
+                else:
+                    result["repaired"] += 1
+                    action = "security.document_derivative_encryption_metadata_repaired"
+            elif file_format == FORMAT_V1:
+                metadata = rotate_encrypted_file(
+                    path,
+                    expected_sha256=derivative.sha256,
+                )
+                result["migrated_v1"] += 1
+                action = "security.document_derivative_encryption_v1_migrated"
+            elif not is_encrypted_file(path):
+                metadata = encrypt_file(
+                    path,
+                    path,
+                    expected_sha256=derivative.sha256,
+                )
+                result["encrypted"] += 1
+                action = "security.document_derivative_encrypted_at_rest"
+            else:
+                raise DocumentEncryptionError(
+                    "Неизвестный формат защищённого производного документа"
+                )
+
+            _apply_derivative_metadata(derivative, metadata)
+            await record_security_event(
+                db,
+                action=action,
+                severity="info",
+                source="document_derivative_encryption_migration",
+                resource_type="document_derivative",
+                resource_id=derivative.id,
+                details={
+                    "case_id": derivative.case_id,
+                    "source_document_id": derivative.source_document_id,
+                    "derivative_type": derivative.derivative_type,
+                    "old_key_id": old_key_id,
+                    "old_format": old_format,
+                    "new_key_id": metadata.key_id,
+                    "new_format": metadata.format_version,
+                    "envelope_id_prefix": str(metadata.envelope_id or "")[:12] or None,
+                    "sha256_prefix": str(derivative.sha256 or "")[:12] or None,
+                },
+                comment=(
+                    "Производный документ приведён к общей per-document "
+                    "envelope encryption authority"
+                ),
+            )
+        except (DocumentEncryptionError, OSError, ValueError) as error:
+            result["failed"] += 1
+            derivative.error_code = "encryption_rotation_failed"
+            derivative.error_detail = type(error).__name__[:255]
+            await record_security_event(
+                db,
+                action="security.document_derivative_encryption_failed",
+                severity="critical",
+                source="document_derivative_encryption_migration",
+                resource_type="document_derivative",
+                resource_id=derivative.id,
+                details={
+                    "case_id": derivative.case_id,
+                    "source_document_id": derivative.source_document_id,
+                    "error_type": type(error).__name__,
+                    "sha256_prefix": str(derivative.sha256 or "")[:12] or None,
+                },
+                comment="Не удалось проверить или ротировать производный документ",
             )
     await db.flush()
     return result

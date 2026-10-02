@@ -13,7 +13,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     BACKUP_DIR=./backups
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends postgresql-client ca-certificates \
+    && apt-get install -y --no-install-recommends postgresql-client ca-certificates tesseract-ocr tesseract-ocr-eng tesseract-ocr-rus fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml constraints.txt README.md alembic.ini ./

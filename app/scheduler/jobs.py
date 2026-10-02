@@ -9,6 +9,7 @@ from app.config import settings
 from app.domain.cases.m1_claim_service import M1ClaimService
 from app.domain.cases.sla_service import CaseSLAService
 from app.domain.consultations.slot_service import SlotService
+from app.domain.documents.document_derivative_service import DocumentDerivativeService
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.retention.case_retention_service import CaseRetentionService
 from app.domain.statuses.consultation_statuses import ConsultationStatus
@@ -27,7 +28,10 @@ from app.security.backup_restore_fence import (
 from app.security.backup_retention import cleanup_authenticated_backups
 from app.security.backup_service import create_provider_encrypted_backup
 from app.security.document_access import cleanup_document_access_grants
-from app.security.document_key_rotation import migrate_document_encryption
+from app.security.document_key_rotation import (
+    migrate_document_derivative_encryption,
+    migrate_document_encryption,
+)
 from app.security.document_scanning import rescan_legacy_documents
 from app.security.file_uploads import cleanup_quarantine
 from app.security.key_rotation import reencrypt_mfa_secrets
@@ -220,6 +224,11 @@ class SchedulerJobs:
     async def discover_due_case_retention(self) -> dict[str, int | bool]:
         return await CaseRetentionService(self.db).discover_due_cases()
 
+    async def build_document_derivatives(self) -> dict[str, int]:
+        return await DocumentDerivativeService(
+            self.db
+        ).build_missing_pdf_derivatives(limit=5)
+
     async def cleanup_security_state(self) -> dict[str, object]:
         return {
             "login_states": await LoginThrottleService(self.db).cleanup(),
@@ -228,6 +237,9 @@ class SchedulerJobs:
             "mfa_secrets_reencrypted": await reencrypt_mfa_secrets(self.db),
             "document_rescan": await rescan_legacy_documents(self.db),
             "document_encryption": await migrate_document_encryption(self.db),
+            "document_derivative_encryption": (
+                await migrate_document_derivative_encryption(self.db)
+            ),
             "encrypted_backups_removed": await asyncio.to_thread(
                 cleanup_authenticated_backups,
                 retention_days=settings.backup_retention_days,

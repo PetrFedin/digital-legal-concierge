@@ -37,6 +37,7 @@ JOB_SPECS = (
     ("case_sla", "scheduler", "check_case_sla"),
     ("case_retention", "scheduler", "discover_due_case_retention"),
     ("security_cleanup", "scheduler", "cleanup_security_state"),
+    ("document_derivatives", "scheduler", "build_document_derivatives"),
     ("claim_deadlines", "scheduler", "check_claim_waiting_30_days"),
     ("self_filing_sla", "scheduler", "check_self_filing_sla"),
     ("self_filing_email", "self_filing_email", "send_pending"),

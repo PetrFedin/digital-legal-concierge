@@ -1015,3 +1015,31 @@ Whenever anything changes:
 - Issue #172 owns a separate controlled legacy re-admission workflow: protected storage resolution/decryption → ClamAV admission → structural validation → independent SHA agreement → canonical DLCENC2 Case storage → explicit audit. This is deliberately not folded into the live ingestion PR.
 - Added bounded regression `tests/test_dlc_int_00_legacy_rescan_fence.py` and included it in the DLC-INT-00 CI proof.
 - All prior DLC-INT-00 exact heads are diagnostic only after this source/test change. Freeze this map-final commit and rerun the complete workflow family before classifying the parent integration layer.
+
+
+## 2026-10-01 — DLC-INT-01 PDF validation and OCR derivative authority
+
+- Started Phase 1–2 of `docs/DIGITAL_LEGAL_CONCIERGE_INTEGRATION_MASTER_PLAN_2026-10-01.md` as a stacked branch on the exact DLC-INT-00 secure-admission authority. The parent legacy-rescan safety fence and issue #172 are part of this branch ancestry.
+- Added `document_derivatives` as a separate evidence-processing authority. A derivative is never a `Document` version and never enters the client upload/review lifecycle. It records Case/source Document, immutable source SHA-256, derivative SHA-256, type, tool/version, recipe identity, page count, text state, provenance and DLCENC2 envelope metadata.
+- Original accepted evidence is never rewritten. Processing begins only from a `VERIFIED`, usable encrypted PDF source. The source is decrypted through the existing `LocalStorageService` authority and its plaintext SHA is rechecked before any derivative work.
+- pikepdf strict-open is attempted first; recoverable structure may be rebuilt into a **new** metadata-scrubbed `SANITIZED_PDF` derivative. The emitted derivative is reopened with recovery disabled and page count must remain unchanged. Password-protected/unrepairable outputs fail explicitly.
+- Searchable-text detection uses pdfminer.six on the sanitised derivative. OCRmyPDF is invoked only when the configured usable-text threshold is not met. OCR executes in a private temporary processing directory, with one worker, bounded timeout, explicit language set and standard PDF output; the temporary plaintext is not claimed as securely erased.
+- OCR output is strictly reopened with pikepdf, page count must match the sanitised input and a usable text layer must be present before the `OCR_PDF` derivative can become READY.
+- Failed sanitisation/OCR attempts are durable derivative records with error code/detail and Case audit event; retries reuse the same source/tool/recipe identity instead of inventing a second business document.
+- Derivative ciphertext uses the same document encryption keyring and canonical Case storage scope. `load_authorized_derivative` first authorizes the immutable source Document through the existing admin/lawyer Case responsibility rules and then validates lineage/envelope state; a derivative never becomes its own authorization source.
+- Case retention now preflights and deletes derivative ciphertext and rows before deleting source Documents, counts derivative deletions and includes source+derivative identities in the retained content digest.
+- Document master-key rotation now has a derivative rotation pass that rewraps DLCENC2 DEKs without rewriting ciphertext. The hourly security cleanup runs both source-Document and derivative envelope rotation.
+- A bounded scheduler job builds at most five missing PDF derivative chains per cycle so OCR cannot monopolize the scheduler timeout. Already complete source/tool/recipe chains are skipped.
+- Production/container runtime now declares pikepdf 10.16.x, OCRmyPDF 17.13.x, pdfminer.six 20260107, Tesseract English/Russian language data and DejaVu test/runtime fonts. Production preflight and `/ready` expose a cheap processor-runtime availability/configuration check.
+- Added deterministic tests for searchable PDF, recoverable structure, password protection, source immutability, derivative idempotency, scan-only OCR lineage, encrypted storage, source-bound access, retention deletion and envelope rotation, plus a real Docker OCRmyPDF/Tesseract image-only integration proof.
+- DLC-INT-01 remains **SOURCE_IMPLEMENTED / EXACT_PR_EVIDENCE_REQUIRED**. No merge/deploy classification may inherit from the parent SHA; freeze this map-final head and execute the exact workflow family plus the dedicated PDF/OCR proofs.
+
+
+## 2026-10-02 — DLC-INT-01 exact-proof repair and delivery handoff boundary
+
+- First runner-backed DLC-INT-01 exact execution proved the real OCR/Tesseract container path, migration 0032 application, PostgreSQL migration/backup/restore, Deployment Readiness, PostgreSQL Concurrency, Telegram Runtime Contracts and Browser Staff E2E. The focused derivative job exposed only migration-test-contract debt, not a failed PDF/OCR runtime.
+- The only DLC-INT-01-owned full-suite delta on the first exact candidate was the retention-trigger fixture omitting the newly non-null `case_retention_records.derivatives_deleted` column. The fixture now supplies that column; application retention code already deletes derivative rows/files under the same Case deletion authority.
+- Two other failures inside the historical `tests/test_database_migrations.py` file were already inherited on the DLC-INT-00 parent: stale payment-webhook schema assertions and the historical hard-coded audit key expectation. They are not used as the DLC-INT-01 bounded acceptance gate.
+- Added `tests/test_dlc_int_01_migration.py` as the bounded migration authority proof for revision `20261001_0032`: derivative table, recipe/provenance/envelope columns, retention counter and required indexes.
+- The dedicated DLC-INT-01 job now runs only DLC-INT-01-owned derivative/access/migration proofs. The complete SQLite and locked-image suites still run independently and remain the differential baseline gate; inherited failures are not hidden or suppressed.
+- Exact evidence collected before this map-final commit is diagnostic only. Freeze the SHA produced by this commit and classify all workflow families again before merge/deployment.

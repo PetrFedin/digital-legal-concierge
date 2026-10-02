@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from app.config import settings
+from app.security.document_derivative_runtime import document_derivative_runtime_status
 
 
 PLACEHOLDERS = {
@@ -119,6 +120,7 @@ def build_report() -> dict[str, object]:
             settings.document_malware_scanner or "disabled"
         ).strip().lower()
         clamav_host = str(settings.clamav_host or "").strip()
+        derivative_runtime = document_derivative_runtime_status()
         bot_expected = runtime_role in {"all", "bot"}
         scheduler_expected = runtime_role in {"all", "bot"}
         checks.update(
@@ -189,6 +191,18 @@ def build_report() -> dict[str, object]:
                 "clamav_timeout_valid": 1
                 <= int(settings.clamav_timeout_seconds)
                 <= 120,
+                "document_derivative_runtime_ready": bool(
+                    derivative_runtime.get("available")
+                ),
+                "document_pdf_text_threshold_valid": (
+                    1 <= int(settings.document_pdf_min_text_bytes) <= 10000
+                ),
+                "document_ocr_timeout_valid": (
+                    30 <= int(settings.document_ocr_timeout_seconds) <= 1800
+                ),
+                "document_ocr_languages_configured": bool(
+                    str(settings.document_ocr_languages or "").strip()
+                ),
                 "payment_provider_ready": payment_ready,
                 "retention_is_dry_run": bool(settings.case_retention_dry_run),
                 "telegram_wait_valid": 10

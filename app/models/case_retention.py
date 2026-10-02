@@ -80,6 +80,7 @@ class CaseRetentionRecord(Base, TimestampMixin):
     attempt_count: Mapped[int] = mapped_column(Integer, default=0)
 
     documents_deleted: Mapped[int] = mapped_column(Integer, default=0)
+    derivatives_deleted: Mapped[int] = mapped_column(Integer, default=0)
     messages_deleted: Mapped[int] = mapped_column(Integer, default=0)
     notifications_deleted: Mapped[int] = mapped_column(Integer, default=0)
     consultations_anonymized: Mapped[int] = mapped_column(Integer, default=0)
