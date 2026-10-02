@@ -121,6 +121,9 @@ async def test_refund_of_late_extra_payment_preserves_booked_consultation(tmp_pa
         consultation = context["consultation"]
         slot = context["slot"]
         payment = context["payment"]
+        payment_id = int(payment.id)
+        consultation_id = int(consultation.id)
+        slot_id = int(slot.id)
 
         slot.status = "booked"
         slot.consultation_id = consultation.id
@@ -174,10 +177,16 @@ async def test_legacy_ambiguous_payment_requires_explicit_consultation_choice(tm
     async with factory() as session:
         context = await create_context(session, suffix=2)
         payment = context["payment"]
+        payment_id = int(payment.id)
+        first_consultation_id = int(context["consultation"].id)
         payment.reservation_key = None
+        # Current persistence authority permits only one active consultation per
+        # Case. A legacy ambiguous payment is represented by historical terminal
+        # consultations plus one active consultation, not two simultaneously
+        # active rows.
         second = Consultation(
             case_id=context["case"].id,
-            status=ConsultationStatus.SLOT_PENDING,
+            status=ConsultationStatus.CANCELLED,
             lawyer_id=context["lawyer"].id,
         )
         session.add(second)
@@ -192,19 +201,19 @@ async def test_legacy_ambiguous_payment_requires_explicit_consultation_choice(tm
             )
         await session.rollback()
 
-        payment = await session.get(Payment, payment.id)
+        payment = await session.get(Payment, payment_id)
         assert payment.status == PaymentStatus.PAID_REVIEW
 
         payment, selected = await PaymentReviewService(session).resolve(
-            payment_id=payment.id,
+            payment_id=payment_id,
             decision="refund_pending",
-            consultation_id=context["consultation"].id,
+            consultation_id=first_consultation_id,
             actor_id=context["admin"].id,
             comment="После сверки платёж относится к первой консультации",
         )
         await session.commit()
 
-        assert selected.id == context["consultation"].id
+        assert selected.id == first_consultation_id
         assert payment.status == PaymentStatus.REFUND_PENDING
 
     await engine.dispose()
@@ -218,6 +227,11 @@ async def test_old_payment_review_does_not_mutate_newer_booked_consultation(tmp_
         old_consultation = context["consultation"]
         payment = context["payment"]
         case = context["case"]
+        # The payment belongs to an old consultation. Under the canonical
+        # one-active-consultation-per-Case invariant that historical consultation
+        # must be terminal before a newer booked consultation can exist.
+        old_consultation.status = ConsultationStatus.CANCELLED
+        await session.flush()
 
         newer = Consultation(
             case_id=case.id,
@@ -309,9 +323,9 @@ async def test_inactive_link_review_cannot_be_silently_accepted_into_booking(tmp
             )
         await session.rollback()
 
-        payment = await session.get(Payment, payment.id)
-        consultation = await session.get(Consultation, consultation.id)
-        slot = await session.get(ConsultationSlot, slot.id)
+        payment = await session.get(Payment, payment_id)
+        consultation = await session.get(Consultation, consultation_id)
+        slot = await session.get(ConsultationSlot, slot_id)
         assert payment.status == PaymentStatus.PAID_REVIEW
         assert consultation.status == ConsultationStatus.BOOKED
         assert slot.status == "booked"
