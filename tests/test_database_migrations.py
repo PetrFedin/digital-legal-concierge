@@ -221,13 +221,16 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "event_key",
         "event_type",
         "provider_payment_id",
-        "payment_purpose",
-        "payment_details_snapshot",
         "payment_id",
         "payload_sha256",
+        "payload_summary",
         "status",
         "attempt_count",
+        "first_seen_at",
+        "last_seen_at",
+        "processing_started_at",
         "processed_at",
+        "response_code",
         "error_code",
     }.issubset(column_names(database_path, "payment_webhook_events"))
     assert {
