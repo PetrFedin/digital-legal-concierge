@@ -1043,3 +1043,15 @@ Whenever anything changes:
 - Added `tests/test_dlc_int_01_migration.py` as the bounded migration authority proof for revision `20261001_0032`: derivative table, recipe/provenance/envelope columns, retention counter and required indexes.
 - The dedicated DLC-INT-01 job now runs only DLC-INT-01-owned derivative/access/migration proofs. The complete SQLite and locked-image suites still run independently and remain the differential baseline gate; inherited failures are not hidden or suppressed.
 - Exact evidence collected before this map-final commit is diagnostic only. Freeze the SHA produced by this commit and classify all workflow families again before merge/deployment.
+
+
+## 2026-10-02 — CUSTOMER-HANDOVER authority freeze
+
+- Зафиксирован единый заказчицкий продуктовый контракт `docs/CANONICAL_PRODUCT_SPEC_2026-10-02.md` на базе исходной функциональной и UX/UI-спецификаций и текущих product/system contracts. Граница продукта остается М1/М2; Telegram остается клиентским кабинетом; self-filing остается режимом М1.
+- Зафиксирована текущая backend/database/runtime архитектура в `docs/TECHNICAL_ARCHITECTURE_CURRENT.md`: Python/FastAPI/aiogram, PostgreSQL, Redis, ClamAV, encrypted Case storage, scheduler/notifications, state/payment/document authorities и release gates.
+- Добавлен `docs/AUTHORITY_MANIFEST.yml`: current-authority документы отделены от исторических versioned handover/start/ready/runbook файлов. Исторические документы не удаляются, поскольку являются evidence, но больше не могут переопределять текущий контракт.
+- `docs/START_HERE.md` переведен с устаревшего host-venv запуска на container-first вход и единую цепочку current authority.
+- `docs/REPOSITORY_MAP.md` актуализирован по фактическим слоям app/api, app/domain, models, security, storage, scheduler, migrations и текущим compatibility facades.
+- Добавлен фактический `docs/CUSTOMER_HANDOVER_CHECKLIST_2026-10-02.md` по 20 пунктам передачи. Реализованный source/runtime-контур отделен от обязательных LIVE_REQUIRED/UAT/pilot/provider/staging доказательств; внешние credentials и реальные участники не симулируются.
+- Добавлен `tests/test_documentation_authority_current.py`, который защищает единую current-документацию, Docker-first entrypoint, границу М1/М2 и наличие замороженных business-source specs.
+- Эта ветка не объявляет staging/UAT/pilot/production завершенными. Их доказательства остаются LIVE_REQUIRED по `ACCEPTANCE_CURRENT.md` и `RUNBOOK_CURRENT.md`.
