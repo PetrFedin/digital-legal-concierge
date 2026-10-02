@@ -6,5 +6,6 @@ class SettingKey:
     CLAIM_WAITING_DAYS = "deadlines.claim_waiting_days"
     SLOT_HOLD_MINUTES = "consultations.slot_hold_minutes"
     PAYMENT_REMINDER_HOURS = "notifications.payment_reminder_hours"
+    CONSULTATION_PAYMENT_REMINDER_HOURS = "notifications.consultation_payment_reminder_hours"
     BOT_WELCOME_TEXT = "texts.bot_welcome"
     LEGAL_DISCLAIMER = "texts.legal_disclaimer"
