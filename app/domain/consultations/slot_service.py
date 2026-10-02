@@ -17,7 +17,7 @@ class SlotUnavailableError(RuntimeError):
 
 
 class SlotService:
-    DEFAULT_HOLD_MINUTES = 24 * 60
+    DEFAULT_HOLD_MINUTES = 25 * 60
     TEST_SLOT_DURATION_MINUTES = 60
     TEST_SLOT_STEP_MINUTES = 90
 
