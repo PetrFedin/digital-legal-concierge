@@ -159,6 +159,7 @@ Production принимает подтверждение платежа толь
 
 Минимум:
 
+- client inactivity reminders for unfinished calculation/document/slot-selection stages;
 - payment reminders;
 - consultation confirmation/reminders/change/outcome;
 - document decisions;
