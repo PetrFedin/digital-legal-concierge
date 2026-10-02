@@ -479,7 +479,8 @@ jobs:
             app/domain/retention/case_retention_service.py \
             migrations/versions/20261001_0032_document_derivatives.py \
             tests/test_dlc_int_01_pdf_derivatives.py \
-            tests/test_dlc_int_01_derivative_authority.py
+            tests/test_dlc_int_01_derivative_authority.py \
+            tests/test_dlc_int_01_migration.py
 
       - name: Prove migration 0032 and ORM parity
         run: |
@@ -493,7 +494,7 @@ jobs:
           pytest -q \
             tests/test_dlc_int_01_pdf_derivatives.py \
             tests/test_dlc_int_01_derivative_authority.py \
-            tests/test_database_migrations.py
+            tests/test_dlc_int_01_migration.py
 
   dlc-int-01-ocr-runtime:
     name: DLC-INT-01 real OCR runtime
