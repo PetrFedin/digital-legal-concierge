@@ -1,225 +1,225 @@
-# DIGITAL LEGAL CONCIERGE — TECHNICAL ARCHITECTURE CURRENT
+# DIGITAL LEGAL CONCIERGE — ТЕХНИЧЕСКАЯ АРХИТЕКТУРА
 
-**Frozen baseline:** 2026-10-02  
-**Status:** AUTHORITATIVE TECHNICAL DELIVERY ARCHITECTURE
+**Зафиксированная базовая версия:** 02.10.2026  
+**Статус:** АВТОРИТЕТНАЯ ТЕХНИЧЕСКАЯ АРХИТЕКТУРА ДЛЯ ПЕРЕДАЧИ
 
-## 1. Runtime topology
+## 1. Runtime-стек
 
-Production/staging artifact: one immutable Docker image built from this repository.
+Staging и production используют один immutable Docker image из этого репозитория.
 
-Core runtime:
+Основной стек:
 
 - Python 3.11;
-- FastAPI HTTP/staff API;
-- aiogram 3 Telegram bot;
+- FastAPI — HTTP/API/staff web;
+- aiogram 3 — Telegram-бот;
 - SQLAlchemy 2 async ORM;
-- Alembic migrations;
-- PostgreSQL 17 production authority;
-- Redis 7.4 durable Telegram FSM/coordination;
-- ClamAV sidecar for document malware admission;
-- encrypted Case-scoped document storage;
+- Alembic — единственный источник схемных миграций;
+- PostgreSQL 17 — основной production data authority;
+- Redis 7.4 — долговременный Telegram FSM/coordination;
+- ClamAV sidecar — malware admission документов;
+- зашифрованное Case-scoped файловое хранилище;
 - scheduler + durable notification dispatcher;
-- optional YooKassa provider integration when deliberately enabled.
+- YooKassa — опциональный provider, только при осознанном включении.
 
-SQLite and in-memory FSM are test/development conveniences only.
+SQLite и memory FSM допустимы только для разработки/тестов.
 
-## 2. Deployment shape
+## 2. Топология развертывания
 
-### Standard container contour
+### Стандартный контур
 
 `client/staff/Telegram → application image → PostgreSQL + Redis + encrypted storage`.
 
-### Current Timeweb split contour
+### Текущий Timeweb split-контур
 
-Because Telegram reachability is asymmetric on the current host, production topology may split the same immutable image into:
+Из-за фактически выявленной асимметрии доступа Telegram на текущем хосте допустим split одного и того же immutable image:
 
 - **web runtime** — FastAPI/staff/API, `RUN_BOT=false`, `RUN_SCHEDULER=false`;
 - **bot runtime** — host-network Telegram polling + scheduler/notification delivery, `RUN_BOT=true`, `RUN_SCHEDULER=true`;
-- PostgreSQL/Redis exposed only to the local host/runtime contour;
-- ClamAV available to every upload ingress authority;
-- both runtimes use the same database, storage, keyring and release SHA.
+- PostgreSQL и Redis доступны только внутри локального runtime-контура;
+- ClamAV доступен всем входам загрузки документов;
+- обе роли работают с одной БД, storage, keyring и одним release SHA.
 
-No second polling consumer is allowed.
+Второй polling consumer запрещен.
 
-## 3. Application layers
+## 3. Слои приложения
 
 ### Presentation
 
-- `app/bot/*` — Telegram client cabinet;
-- `app/api/*` — staff CRM, lawyer workspace, operations/security APIs and web surfaces.
+- `app/bot/*` — Telegram-клиентский кабинет;
+- `app/api/*` — CRM, рабочее место юриста, operations/security API и web surfaces.
 
-Presentation code may request domain actions; it does not own legal/financial truth.
+Presentation инициирует доменные команды, но не является источником юридической или финансовой истины.
 
 ### Domain
 
-- `app/domain/cases/*` — Case lifecycle, transition authority, SLA, assignment, M1/M2 services;
+- `app/domain/cases/*` — Case lifecycle, transition authority, SLA, assignment, М1/М2;
 - `app/domain/documents/*` — document workflow/review/derivatives;
 - `app/domain/payments/*` — payment lifecycle, provider/offline reconciliation;
 - `app/domain/consultations/*` — slots/reservations/consultation lifecycle;
 - `app/domain/notifications/*` — durable notification generation/delivery;
-- `app/domain/retention/*` — legal hold and controlled deletion.
+- `app/domain/retention/*` — legal hold и controlled deletion.
 
-### Platform/security
+### Platform / security
 
-- `app/security/*` — sessions/RBAC/MFA, document encryption/access, malware admission, audit integrity, backup/key rotation;
-- `app/storage.py` — protected Case-scoped storage boundary;
-- `app/scheduler/*` — singleton scheduler jobs and retry/maintenance execution;
+- `app/security/*` — sessions/RBAC/MFA, encryption/access, malware admission, audit integrity, backup/key rotation;
+- `app/storage.py` — защищенная Case-scoped storage boundary;
+- `app/scheduler/*` — singleton jobs, retry и maintenance;
 - `app/db/*` — async database/session/migration bootstrap.
 
-## 4. Business authority graph
+## 4. Граф источников истины
 
 ### Case
 
-`Case.status` is the only process-state authority.  
-Transitions: `app/domain/cases/case_transition_policy.py`.  
-Mutations: `CaseService` or dedicated domain services.
+`Case.status` — единственный process-state authority.  
+Граф переходов: `app/domain/cases/case_transition_policy.py`.  
+Запись: `CaseService` и профильные domain services.
 
-Every normal transition is explicit. Compatibility-only states are readable but cannot be re-entered by current writes. Forced recovery is privileged, narrow and audited.
+Каждый нормальный переход задан явно. Compatibility-only состояния читаются, но не создаются заново. Forced recovery — привилегированный, узкий и аудируемый механизм.
 
 ### Calculation
 
-Preview is transient Redis/FSM state. A durable Case/Calculation is created only by explicit save with an idempotent operation key.
+Preview живет только в Redis/FSM. Durable Case/Calculation создается после явного сохранения с idempotency operation key.
 
-Legal calculation rules are versioned/effective-dated evidence, not hidden constants.
+Правовые расчетные правила должны иметь version/effective-date evidence и не сводятся к скрытым константам.
 
 ### Document
 
-`Document` = immutable accepted source/version evidence.  
-`DocumentDerivative` = reproducible sanitized/OCR derivative; never a replacement source.
+`Document` — неизменяемое принятое source/version evidence.  
+`DocumentDerivative` — воспроизводимый sanitized/OCR derivative, но не новый source.
 
-Admission order:
+Admission:
 
-`incoming → ClamAV verdict → structural/type validation → SHA agreement → DLCENC2 envelope encryption → Document`.
+`incoming → ClamAV → structural/type validation → SHA agreement → DLCENC2 envelope encryption → Document`.
 
-Derivative order:
+Derivative:
 
-`VERIFIED encrypted source → pikepdf → encrypted sanitized derivative → usable-text test → OCRmyPDF only when needed → encrypted OCR derivative`.
+`VERIFIED encrypted source → pikepdf → encrypted sanitized derivative → text check → OCRmyPDF только при отсутствии usable text → encrypted OCR derivative`.
 
 ### Payment
 
-`Payment` = current projection.  
-`PaymentEvent` = append-only normalized lifecycle.  
-`PaymentWebhookEvent` = provider evidence/idempotency ledger.
+`Payment` — current projection.  
+`PaymentEvent` — append-only normalized lifecycle.  
+`PaymentWebhookEvent` — provider evidence / idempotency ledger.
 
-Provider/webhook, staff reconciliation and stale-money handling all converge on the same domain lifecycle.
+Provider webhook, ручная сверка и обработка stale-money сходятся в единую domain lifecycle.
 
 ### Consultation
 
-`ConsultationSlot` owns capacity/time.  
-`Consultation` owns client/Case booking lifecycle.  
-Reservation/payment/result operations lock/revalidate the exact slot/consultation context.
+`ConsultationSlot` владеет временем/емкостью.  
+`Consultation` владеет Case/client booking lifecycle.  
+Reservation/payment/result всегда блокируют и повторно валидируют точный slot/consultation context.
 
 ### Notification
 
-Notification records are durable. Delivery/retry is separate from domain mutation; a send failure never rolls back or repeats an already committed legal/financial action.
+Notification хранится долговременно. Delivery/retry отделены от бизнес-мутации: ошибка отправки не откатывает и не повторяет уже подтвержденное юридическое/финансовое действие.
 
-## 5. Persistence model
+## 5. Persistence
 
-PostgreSQL stores all durable legal, financial, role, audit and operational facts.
+PostgreSQL хранит все долговременные юридические, финансовые, ролевые, аудиторские и операционные факты.
 
-Important invariants:
+Ключевые инварианты:
 
 - Client → Cases = one-to-many;
-- Case has one current M1/M2 route/status at a time;
+- у одного Case один текущий маршрут М1/М2 и один status;
 - Case → Calculations = one-to-many;
-- document versions are append-only business records;
-- normalized payment events are append-only;
-- audit/history is not rewritten;
-- one active provider payment attempt per controlled identity where required;
-- consultation/slot uniqueness enforced at DB/domain boundaries;
-- idempotent Telegram/provider operations use stable operation/event keys.
+- версии документов — append-only business records;
+- PaymentEvent — append-only;
+- audit/history не переписывается;
+- provider payment identities и активные попытки защищены DB/domain constraints;
+- slot/consultation uniqueness защищена на DB/domain boundary;
+- Telegram/provider retries используют стабильные operation/event keys.
 
-Alembic is the only schema evolution authority. Deployment requires one head and ORM/migration parity.
+Alembic — единственный источник изменения схемы. Перед развертыванием требуется одна head revision и ORM/migration parity.
 
-## 6. Transaction and concurrency model
+## 6. Транзакции и concurrency
 
-- every stateful action operates inside an explicit async DB transaction;
-- critical rows use `SELECT ... FOR UPDATE` or DB uniqueness as the concurrency backstop;
-- stale UI/Telegram snapshots are rejected, not silently replayed;
-- ORM values needed after commit/rollback are snapshotted before the boundary;
-- provider/Telegram retry is idempotent by stable identifiers;
-- PostgreSQL concurrency tests are mandatory release evidence; SQLite cannot prove race safety.
+- stateful-действие выполняется в явной async DB transaction;
+- критичные записи блокируются через `SELECT ... FOR UPDATE` либо защищаются DB uniqueness;
+- stale UI/Telegram snapshot отклоняется, а не применяется молча;
+- значения ORM, нужные после commit/rollback, snapshot-ятся заранее;
+- retries Telegram/provider идемпотентны;
+- race-safety доказывается PostgreSQL concurrency tests; SQLite для этого недостаточен.
 
 ## 7. Telegram state model
 
-Redis FSM stores transient wizard/draft/navigation state.
+Redis FSM хранит transient wizard/draft/navigation state.
 
-Persistent business state is never reconstructed from Redis alone.
+Durable бизнес-состояние не восстанавливается только из Redis.
 
-Rules:
+Правила:
 
-- callback mutations carry exact Case/domain provenance;
-- multi-Case ambiguity fails closed;
-- Back only replays read/idempotent screens;
-- process restart may lose transient UI state but must recover from PostgreSQL Home/My Case safely;
-- polling is protected by singleton lease.
+- mutation callback несет точную Case/domain provenance;
+- multi-Case неоднозначность fail-closed;
+- Back воспроизводит только read/idempotent screen;
+- после рестарта transient UI может быть утерян, но Home/My Case восстанавливаются из PostgreSQL без выдумывания мутации;
+- polling защищен singleton lease.
 
 ## 8. Staff authorization
 
-Roles are enforced server-side:
+Права проверяются на сервере:
 
 - admin/operator;
-- lawyer with Case responsibility checks;
-- superadmin/leadership with stronger MFA/session requirements.
+- lawyer + Case responsibility;
+- superadmin/leadership + усиленная MFA/session policy.
 
-UI visibility is convenience only. Every protected endpoint independently validates current account, roles, session version/revocation and Case responsibility.
+Скрытая кнопка не является security boundary. Каждый endpoint валидирует актуальный account, roles, session version/revocation и Case responsibility.
 
-Runtime contract: one HTTP method/path has one route owner. Import/include order must not define authorization.
+Runtime-инвариант: одна пара HTTP method/path — один route owner. Порядок include/import не определяет авторизацию.
 
 ## 9. Document security
 
-- ClamAV fail-closed in production;
-- content/type/size validation;
-- independent SHA agreement;
+- ClamAV fail-closed в production;
+- type/content/size validation;
+- независимая SHA agreement;
 - per-document envelope encryption;
-- Case-scoped portable storage keys;
+- переносимые Case-scoped storage keys;
 - one-time protected download grants;
-- key rotation without unnecessary ciphertext rewrite;
-- quarantine never retains rejected plaintext;
-- legal hold/retention includes source and derivatives;
-- backup/restore revalidates storage identity and decryption.
+- key rotation без лишней перезаписи ciphertext;
+- quarantine не хранит rejected plaintext;
+- legal hold/retention охватывает source и derivatives;
+- restore заново проверяет storage identity и decryption.
 
 ## 10. Backup / restore
 
-Authenticated encrypted backups include PostgreSQL evidence plus protected storage under the runbook contract.
+Аутентифицированный encrypted backup включает PostgreSQL evidence и защищенный storage по runbook-контракту.
 
-Release requires:
+Релизная проверка:
 
-`pre-backup witness → encrypted backup → independent verification → restore to empty staging DB/storage → Alembic/audit/document checks → same image runtime smoke → normal authorized historical document read`.
+`pre-backup witness → encrypted backup → independent verification → restore в пустую staging DB/storage → Alembic/audit/document checks → запуск того же image → обычное авторизованное чтение исторического документа`.
 
-A backup file existing is not acceptance.
+Наличие файла backup само по себе не является приемкой.
 
 ## 11. Observability
 
-Mandatory operational signals:
+Минимальный обязательный набор:
 
-- `/health` liveness;
-- `/ready` dependency/readiness contract;
-- scheduler heartbeat/job failures;
-- notification backlog/retry failures;
-- Telegram polling/sending failure;
-- DB/Redis availability;
-- payment webhook/review/refund backlog;
-- document scanner/storage capacity;
-- backup freshness/restore readiness;
+- `/health` — liveness;
+- `/ready` — readiness зависимостей;
+- scheduler heartbeat / job failures;
+- notification backlog / retry failures;
+- Telegram polling/sending failures;
+- PostgreSQL / Redis availability;
+- payment webhook / review / refund backlog;
+- document scanner / storage capacity;
+- backup freshness / restore readiness;
 - security/audit events.
 
-Secrets and document plaintext are excluded from logs.
+Секреты и plaintext документов не пишутся в логи.
 
 ## 12. Release gates
 
-One frozen SHA must pass, on that same SHA:
+Один frozen SHA должен на одном и том же коде пройти:
 
-- compile/architecture/Alembic/ORM;
+- compile / architecture / Alembic / ORM;
 - focused domain proofs;
 - PostgreSQL migrations + backup/restore drill;
 - PostgreSQL concurrency;
 - Redis/Telegram runtime;
 - browser staff E2E;
-- document malware/OCR runtime gates;
+- malware/OCR runtime gates;
 - locked/reproducible image differential;
-- real Telegram/customer UAT personas;
+- реальные Telegram/customer UAT personas;
 - post-live backup→restore;
-- provider/offline payment evidence for the mechanism actually enabled.
+- provider/offline payment evidence для реально включенного механизма.
 
-No gate is promoted from source inspection to runtime PASS without execution.
+Source inspection не повышается до runtime PASS без фактического выполнения.
