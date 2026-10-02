@@ -54,6 +54,9 @@ TEMPLATES = {
         "По делу {case_number} документ «{document}» отклонён. "
         "Причина: {comment}."
     ),
+    "client_inactivity_reminder": (
+        "{message}\n\nДело: {case_number}. Следующий шаг: {next_action}."
+    ),
     "payment_created": "Выставлен платеж по делу {case_number}: {amount} ₽.",
     "payment_paid": "Оплата подтверждена по делу {case_number}.",
     "payment_reminder": "Напоминание: по делу {case_number} ожидается оплата.",
