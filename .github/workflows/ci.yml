@@ -520,6 +520,35 @@ jobs:
             digital-legal-concierge:dlc-int-01 \
             pytest -q tests/test_dlc_int_01_ocr_integration.py
 
+  release-baseline-03:
+    name: Release baseline 03 M1 callback contract repairs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      APP_ENV: test
+      DATABASE_URL: sqlite+aiosqlite:///./release_baseline_03.db
+      BOT_TOKEN: CHANGE_ME
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: pip install -e ".[test]"
+      - name: Run classified M1 source contracts
+        run: |
+          pytest -q \
+            tests/test_court_payment_handoff_v35.py \
+            tests/test_m1_money_received_notification_v36.py \
+            tests/test_document_review_workspace_v34.py
+
   release-baseline-02:
     name: Release baseline 02 Case scope and consultation contracts
     runs-on: ubuntu-24.04
