@@ -1086,3 +1086,12 @@ Whenever anything changes:
 - Document-access denial for a lawyer who is not the current effective owner now asserts the unified `lawyer_not_responsible` reason. Responsibility is route-aware: M1 uses `Case.assigned_lawyer_id`; M2 uses the current consultation.
 - When an M2 hold expires before successful payment, the consultation and Case return to slot selection. A later provider success enters `PAID_REVIEW` but does not reopen the expired reservation; the test now expects `M2_SLOT_PENDING`, matching `SlotService.release_expired_holds()` and the current UX recovery path.
 - Added focused CI job `Release baseline 02 Case scope and consultation contracts`. Full suites remain the release differential.
+
+
+## 2026-10-02 — RELEASE-BASELINE-03 exact-Case M1 callback source contracts
+
+- Reclassified three source-inspection failures as stale tests after the production handlers were hardened from raw callback equality to `callback_matches_action(...)` plus exact-Case `:v2:<case_id>` provenance.
+- Court-payment tests now verify that the M1 court screen emits `bound_case_callback("pay_court_70000", case.id)`, the handler accepts the compatibility matcher and forwards the already-resolved Case scope into `start_payment`.
+- Court-payment webhook source proof now inspects the actual transition mapping block rather than slicing from the first unrelated `M1_COURT_PAYMENT` occurrence. The asserted business sequence remains `M1_PAYMENT_70000_RECEIVED → M1_ENFORCEMENT`.
+- Success-fee and contract-sign handler proofs now assert the compatible Case-bound matcher. Durable notification keyboards may still carry historical raw callback tokens; the handler safely accepts those only through the guarded callback scope while fresh Case screens emit exact provenance.
+- No M1 business logic, payment transitions or Telegram handlers changed. Added focused CI job `Release baseline 03 M1 callback contract repairs`.
