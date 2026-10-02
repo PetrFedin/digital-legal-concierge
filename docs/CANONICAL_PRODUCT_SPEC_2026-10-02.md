@@ -1,210 +1,210 @@
-# DIGITAL LEGAL CONCIERGE — CANONICAL PRODUCT SPECIFICATION
+# DIGITAL LEGAL CONCIERGE — ЕДИНАЯ СПЕЦИФИКАЦИЯ ПРОДУКТА
 
-**Frozen baseline:** 2026-10-02  
-**Status:** AUTHORITATIVE FOR CUSTOMER DELIVERY  
-**Business sources:** `docs/source_specs/Функциональная_спецификация_MVP.docx`, `docs/source_specs/UX_UI_спецификация_Telegram_бот.docx`  
-**Implementation authorities:** `PRODUCT_SCOPE_CURRENT.md`, `SYSTEM_CONTRACT_CURRENT.md`, `ACCEPTANCE_CURRENT.md`, `RUNBOOK_CURRENT.md`, `PROCESS_MAP_CURRENT.md`
+**Зафиксированная базовая версия:** 02.10.2026  
+**Статус:** АВТОРИТЕТНЫЙ ДОКУМЕНТ ДЛЯ ПЕРЕДАЧИ ЗАКАЗЧИКУ  
+**Бизнес-источники:** `docs/source_specs/Функциональная_спецификация_MVP.docx`, `docs/source_specs/UX_UI_спецификация_Telegram_бот.docx`  
+**Технические источники истины:** `PRODUCT_SCOPE_CURRENT.md`, `SYSTEM_CONTRACT_CURRENT.md`, `ACCEPTANCE_CURRENT.md`, `RUNBOOK_CURRENT.md`, `PROCESS_MAP_CURRENT.md`
 
-This document freezes the single product interpretation used for handover. Historical versioned handover/start/ready documents are evidence only and cannot change this contract.
+Этот документ фиксирует единую трактовку продукта для разработки, тестирования, приемки и передачи заказчику. Исторические документы с суффиксами версий являются только свидетельствами предыдущих этапов и не изменяют настоящий контракт.
 
-## 1. Scope
+## 1. Границы продукта
 
-The product contains exactly two legal routes:
+В продукте ровно два юридических маршрута:
 
-- **M1 — standard recovery under DDU / 214-FZ**;
-- **M2 — paid personal consultation**.
+- **М1 — стандартное взыскание по ДДУ / 214-ФЗ**;
+- **М2 — платная личная консультация**.
 
-Telegram is the client cabinet. There is no separate client web cabinet in the delivery scope. CRM, lawyer workspace and leadership/operations surfaces are internal staff products.
+Telegram — клиентский кабинет. Отдельный веб-кабинет клиента в объем передачи не входит. CRM администратора, рабочее место юриста и контур руководителя/эксплуатации являются внутренними интерфейсами команды.
 
-The self-filing court-document package is an **M1 service mode**, not a third route.
+Пакет самостоятельной подготовки судебных документов — **режим услуги внутри М1**, а не третий маршрут.
 
-## 2. Core UX contract
+## 2. UX-контракт
 
-Persistent client navigation is:
+Постоянная клиентская навигация:
 
-`Home → Calculate → My Case → Documents → Contact Lawyer`.
+`Главная → Рассчитать → Моё дело → Документы → Связаться с юристом`.
 
-Rules:
+Правила:
 
-- one screen = one primary action;
-- client sees client-safe status and nearest action, never internal CRM comments/status codes;
-- Back/Cancel/timeout/retry must not destroy persisted business data;
-- every mutating Telegram action is bound to the exact Case/domain object when ambiguity is possible;
-- stale callbacks fail closed and never silently switch Case;
-- closed matters are read-only; a new calculation/new matter is explicit;
-- calculations are preliminary guidance until lawyer review.
+- один экран — одно основное действие;
+- клиент видит понятный клиентский статус и ближайший шаг, но не внутренние CRM-статусы и комментарии;
+- Назад / Отмена / тайм-аут / повтор не уничтожают уже сохраненные бизнес-данные;
+- каждое изменяющее состояние действие Telegram привязано к точному делу и объекту домена, когда возможна неоднозначность;
+- устаревшие callback-действия завершаются безопасно и не переключают дело незаметно;
+- закрытые дела доступны только для чтения; новый расчет/новое обращение запускается явно;
+- расчет обозначается как предварительный до проверки юристом.
 
-## 3. Case / state authority
+## 3. Источник истины State Machine
 
-`Case.status` is the single process-state authority. Business transitions occur through `CaseService` or dedicated domain services using the same transition policy. Generic arbitrary status editing is not a supported business mechanism.
+`Case.status` — единственный источник истины процессного состояния. Переходы выполняются через `CaseService` или специализированные доменные сервисы, использующие ту же политику переходов. Произвольное ручное редактирование статуса через UI не является бизнес-механизмом.
 
-### M1 canonical chain
+### М1 — каноническая цепочка
 
-`calculator preview → explicit save → client decision → consent → documents → lawyer review → accept/request-more/reject-or-M2 → contract → initial payment → POA → claim → 30-day wait → court → second payment → enforcement → recovered money → success fee → M1_CLOSED`.
+`предварительный расчет → явное сохранение → решение клиента → согласие → документы → проверка юристом → принять / запросить / отклонить / перевести в М2 → договор → первый платеж → доверенность → претензия → ожидание 30 дней → суд → второй платеж → исполнение → поступление денег → success fee → M1_CLOSED`.
 
-The source-spec statuses remain the business vocabulary. Current code may use additional controlled intermediate states for recovery/compatibility, but they must not create another route or bypass the legal order.
+Статусы исходной спецификации сохраняются как бизнес-словарь. Реализация может иметь контролируемые промежуточные состояния для восстановления и совместимости, но они не создают новый маршрут и не позволяют обходить юридическую последовательность.
 
-### M2 canonical chain
+### М2 — каноническая цепочка
 
-`description → optional documents → slot selection → payment obligation/confirmation → booked consultation → lawyer result → M2_CLOSED or M2_TO_M1`.
+`описание ситуации → документы при наличии → выбор слота → платежное обязательство / подтверждение → подтвержденная консультация → итог юриста → M2_CLOSED или M2_TO_M1`.
 
-Historical `M2_CONSULTATION_ROUTE` is compatibility-only in the implementation. New writes use the current M2 entry/state authority and must advance into `M2_DESCRIPTION_PENDING`.
+Исторический `M2_CONSULTATION_ROUTE` читается для совместимости, но новые записи не создаются в этом состоянии; современный вход идет в `M2_DESCRIPTION_PENDING`.
 
-## 4. Roles
+## 4. Роли и полномочия
 
-### Client
-May create/continue their own inquiry, calculate, upload/replace their own document version, view client-safe status/history/payment state, choose a consultation slot, send messages and perform explicit client confirmations. Client actions never establish lawyer, court, bank/provider or recovered-money facts.
+### Клиент
+Может создавать и продолжать свои обращения, выполнять расчет, загружать/заменять собственную версию документа, видеть клиентский статус/историю/платежи, выбирать слот консультации, отправлять сообщения и выполнять явные клиентские подтверждения. Действие клиента не устанавливает факт юридического решения, суда, поступления денег или provider/bank receipt.
 
-### Administrator
-Owns operational queues, assignment, factual payment reconciliation, consultation operations, technical document reupload requests, delivery/retry operations and operational follow-up. Administrator does not make substantive legal approval/rejection decisions.
+### Администратор
+Ведет операционные очереди, назначение ответственных, фактическую сверку платежей, организацию консультаций, технические запросы повторной загрузки, доставку/повтор уведомлений и операционное сопровождение. Администратор не утверждает юридическое содержание документов и не принимает за юриста правовые решения.
 
-### Lawyer
-Owns legal document review, legal Case decisions, M1/M2 legal transitions, claim/court/enforcement facts assigned to the lawyer, consultation outcome and legal source/deliverable approval.
+### Юрист
+Владеет юридической проверкой документов, правовыми решениями по делу, юридическими переходами М1/М2, назначенными ему фактами претензии/суда/исполнения, итогом консультации и юридическим утверждением исходных/итоговых документов.
 
-### Superadmin / leadership
-Owns users/access, security, audit, backup/restore, retention/legal hold, diagnostics and controlled recovery.
+### Superadmin / руководитель
+Управляет пользователями и доступом, безопасностью, аудитом, backup/restore, retention/legal hold, диагностикой и контролируемым восстановлением.
 
-Every server endpoint enforces authorization independently of UI visibility.
+Каждый серверный endpoint проверяет полномочия независимо от того, скрыта ли кнопка в интерфейсе.
 
-## 5. Data model
+## 5. Модель данных
 
-The delivery data authority is PostgreSQL. Core aggregates are:
+Основной долговременный источник истины — PostgreSQL. Ключевые агрегаты:
 
 - User / AdminUser / Lawyer;
-- Case + Case history/audit;
-- Calculation + versioned legal rule evidence;
-- Document + immutable versions/security/encryption metadata;
-- DocumentDerivative for controlled sanitized/OCR derivatives;
+- Case + история дела / AuditLog;
+- Calculation + версионированные доказательства примененных правовых правил;
+- Document + неизменяемые версии / security / encryption metadata;
+- DocumentDerivative для контролируемых sanitized/OCR-производных;
 - Payment + append-only PaymentEvent + PaymentWebhookEvent;
 - Consultation + ConsultationSlot;
 - Message;
 - Notification;
-- consent/service-contract evidence;
-- retention/legal-hold records;
-- self-filing aggregate as an M1 service mode.
+- evidence согласий и договоров;
+- retention / legal hold;
+- self-filing aggregate как режим услуги М1.
 
-Redis stores Telegram FSM/navigation/drafts and coordination state only. Loss of Redis must not fabricate or erase persistent legal/financial facts.
+Redis хранит только Telegram FSM, навигацию, черновики и координационное состояние. Потеря Redis не может создавать или удалять юридические и финансовые факты.
 
-## 6. Documents
+## 6. Документы и файловое хранилище
 
-Canonical admission:
+Канонический admission:
 
-`incoming bytes → malware admission → file/content validation → SHA agreement → immutable encrypted source → optional sanitized/OCR derivative → later extraction/index`.
+`incoming bytes → malware admission → проверка типа/структуры → сверка SHA-256 → неизменяемый зашифрованный оригинал → при необходимости sanitized/OCR derivative → дальнейшее извлечение/index`.
 
-Rules:
+Правила:
 
-- original accepted evidence is never overwritten by sanitizer/OCR;
-- files are encrypted at rest with per-document envelope metadata;
-- storage identity is Case-scoped and portable;
-- rejected bytes are never retained as plaintext;
-- derivatives have their own checksum, processor/version, recipe and provenance;
-- authorization of a derivative re-authorizes the source Document/Case;
-- key rotation, retention and restore rules apply to source and derivatives.
+- принятый оригинал никогда не перезаписывается sanitizer/OCR;
+- документы шифруются at rest с индивидуальными envelope metadata;
+- storage key привязан к Case и переносим между средами;
+- отклоненный файл не сохраняется в plaintext;
+- производный объект имеет собственные checksum, processor/version, recipe и provenance;
+- доступ к derivative повторно проверяет права к исходному Document/Case;
+- key rotation, retention и restore распространяются на оригиналы и derivatives.
 
-## 7. Payments
+## 7. Платежи
 
-Money is a business lifecycle, not a button.
+Деньги — это бизнес-жизненный цикл, а не кнопка.
 
-Supported production mechanisms:
+Разрешенные production-механизмы:
 
-- **offline/manual reconciliation** — persisted obligation, independent bank/accounting confirmation by authorized staff, no fabricated external payment URL;
-- **YooKassa** — only when approved test/live credentials and provider evidence are deliberately configured.
+- **offline/manual reconciliation** — платежное обязательство сохраняется, фактическое поступление независимо подтверждает уполномоченный сотрудник по банковским/учетным данным, внешняя ссылка не выдумывается;
+- **YooKassa** — только при намеренно подключенных и проверенных реквизитах и provider evidence.
 
-`disabled` and `fake` are not production payment mechanisms.
+`disabled` и `fake` не являются production-механизмами оплаты.
 
-M1 full representation retains the approved commercial stages including 30,000 RUB, 70,000 RUB and success-fee stage as defined by the source specification/current contract.
+Для полного представительства М1 сохраняются утвержденные коммерческие этапы, включая 30 000 ₽, 70 000 ₽ и success fee согласно исходной спецификации/текущему контракту.
 
-M2 remains paid: slot booking becomes final only after the exact payment/reservation context is confirmed.
+М2 остается платной консультацией: окончательное бронирование слота возможно только после подтверждения платежа в точном контексте reservation/consultation.
 
-Provider callbacks are idempotent evidence; stale money cannot mutate a different Case or reservation.
+Webhook провайдера обрабатывается идемпотентно. Устаревший платеж не может изменить другое дело или другой слот.
 
-## 8. Consultation calendar
+## 8. Календарь консультаций
 
-Consultation slots are persisted, reservable and concurrency-safe. Two clients cannot own the same slot. Hold expiry, reschedule, cancel, client no-show, lawyer no-show, rebooking and refund/review paths are explicit.
+Слоты хранятся в БД и защищены от гонок. Один слот не может одновременно принадлежать двум клиентам. Резерв, истечение hold, перенос, отмена, client no-show, lawyer no-show, повторная запись и refund/review — явные сценарии.
 
-Client reminders include 24-hour and 2-hour consultation reminders. Unpaid slot reminders/expiry use the configured reservation policy.
+Клиент получает напоминания за 24 часа и 2 часа. Неоплаченный резерв обслуживается отдельной политикой напоминаний и освобождения слота.
 
-## 9. Notifications and communication
+## 9. Уведомления и коммуникации
 
-Notifications are durable records with retry/delivery state. Scheduler/dispatcher handles:
+Notification — долговременная запись со статусом доставки и повтора. Scheduler/dispatcher обрабатывает:
 
-- abandoned client actions;
-- document requests;
-- payment reminders;
-- consultation reminders;
-- claim/court/enforcement events;
-- staff attention signals;
-- failed delivery retry.
+- незавершенные действия клиента;
+- запросы документов;
+- напоминания об оплате;
+- консультации;
+- претензионные/судебные/исполнительные события;
+- staff attention;
+- повтор неуспешной доставки.
 
-A notification never substitutes for a business-state transition.
+Уведомление не подменяет переход бизнес-состояния.
 
-## 10. CRM and lawyer workspace
+## 10. CRM и рабочее место юриста
 
-The Case card is self-contained: client, route/status, calculation, documents/versions, legal review, payments, nearest action/deadline/responsibility, messages and event history.
+Карточка дела самодостаточна: клиент, маршрут/статус, расчет, документы/версии, юридическая проверка, платежи, ближайшее действие/срок/ответственный, сообщения и история событий.
 
-Administrator dashboard prioritizes operational queues and financial/consultation attention. Lawyer workspace shows assigned legal work, documents, consultations, messages and permitted legal actions. Leadership controls are separated from daily work.
+CRM администратора приоритизирует операционные очереди, платежи и консультации. Рабочее место юриста показывает назначенную юридическую работу, документы, консультации, сообщения и разрешенные юридические действия. Контур руководителя отделен от ежедневной работы.
 
-## 11. Security / audit / retention
+## 11. Безопасность, аудит и retention
 
-Mandatory controls:
+Обязательные контроли:
 
-- personal staff accounts and RBAC;
-- MFA for privileged operations where configured;
-- protected sessions and revocation;
-- immutable/tamper-evident audit chain;
-- encrypted document storage and key rotation;
-- one-time document access grants;
-- legal hold and two-person retention deletion;
-- encrypted authenticated backup and tested restore;
-- no secrets in repository/logs/client sessions.
+- персональные staff-аккаунты и RBAC;
+- MFA для привилегированных операций, где настроено;
+- защищенные сессии и отзыв;
+- tamper-evident audit chain;
+- шифрование документов и rotation ключей;
+- одноразовые grants на выдачу документов;
+- legal hold и двухэтапное удаление по retention;
+- зашифрованный аутентифицированный backup и проверенный restore;
+- секреты не хранятся в репозитории, логах и клиентских сессиях.
 
-History is append-only by business design; corrections are represented by later events, not history rewrites.
+Бизнес-история append-only: исправление фиксируется следующим событием, а не переписыванием прошлого.
 
-## 12. NFR / operations
+## 12. NFR и эксплуатация
 
-Required delivery properties:
+Для поставки требуются:
 
-- production PostgreSQL;
-- production Redis for Telegram FSM;
+- PostgreSQL в production;
+- Redis для production Telegram FSM;
 - Docker/container runtime;
-- idempotent writes;
-- concurrency protection for Case/payment/slot/document mutations;
-- UTC persistence + configured business timezone presentation;
-- scheduler singleton/heartbeat;
-- monitoring for Telegram, DB, Redis, payments/webhooks, storage, scheduler, notification backlog and backup freshness;
-- reproducible migrations, backup and restore;
-- no duplicate runtime owner for the same HTTP method/path.
+- идемпотентные записи;
+- concurrency protection для Case/payment/slot/document;
+- UTC в БД + единая business timezone при отображении;
+- singleton scheduler и heartbeat;
+- мониторинг Telegram, PostgreSQL, Redis, платежей/webhook, storage, scheduler, notification backlog и backup freshness;
+- воспроизводимые миграции и backup/restore;
+- один runtime owner на одну пару HTTP method/path.
 
-## 13. Acceptance boundary
+## 13. Граница приемки
 
-Customer release requires one frozen candidate SHA whose evidence agrees across:
+Релиз заказчику требует один замороженный SHA, для которого согласованы:
 
-`client/staff UI → domain result → PostgreSQL state → audit/history/payment/document evidence`.
+`клиентский/staff UI → результат доменного сервиса → PostgreSQL → audit/history/payment/document evidence`.
 
-Mandatory acceptance includes M1, M2, error/retry/stale scenarios, role separation, document security, payment consistency, calendar concurrency, notification retry, backup→restore, staff browser E2E and real Telegram personas.
+Обязательны М1, М2, error/retry/stale сценарии, разграничение ролей, безопасность документов, платежная согласованность, гонки календаря, retry уведомлений, backup→restore, browser E2E и реальные Telegram persona tests.
 
-Production claims are never made from source inspection alone.
+Наличие кода само по себе не объявляется production-приемкой.
 
-## 14. Conflict resolution
+## 14. Приоритет источников и снятие дублей
 
-Precedence:
+Приоритет при противоречии:
 
-1. approved Functional Specification for business rules;
-2. approved UX/UI Specification for client/staff interaction, where it does not contradict business rules;
-3. this frozen canonical specification;
+1. утвержденная Функциональная спецификация — бизнес-правила;
+2. утвержденная UX/UI-спецификация — взаимодействие, если не противоречит бизнес-правилам;
+3. настоящая единая спецификация;
 4. `PRODUCT_SCOPE_CURRENT.md`;
 5. `SYSTEM_CONTRACT_CURRENT.md`;
 6. `ACCEPTANCE_CURRENT.md` / `RUNBOOK_CURRENT.md`;
-7. implementation/process maps;
-8. historical versioned documents.
+7. технические process map / implementation inventory;
+8. исторические versioned-документы.
 
-Known reconciliations already frozen:
+Уже зафиксированные развилки:
 
-- only M1/M2 exist;
-- `M2_CONSULTATION_ROUTE` is not a new writable modern state;
-- Telegram is the client cabinet;
-- source evidence is immutable;
-- client cannot establish staff/provider facts;
-- payment receipt is not inferred from a click/screenshot;
-- calculation is preliminary and legally reviewable;
-- self-filing is M1 service mode, not M3.
+- существуют только М1 и М2;
+- `M2_CONSULTATION_ROUTE` — compatibility-only, а не современное writable-состояние;
+- Telegram — клиентский кабинет;
+- оригинальное evidence неизменяемо;
+- клиент не устанавливает staff/provider-факты;
+- поступление оплаты не выводится из клика или скриншота клиента;
+- расчет предварительный и проверяется юристом;
+- self-filing — режим М1, а не М3.
