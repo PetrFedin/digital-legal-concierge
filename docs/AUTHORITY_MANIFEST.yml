@@ -17,6 +17,7 @@ authoritative:
     - docs/RUNBOOK_CURRENT.md
     - docs/OPERATIONS.md
     - docs/RELEASE_ROLLBACK.md
+    - docs/CUSTOMER_HANDOVER_CHECKLIST_2026-10-02.md
   implementation_inventory:
     - docs/PROCESS_MAP_CURRENT.md
     - docs/REPOSITORY_MAP.md
