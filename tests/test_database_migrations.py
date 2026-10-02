@@ -325,11 +325,11 @@ def test_retention_trigger_destroys_v2_keys_atomically_before_file_deletion(tmp_
             INSERT INTO case_retention_records (
                 id, case_id, policy_version, status, retention_due_at,
                 legal_hold, attempt_count, documents_deleted,
-                messages_deleted, notifications_deleted,
+                derivatives_deleted, messages_deleted, notifications_deleted,
                 consultations_anonymized, created_at, updated_at
             ) VALUES (
                 1, 77, 'case-content-v1', 'APPROVED', CURRENT_TIMESTAMP,
-                0, 0, 0, 0, 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                0, 0, 0, 0, 0, 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
             )
             """
         )
