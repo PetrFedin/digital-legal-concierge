@@ -701,3 +701,105 @@ Policy changes create new validation records rather than rewriting old history.
 
 **Sequencing:** Timeline/Evidence/Search -> argument graph -> graph UI -> AI suggestion queue; pyHanko verification -> trust policy -> LTV/revalidation history.
 
+## Premium commercial wave — secure settlement and negotiation room
+
+This wave extends a legal case from preparation into a controlled negotiation workflow while preserving legal review and evidence integrity.
+
+### Settlement Room Authority — ADOPT
+
+Create a case-scoped secure room with:
+
+- authorised parties/representatives;
+- negotiation status;
+- offer/counteroffer;
+- non-monetary terms;
+- payment schedule;
+- deadline/expiry;
+- attached evidence/draft;
+- response;
+- accepted/rejected/withdrawn state;
+- audit trail.
+
+The room is not public chat and does not replace normal case evidence.
+
+### Versioned Offer / Counteroffer — ADOPT
+
+Each offer version stores:
+
+- amount/terms;
+- currency;
+- payment timing;
+- conditions;
+- release/waiver wording reference;
+- cost/penalty calculation snapshot where relevant;
+- evidence/legal-source links;
+- validity/expiry;
+- proposer;
+- status.
+
+Offers are immutable once issued; a changed proposal is a new version.
+
+### Scenario Calculator — ADOPT
+
+Provide deterministic comparison of settlement scenarios, e.g.:
+
+- offered amount;
+- timing/installments;
+- calculated claim components;
+- documented costs;
+- time value/fees if explicitly configured;
+- net cash schedule.
+
+This is a scenario tool, not a court-outcome predictor or recommendation to accept/reject.
+
+### Negotiation Evidence Boundary — ADOPT
+
+Support explicit classifications:
+
+- internal strategy note;
+- shareable offer;
+- counterparty response;
+- signed/final settlement document.
+
+Internal notes never enter counterparty export by accident.
+
+### Draft Settlement Document — ADAPT
+
+Use existing document-assembly and legal-source controls to generate a versioned draft from accepted structured terms.
+
+The draft requires legal/user review.
+
+### E-sign / Finalisation — ADAPT
+
+Reuse the existing Documenso/provider boundary or accepted signature workflow:
+
+accepted structured terms -> final document -> signatures -> verification -> case timeline -> payment/obligation schedule
+
+Settlement state becomes final only according to configured confirmation/signature rules.
+
+### Obligation Tracking — ADOPT
+
+After settlement:
+
+- payment installment;
+- document/action obligation;
+- due date;
+- completion evidence;
+- missed/default status;
+- next action.
+
+This feeds the existing Deadline and Case Projection authorities.
+
+### Additional acceptance
+
+- offer versions cannot be silently edited after issue;
+- internal notes cannot leak to the other party;
+- calculator is reproducible from a case snapshot;
+- system does not predict judicial outcome or decide whether to settle;
+- final document resolves to exact accepted terms;
+- post-settlement obligations appear in canonical timeline/deadline state.
+
+**Sequencing:** Timeline + Calculation + Evidence + Secure Documents -> Settlement Room -> offers -> draft -> signature -> obligation tracking.
+
+**Commercial framing:** this extends the product from "prepare my claim" to a controlled end-to-end resolution workspace.
+
