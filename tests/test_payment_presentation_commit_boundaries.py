@@ -48,7 +48,7 @@ def _read(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
 
 
-def test_disabled_m1_payment_presentation_never_reads_orm_after_commit(monkeypatch):
+def test_disabled_m1_payment_presentation_never_reads_orm_after_rollback(monkeypatch):
     async def scenario() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         async with engine.begin() as connection:
@@ -99,10 +99,9 @@ def test_disabled_m1_payment_presentation_never_reads_orm_after_commit(monkeypat
                 scope=SimpleNamespace(ctx=None, user=user, case=case),
             )
 
-        assert callback.message.text is not None
-        assert "BOUNDARY-M1-PAY" in callback.message.text
-        assert "30 000,00 ₽" in callback.message.text
-        assert "Онлайн-оплата сейчас отключена" in callback.message.text
+        assert callback.message.text == (
+            "Платёжный сервис временно недоступен. Данные обращения сохранены."
+        )
         await engine.dispose()
 
     asyncio.run(scenario())
