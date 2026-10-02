@@ -43,6 +43,13 @@ exclude = ["docs*", "content*", "storage*", "templates*", "tests*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# PM-043: the suite creates many short-lived aiosqlite worker threads. A single
+# pytest-asyncio loop owns async tests/fixtures for the whole process so a worker
+# cannot post its final close/cursor result into a loop that pytest already
+# destroyed between adjacent tests. Individual engines/sessions still must be
+# explicitly closed/disposed; warnings remain fatal.
+asyncio_default_test_loop_scope = "session"
+asyncio_default_fixture_loop_scope = "session"
 testpaths = ["tests"]
 filterwarnings = [
   "error",

@@ -520,6 +520,49 @@ jobs:
             digital-legal-concierge:dlc-int-01 \
             pytest -q tests/test_dlc_int_01_ocr_integration.py
 
+  pm043-aiosqlite-lifecycle:
+    name: PM-043 aiosqlite lifecycle proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      APP_ENV: test
+      DATABASE_URL: sqlite+aiosqlite:///./pm043_ci.db
+      BOT_TOKEN: CHANGE_ME
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[test]"
+
+      - name: Compile lifecycle proof
+        run: |
+          python -m compileall -q \
+            tests/test_pm043_aiosqlite_lifecycle.py \
+            tests/test_message_service.py \
+            tests/test_mfa_key_rotation_batches.py
+
+      - name: Repeat suspect SQLite cluster
+        run: |
+          set -e
+          for attempt in 1 2 3; do
+            echo "PM-043 attempt $attempt"
+            pytest -q \
+              tests/test_pm043_aiosqlite_lifecycle.py \
+              tests/test_message_service.py \
+              tests/test_mfa_key_rotation_batches.py
+          done
+
   sqlite-tests:
     name: SQLite application tests
     runs-on: ubuntu-24.04
