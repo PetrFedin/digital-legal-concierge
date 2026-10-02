@@ -85,7 +85,7 @@ async def create_booking_context(session, *, suffix: str = "1"):
 
 
 @pytest.mark.asyncio
-async def test_only_one_client_can_hold_the_same_slot_for_ten_minutes(tmp_path):
+async def test_only_one_client_can_hold_same_slot_for_configured_default_window(tmp_path):
     engine, session_factory = await create_database(tmp_path, "slots.db")
 
     async with session_factory() as session:
@@ -118,7 +118,7 @@ async def test_only_one_client_can_hold_the_same_slot_for_ten_minutes(tmp_path):
         hold_seconds = (
             as_utc(first_slot.hold_expires_at) - before_hold
         ).total_seconds()
-        assert 9 * 60 <= hold_seconds <= 10 * 60 + 5
+        assert 29 * 60 <= hold_seconds <= 30 * 60 + 5
 
         with pytest.raises(SlotUnavailableError):
             await SlotService(second).hold_slot(
