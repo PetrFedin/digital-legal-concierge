@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.domain.cases.sla_service import CaseSLAService
 from app.domain.consultations.slot_service import SlotService
+from app.domain.notifications.client_inactivity_service import ClientInactivityReminderService
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.retention.case_retention_service import CaseRetentionService
 from app.domain.statuses.consultation_statuses import ConsultationStatus
@@ -87,6 +88,9 @@ class SchedulerJobs:
                 f"Automatic backup blocked by {freshness.reason}"
             )
         return await asyncio.to_thread(_create_encrypted_backup)
+
+    async def check_client_inactivity_reminders(self) -> int:
+        return await ClientInactivityReminderService(self.db).run()
 
     async def check_unpaid_payments(self) -> int:
         now = datetime.now(timezone.utc)

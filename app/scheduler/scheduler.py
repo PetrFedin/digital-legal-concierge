@@ -21,6 +21,7 @@ SCHEDULER_JOB_TIMEOUT_SECONDS = 30 * 60
 # Public result keys are retained for compatibility with operational callers.
 JOB_SPECS = (
     ("encrypted_backup", "scheduler", "create_encrypted_backup_if_due"),
+    ("client_inactivity_reminders", "scheduler", "check_client_inactivity_reminders"),
     ("payment_reminders", "scheduler", "check_unpaid_payments"),
     ("released_slots", "scheduler", "release_unpaid_consultation_slots"),
     ("consultation_reminders", "scheduler", "check_consultation_reminders"),
