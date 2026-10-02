@@ -49,13 +49,19 @@ DEFAULT_SETTINGS = {
     },
     "consultations.slot_hold_minutes": {
         "title": "Удержание слота консультации",
-        "value": 30,
+        "value": 1440,
         "type": "integer",
         "editable": True,
     },
     "notifications.payment_reminder_hours": {
-        "title": "Напоминания по оплате",
-        "value": [3, 24, 72],
+        "title": "Напоминания по оплате М1",
+        "value": [24, 72, 168],
+        "type": "list",
+        "editable": True,
+    },
+    "notifications.consultation_payment_reminder_hours": {
+        "title": "Напоминания по оплате консультации",
+        "value": [1, 12, 24],
         "type": "list",
         "editable": True,
     },
