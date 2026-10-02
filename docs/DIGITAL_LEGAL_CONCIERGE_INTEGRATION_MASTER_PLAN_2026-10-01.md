@@ -476,3 +476,121 @@ veraPDF library is GPL-licensed in the verified upstream repository. Treat it as
 
 **Sequencing:** secure admission + signature verification first -> archival derivative policy -> veraPDF validation -> preservation manifest.
 
+## Additional wave — web/email evidence capture and authenticity metadata
+
+This wave strengthens digital evidence intake for disputes where important facts exist in web pages, developer portals or email correspondence.
+
+### Browsertrix evidence capture — CONDITIONAL SIDECAR
+
+Reference:
+
+https://github.com/webrecorder/browsertrix-crawler
+
+Use Browsertrix Crawler as an external evidence-capture tool when a case requires a reproducible rendered-web snapshot that simple PDF/screenshot export cannot preserve adequately.
+
+Candidate uses:
+
+- developer/customer portal state;
+- public terms/offer pages;
+- project status pages;
+- published notices;
+- public company/developer statements relevant to the case.
+
+Capture package should retain, where available:
+
+- source URL;
+- captured_at;
+- crawl/capture profile;
+- WARC/WACZ or equivalent archive reference;
+- rendered screenshot;
+- page title/canonical URL;
+- asset/request evidence;
+- crawler/version;
+- package checksum.
+
+Browsertrix is evidence acquisition only. It does not decide that a web page is legally authoritative or that a captured statement is true.
+
+### Browser evidence admission — ADOPT
+
+Flow:
+
+capture package -> checksum/virus/file admission -> metadata extraction -> evidence record -> reviewer classification -> timeline/legal-source link
+
+A user or operator must identify why the page matters and which fact/event it supports.
+
+Do not silently recrawl and replace old evidence. Every new capture is a new version/evidence item.
+
+### Email evidence intake — ADOPT
+
+Support raw email evidence as the preferred source rather than only screenshots.
+
+Accepted source forms may include:
+
+- RFC822/EML;
+- provider-exported raw message;
+- attachment set;
+- human-readable derivative.
+
+Store:
+
+- source file checksum;
+- Message-ID;
+- From/To/Cc;
+- Date header;
+- subject;
+- received-chain summary;
+- attachment IDs/checksums;
+- raw header preservation;
+- parser/version;
+- review status.
+
+The original raw message remains immutable.
+
+### DKIM verification — ADAPT
+
+Candidate library/reference:
+
+https://github.com/forwardemail/dkimpy
+
+Use DKIM verification when the original raw message contains the required signature and headers.
+
+Persist:
+
+- signature selector/domain;
+- verification status;
+- verification time;
+- DNS/key lookup evidence where practical;
+- verifier/version.
+
+A successful DKIM result shows that the message validates against the signing domain/key under the verification conditions. It does not by itself prove who physically authored the text, legal authority of the sender, or that every forwarded/screenshot copy is authentic.
+
+### Email-to-Timeline / Evidence linking — ADOPT
+
+Allow an admitted email to support:
+
+- notice/request sent;
+- response received;
+- promised action/date;
+- refusal;
+- evidence request;
+- settlement/negotiation step.
+
+Timeline extraction may propose dates/entities from headers/text, but human/CaseService confirmation creates the authoritative event.
+
+### Licensing boundary
+
+Browsertrix Crawler is AGPL-licensed upstream. Treat it as a separately deployed evidence-capture service/CLI with explicit legal review rather than embedding its code into the application.
+
+The verified forwardemail/dkimpy repository is MIT-licensed but has lower recent activity; pin and test the exact approved version before use.
+
+### Additional acceptance
+
+- raw evidence is retained unchanged;
+- web capture identifies exact URL/time/tool/version/checksum;
+- email derivatives trace to the original raw message;
+- DKIM result is shown as cryptographic metadata, not a legal conclusion;
+- no recrawl or reparsing silently overwrites prior evidence;
+- captured content remains subject to normal case ACL, retention and legal hold.
+
+**Sequencing:** secure file admission first -> raw email/web capture -> authenticity metadata -> timeline/source linkage -> evidence bundle export.
+
