@@ -10,6 +10,7 @@ from app.domain.cases.sla_service import CaseSLAService
 from app.domain.consultations.slot_service import SlotService
 from app.domain.notifications.client_inactivity_service import ClientInactivityReminderService
 from app.domain.notifications.notification_engine import NotificationEngine
+from app.domain.payments.payment_types import PaymentCode
 from app.domain.retention.case_retention_service import CaseRetentionService
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
@@ -31,6 +32,8 @@ from app.security.file_uploads import cleanup_quarantine
 from app.security.key_rotation import reencrypt_mfa_secrets
 from app.security.login_throttle import LoginThrottleService
 from app.security.token_revocation import cleanup_revoked_tokens
+from app.system.settings_keys import SettingKey
+from app.system.settings_service import SettingsService
 
 
 def as_utc(value: datetime) -> datetime:
@@ -92,9 +95,42 @@ class SchedulerJobs:
     async def check_client_inactivity_reminders(self) -> int:
         return await ClientInactivityReminderService(self.db).run()
 
+    @staticmethod
+    def _normalize_reminder_hours(
+        raw_value: object,
+        *,
+        fallback: tuple[int, ...],
+    ) -> tuple[int, ...]:
+        if not isinstance(raw_value, (list, tuple)):
+            return fallback
+        values: set[int] = set()
+        for item in raw_value:
+            try:
+                hour = int(item)
+            except (TypeError, ValueError):
+                continue
+            if hour > 0:
+                values.add(hour)
+        return tuple(sorted(values)) or fallback
+
+    async def _payment_reminder_hours(
+        self,
+        payment: Payment,
+    ) -> tuple[int, ...]:
+        if payment.payment_code == PaymentCode.M2_CONSULTATION_PAYMENT:
+            key = SettingKey.CONSULTATION_PAYMENT_REMINDER_HOURS
+            fallback = (1, 12, 24)
+        else:
+            key = SettingKey.PAYMENT_REMINDER_HOURS
+            fallback = (24, 72, 168)
+        try:
+            raw_value = await SettingsService(self.db).get_value(key)
+        except KeyError:
+            return fallback
+        return self._normalize_reminder_hours(raw_value, fallback=fallback)
+
     async def check_unpaid_payments(self) -> int:
         now = datetime.now(timezone.utc)
-        reminder_cutoff = now - timedelta(minutes=15)
         payments = (
             await self.db.execute(
                 select(Payment).where(
@@ -103,15 +139,24 @@ class SchedulerJobs:
                             PaymentStatus.PENDING,
                             PaymentStatus.WAITING_CONFIRMATION,
                         ]
-                    ),
-                    Payment.created_at <= reminder_cutoff,
+                    )
                 )
             )
         ).scalars().all()
 
         count = 0
-        day_key = now.date().isoformat()
         for payment in payments:
+            created_at = as_utc(payment.created_at)
+            age_hours = max((now - created_at).total_seconds() / 3600, 0.0)
+            cadence = await self._payment_reminder_hours(payment)
+            due = [hours for hours in cadence if age_hours >= hours]
+            if not due:
+                continue
+
+            # Emit only the latest threshold currently due. Normal hourly
+            # scheduler operation still yields the complete 24/72/168 or
+            # 1/12/24 sequence, while recovery after downtime avoids bursts.
+            threshold = due[-1]
             case = await self.db.get(Case, payment.case_id)
             created = await self.notifications.emit(
                 event_code="PAYMENT_REMINDER",
@@ -119,7 +164,9 @@ class SchedulerJobs:
                 payload={
                     "case_number": case.case_number if case else payment.case_id
                 },
-                dedupe_key=f"payment:{payment.id}:reminder:{day_key}",
+                dedupe_key=(
+                    f"payment:{payment.id}:reminder:{threshold}h"
+                ),
             )
             if created:
                 count += 1
