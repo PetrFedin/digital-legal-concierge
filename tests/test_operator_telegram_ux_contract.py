@@ -16,12 +16,34 @@ def _texts(markup):
     return [button.text for row in markup.inline_keyboard for button in row]
 
 
-def test_reply_menu_prioritizes_calculation_and_keeps_clear_labels():
-    markup = reply_main_menu()
+def test_reply_menu_for_new_client_has_only_valid_entry_points():
+    markup = reply_main_menu(False)
+    texts = [button.text for row in markup.keyboard for button in row]
+
     assert markup.is_persistent is True
-    assert markup.keyboard[0][0].text == "🧮 Рассчитать неустойку"
-    assert "📁 Моё дело" in [button.text for row in markup.keyboard for button in row]
-    assert markup.input_field_placeholder == "Выберите: расчёт, дело или помощь"
+    assert texts == [
+        "🧮 Рассчитать неустойку",
+        "💬 Связаться с юристом",
+        "🏠 Главная",
+    ]
+    assert "📁 Моё дело" not in texts
+    assert "📄 Документы" not in texts
+    assert markup.input_field_placeholder == "Выберите: расчёт или помощь юриста"
+
+
+def test_reply_menu_for_active_case_exposes_case_workspace():
+    markup = reply_main_menu(True)
+    texts = [button.text for row in markup.keyboard for button in row]
+
+    assert texts == [
+        "📁 Моё дело",
+        "📄 Документы",
+        "💬 Переписка",
+        "✉️ Новый вопрос",
+        "🏠 Главная",
+    ]
+    assert "🧮 Рассчитать неустойку" not in texts
+    assert markup.input_field_placeholder == "Выберите: дело, документы или переписка"
 
 
 def test_inline_menu_hides_disabled_payments_and_parallel_calculation():
