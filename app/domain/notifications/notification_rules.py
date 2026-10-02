@@ -56,6 +56,10 @@ NOTIFICATION_RULES = {
         "recipients": ["client"],
         "template": "document_rejected",
     },
+    "CLIENT_INACTIVITY_REMINDER": {
+        "recipients": ["client"],
+        "template": "client_inactivity_reminder",
+    },
     "PAYMENT_CREATED": {
         "recipients": ["client"],
         "template": "payment_created",
