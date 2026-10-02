@@ -6,7 +6,7 @@
 - `docs/FINAL_ARCHITECTURE_2026-10-03.md` — production architecture.
 - `docs/FINAL_CUSTOMER_HANDOVER_CHECKLIST_2026-10-03.md` — фактический план передачи.
 - `docs/START_HERE.md` — запуск.
-- `docs/source_specs/` — утверждённые Functional и UX/UI исходники.
+- `source_documents/1 Функциональная_спецификация_MVP_финальная_версия.docx` и `source_documents/1 UX_UI_спецификация_Telegram_бот_финальная_версия.docx` — финальные утверждённые исходники требований.\n- `docs/source_specs/` — рабочие/исторические копии и дополнительные материалы.
 
 Versioned `WHAT_IS_READY_V*`, `HANDOVER_V*`, `FINAL_HANDOVER_V*` и исследовательские документы сохраняются как история и не расширяют frozen MVP.
 
