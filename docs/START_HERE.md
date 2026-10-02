@@ -13,7 +13,7 @@ Do not start from historical `START_SIMPLE_V*`, `WHAT_IS_READY_V*` or `FINAL_HAN
 5. `docs/ACCEPTANCE_CURRENT.md` — release acceptance contract.
 6. `docs/RUNBOOK_CURRENT.md` — deployment/operations procedure.
 7. `docs/PROCESS_MAP_CURRENT.md` — living implementation/debt/evidence inventory.
-8. `docs/AUTHORITY_MANIFEST.yml` — canonical-vs-historical documentation registry.
+8. `docs/CUSTOMER_HANDOVER_CHECKLIST_2026-10-02.md` — фактический статус 20 пунктов передачи заказчику.\n9. `docs/AUTHORITY_MANIFEST.yml` — реестр авторитетных и исторических документов.
 
 ## Local engineering start
 
