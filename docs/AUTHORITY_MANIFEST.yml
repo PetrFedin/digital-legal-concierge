@@ -1,0 +1,47 @@
+version: 1
+frozen_at: "2026-10-02"
+status: authoritative
+
+authoritative:
+  product:
+    - docs/CANONICAL_PRODUCT_SPEC_2026-10-02.md
+    - docs/PRODUCT_SCOPE_CURRENT.md
+  architecture:
+    - docs/TECHNICAL_ARCHITECTURE_CURRENT.md
+    - docs/SYSTEM_CONTRACT_CURRENT.md
+  acceptance:
+    - docs/ACCEPTANCE_CURRENT.md
+    - docs/POST_LIVE_RELEASE_EVIDENCE.md
+    - docs/LIVE_REQUIRED_RUNBOOK.md
+  operations:
+    - docs/RUNBOOK_CURRENT.md
+    - docs/OPERATIONS.md
+    - docs/RELEASE_ROLLBACK.md
+  implementation_inventory:
+    - docs/PROCESS_MAP_CURRENT.md
+    - docs/REPOSITORY_MAP.md
+  integration_plan:
+    - docs/DIGITAL_LEGAL_CONCIERGE_INTEGRATION_MASTER_PLAN_2026-10-01.md
+
+business_sources:
+  - docs/source_specs/Функциональная_спецификация_MVP.docx
+  - docs/source_specs/UX_UI_спецификация_Telegram_бот.docx
+  - docs/source_specs/Карта_действий_v4.pdf
+
+historical_only_patterns:
+  - docs/FINAL_HANDOVER_V*.md
+  - docs/HANDOVER_V*.md
+  - docs/LAUNCH_READINESS_REPORT_V*.md
+  - docs/START_HERE_FINAL_V*.md
+  - docs/START_SIMPLE_V*.md
+  - docs/WHAT_IS_READY_V*.md
+  - docs/OPERATOR_WORKFLOW_V*.md
+  - docs/PRODUCTION_DEPLOY_V*.md
+  - docs/PRODUCTION_CHECKLIST_V*.md
+  - docs/RUNBOOK_V*.md
+
+rules:
+  - "Historical files are evidence/context only and never override authoritative current documents."
+  - "New version-suffixed handover/ready/start/runbook documents are prohibited; update the current authority instead."
+  - "Every behavior-changing pull request updates docs/PROCESS_MAP_CURRENT.md."
+  - "Business scope cannot expand beyond M1/M2 without an explicit canonical product-spec change."
