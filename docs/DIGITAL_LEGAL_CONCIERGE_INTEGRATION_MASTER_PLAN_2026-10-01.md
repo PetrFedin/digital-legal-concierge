@@ -803,3 +803,106 @@ This feeds the existing Deadline and Case Projection authorities.
 
 **Commercial framing:** this extends the product from "prepare my claim" to a controlled end-to-end resolution workspace.
 
+## Premium enterprise wave — external counsel workspace and filing-readiness gate
+
+This wave makes a case portable between self-service, in-house review and external counsel without losing evidence lineage.
+
+### External Counsel Workspace — ADOPT
+
+Create a case-scoped collaboration role/workspace for:
+
+- client;
+- authorised lawyer/counsel;
+- expert/consultant;
+- internal operator.
+
+Counsel accesses only explicitly shared case scope.
+
+### Portfolio pattern source — REUSE/ADAPT
+
+Reuse controlled collaboration patterns from:
+
+https://github.com/PetrFedin/chat
+
+Useful patterns:
+
+- scoped membership;
+- task/evidence relationships;
+- review/return/resubmit;
+- source-linked comments;
+- structured request/approval;
+- durable audit/outbox.
+
+No shared database.
+
+### Counsel Review Request — ADOPT
+
+Store:
+
+- case;
+- question/scope;
+- reviewer;
+- due date;
+- argument/evidence nodes;
+- document versions;
+- requested output;
+- status;
+- response/advice;
+- private/client-visible classification.
+
+### Filing Readiness Gate — ADOPT
+
+Versioned checklist may include:
+
+- party/identity complete;
+- legal basis/source versions identified;
+- claim/calculation snapshot frozen;
+- required evidence admitted;
+- signature/verification state known;
+- procedural deadline confirmed;
+- exhibits/bundle present;
+- unresolved contradiction flagged;
+- counsel/user approval recorded.
+
+READY means package readiness, not successfully filed.
+
+### Counsel Comment / Redline Linkage — ADOPT
+
+Comments/redlines reference exact:
+
+- document version;
+- page/section;
+- argument/evidence node;
+- checklist item.
+
+Document revision preserves old review history.
+
+### Case Handoff Package — ADOPT
+
+Generate:
+
+- case summary;
+- timeline;
+- argument/evidence graph;
+- calculations;
+- current deadline;
+- evidence manifest;
+- document versions;
+- unresolved issues;
+- checksum/version.
+
+Reuse existing evidence-bundle machinery.
+
+### Additional acceptance
+
+- counsel access is case-scoped/revocable;
+- private counsel notes never leak into settlement room;
+- comments link to immutable source versions;
+- readiness is reproducible from checklist/rule version;
+- READY does not imply filed;
+- handoff package reconciles to evidence checksums.
+
+**Sequencing:** Evidence/Timeline/Argument Graph -> counsel membership -> structured review -> filing gate -> handoff package -> future filing adapter.
+
+**Commercial framing:** seamless escalation from consumer self-service to professional legal workflow.
+
