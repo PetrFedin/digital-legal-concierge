@@ -906,3 +906,107 @@ Reuse existing evidence-bundle machinery.
 
 **Commercial framing:** seamless escalation from consumer self-service to professional legal workflow.
 
+## Moat wave — multi-case legal operations and portfolio claims workspace
+
+This wave opens a B2B market for law firms, associations, property-owner groups and corporate legal teams managing many similar cases.
+
+### Case Portfolio Authority — ADOPT
+
+Create:
+
+- portfolio;
+- organisation/team;
+- case membership;
+- common legal issue/template;
+- shared evidence/source;
+- jurisdiction/process;
+- owner;
+- status.
+
+Every individual case remains legally and evidentially independent.
+
+### Common Issue / Template Authority — ADOPT
+
+Version reusable:
+
+- legal issue definition;
+- document template;
+- evidence request;
+- calculation rule;
+- filing-readiness checklist;
+- settlement clause template.
+
+A template update never rewrites already-issued case documents.
+
+### Shared Evidence Library — ADOPT
+
+Allow portfolio-level sources such as:
+
+- common contract form;
+- developer/public statement;
+- regulatory/legal source;
+- expert report;
+- standard correspondence.
+
+Individual case links explicitly state how the shared source applies.
+
+### Bulk Intake / Normalisation — ADOPT
+
+Controlled workflow:
+
+source files/table -> case candidates -> field validation -> duplicate detection -> preview -> explicit case creation
+
+No bulk import bypasses identity/evidence admission.
+
+### Portfolio Operations Cockpit — ADOPT
+
+Show:
+
+- cases by stage;
+- deadlines;
+- missing evidence;
+- filing readiness;
+- settlement state;
+- counsel review;
+- common blockers;
+- aggregate claimed/settled amounts where methodology permits.
+
+Always distinguish aggregate portfolio reporting from individual legal outcome.
+
+### Batch Drafting with Individual Commit — ADOPT
+
+Generate draft notices/requests from common templates, but each case has:
+
+- individual source data;
+- individual calculation;
+- exact document version;
+- individual approval;
+- individual send/filing state.
+
+No "mass send" without case-level validation.
+
+### Pattern Intelligence — ADOPT
+
+Detect operational patterns:
+
+- recurring missing evidence;
+- common counterparty response;
+- repeated clause;
+- stage delay;
+- settlement term frequency.
+
+This is process intelligence, not prediction of court outcome.
+
+### Additional acceptance
+
+- one case cannot inherit another person's private evidence;
+- shared sources are separately permissioned;
+- template changes do not alter old case history;
+- every batch-generated artifact has individual case validation;
+- portfolio aggregates identify methodology and denominator;
+- no class/collective-action legal status is implied automatically.
+
+**Sequencing:** single-case authority + Counsel/Settlement -> portfolio -> shared sources/templates -> bulk intake -> portfolio cockpit -> controlled batch operations.
+
+**Commercial framing:** expands from consumer legal concierge to LegalOps / law-firm portfolio software without sacrificing case-level evidence integrity.
+
