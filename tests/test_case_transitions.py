@@ -68,6 +68,18 @@ def test_expected_m1_and_m2_paths_are_allowed():
         CaseStatus.M1_PAYMENT_30000_RECEIVED,
     )
     assert transition_allowed(
+        CaseStatus.M1_COURT_STAGE,
+        CaseStatus.M1_WAITING_PAYMENT_70000,
+    )
+    assert not transition_allowed(
+        CaseStatus.M1_COURT_STAGE,
+        CaseStatus.M1_ENFORCEMENT,
+    )
+    assert not transition_allowed(
+        CaseStatus.M1_COURT_STAGE,
+        CaseStatus.M1_MONEY_RECEIVED,
+    )
+    assert transition_allowed(
         CaseStatus.M2_CONSULTATION_DONE,
         CaseStatus.M1_DOCUMENTS_PENDING,
     )
