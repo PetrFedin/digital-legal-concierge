@@ -201,6 +201,21 @@ async def test_complete_consultation_closes_case_and_slot(tmp_path):
         assert slot.status == "completed"
         assert case.status == CaseStatus.M2_CLOSED
 
+        status_events = (
+            await session.execute(
+                select(AuditLog)
+                .where(
+                    AuditLog.entity_id == case.id,
+                    AuditLog.action == "CASE_STATUS_CHANGED",
+                )
+                .order_by(AuditLog.id.asc())
+            )
+        ).scalars().all()
+        assert [event.new_value["status"] for event in status_events] == [
+            CaseStatus.M2_CONSULTATION_DONE.value,
+            CaseStatus.M2_CLOSED.value,
+        ]
+
         audit = (
             await session.execute(
                 select(AuditLog)
@@ -212,6 +227,49 @@ async def test_complete_consultation_closes_case_and_slot(tmp_path):
             )
         ).scalars().first()
         assert audit.actor_id == context["lawyer"].id
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_complete_consultation_to_m1_preserves_explicit_route_states(tmp_path):
+    engine, factory = await create_database(tmp_path, "outcome-to-m1.db")
+    async with factory() as session:
+        context = await create_context(session, suffix=8)
+        await session.commit()
+
+        consultation = await ConsultationOutcomeService(session).complete(
+            consultation_id=context["consultation"].id,
+            lawyer_id=context["lawyer"].id,
+            result=(
+                "По итогам консультации принято решение продолжить стандартную работу."
+            ),
+            decision="to_m1",
+        )
+        await session.commit()
+        case = await session.get(Case, context["case"].id)
+
+        assert consultation.status == ConsultationStatus.DONE
+        assert case.status == CaseStatus.M1_DOCUMENTS_PENDING
+        assert str(case.route) == "M1"
+
+        status_events = (
+            await session.execute(
+                select(AuditLog)
+                .where(
+                    AuditLog.entity_id == case.id,
+                    AuditLog.action.in_(
+                        ["CASE_STATUS_CHANGED", "CASE_TRANSFERRED_TO_M1"]
+                    ),
+                )
+                .order_by(AuditLog.id.asc())
+            )
+        ).scalars().all()
+        assert [event.new_value["status"] for event in status_events] == [
+            CaseStatus.M2_CONSULTATION_DONE.value,
+            CaseStatus.M2_TO_M1.value,
+            CaseStatus.M1_DOCUMENTS_PENDING.value,
+        ]
 
     await engine.dispose()
 
