@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -54,6 +54,7 @@ def make_case(status=CaseStatus.NEW):
         next_action="old",
         closed_at=None,
         content_deleted_at=None,
+        updated_at=datetime.now(timezone.utc),
     )
 
 
@@ -142,6 +143,47 @@ async def test_normal_transition_updates_route_history_and_sla(
     assert len(patch_transition_side_effects) == 1
     assert patch_transition_side_effects[0]["new_value"]["forced"] is False
     assert len(FakeSLAService.calls) == 1
+
+
+async def test_court_stage_is_blocked_before_thirty_day_wait_expires(
+    patch_transition_side_effects,
+):
+    db = FakeDB()
+    case = make_case(CaseStatus.M1_WAITING_30_DAYS)
+    case.updated_at = datetime.now(timezone.utc) - timedelta(days=29)
+
+    with pytest.raises(CaseTransitionError, match="30 календарных дней"):
+        await CaseService(db).change_status(
+            case=case,
+            next_status=CaseStatus.M1_COURT_STAGE,
+            actor_type="lawyer",
+            actor_id=5,
+            comment="Попытка открыть суд раньше контрольного срока",
+        )
+
+    assert case.status == CaseStatus.M1_WAITING_30_DAYS
+    assert db.flush_count == 0
+    assert patch_transition_side_effects == []
+
+
+async def test_court_stage_is_allowed_after_thirty_day_wait_expires(
+    patch_transition_side_effects,
+):
+    db = FakeDB()
+    case = make_case(CaseStatus.M1_WAITING_30_DAYS)
+    case.updated_at = datetime.now(timezone.utc) - timedelta(days=31)
+
+    await CaseService(db).change_status(
+        case=case,
+        next_status=CaseStatus.M1_COURT_STAGE,
+        actor_type="lawyer",
+        actor_id=5,
+        comment="Контрольный 30-дневный срок истёк",
+    )
+
+    assert case.status == CaseStatus.M1_COURT_STAGE
+    assert db.flush_count == 1
+    assert len(patch_transition_side_effects) == 1
 
 
 async def test_same_status_is_idempotent_without_duplicate_history(
