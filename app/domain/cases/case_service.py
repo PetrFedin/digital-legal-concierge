@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -98,6 +98,25 @@ class CaseService:
         )
         if source == destination:
             return case, False
+        if (
+            not force
+            and source == CaseStatus.M1_WAITING_30_DAYS
+            and destination == CaseStatus.M1_COURT_STAGE
+        ):
+            waiting_since = getattr(case, "updated_at", None)
+            if waiting_since is None:
+                raise CaseTransitionError(
+                    "Нельзя открыть судебный этап без даты начала 30-дневного срока"
+                )
+            if waiting_since.tzinfo is None:
+                waiting_since = waiting_since.replace(tzinfo=timezone.utc)
+            else:
+                waiting_since = waiting_since.astimezone(timezone.utc)
+            if datetime.now(timezone.utc) < waiting_since + timedelta(days=30):
+                raise CaseTransitionError(
+                    "Судебный этап нельзя открыть до истечения 30 календарных дней "
+                    "после начала контрольного срока"
+                )
         if (
             getattr(case, "content_deleted_at", None) is not None
             and destination not in TERMINAL_STATUSES
