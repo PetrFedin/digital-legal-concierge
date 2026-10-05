@@ -60,6 +60,7 @@ from app.domain.payments.mode import (
     payment_provider_name,
     payments_disabled,
     payments_enabled,
+    production_payment_ready,
 )
 from app.security.backup_freshness import backup_freshness_status
 from app.security.client_address import (
@@ -256,8 +257,9 @@ def create_app():
             ),
             "payment_webhook_secret_ready": payment_webhook_secret_ready,
             "payment_mode_valid": payment_mode_valid(),
-            # Kept for compatibility with deployment scripts and dashboards.
-            "payment_provider_configured": payment_mode_valid(),
+            # A disabled/fake provider may be valid for local or pilot operation,
+            # but production acceptance requires configured YooKassa.
+            "payment_provider_configured": production_payment_ready(),
             "trusted_proxy_config_valid": trusted_proxy_config_valid,
             "trusted_proxy_hop_limit_valid": (
                 1 <= int(settings.trusted_proxy_max_hops) <= 20
