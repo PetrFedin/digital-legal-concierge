@@ -61,6 +61,7 @@ def test_no_payment_booking_confirms_slot_without_creating_payment():
     assert "create_payment_link" not in source
     assert "confirm_booking" in booking
     assert "ConsultationStatus.BOOKED" in booking
+    assert "CaseStatus.M2_PAYMENT_PENDING" in booking
     assert "CaseStatus.M2_CONSULTATION_BOOKED" in booking
     assert "CONSULTATION_BOOKED_WITHOUT_PAYMENT" in booking
     assert "dedupe_key=" in booking
