@@ -80,7 +80,39 @@ def test_expected_m1_and_m2_paths_are_allowed():
         CaseStatus.M1_MONEY_RECEIVED,
     )
     assert transition_allowed(
+        CaseStatus.M2_SLOT_PENDING,
+        CaseStatus.M2_PAYMENT_PENDING,
+    )
+    assert not transition_allowed(
+        CaseStatus.M2_SLOT_PENDING,
+        CaseStatus.M2_CONSULTATION_BOOKED,
+    )
+    assert transition_allowed(
+        CaseStatus.M2_PAYMENT_PENDING,
+        CaseStatus.M2_CONSULTATION_BOOKED,
+    )
+    assert transition_allowed(
+        CaseStatus.M2_CONSULTATION_BOOKED,
         CaseStatus.M2_CONSULTATION_DONE,
+    )
+    assert not transition_allowed(
+        CaseStatus.M2_CONSULTATION_BOOKED,
+        CaseStatus.M2_CLOSED,
+    )
+    assert not transition_allowed(
+        CaseStatus.M2_CONSULTATION_BOOKED,
+        CaseStatus.M1_DOCUMENTS_PENDING,
+    )
+    assert transition_allowed(
+        CaseStatus.M2_CONSULTATION_DONE,
+        CaseStatus.M2_TO_M1,
+    )
+    assert not transition_allowed(
+        CaseStatus.M2_CONSULTATION_DONE,
+        CaseStatus.M1_DOCUMENTS_PENDING,
+    )
+    assert transition_allowed(
+        CaseStatus.M2_TO_M1,
         CaseStatus.M1_DOCUMENTS_PENDING,
     )
     assert not transition_allowed(
