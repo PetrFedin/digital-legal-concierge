@@ -121,6 +121,17 @@ async def _book_without_payment(*, db, ctx, user_id: int, case, consultation):
     if not consultation.slot_id:
         raise SlotUnavailableError("Сначала выберите свободное время")
 
+    if _case_status(case) == CaseStatus.M2_SLOT_PENDING:
+        await ctx.case_service.change_status(
+            case=case,
+            next_status=CaseStatus.M2_PAYMENT_PENDING,
+            actor_type="system",
+            actor_id=None,
+            comment=(
+                "Слот зарезервирован; в пилотном режиме онлайн-оплата отключена"
+            ),
+        )
+
     slot = await SlotService(db).confirm_booking(
         consultation.slot_id,
         consultation.id,

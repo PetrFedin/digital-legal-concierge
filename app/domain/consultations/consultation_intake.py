@@ -236,6 +236,17 @@ class ConsultationIntakeService:
         if not consultation.slot_id:
             raise SlotUnavailableError("Сначала выберите свободное время")
 
+        if normalized_case_status(case) == CaseStatus.M2_SLOT_PENDING:
+            await self.cases.change_status(
+                case=case,
+                next_status=CaseStatus.M2_PAYMENT_PENDING,
+                actor_type="system",
+                actor_id=None,
+                comment=(
+                    "Слот зарезервирован; в пилотном режиме онлайн-оплата отключена"
+                ),
+            )
+
         slot = await self.slots.confirm_booking(
             consultation.slot_id,
             consultation.id,

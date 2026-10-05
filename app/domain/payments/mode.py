@@ -27,3 +27,9 @@ def payment_mode_valid() -> bool:
     if provider == "disabled":
         return True
     return provider in VALID_PAYMENT_PROVIDERS and payments_enabled()
+
+
+def production_payment_ready() -> bool:
+    if settings.app_env != "production":
+        return payment_mode_valid()
+    return payment_provider_name() == "yookassa" and payments_enabled()

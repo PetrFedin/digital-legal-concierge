@@ -12,6 +12,7 @@ from app.domain.payments.mode import (
     payment_mode_valid,
     payments_disabled,
     payments_enabled,
+    production_payment_ready,
 )
 from app.domain.statuses.case_statuses import CaseStatus
 
@@ -28,15 +29,36 @@ def test_disabled_payment_mode_is_valid_but_not_enabled(monkeypatch):
     assert payment_mode_valid() is True
 
 
-def test_readiness_separates_payment_capability_from_service_health():
+def test_readiness_separates_pilot_payment_mode_from_production_acceptance():
     source = inspect.getsource(main.create_app)
 
     assert '"payment_mode_valid": payment_mode_valid()' in source
-    assert '"payment_provider_configured": payment_mode_valid()' in source
+    assert '"payment_provider_configured": production_payment_ready()' in source
     assert '"disabled_by_configuration": payment_disabled' in source
     assert '"pilot_flows_continue_without_payment": payment_disabled' in source
     assert '"enabled": not payment_disabled' in source
     assert 'RedirectResponse(url="/operator")' in source
+
+
+def test_production_readiness_requires_configured_yookassa(monkeypatch):
+    monkeypatch.setattr(settings, "app_env", "production")
+
+    monkeypatch.setattr(settings, "payment_provider", "disabled")
+    assert payment_mode_valid() is True
+    assert production_payment_ready() is False
+
+    monkeypatch.setattr(settings, "payment_provider", "fake")
+    monkeypatch.setattr(settings, "demo_mode", True)
+    assert production_payment_ready() is False
+
+    monkeypatch.setattr(settings, "payment_provider", "yookassa")
+    monkeypatch.setattr(settings, "yookassa_shop_id", "")
+    monkeypatch.setattr(settings, "yookassa_secret_key", "")
+    assert production_payment_ready() is False
+
+    monkeypatch.setattr(settings, "yookassa_shop_id", "shop-test")
+    monkeypatch.setattr(settings, "yookassa_secret_key", "secret-test")
+    assert production_payment_ready() is True
 
 
 def test_pilot_handlers_are_registered_before_generic_payment_handlers():
@@ -61,6 +83,7 @@ def test_no_payment_booking_confirms_slot_without_creating_payment():
     assert "create_payment_link" not in source
     assert "confirm_booking" in booking
     assert "ConsultationStatus.BOOKED" in booking
+    assert "CaseStatus.M2_PAYMENT_PENDING" in booking
     assert "CaseStatus.M2_CONSULTATION_BOOKED" in booking
     assert "CONSULTATION_BOOKED_WITHOUT_PAYMENT" in booking
     assert "dedupe_key=" in booking
