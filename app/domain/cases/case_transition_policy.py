@@ -105,8 +105,6 @@ _TRANSITIONS: dict[CaseStatus, frozenset[CaseStatus]] = {
     CaseStatus.M1_COURT_STAGE: frozenset(
         {
             CaseStatus.M1_WAITING_PAYMENT_70000,
-            CaseStatus.M1_ENFORCEMENT,
-            CaseStatus.M1_MONEY_RECEIVED,
         }
     ),
     CaseStatus.M1_WAITING_PAYMENT_70000: frozenset(
