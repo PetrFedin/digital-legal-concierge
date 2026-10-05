@@ -82,6 +82,30 @@ class PaymentReviewService:
             )
         return normalized
 
+    async def _advance_case_after_received_payment(
+        self,
+        *,
+        case: Case,
+        actor_id: int | None,
+        comment: str,
+    ) -> None:
+        if case.status == CaseStatus.M2_SLOT_PENDING:
+            await self.cases.change_status(
+                case=case,
+                next_status=CaseStatus.M2_PAYMENT_PENDING,
+                actor_type="admin",
+                actor_id=actor_id,
+                comment="Оплаченный слот подтверждён при ручной проверке платежа",
+            )
+        if case.status != CaseStatus.M2_CONSULTATION_BOOKED:
+            await self.cases.change_status(
+                case=case,
+                next_status=CaseStatus.M2_CONSULTATION_BOOKED,
+                actor_type="admin",
+                actor_id=actor_id,
+                comment=comment,
+            )
+
     async def _record_resolution(
         self,
         *,
@@ -156,14 +180,11 @@ class PaymentReviewService:
             consultation.id,
             slot.id,
         )
-        if case.status != CaseStatus.M2_CONSULTATION_BOOKED:
-            await self.cases.change_status(
-                case=case,
-                next_status=CaseStatus.M2_CONSULTATION_BOOKED,
-                actor_type="admin",
-                actor_id=actor_id,
-                    comment="Подтверждение существующей брони после проверки платежа",
-            )
+        await self._advance_case_after_received_payment(
+            case=case,
+            actor_id=actor_id,
+            comment="Подтверждение существующей брони после проверки платежа",
+        )
 
         await self._record_resolution(
             payment=payment,
@@ -273,14 +294,11 @@ class PaymentReviewService:
             slot.id,
         )
 
-        if case.status != CaseStatus.M2_CONSULTATION_BOOKED:
-            await self.cases.change_status(
-                case=case,
-                next_status=CaseStatus.M2_CONSULTATION_BOOKED,
-                actor_type="admin",
-                actor_id=actor_id,
-                    comment="Назначен новый слот после ручной проверки платежа",
-            )
+        await self._advance_case_after_received_payment(
+            case=case,
+            actor_id=actor_id,
+            comment="Назначен новый слот после ручной проверки платежа",
+        )
 
         await self._record_resolution(
             payment=payment,
