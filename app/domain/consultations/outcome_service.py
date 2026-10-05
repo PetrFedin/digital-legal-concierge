@@ -143,7 +143,22 @@ class ConsultationOutcomeService:
         slot.status = "completed"
         slot.hold_expires_at = None
 
+        await self.cases.change_status(
+            case=case,
+            next_status=CaseStatus.M2_CONSULTATION_DONE,
+            actor_type="lawyer",
+            actor_id=lawyer_id,
+            comment="Результат консультации зафиксирован",
+        )
+
         if normalized_decision == "to_m1":
+            await self.cases.change_status(
+                case=case,
+                next_status=CaseStatus.M2_TO_M1,
+                actor_type="lawyer",
+                actor_id=lawyer_id,
+                comment="Юрист выбрал продолжение по стандартному маршруту М1",
+            )
             await self.cases.transfer_to_m1(
                 case=case,
                 actor_type="lawyer",
@@ -156,16 +171,9 @@ class ConsultationOutcomeService:
                 next_status=CaseStatus.M2_CLOSED,
                 actor_type="lawyer",
                 actor_id=lawyer_id,
-                    comment="Консультация завершена, обращение закрыто",
+                comment="Консультация завершена, обращение закрыто",
             )
         else:
-            await self.cases.change_status(
-                case=case,
-                next_status=CaseStatus.M2_CONSULTATION_DONE,
-                actor_type="lawyer",
-                actor_id=lawyer_id,
-                    comment="Результат консультации зафиксирован",
-            )
             case.next_action = (
                 "Назначить следующую консультацию"
                 if normalized_decision == "follow_up"
