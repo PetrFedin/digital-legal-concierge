@@ -130,7 +130,7 @@ _TRANSITIONS: dict[CaseStatus, frozenset[CaseStatus]] = {
     ),
     CaseStatus.M2_DOCUMENTS_OPTIONAL: frozenset({CaseStatus.M2_SLOT_PENDING}),
     CaseStatus.M2_SLOT_PENDING: frozenset(
-        {CaseStatus.M2_PAYMENT_PENDING, CaseStatus.M2_CONSULTATION_BOOKED}
+        {CaseStatus.M2_PAYMENT_PENDING}
     ),
     CaseStatus.M2_PAYMENT_PENDING: frozenset(
         {CaseStatus.M2_SLOT_PENDING, CaseStatus.M2_CONSULTATION_BOOKED}
@@ -139,16 +139,12 @@ _TRANSITIONS: dict[CaseStatus, frozenset[CaseStatus]] = {
         {
             CaseStatus.M2_SLOT_PENDING,
             CaseStatus.M2_CONSULTATION_DONE,
-            CaseStatus.M2_CLOSED,
-            CaseStatus.M1_DOCUMENTS_PENDING,
         }
     ),
     CaseStatus.M2_CONSULTATION_DONE: frozenset(
         {
             CaseStatus.M2_SLOT_PENDING,
-            CaseStatus.M2_CONSULTATION_BOOKED,
             CaseStatus.M2_TO_M1,
-            CaseStatus.M1_DOCUMENTS_PENDING,
             CaseStatus.M2_CLOSED,
         }
     ),
