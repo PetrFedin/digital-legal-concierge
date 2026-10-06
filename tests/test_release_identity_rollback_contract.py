@@ -88,6 +88,8 @@ def test_deploy_is_clean_commit_backup_first_and_identity_checked():
 
     assert "git status --porcelain --untracked-files=no" in source
     assert "git rev-parse --verify HEAD" in source
+    assert "DEPLOY_EXACT_SHA" in source
+    assert '"$GIT_COMMIT_SHA" = "$DEPLOY_EXACT_SHA"' in source
     assert 'APP_IMAGE_TAG="${RELEASE_TAG:-${GIT_COMMIT_SHA:0:12}}"' in source
     assert "org.opencontainers.image.revision" in source
     assert "/runtime/release" in source
@@ -96,6 +98,22 @@ def test_deploy_is_clean_commit_backup_first_and_identity_checked():
     assert "Создание зашифрованной резервной копии перед обновлением" in source
     assert source.index("backup_cli create") < source.index("dc up -d --remove-orphans")
     assert "docker compose down -v" not in source
+
+
+def test_status_and_acceptance_are_pinned_to_the_accepted_sha():
+    status = read("status.sh")
+    acceptance = read("acceptance.sh")
+
+    assert 'expected_commit="${DEPLOY_EXACT_SHA:-${EXPECTED_COMMIT:-$image_revision}}"' in status
+    assert '"$image_revision" != "$expected_commit"' in status
+    assert '-e EXPECTED_COMMIT="$expected_commit"' in status
+
+    assert 'accepted_sha="${DEPLOY_EXACT_SHA:-}"' in acceptance
+    assert "DEPLOY_EXACT_SHA обязателен" in acceptance
+    assert 'current_sha="$(git rev-parse --verify HEAD)"' in acceptance
+    assert '"$current_sha" != "$accepted_sha"' in acceptance
+    assert "scripts/production_preflight.py" in acceptance
+    assert "bash ./status.sh" in acceptance
 
 
 def test_automatic_rollback_requires_the_same_migration_head():
@@ -125,6 +143,7 @@ def test_operator_scripts_are_valid_bash():
         "deploy.sh",
         "rollback.sh",
         "status.sh",
+        "acceptance.sh",
         "bot-control.sh",
         "timeweb-deploy.sh",
     ):
