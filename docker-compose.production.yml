@@ -1,37 +1,99 @@
-services:
-  bot:
-    build: .
-    container_name: legal-concierge-bot
-    restart: unless-stopped
-    env_file:
-      - .env
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./storage:/app/storage
-      - ./backups:/app/backups
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready')"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
+# Canonical production compose mirrors the Timeweb deployment contract.
+# Keep this file aligned with docker-compose.timeweb.yml so generic production
+# instructions cannot bypass persistent PostgreSQL/Redis/storage safeguards.
 
+services:
   postgres:
-    image: postgres:16-alpine
-    container_name: legal-concierge-postgres
-    restart: unless-stopped
+    image: postgres:17-alpine
     environment:
       POSTGRES_DB: legal_concierge
       POSTGRES_USER: legal_concierge
-      POSTGRES_PASSWORD: change_me_strong_password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - concierge_postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U legal_concierge -d legal_concierge
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
 
   redis:
-    image: redis:7-alpine
-    container_name: legal-concierge-redis
+    image: redis:7.4-alpine
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+    volumes:
+      - concierge_redis:/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  app:
+    image: "${APP_IMAGE_REPOSITORY:-digital-legal-concierge}:${APP_IMAGE_TAG:-timeweb}"
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_RELEASE: "${APP_RELEASE:-timeweb}"
+        GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:-unknown}"
+        BUILD_TIMESTAMP: "${BUILD_TIMESTAMP:-unknown}"
+        APP_IMAGE_REPOSITORY: "${APP_IMAGE_REPOSITORY:-digital-legal-concierge}"
+        APP_IMAGE_TAG: "${APP_IMAGE_TAG:-timeweb}"
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8000}:8000"
+    volumes:
+      - concierge_data:/app/data
+      - concierge_storage:/app/storage
+      - concierge_logs:/app/logs
+      - concierge_backups:/app/backups
+    restart: unless-stopped
+    stop_grace_period: 45s
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)
+      interval: 20s
+      timeout: 7s
+      retries: 5
+      start_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "5"
 
 volumes:
-  postgres_data:
+  concierge_postgres:
+  concierge_data:
+  concierge_storage:
+  concierge_logs:
+  concierge_backups:
+  concierge_redis:
