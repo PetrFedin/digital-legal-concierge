@@ -2,10 +2,12 @@
 
 ## Production-схема
 
-Для текущей версии используйте облачный сервер Timeweb с Docker Compose и постоянными
-Docker volumes. Базу данных размещайте в PostgreSQL; предпочтительно — в управляемом
-PostgreSQL Timeweb в той же приватной сети. Redis запускается рядом с приложением без
-публикации порта и хранит незавершённые Telegram-сценарии в постоянном AOF-volume.
+Для текущей customer-handover версии используйте облачный сервер Timeweb с Docker Compose
+и постоянными Docker volumes. Канонический compose поднимает PostgreSQL 17 и Redis 7.4
+рядом с приложением; оба сервиса не публикуют свои порты наружу. Redis хранит
+незавершённые Telegram-сценарии в постоянном AOF-volume, PostgreSQL является основным
+юридически значимым хранилищем. Переход на managed PostgreSQL — отдельное post-handover
+изменение и не смешивается с текущей acceptance.
 
 App Platform через Docker Compose не подходит для текущего файлового контура без переноса
 документов и backup в S3: App Platform создаёт новое окружение при деплое и запрещает
@@ -83,23 +85,26 @@ revision с `DEPLOY_EXACT_SHA`. Production acceptance не проходит пр
 
 ## Первый запуск
 
-```bash
-git clone https://github.com/PetrFedin/digital-legal-concierge.git
-cd digital-legal-concierge
-cp .env.production.example .env
-bash ./generate-secrets.sh
-```
+Для текущей передачи заказчику первый запуск выполняется только через замороженный
+exact-SHA контур выше. После fresh clone сначала задайте `DEPLOY_EXACT_SHA` и checkout
+этого commit; не деплойте незафиксированный HEAD `main`.
 
-Перенесите значения из `.env.generated.secrets` в `.env`, заполните `BOT_TOKEN`,
-`DATABASE_URL`, домен, YooKassa и фактические CIDR reverse proxy. Не меняйте
+Перенесите значения из `.env.generated.secrets` в `.env`, заполните новый
+`BOT_TOKEN`, `POSTGRES_PASSWORD`, согласованный `DATABASE_URL`, HTTPS-домен,
+YooKassa credentials и фактические CIDR reverse proxy. Не меняйте
 `FSM_STORAGE_BACKEND=redis` и `REDIS_URL=redis://redis:6379/0` для штатного Compose.
-Затем удалите файл с сгенерированными секретами.
+Старый или ранее раскрытый Telegram token для live smoke не используется. После переноса
+значений удалите `.env.generated.secrets`.
+
+До деплоя выполните:
 
 ```bash
 rm -f .env.generated.secrets
 bash ./test.sh
-bash ./timeweb-deploy.sh
 ```
+
+Затем запускайте `timeweb-deploy.sh` только с `DEPLOY_EXACT_SHA`, как показано в
+разделе «Замороженный acceptance-контур».
 
 ## Что выполняется автоматически
 
@@ -142,7 +147,9 @@ ALLOW_NON_MAIN_DEPLOY=true DEPLOY_EXACT_SHA="$DEPLOY_EXACT_SHA" bash ./timeweb-d
 ## Проверка работающего release
 
 ```bash
-COMPOSE_FILE=docker-compose.timeweb.yml bash ./status.sh
+COMPOSE_FILE=docker-compose.timeweb.yml \
+DEPLOY_EXACT_SHA="$DEPLOY_EXACT_SHA" \
+bash ./status.sh
 ```
 
 Команда проверяет Redis, `/health`, `/ready`, `/runtime/release` и совпадение полного Git
