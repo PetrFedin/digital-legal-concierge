@@ -1,7 +1,8 @@
 # Digital Legal Concierge — финальный чек-лист передачи заказчику
 
-**Дата:** 2026-10-03  
-**Release branch:** `release/final-customer-handover-20261003`  
+**Исходная дата:** 2026-10-03  
+**Acceptance update:** 2026-10-06  
+**Release authority:** полный accepted Git SHA на `main`, зеркально зафиксированный в `release/customer-handover-20261005`  
 **Scope:** только М1/М2. Никакого расширения MVP до закрытия передачи.
 
 Статусы:
@@ -36,7 +37,9 @@
 
 ## Release gates перед staging
 
-Exact commit обязан пройти:
+Exact commit обязан пройти. Для staging/production оператор задаёт полный
+`DEPLOY_EXACT_SHA`; acceptance должна доказать совпадение checkout, OCI image revision
+и `/runtime/release` с этим SHA.
 
 1. Python compile;
 2. architecture check;
@@ -52,6 +55,10 @@ Exact commit обязан пройти:
 12. PostgreSQL concurrency.
 
 ## Staging smoke
+
+До функционального smoke staging обязан быть изолирован от production отдельными
+Compose project/volumes, Telegram bot token, YooKassa test shop и HTTPS endpoint.
+`/health`, `/ready` и `/runtime/release` должны пройти exact-SHA acceptance.
 
 ### Клиент
 
