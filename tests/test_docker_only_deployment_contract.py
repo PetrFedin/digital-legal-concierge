@@ -170,10 +170,9 @@ def test_production_preflight_requires_runtime_dependencies_and_valid_payment_mo
     assert '"fsm_storage_is_redis"' in source
     assert '"redis_url_ready"' in source
     assert '"trusted_proxy_configured"' in source
-    assert 'payment_provider == "disabled"' in source
     assert 'payment_provider == "yookassa"' in source
     assert '"payment_provider_ready": payment_ready' in source
-    assert "Онлайн-оплата отключена" in source
+    assert "production acceptance заблокирован" in source
     assert "secrets_exposed" in source
     assert "your-domain" in source
     assert 'not in {"host", "localhost"}' in source
@@ -193,24 +192,23 @@ def _configure_preflight_paths(monkeypatch, tmp_path) -> None:
     )
 
 
-def test_production_preflight_accepts_explicit_disabled_mode_but_rejects_fake(
+def test_production_preflight_rejects_disabled_and_fake_payment_modes(
     monkeypatch,
     tmp_path,
 ):
     _configure_preflight_paths(monkeypatch, tmp_path)
+
     monkeypatch.setattr(production_preflight.settings, "payment_provider", "disabled")
-
     disabled_report = production_preflight.build_report()
-
-    assert disabled_report["checks"]["payment_provider_ready"] is True
+    assert disabled_report["checks"]["payment_provider_ready"] is False
+    assert "payment_provider_ready" in disabled_report["failed"]
     assert any(
-        "Онлайн-оплата отключена" in warning
+        "production acceptance заблокирован" in warning
         for warning in disabled_report["warnings"]
     )
 
     monkeypatch.setattr(production_preflight.settings, "payment_provider", "fake")
     fake_report = production_preflight.build_report()
-
     assert fake_report["checks"]["payment_provider_ready"] is False
     assert "payment_provider_ready" in fake_report["failed"]
 
