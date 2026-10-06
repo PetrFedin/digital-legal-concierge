@@ -56,6 +56,22 @@ async def export_cases(
             "status": c.status,
             "lawyer_id": c.assigned_lawyer_id,
             "next_action": c.next_action,
+            "enforcement_number": c.enforcement_number,
+            "enforcement_status": c.enforcement_status,
+            "enforcement_started_at": (
+                c.enforcement_started_at.isoformat()
+                if c.enforcement_started_at
+                else ""
+            ),
+            "received_amount": (
+                str(c.received_amount) if c.received_amount is not None else ""
+            ),
+            "received_at": c.received_at.isoformat() if c.received_at else "",
+            "success_fee_amount": (
+                str(c.success_fee_amount)
+                if c.success_fee_amount is not None
+                else ""
+            ),
             "created_at": c.created_at.isoformat() if c.created_at else "",
             "updated_at": c.updated_at.isoformat() if c.updated_at else "",
         }
