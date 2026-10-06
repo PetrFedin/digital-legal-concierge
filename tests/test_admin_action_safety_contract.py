@@ -67,6 +67,8 @@ def test_admin_write_actions_share_a_single_flight_guard():
         "autoAssign(${x.id},this)",
         "confirmPayment(${p.id},${p.case_id},this)",
         "saveStatus(${id},this)",
+        "recordAdminReceipt(${id},this,false)",
+        "recordAdminReceipt(${id},this,true)",
         "createLawyer(this)",
         "saveSetting(this)",
     ):
@@ -80,6 +82,7 @@ def test_admin_write_actions_share_a_single_flight_guard():
         ("autoAssign", "case:", "назначено", "не назначено"),
         ("confirmPayment", "payment:", "подтверждён", "не подтверждён"),
         ("saveStatus", "case:", "сохранён", "не изменён"),
+        ("recordAdminReceipt", "case:", "сохранено", "не сохранено"),
         ("createLawyer", "global:create-lawyer", "создан", "не создан"),
         ("saveSetting", "setting:", "сохранена", "не сохранена"),
     ),
@@ -120,6 +123,17 @@ def test_admin_status_change_validates_comment_and_requires_confirmation():
     assert "next===expected" in function
     assert function.index("confirm(") < function.index("withAction(")
     assert function.index("withAction(") < function.index("await api(")
+
+
+def test_admin_receipt_ui_sends_case_snapshot_and_explicit_final_flag():
+    function = _function("recordAdminReceipt")
+    compact = _compact(function)
+
+    assert "expected_status:expectedStatus" in compact
+    assert "expected_updated_at:expectedUpdatedAt" in compact
+    assert "final:final" in compact
+    assert "/enforcement/receipt" in function
+    assert "confirm(" in function
 
 
 def test_admin_setting_service_locks_and_rejects_stale_updates():
