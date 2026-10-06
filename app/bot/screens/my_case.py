@@ -200,6 +200,8 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
         lines.append(f"🗓 Консультация: {view.consultation_summary}")
     if view.payments_summary:
         lines.append(f"💳 Оплаты: {view.payments_summary}")
+    if view.enforcement_summary:
+        lines.append(f"⚖️ Исполнение: {view.enforcement_summary}")
     lines.extend(["", f"Обновлено: {format_updated_at(view.updated_at)}"])
 
     await _safe_edit(
