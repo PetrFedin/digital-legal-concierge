@@ -134,6 +134,13 @@ if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
 fi
 
 export GIT_COMMIT_SHA="$(git rev-parse --verify HEAD)"
+if [ -n "${DEPLOY_EXACT_SHA:-}" ]; then
+  case "$DEPLOY_EXACT_SHA" in
+    *[!0-9a-f]*|"") fail "DEPLOY_EXACT_SHA должен быть полным lowercase Git SHA" ;;
+  esac
+  [ "${#DEPLOY_EXACT_SHA}" -eq 40 ] || fail "DEPLOY_EXACT_SHA должен содержать ровно 40 символов"
+  [ "$GIT_COMMIT_SHA" = "$DEPLOY_EXACT_SHA" ] || fail     "Текущий Git SHA $GIT_COMMIT_SHA не совпадает с принятым DEPLOY_EXACT_SHA $DEPLOY_EXACT_SHA"
+fi
 export APP_IMAGE_REPOSITORY="${APP_IMAGE_REPOSITORY:-digital-legal-concierge}"
 export APP_IMAGE_TAG="${RELEASE_TAG:-${GIT_COMMIT_SHA:0:12}}"
 export APP_RELEASE="${APP_RELEASE:-$APP_IMAGE_TAG}"
