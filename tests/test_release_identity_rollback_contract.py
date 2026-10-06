@@ -112,6 +112,7 @@ def test_status_and_acceptance_are_pinned_to_the_accepted_sha():
     assert "DEPLOY_EXACT_SHA обязателен" in acceptance
     assert 'current_sha="$(git rev-parse --verify HEAD)"' in acceptance
     assert '"$current_sha" != "$accepted_sha"' in acceptance
+    assert 'docker compose -f "$compose_file" exec -T app' in acceptance
     assert "scripts/production_preflight.py" in acceptance
     assert "bash ./status.sh" in acceptance
 
