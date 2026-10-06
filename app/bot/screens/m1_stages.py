@@ -436,6 +436,12 @@ async def pay_success_fee(callback: CallbackQuery, db):
     ).scalars().first()
     service = PaymentService(db)
     try:
+        amount = await service.estimate_success_fee_for_case(case.id)
+        if existing and existing.amount != amount:
+            raise ValueError(
+                "Сумма существующего финального платежа не соответствует "
+                "фактическому поступлению. Требуется ручная проверка."
+            )
         if status == CaseStatus.M1_MONEY_RECEIVED:
             await ctx.case_service.change_status(
                 case=case,
@@ -446,8 +452,8 @@ async def pay_success_fee(callback: CallbackQuery, db):
             )
         if existing:
             payment = existing
+            case.success_fee_amount = amount
         else:
-            amount = await service.estimate_success_fee_for_case(case.id)
             payment = await service.get_or_create_payment(
                 case=case,
                 payment_code=PaymentCode.M1_SUCCESS_FEE,
