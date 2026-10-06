@@ -1216,3 +1216,113 @@ These are platform workflow attestations, not professional licensure.
 
 **Moat:** standardised case-readiness manifests reduce switching/handoff friction while the provider network compounds structured service reliability evidence.
 
+
+
+## Institutional adoption wave — Embedded Legal Readiness Infrastructure
+
+This wave turns the Case Readiness Standard and counsel workflow into infrastructure that banks, insurers, real-estate platforms, employers, associations and professional-service networks can embed while preserving legal boundaries and user control.
+
+### Case Readiness Interchange Profile — ADOPT
+
+Publish a bounded versioned profile for:
+
+- case/package identity;
+- jurisdiction/scope;
+- evidence checklist state;
+- calculation/rule version;
+- deadline snapshot;
+- contradiction/open-item state;
+- counsel-review state;
+- readiness manifest hash/status.
+
+The profile describes workflow readiness, not legal merit or predicted outcome.
+
+### Synthetic Reference Case — ADOPT
+
+Provide non-personal reference packages demonstrating:
+
+`intake -> identity/consent -> evidence -> calculation -> readiness -> counsel handoff -> structured review -> outcome/status update`
+
+No real legal documents or personal data.
+
+### Institutional Embedded Intake — ADOPT
+
+Partner organisations may embed scoped intake for predefined service families, while:
+
+- user consent remains direct and explicit;
+- unsupported matters fail closed;
+- partner branding cannot rewrite legal rules;
+- binding action remains under the existing user/professional authority model.
+
+### Approved Professional / Integration Network — ADOPT
+
+Qualification paths may include:
+
+- Counsel Workspace Integrated;
+- Structured Review Compatible;
+- Evidence Handoff Verified;
+- Filing Package Workflow Verified;
+- Enterprise Case API Integrated.
+
+These attest technical/process compatibility only; professional licences remain external-source facts.
+
+### Institutional Publishing — CONDITIONAL
+
+Approved parties may submit scoped source facts such as:
+
+- policy/claim reference;
+- transaction/contract reference;
+- employer/association eligibility fact;
+- property/loan reference;
+- service status.
+
+They cannot publish a legal conclusion into the authoritative case.
+
+### Enterprise Distribution Bundles — ADOPT
+
+Potential products:
+
+- Embedded Legal Intake;
+- Case Readiness API;
+- Counsel Handoff Workspace;
+- Portfolio LegalOps;
+- Evidence Vault / Verification;
+- White-label Status Experience.
+
+### Privacy-safe Service Reliability Network — ADOPT
+
+Across participating professional providers, derive only bounded process dimensions with sufficient privacy/sample safeguards:
+
+- response time;
+- accepted request rate;
+- structured-review completion;
+- current availability;
+- integration status.
+
+Never expose case outcomes, client identities or hidden win-rate rankings as reputation.
+
+### Legitimate Switching Cost — ADOPT
+
+Compounding value:
+
+- case/evidence history;
+- rule/calculation snapshots;
+- readiness manifests;
+- counsel review lineage;
+- organisation-specific intake mappings;
+- provider integration history;
+- consented portfolio analytics.
+
+Users retain export/access rights; switching cost comes from continuity and embedded integrations.
+
+### Additional acceptance
+
+- institutional embedding never grants autonomous legal-action authority;
+- readiness remains distinct from merit/outcome prediction;
+- licences/qualifications remain externally sourced and current;
+- user revocation terminates future partner access without destroying historical audit;
+- white-label deployments share common core legal/evidence logic rather than partner forks.
+
+**Sequencing:** Case Readiness Standard -> reference packages -> enterprise partner scopes -> embedded intake -> professional certification -> institutional pilots -> portfolio distribution.
+
+**Moat:** the product becomes a common readiness and handoff rail between consumers, institutions and legal professionals rather than a single-channel concierge.
