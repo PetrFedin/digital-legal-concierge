@@ -1,6 +1,7 @@
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -58,6 +59,24 @@ class Case(Base, TimestampMixin):
     escalation_level: Mapped[int] = mapped_column(Integer, default=0)
     next_action: Mapped[str | None] = mapped_column(String(255), nullable=True)
     internal_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enforcement_number: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    enforcement_status: Mapped[str | None] = mapped_column(
+        String(100), nullable=True
+    )
+    enforcement_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    received_amount: Mapped[Decimal | None] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
+    received_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    success_fee_amount: Mapped[Decimal | None] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
     closed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
