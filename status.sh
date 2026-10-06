@@ -17,10 +17,16 @@ container_id="$(dc ps -q app)"
 [ -n "$container_id" ] || { echo "Контейнер app не найден"; exit 2; }
 image_reference="$(docker inspect --format '{{.Config.Image}}' "$container_id")"
 image_revision="$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$container_id")"
+expected_commit="${DEPLOY_EXACT_SHA:-${EXPECTED_COMMIT:-$image_revision}}"
+if [ -n "$expected_commit" ] && [ "$image_revision" != "$expected_commit" ]; then
+  echo "revision mismatch: running=$image_revision expected=$expected_commit"
+  exit 2
+fi
 echo "image $image_reference"
 echo "revision $image_revision"
+echo "accepted_revision $expected_commit"
 
-dc exec -T -e EXPECTED_COMMIT="$image_revision" app python - <<'PY'
+dc exec -T -e EXPECTED_COMMIT="$expected_commit" app python - <<'PY'
 import json
 import os
 import urllib.request
