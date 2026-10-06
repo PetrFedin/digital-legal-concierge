@@ -95,8 +95,9 @@ def test_runtime_alembic_files_resolve_outside_the_installed_wheel():
 def test_compose_persists_documents_backups_and_telegram_fsm():
     local_compose = read("docker-compose.yml")
     timeweb_compose = read("docker-compose.timeweb.yml")
+    production_compose = read("docker-compose.production.yml")
 
-    for source in (local_compose, timeweb_compose):
+    for source in (local_compose, timeweb_compose, production_compose):
         assert "redis:7.4-alpine" in source
         assert "--appendonly" in source
         assert "condition: service_healthy" in source
@@ -105,7 +106,11 @@ def test_compose_persists_documents_backups_and_telegram_fsm():
             assert mount in source
         assert "stop_grace_period: 45s" in source
     assert "DATABASE_URL:" not in local_compose
-    assert "0.0.0.0" not in timeweb_compose
+    for source in (timeweb_compose, production_compose):
+        assert "postgres:17-alpine" in source
+        assert "concierge_postgres:/var/lib/postgresql/data" in source
+        assert "0.0.0.0" not in source
+        assert "change_me_strong_password" not in source
 
 
 def test_production_template_is_fail_closed_and_restart_safe():
