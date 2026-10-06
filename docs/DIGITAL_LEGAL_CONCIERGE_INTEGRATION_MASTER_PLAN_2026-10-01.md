@@ -1118,3 +1118,101 @@ Do not let a distribution partner re-label the product as a legal guarantee.
 
 **Commercial framing:** converts the concierge from a direct channel into embeddable LegalTech infrastructure with partner-led acquisition.
 
+## Defensibility wave — Case Readiness Standard and professional service trust network
+
+This wave creates a portable, explainable readiness protocol for case handoff and a professional-network layer without ranking lawyers by outcomes.
+
+### Legal Case Readiness Standard — ADOPT
+
+Define a versioned readiness profile with components such as:
+
+- verified party/identity fields;
+- contract/property facts;
+- deadline/procedure state;
+- calculation snapshot;
+- evidence completeness;
+- evidence integrity/signature state;
+- legal-source versions;
+- argument/evidence graph completeness;
+- unresolved contradictions;
+- filing/settlement document state;
+- counsel review status.
+
+The standard describes package readiness, not probability of legal success.
+
+### Readiness Manifest — ADOPT
+
+Generate a machine-readable manifest:
+
+- case ID;
+- standard version;
+- component states;
+- missing items;
+- evidence bundle checksum;
+- calculation version;
+- deadline snapshot;
+- generated_at;
+- reviewer/approval state.
+
+This can travel with the Counsel Handoff Package.
+
+### Scoped Readiness Credential — ADAPT
+
+Where useful, issue a verifiable attestation:
+
+"Case package met Readiness Standard X at time T"
+
+It must identify scope and expiry/revalidation conditions.
+
+It does not certify legal merit or court admissibility.
+
+### Professional Service Network — ADOPT
+
+Counsel/experts/providers may have factual service profiles:
+
+- identity/organisation verified;
+- jurisdiction/practice scope;
+- available service type;
+- structured-review integration;
+- response SLA offered;
+- completed platform review count;
+- current credential/integration status.
+
+Do not publish win rates or opaque lawyer rankings.
+
+### Service Reliability Dimensions — ADOPT
+
+Internal/partner matching may use factual process metrics:
+
+- accepted review requests;
+- median response time;
+- overdue rate;
+- structured-review completion;
+- availability status.
+
+New providers remain no-history, not low-ranked.
+
+### Partner Credential — ADOPT
+
+Possible scoped statuses:
+
+- Counsel Workspace Integrated;
+- Structured Review Verified;
+- Filing Package Workflow Verified;
+- Settlement Workflow Integrated.
+
+These are platform workflow attestations, not professional licensure.
+
+### Additional acceptance
+
+- readiness profile never predicts outcome;
+- manifest binds to exact case/evidence/calculation versions;
+- professional licence/qualification data remains external/source-attributed;
+- no hidden provider ranking by settlement/court outcome;
+- new providers are not penalised for lack of history;
+- credential verification exposes minimum necessary data.
+
+**Sequencing:** Filing Readiness + Counsel Workspace + Portfolio LegalOps -> readiness standard/manifest -> provider service profiles -> workflow credentials -> matching/verification.
+
+**Moat:** standardised case-readiness manifests reduce switching/handoff friction while the provider network compounds structured service reliability evidence.
+
