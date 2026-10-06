@@ -6,6 +6,7 @@ import re
 import pytest
 
 from app.api.admin import (
+    admin_record_enforcement_receipt,
     auto_assign,
     create_lawyer,
     manual_confirm_payment,
@@ -158,6 +159,20 @@ def test_manual_status_locks_case_and_rejects_stale_status():
     assert source.count("await db.rollback()") >= 3
 
 
+def test_admin_enforcement_receipt_locks_case_and_checks_snapshot():
+    source = inspect.getsource(admin_record_enforcement_receipt)
+    compact = _compact(source)
+
+    assert ".with_for_update()" in source
+    assert "expected_status" in source
+    assert "expected_updated_at" in source
+    assert "str(case.status)!=str(expected_status)" in compact
+    assert "case.updated_at.isoformat()!=str(expected_updated_at)" in compact
+    assert "EnforcementService(db).record_receipt" in source
+    assert 'event_code="M1_MONEY_RECEIVED"' in source
+    assert source.count("await db.rollback()") >= 3
+
+
 def test_manual_payment_confirmation_locks_payment_and_case():
     source = inspect.getsource(manual_confirm_payment)
 
@@ -172,7 +187,14 @@ def test_manual_payment_confirmation_locks_payment_and_case():
 
 @pytest.mark.parametrize(
     "endpoint",
-    (set_setting, create_lawyer, auto_assign, manual_status, manual_confirm_payment),
+    (
+        set_setting,
+        create_lawyer,
+        auto_assign,
+        manual_status,
+        admin_record_enforcement_receipt,
+        manual_confirm_payment,
+    ),
 )
 def test_admin_write_endpoints_rollback_unexpected_failures(endpoint):
     source = inspect.getsource(endpoint)
