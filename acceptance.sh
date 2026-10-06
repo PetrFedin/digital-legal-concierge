@@ -27,7 +27,7 @@ if [ "$current_sha" != "$accepted_sha" ]; then
   exit 2
 fi
 
-docker compose -f "$compose_file" run --rm --no-deps \
-  --entrypoint python app scripts/production_preflight.py
+docker compose -f "$compose_file" exec -T app \
+  python scripts/production_preflight.py
 
 COMPOSE_FILE="$compose_file" DEPLOY_EXACT_SHA="$accepted_sha" bash ./status.sh
