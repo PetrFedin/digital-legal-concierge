@@ -80,6 +80,10 @@ def test_expected_m1_and_m2_paths_are_allowed():
         CaseStatus.M1_COURT_STAGE,
         CaseStatus.M1_MONEY_RECEIVED,
     )
+    assert not transition_allowed(
+        CaseStatus.M1_WAITING_30_DAYS,
+        CaseStatus.M1_MONEY_RECEIVED,
+    )
     assert transition_allowed(
         CaseStatus.M2_SLOT_PENDING,
         CaseStatus.M2_PAYMENT_PENDING,
