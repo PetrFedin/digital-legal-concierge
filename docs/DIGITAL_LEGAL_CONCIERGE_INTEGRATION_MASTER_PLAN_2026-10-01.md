@@ -1010,3 +1010,111 @@ This is process intelligence, not prediction of court outcome.
 
 **Commercial framing:** expands from consumer legal concierge to LegalOps / law-firm portfolio software without sacrificing case-level evidence integrity.
 
+## Platform economics wave — Embedded Legal API and white-label partner distribution
+
+This wave opens partner distribution through real-estate platforms, banks, insurers, property services, associations and legal-service channels.
+
+### Partner Organisation Authority — ADOPT
+
+Create:
+
+- partner;
+- allowed products/jurisdictions;
+- branding;
+- auth/client credentials;
+- intake scopes;
+- case visibility;
+- pricing/commercial plan reference;
+- support/escalation;
+- privacy/retention policy;
+- status.
+
+Partner never receives case data outside explicit user/contract scope.
+
+### Embedded Intake API — ADOPT
+
+Partner can create a case candidate with only approved minimum fields:
+
+- issue/product type;
+- relevant dates;
+- property/contract references;
+- user identity/contact with consent;
+- source partner;
+- initial documents/evidence references.
+
+Flow:
+
+partner intake -> user verification/consent -> validation -> case created -> canonical CaseService
+
+No partner can silently open a binding legal action for the user.
+
+### Calculation / Eligibility API — ADOPT
+
+Expose bounded deterministic services where legally/product-appropriate:
+
+- scenario calculation;
+- missing information;
+- process/readiness state;
+- next required evidence.
+
+Response must identify rule/version and must not be presented as a guaranteed legal outcome.
+
+### Evidence Upload / Status API — ADOPT
+
+Partner may, within scope:
+
+- upload/document handoff;
+- fetch case stage;
+- fetch requested evidence checklist;
+- receive status webhooks.
+
+Raw evidence still goes through the normal secure admission/encryption pipeline.
+
+### White-label Experience — ADOPT
+
+Partner may embed:
+
+- co-branded intake;
+- calculator;
+- evidence checklist;
+- status surface.
+
+Core legal logic, evidence and authority remain common; no per-partner legal-code forks.
+
+### Partner Webhooks — ADOPT
+
+Events:
+
+- consent completed;
+- case admitted;
+- evidence missing;
+- stage changed;
+- counsel review requested;
+- settlement/final state changed where shareable.
+
+Signed, idempotent and scoped.
+
+### Embedded Legal Boundary — REQUIRED
+
+The API/product must clearly state:
+
+- what is automated information/workflow;
+- when counsel/legal professional review is involved;
+- jurisdiction/scope;
+- unsupported/out-of-scope issues.
+
+Do not let a distribution partner re-label the product as a legal guarantee.
+
+### Additional acceptance
+
+- user consent/identity gates case creation;
+- partner sees only scoped case projection;
+- calculator outputs exact rule/version;
+- evidence uses normal secure admission;
+- white-label branding cannot change legal rules;
+- revoking partner access preserves user case/history.
+
+**Sequencing:** Portfolio LegalOps + Counsel/Settlement + stable APIs -> partner org -> embedded intake -> status/evidence API -> white-label -> commercial distribution.
+
+**Commercial framing:** converts the concierge from a direct channel into embeddable LegalTech infrastructure with partner-led acquisition.
+
