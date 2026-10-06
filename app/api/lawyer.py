@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
+from app.domain.cases.enforcement_service import EnforcementError, EnforcementService
 from app.domain.cases.sla_service import CaseSLAError, CaseSLAService
 from app.domain.consultations.outcome_service import (
     ConsultationOutcomeError,
@@ -120,9 +121,163 @@ async def lawyer_cases(
                 CaseStatus.M1_LAWYER_REVIEW,
                 CaseStatus.M1_DOCS_REQUESTED,
             },
+            "enforcement_number": case.enforcement_number,
+            "enforcement_status": case.enforcement_status,
+            "enforcement_started_at": (
+                case.enforcement_started_at.isoformat()
+                if case.enforcement_started_at
+                else None
+            ),
+            "received_amount": (
+                str(case.received_amount) if case.received_amount is not None else None
+            ),
+            "received_at": case.received_at.isoformat() if case.received_at else None,
+            "success_fee_amount": (
+                str(case.success_fee_amount)
+                if case.success_fee_amount is not None
+                else None
+            ),
+            "can_update_enforcement": case.status == CaseStatus.M1_ENFORCEMENT,
+            "can_record_money_received": case.status == CaseStatus.M1_ENFORCEMENT,
         }
         for case, user in rows
     ]
+
+
+@router.post("/cases/{case_id}/enforcement")
+async def update_enforcement(
+    case_id: int,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    actor = await require_lawyer_actor(db, x_admin_token)
+    expected_status = payload.get("expected_status")
+    expected_updated_at = payload.get("expected_updated_at")
+    try:
+        case = await assigned_case(
+            db,
+            case_id,
+            actor.lawyer.id,
+            for_update=True,
+        )
+        assert_case_snapshot(
+            case,
+            expected_status=expected_status,
+            expected_updated_at=expected_updated_at,
+        )
+        await EnforcementService(db).update_execution(
+            case=case,
+            enforcement_number=payload.get("enforcement_number"),
+            enforcement_status=payload.get("enforcement_status"),
+            actor_type="lawyer",
+            actor_id=actor.lawyer.id,
+            comment=str(payload.get("comment") or "").strip() or None,
+        )
+        await CaseSLAService(db).record_lawyer_activity(
+            case=case,
+            lawyer_id=actor.lawyer.id,
+            action="M1_ENFORCEMENT_UPDATED",
+            comment=str(payload.get("comment") or "").strip() or None,
+        )
+        await db.commit()
+        await db.refresh(case)
+    except HTTPException:
+        await db.rollback()
+        raise
+    except (EnforcementError, CaseSLAError, ValueError) as error:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except Exception:
+        await db.rollback()
+        raise
+    return {
+        "ok": True,
+        "case_id": case.id,
+        "status": case.status,
+        "enforcement_number": case.enforcement_number,
+        "enforcement_status": case.enforcement_status,
+        "enforcement_started_at": (
+            case.enforcement_started_at.isoformat()
+            if case.enforcement_started_at
+            else None
+        ),
+        "updated_at": case.updated_at.isoformat(),
+    }
+
+
+@router.post("/cases/{case_id}/enforcement/receipt")
+async def record_enforcement_receipt(
+    case_id: int,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    actor = await require_lawyer_actor(db, x_admin_token)
+    expected_status = payload.get("expected_status")
+    expected_updated_at = payload.get("expected_updated_at")
+    final = payload.get("final") is True
+    try:
+        case = await assigned_case(
+            db,
+            case_id,
+            actor.lawyer.id,
+            for_update=True,
+        )
+        assert_case_snapshot(
+            case,
+            expected_status=expected_status,
+            expected_updated_at=expected_updated_at,
+        )
+        source_version = case.updated_at.isoformat()
+        await EnforcementService(db).record_receipt(
+            case=case,
+            amount=payload.get("amount"),
+            final=final,
+            actor_type="lawyer",
+            actor_id=actor.lawyer.id,
+            comment=str(payload.get("comment") or "").strip() or None,
+        )
+        await CaseSLAService(db).record_lawyer_activity(
+            case=case,
+            lawyer_id=actor.lawyer.id,
+            action=(
+                "M1_MONEY_RECEIVED"
+                if final
+                else "M1_PARTIAL_RECEIPT_RECORDED"
+            ),
+            comment=str(payload.get("comment") or "").strip() or None,
+        )
+        if final:
+            await NotificationEngine(db).emit(
+                event_code="M1_MONEY_RECEIVED",
+                case_id=case.id,
+                payload={
+                    "case_number": case.case_number,
+                    "amount": str(case.received_amount),
+                },
+                dedupe_key=f"case:{case.id}:money-received:{source_version}",
+            )
+        await db.commit()
+        await db.refresh(case)
+    except HTTPException:
+        await db.rollback()
+        raise
+    except (EnforcementError, CaseSLAError, ValueError) as error:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except Exception:
+        await db.rollback()
+        raise
+    return {
+        "ok": True,
+        "case_id": case.id,
+        "status": case.status,
+        "received_amount": str(case.received_amount),
+        "received_at": case.received_at.isoformat() if case.received_at else None,
+        "final": final,
+        "updated_at": case.updated_at.isoformat(),
+    }
 
 
 @router.get("/consultations")
