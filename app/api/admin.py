@@ -370,6 +370,22 @@ async def case_detail(
             "status": case.status,
             "next_action": case.next_action,
             "lawyer_id": case.assigned_lawyer_id,
+            "enforcement_number": case.enforcement_number,
+            "enforcement_status": case.enforcement_status,
+            "enforcement_started_at": (
+                case.enforcement_started_at.isoformat()
+                if case.enforcement_started_at
+                else None
+            ),
+            "received_amount": (
+                str(case.received_amount) if case.received_amount is not None else None
+            ),
+            "received_at": case.received_at.isoformat() if case.received_at else None,
+            "success_fee_amount": (
+                str(case.success_fee_amount)
+                if case.success_fee_amount is not None
+                else None
+            ),
             "updated_at": case.updated_at.isoformat(),
         },
         "client": (
