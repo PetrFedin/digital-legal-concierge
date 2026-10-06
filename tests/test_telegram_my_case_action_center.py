@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,6 +8,7 @@ from app.bot.client_case_view import (
     ClientAction,
     _action_key,
     _document_overview,
+    _enforcement_summary,
     _priority_action,
     progress_bar,
 )
@@ -139,6 +141,7 @@ def test_my_case_uses_one_primary_action_and_document_aware_snapshot():
     assert "Данные дела или документов уже изменились" in source
     assert "Ваш следующий шаг" in source
     assert "Готовность" in source
+    assert "view.enforcement_summary" in source
     assert "Что мешает продолжить" in source
     assert "message is not modified" in source
     assert 'c.data.startswith("next_action:")' in source
@@ -154,6 +157,22 @@ def test_home_status_and_my_case_share_the_same_presenter():
     assert "Ваш следующий шаг" in common
     assert "Главный экран уже актуален" in common
     assert "PILOT_NEXT_ACTIONS" in common
+
+
+def test_enforcement_summary_is_client_safe_and_uses_actual_receipt():
+    current_case = SimpleNamespace(
+        enforcement_started_at=datetime(2026, 10, 6, 9, tzinfo=timezone.utc),
+        enforcement_number="12345/26/77001-ИП",
+        enforcement_status="PARTIAL_PAYMENT",
+        received_amount=Decimal("15000.50"),
+    )
+
+    summary = _enforcement_summary(current_case)
+
+    assert "Есть частичное поступление" in summary
+    assert "12345/26/77001-ИП" in summary
+    assert "15 000.50 ₽" in summary
+    assert "PARTIAL_PAYMENT" not in summary
 
 
 def test_existing_case_status_actions_remain_available():
