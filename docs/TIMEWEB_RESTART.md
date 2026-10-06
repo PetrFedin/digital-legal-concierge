@@ -2,10 +2,12 @@
 
 ## Production-схема
 
-Для текущей версии используйте облачный сервер Timeweb с Docker Compose и постоянными
-Docker volumes. Базу данных размещайте в PostgreSQL; предпочтительно — в управляемом
-PostgreSQL Timeweb в той же приватной сети. Redis запускается рядом с приложением без
-публикации порта и хранит незавершённые Telegram-сценарии в постоянном AOF-volume.
+Для текущей customer-handover версии используйте облачный сервер Timeweb с Docker Compose
+и постоянными Docker volumes. Канонический compose поднимает PostgreSQL 17 и Redis 7.4
+рядом с приложением; оба сервиса не публикуют свои порты наружу. Redis хранит
+незавершённые Telegram-сценарии в постоянном AOF-volume, PostgreSQL является основным
+юридически значимым хранилищем. Переход на managed PostgreSQL — отдельное post-handover
+изменение и не смешивается с текущей acceptance.
 
 App Platform через Docker Compose не подходит для текущего файлового контура без переноса
 документов и backup в S3: App Platform создаёт новое окружение при деплое и запрещает
@@ -30,25 +32,79 @@ FSM data.
 Python, pip, Redis и virtualenv отдельно на сервере не нужны. Python, Redis и зависимости
 запускаются контейнерами Docker.
 
-## Первый запуск
+## Замороженный acceptance-контур
+
+Перед передачей заказчику деплой выполняется только из заранее принятого полного Git SHA.
+Переменная `DEPLOY_EXACT_SHA` обязательна для финальной acceptance-команды и рекомендуется
+для любого staging/production deploy. Если checkout и accepted SHA не совпадают, deploy
+останавливается до сборки контейнера.
+
+Staging и production нельзя запускать одним Compose project. Для staging используйте
+отдельный checkout/каталог, отдельный `COMPOSE_PROJECT_NAME`, отдельный порт приложения,
+отдельный Telegram bot token, отдельный YooKassa test shop и отдельные Docker volumes.
+Это исключает смешивание PostgreSQL, Redis FSM, документов и backup между контурами.
+
+Пример staging-подготовки без раскрытия секретов:
 
 ```bash
-git clone https://github.com/PetrFedin/digital-legal-concierge.git
-cd digital-legal-concierge
+export DEPLOY_EXACT_SHA=<FULL_ACCEPTED_SHA>
+export COMPOSE_PROJECT_NAME=dlc-staging
+export APP_PORT=18000
+git fetch origin
+git checkout --detach "$DEPLOY_EXACT_SHA"
 cp .env.production.example .env
 bash ./generate-secrets.sh
 ```
 
-Перенесите значения из `.env.generated.secrets` в `.env`, заполните `BOT_TOKEN`,
-`DATABASE_URL`, домен, YooKassa и фактические CIDR reverse proxy. Не меняйте
+Перенесите сгенерированные значения в `.env`, удалите `.env.generated.secrets` и
+задайте staging-specific `BOT_TOKEN`, `PUBLIC_BASE_URL`, `TRUSTED_PROXY_CIDRS`,
+`POSTGRES_PASSWORD`, согласованный `DATABASE_URL`, а также YooKassa credentials.
+Для Compose-базы hostname в `DATABASE_URL` должен быть `postgres`, а пароль должен
+совпадать с `POSTGRES_PASSWORD`. Секреты не передаются через Git и не выводятся в
+acceptance evidence.
+
+После настройки:
+
+```bash
+ALLOW_NON_MAIN_DEPLOY=true \
+DEPLOY_EXACT_SHA="$DEPLOY_EXACT_SHA" \
+COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME" \
+APP_PORT="$APP_PORT" \
+bash ./timeweb-deploy.sh
+
+COMPOSE_FILE=docker-compose.timeweb.yml \
+DEPLOY_EXACT_SHA="$DEPLOY_EXACT_SHA" \
+COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME" \
+bash ./acceptance.sh
+```
+
+`acceptance.sh` сначала выполняет fail-closed production preflight, затем проверяет
+работающие Redis, `/health`, `/ready`, `/runtime/release` и совпадение OCI/runtime
+revision с `DEPLOY_EXACT_SHA`. Production acceptance не проходит при `PAYMENT_PROVIDER=disabled`
+или `fake`: должен быть настроен реальный YooKassa provider flow.
+
+## Первый запуск
+
+Для текущей передачи заказчику первый запуск выполняется только через замороженный
+exact-SHA контур выше. После fresh clone сначала задайте `DEPLOY_EXACT_SHA` и checkout
+этого commit; не деплойте незафиксированный HEAD `main`.
+
+Перенесите значения из `.env.generated.secrets` в `.env`, заполните новый
+`BOT_TOKEN`, `POSTGRES_PASSWORD`, согласованный `DATABASE_URL`, HTTPS-домен,
+YooKassa credentials и фактические CIDR reverse proxy. Не меняйте
 `FSM_STORAGE_BACKEND=redis` и `REDIS_URL=redis://redis:6379/0` для штатного Compose.
-Затем удалите файл с сгенерированными секретами.
+Старый или ранее раскрытый Telegram token для live smoke не используется. После переноса
+значений удалите `.env.generated.secrets`.
+
+До деплоя выполните:
 
 ```bash
 rm -f .env.generated.secrets
 bash ./test.sh
-bash ./timeweb-deploy.sh
 ```
+
+Затем запускайте `timeweb-deploy.sh` только с `DEPLOY_EXACT_SHA`, как показано в
+разделе «Замороженный acceptance-контур».
 
 ## Что выполняется автоматически
 
@@ -68,11 +124,16 @@ bash ./timeweb-deploy.sh
 
 ## Повторный деплой
 
+Повторный деплой не должен неявно брать новый HEAD `main`. Сначала зафиксируйте принятый
+SHA, затем checkout именно этого commit:
+
 ```bash
 cd digital-legal-concierge
-git pull --ff-only
+export DEPLOY_EXACT_SHA=<FULL_ACCEPTED_SHA>
+git fetch origin
+git checkout --detach "$DEPLOY_EXACT_SHA"
 bash ./test.sh
-bash ./timeweb-deploy.sh
+ALLOW_NON_MAIN_DEPLOY=true DEPLOY_EXACT_SHA="$DEPLOY_EXACT_SHA" bash ./timeweb-deploy.sh
 ```
 
 Перед заменой контейнера deploy-скрипт создаёт encrypted backup. Если production preflight
@@ -86,7 +147,9 @@ bash ./timeweb-deploy.sh
 ## Проверка работающего release
 
 ```bash
-COMPOSE_FILE=docker-compose.timeweb.yml bash ./status.sh
+COMPOSE_FILE=docker-compose.timeweb.yml \
+DEPLOY_EXACT_SHA="$DEPLOY_EXACT_SHA" \
+bash ./status.sh
 ```
 
 Команда проверяет Redis, `/health`, `/ready`, `/runtime/release` и совпадение полного Git

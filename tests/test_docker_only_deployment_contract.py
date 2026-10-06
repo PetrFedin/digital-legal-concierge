@@ -95,8 +95,9 @@ def test_runtime_alembic_files_resolve_outside_the_installed_wheel():
 def test_compose_persists_documents_backups_and_telegram_fsm():
     local_compose = read("docker-compose.yml")
     timeweb_compose = read("docker-compose.timeweb.yml")
+    production_compose = read("docker-compose.production.yml")
 
-    for source in (local_compose, timeweb_compose):
+    for source in (local_compose, timeweb_compose, production_compose):
         assert "redis:7.4-alpine" in source
         assert "--appendonly" in source
         assert "condition: service_healthy" in source
@@ -105,7 +106,11 @@ def test_compose_persists_documents_backups_and_telegram_fsm():
             assert mount in source
         assert "stop_grace_period: 45s" in source
     assert "DATABASE_URL:" not in local_compose
-    assert "0.0.0.0" not in timeweb_compose
+    for source in (timeweb_compose, production_compose):
+        assert "postgres:17-alpine" in source
+        assert "concierge_postgres:/var/lib/postgresql/data" in source
+        assert "0.0.0.0" not in source
+        assert "change_me_strong_password" not in source
 
 
 def test_production_template_is_fail_closed_and_restart_safe():
@@ -120,6 +125,7 @@ def test_production_template_is_fail_closed_and_restart_safe():
     assert "REQUIRE_POSTGRES_IN_PRODUCTION=true" in template
     assert "STARTUP_BACKUP_ENABLED=true" in template
     assert "DATABASE_STARTUP_WAIT_SECONDS=120" in template
+    assert "POSTGRES_PASSWORD=" in template
     assert "FSM_STORAGE_BACKEND=redis" in template
     assert "REDIS_URL=redis://redis:6379/0" in template
     assert "PAYMENT_PROVIDER=yookassa" in template
@@ -167,13 +173,14 @@ def test_production_preflight_requires_runtime_dependencies_and_valid_payment_mo
     source = read("scripts/production_preflight.py")
 
     assert '"database_wait_valid"' in source
+    assert '"postgres_password_ready"' in source
+    assert '"postgres_password_matches_database_url"' in source
     assert '"fsm_storage_is_redis"' in source
     assert '"redis_url_ready"' in source
     assert '"trusted_proxy_configured"' in source
-    assert 'payment_provider == "disabled"' in source
     assert 'payment_provider == "yookassa"' in source
     assert '"payment_provider_ready": payment_ready' in source
-    assert "Онлайн-оплата отключена" in source
+    assert "production acceptance заблокирован" in source
     assert "secrets_exposed" in source
     assert "your-domain" in source
     assert 'not in {"host", "localhost"}' in source
@@ -193,26 +200,57 @@ def _configure_preflight_paths(monkeypatch, tmp_path) -> None:
     )
 
 
-def test_production_preflight_accepts_explicit_disabled_mode_but_rejects_fake(
+def test_production_preflight_rejects_disabled_and_fake_payment_modes(
     monkeypatch,
     tmp_path,
 ):
     _configure_preflight_paths(monkeypatch, tmp_path)
+
     monkeypatch.setattr(production_preflight.settings, "payment_provider", "disabled")
-
     disabled_report = production_preflight.build_report()
-
-    assert disabled_report["checks"]["payment_provider_ready"] is True
+    assert disabled_report["checks"]["payment_provider_ready"] is False
+    assert "payment_provider_ready" in disabled_report["failed"]
     assert any(
-        "Онлайн-оплата отключена" in warning
+        "production acceptance заблокирован" in warning
         for warning in disabled_report["warnings"]
     )
 
     monkeypatch.setattr(production_preflight.settings, "payment_provider", "fake")
     fake_report = production_preflight.build_report()
-
     assert fake_report["checks"]["payment_provider_ready"] is False
     assert "payment_provider_ready" in fake_report["failed"]
+
+
+def test_production_preflight_requires_matching_compose_postgres_password(
+    monkeypatch,
+    tmp_path,
+):
+    _configure_preflight_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        production_preflight.settings,
+        "database_url",
+        "postgresql+asyncpg://legal_concierge:db-secret-123456@postgres:5432/legal_concierge",
+    )
+    monkeypatch.setattr(
+        production_preflight.settings,
+        "require_postgres_in_production",
+        True,
+    )
+
+    monkeypatch.setenv("POSTGRES_PASSWORD", "different-secret-123456")
+    mismatch = production_preflight.build_report()
+    assert mismatch["checks"]["postgres_password_ready"] is True
+    assert mismatch["checks"]["postgres_password_matches_database_url"] is False
+
+    monkeypatch.setenv("POSTGRES_PASSWORD", "db-secret-123456")
+    matching = production_preflight.build_report()
+    assert matching["checks"]["postgres_password_ready"] is True
+    assert matching["checks"]["postgres_password_matches_database_url"] is True
+
+
+def test_secret_generator_includes_postgres_password():
+    source = read("generate-secrets.sh")
+    assert '"POSTGRES_PASSWORD"' in source
 
 
 def test_production_preflight_requires_complete_yookassa_credentials(

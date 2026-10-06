@@ -8,6 +8,7 @@ umask 077
 docker run --rm python:3.11-slim python -c '
 import secrets
 names = [
+    "POSTGRES_PASSWORD",
     "ADMIN_API_TOKEN",
     "ADMIN_PASSWORD",
     "SESSION_SIGNING_KEY",

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from app.config import settings
 
@@ -104,11 +105,25 @@ def build_report() -> dict[str, object]:
         database_url = str(settings.database_url or "")
         redis_url = str(settings.redis_url or "")
         postgres = _postgres_url_ready(database_url)
+        postgres_password = str(os.getenv("POSTGRES_PASSWORD") or "")
+        try:
+            parsed_database = urlparse(database_url)
+        except ValueError:
+            parsed_database = None
+        local_compose_postgres = bool(
+            parsed_database
+            and str(parsed_database.hostname or "").lower() == "postgres"
+        )
+        database_password = (
+            unquote(str(parsed_database.password or ""))
+            if parsed_database is not None
+            else ""
+        )
         persistent_sqlite = database_url.startswith(
             "sqlite+aiosqlite:////app/data/"
         )
         payment_provider = settings.payment_provider.strip().lower()
-        payment_ready = payment_provider == "disabled" or (
+        payment_ready = (
             payment_provider == "yookassa"
             and bool(settings.yookassa_shop_id)
             and _secret_ready(settings.yookassa_secret_key, minimum=8)
@@ -146,6 +161,17 @@ def build_report() -> dict[str, object]:
                 "postgres_requirement_satisfied": (
                     postgres if settings.require_postgres_in_production else True
                 ),
+                "postgres_password_ready": _secret_ready(
+                    postgres_password,
+                    minimum=16,
+                ),
+                "postgres_password_matches_database_url": (
+                    not local_compose_postgres
+                    or (
+                        bool(database_password)
+                        and database_password == postgres_password
+                    )
+                ),
                 "database_wait_valid": 10
                 <= int(settings.database_startup_wait_seconds)
                 <= 600,
@@ -175,7 +201,7 @@ def build_report() -> dict[str, object]:
         )
         if payment_provider == "disabled":
             warnings.append(
-                "Онлайн-оплата отключена: бот и кабинеты работают без создания платёжных ссылок"
+                "Онлайн-оплата отключена: production acceptance заблокирован до настройки YooKassa"
             )
         if persistent_sqlite:
             warnings.append(
