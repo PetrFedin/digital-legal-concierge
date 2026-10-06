@@ -30,6 +30,57 @@ FSM data.
 Python, pip, Redis и virtualenv отдельно на сервере не нужны. Python, Redis и зависимости
 запускаются контейнерами Docker.
 
+## Замороженный acceptance-контур
+
+Перед передачей заказчику деплой выполняется только из заранее принятого полного Git SHA.
+Переменная `DEPLOY_EXACT_SHA` обязательна для финальной acceptance-команды и рекомендуется
+для любого staging/production deploy. Если checkout и accepted SHA не совпадают, deploy
+останавливается до сборки контейнера.
+
+Staging и production нельзя запускать одним Compose project. Для staging используйте
+отдельный checkout/каталог, отдельный `COMPOSE_PROJECT_NAME`, отдельный порт приложения,
+отдельный Telegram bot token, отдельный YooKassa test shop и отдельные Docker volumes.
+Это исключает смешивание PostgreSQL, Redis FSM, документов и backup между контурами.
+
+Пример staging-подготовки без раскрытия секретов:
+
+```bash
+export DEPLOY_EXACT_SHA=<FULL_ACCEPTED_SHA>
+export COMPOSE_PROJECT_NAME=dlc-staging
+export APP_PORT=18000
+git fetch origin
+git checkout --detach "$DEPLOY_EXACT_SHA"
+cp .env.production.example .env
+bash ./generate-secrets.sh
+```
+
+Перенесите сгенерированные значения в `.env`, удалите `.env.generated.secrets` и
+задайте staging-specific `BOT_TOKEN`, `PUBLIC_BASE_URL`, `TRUSTED_PROXY_CIDRS`,
+`POSTGRES_PASSWORD`, согласованный `DATABASE_URL`, а также YooKassa credentials.
+Для Compose-базы hostname в `DATABASE_URL` должен быть `postgres`, а пароль должен
+совпадать с `POSTGRES_PASSWORD`. Секреты не передаются через Git и не выводятся в
+acceptance evidence.
+
+После настройки:
+
+```bash
+ALLOW_NON_MAIN_DEPLOY=true \
+DEPLOY_EXACT_SHA="$DEPLOY_EXACT_SHA" \
+COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME" \
+APP_PORT="$APP_PORT" \
+bash ./timeweb-deploy.sh
+
+COMPOSE_FILE=docker-compose.timeweb.yml \
+DEPLOY_EXACT_SHA="$DEPLOY_EXACT_SHA" \
+COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME" \
+bash ./acceptance.sh
+```
+
+`acceptance.sh` сначала выполняет fail-closed production preflight, затем проверяет
+работающие Redis, `/health`, `/ready`, `/runtime/release` и совпадение OCI/runtime
+revision с `DEPLOY_EXACT_SHA`. Production acceptance не проходит при `PAYMENT_PROVIDER=disabled`
+или `fake`: должен быть настроен реальный YooKassa provider flow.
+
 ## Первый запуск
 
 ```bash
@@ -68,11 +119,16 @@ bash ./timeweb-deploy.sh
 
 ## Повторный деплой
 
+Повторный деплой не должен неявно брать новый HEAD `main`. Сначала зафиксируйте принятый
+SHA, затем checkout именно этого commit:
+
 ```bash
 cd digital-legal-concierge
-git pull --ff-only
+export DEPLOY_EXACT_SHA=<FULL_ACCEPTED_SHA>
+git fetch origin
+git checkout --detach "$DEPLOY_EXACT_SHA"
 bash ./test.sh
-bash ./timeweb-deploy.sh
+ALLOW_NON_MAIN_DEPLOY=true DEPLOY_EXACT_SHA="$DEPLOY_EXACT_SHA" bash ./timeweb-deploy.sh
 ```
 
 Перед заменой контейнера deploy-скрипт создаёт encrypted backup. Если production preflight
