@@ -190,6 +190,26 @@ async def test_court_stage_is_allowed_after_thirty_day_wait_expires(
     assert len(patch_transition_side_effects) == 1
 
 
+async def test_enforcement_transition_stamps_start_time_and_status(
+    patch_transition_side_effects,
+):
+    db = FakeDB()
+    case = make_case(CaseStatus.M1_PAYMENT_70000_RECEIVED)
+    case.enforcement_started_at = None
+    case.enforcement_status = None
+
+    await CaseService(db).change_status(
+        case=case,
+        next_status=CaseStatus.M1_ENFORCEMENT,
+        actor_type="system",
+        comment="Судебный платёж подтверждён",
+    )
+
+    assert case.status == CaseStatus.M1_ENFORCEMENT
+    assert case.enforcement_started_at is not None
+    assert case.enforcement_status == "STARTED"
+
+
 async def test_same_status_is_idempotent_without_duplicate_history(
     patch_transition_side_effects,
 ):
