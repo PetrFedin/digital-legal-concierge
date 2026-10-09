@@ -5,6 +5,8 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
+from app.domain.payments.payment_service import PaymentService
+from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
 
 
@@ -140,6 +142,17 @@ class EnforcementService:
                 actor_type=actor_type,
                 actor_id=actor_id,
                 comment=comment or "Фактическое поступление денег клиенту подтверждено",
+            )
+            await PaymentService(self.db).get_or_create_payment(
+                case=case,
+                payment_code=PaymentCode.M1_SUCCESS_FEE,
+            )
+            await self.cases.change_status(
+                case=case,
+                next_status=CaseStatus.M1_WAITING_SUCCESS_FEE,
+                actor_type="system",
+                actor_id=None,
+                comment="Автоматически выставлен финальный договорный платёж 10%",
             )
 
         await self.db.flush()
