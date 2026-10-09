@@ -9,8 +9,10 @@ from app.domain.cases.enforcement_service import EnforcementError, EnforcementSe
 from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
+from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models import Base
 from app.models.case import Case
+from app.models.payment import Payment
 from app.models.user import User
 
 
@@ -109,6 +111,34 @@ async def test_success_fee_fails_closed_without_actual_receipt_amount(tmp_path):
 
         with pytest.raises(ValueError, match="фактической суммы поступления"):
             await PaymentService(session).estimate_success_fee_for_case(case.id)
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_existing_success_fee_with_wrong_amount_fails_closed(tmp_path):
+    engine, factory = await database(tmp_path, "m1-stale-success-fee.db")
+    async with factory() as session:
+        case = await create_enforcement_case(session, suffix=4)
+        case.received_amount = Decimal("50000.00")
+        stale = Payment(
+            case_id=case.id,
+            payment_code=PaymentCode.M1_SUCCESS_FEE,
+            title="Success fee",
+            amount=Decimal("9999.00"),
+            currency="RUB",
+            status=PaymentStatus.PENDING,
+        )
+        session.add(stale)
+        await session.flush()
+
+        with pytest.raises(ValueError, match="не соответствует"):
+            await PaymentService(session).get_or_create_payment(
+                case=case,
+                payment_code=PaymentCode.M1_SUCCESS_FEE,
+            )
+
+        assert case.success_fee_amount is None
 
     await engine.dispose()
 
