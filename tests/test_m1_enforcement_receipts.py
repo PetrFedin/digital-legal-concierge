@@ -75,7 +75,7 @@ async def test_partial_and_final_receipts_accumulate_and_open_success_fee(tmp_pa
             actor_id=11,
             comment="Окончательное поступление подтверждено",
         )
-        assert case.status == CaseStatus.M1_MONEY_RECEIVED
+        assert case.status == CaseStatus.M1_WAITING_SUCCESS_FEE
         assert case.received_amount == Decimal("50000.50")
         assert case.received_at is not None
         assert case.enforcement_status == "MONEY_RECEIVED"
@@ -84,11 +84,14 @@ async def test_partial_and_final_receipts_accumulate_and_open_success_fee(tmp_pa
         amount = await payment_service.estimate_success_fee_for_case(case.id)
         assert amount == Decimal("5000.05")
 
-        payment = await payment_service.get_or_create_payment(
-            case=case,
-            payment_code=PaymentCode.M1_SUCCESS_FEE,
-        )
-        assert payment.amount == Decimal("5000.05")
+        payments = await payment_service.list_case_payments(case.id)
+        success_fees = [
+            item
+            for item in payments
+            if item.payment_code == PaymentCode.M1_SUCCESS_FEE
+        ]
+        assert len(success_fees) == 1
+        assert success_fees[0].amount == Decimal("5000.05")
         assert case.success_fee_amount == Decimal("5000.05")
         await session.commit()
 
@@ -133,7 +136,7 @@ async def test_receipt_rejects_invalid_amount_and_duplicate_final_event(tmp_path
             actor_type="admin",
             actor_id=7,
         )
-        assert case.status == CaseStatus.M1_MONEY_RECEIVED
+        assert case.status == CaseStatus.M1_WAITING_SUCCESS_FEE
 
         with pytest.raises(EnforcementError, match="только на этапе"):
             await service.record_receipt(
