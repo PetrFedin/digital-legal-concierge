@@ -141,11 +141,18 @@ class PaymentService:
             query = query.where(Payment.reservation_key == reservation_key)
         payment = (await self.db.execute(query)).scalars().first()
         if payment:
-            if (
-                payment_code == PaymentCode.M1_SUCCESS_FEE
-                and case.success_fee_amount is None
-            ):
-                case.success_fee_amount = payment.amount
+            if payment_code == PaymentCode.M1_SUCCESS_FEE:
+                expected_amount = (
+                    amount
+                    if amount is not None
+                    else await self.estimate_success_fee_for_case(case.id)
+                )
+                if payment.amount != expected_amount:
+                    raise ValueError(
+                        "Существующий финальный платёж не соответствует "
+                        "фактической сумме поступления клиенту"
+                    )
+                case.success_fee_amount = expected_amount
                 await self.db.flush()
             return payment
 
