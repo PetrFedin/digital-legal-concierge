@@ -42,7 +42,7 @@ def test_lawyer_ui_exposes_assigned_cases_and_locks_each_case_action():
     assert "pendingCases.delete(id)" in compact
     assert "data-expected-status=" in LAWYER_HTML
     assert "data-expected-updated-at=" in LAWYER_HTML
-    assert compact.count("data-case-id=") >= 3
+    assert 'constattrs=`data-case-id="${x.case_id}"' in compact
     assert "acceptCase(${x.case_id},this)" in LAWYER_HTML
     assert "requestDocuments(${x.case_id},this)" in LAWYER_HTML
     assert "transferToM2(${x.case_id},this)" in LAWYER_HTML
