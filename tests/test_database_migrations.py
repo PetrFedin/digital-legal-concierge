@@ -5,7 +5,7 @@ from pathlib import Path
 
 from app.db.migrations import run_database_migrations
 
-HEAD_REVISION = "20260806_0013"
+HEAD_REVISION = "20261006_0014"
 RETENTION_TRIGGER = "trg_retention_destroy_document_keys"
 MESSAGE_SOURCE_INDEX = "uq_messages_sender_source_message"
 DOCUMENT_REVIEW_STARTED_INDEX = "ix_documents_review_started_at"
@@ -88,6 +88,12 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "escalation_level",
         "closed_at",
         "content_deleted_at",
+        "enforcement_number",
+        "enforcement_status",
+        "enforcement_started_at",
+        "received_amount",
+        "received_at",
+        "success_fee_amount",
     }.issubset(column_names(database_path, "cases"))
     assert {
         "sha256",
@@ -106,6 +112,14 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "encrypted_at",
         "review_started_at",
     }.issubset(column_names(database_path, "documents"))
+    assert {
+        "enforcement_number",
+        "enforcement_status",
+        "enforcement_started_at",
+        "received_amount",
+        "received_at",
+        "success_fee_amount",
+    }.issubset(column_names(database_path, "cases"))
     assert "source_message_id" in column_names(database_path, "messages")
     assert MESSAGE_SOURCE_INDEX in index_names(database_path, "messages")
     assert {

@@ -11,8 +11,10 @@ from app.api.lawyer import (
     assigned_case,
     assert_case_snapshot,
     lawyer_cases,
+    record_enforcement_receipt,
     request_docs,
     transfer_to_m2,
+    update_enforcement,
 )
 
 
@@ -40,10 +42,13 @@ def test_lawyer_ui_exposes_assigned_cases_and_locks_each_case_action():
     assert "pendingCases.delete(id)" in compact
     assert "data-expected-status=" in LAWYER_HTML
     assert "data-expected-updated-at=" in LAWYER_HTML
-    assert compact.count("data-case-id=") >= 3
+    assert 'constattrs=`data-case-id="${x.case_id}"' in compact
     assert "acceptCase(${x.case_id},this)" in LAWYER_HTML
     assert "requestDocuments(${x.case_id},this)" in LAWYER_HTML
     assert "transferToM2(${x.case_id},this)" in LAWYER_HTML
+    assert "updateEnforcement(${x.case_id},this)" in LAWYER_HTML
+    assert "recordReceipt(${x.case_id},this,false)" in LAWYER_HTML
+    assert "recordReceipt(${x.case_id},this,true)" in LAWYER_HTML
 
 
 @pytest.mark.parametrize(
@@ -106,6 +111,9 @@ def test_case_reads_are_personal_and_action_availability_matches_transition_poli
     assert "CaseStatus.M1_DOCUMENTS_PENDING" in source
     assert "CaseStatus.M1_DOCS_REQUESTED" in source
     assert '"updated_at"' in source
+    assert '"can_update_enforcement"' in source
+    assert '"can_record_money_received"' in source
+    assert '"received_amount"' in source
 
 
 def test_assigned_case_supports_row_lock_before_assignment_check():
@@ -125,7 +133,16 @@ def test_snapshot_rejects_changed_status_or_row_version():
     assert "case.updated_at.isoformat()" in source
 
 
-@pytest.mark.parametrize("endpoint", (accept, request_docs, transfer_to_m2))
+@pytest.mark.parametrize(
+    "endpoint",
+    (
+        accept,
+        request_docs,
+        transfer_to_m2,
+        update_enforcement,
+        record_enforcement_receipt,
+    ),
+)
 def test_case_action_endpoints_lock_recheck_and_rollback_every_failure(endpoint):
     source = inspect.getsource(endpoint)
     compact = _compact(source)
@@ -137,6 +154,25 @@ def test_case_action_endpoints_lock_recheck_and_rollback_every_failure(endpoint)
     assert "except HTTPException" in source
     assert "except Exception" in source
     assert source.count("await db.rollback()") >= 3
+
+
+def test_enforcement_ui_requires_confirmation_snapshot_and_explicit_finality():
+    update = _action_function("updateEnforcement")
+    receipt = _action_function("recordReceipt")
+    compact_update = _compact(update)
+    compact_receipt = _compact(receipt)
+
+    assert "/enforcement" in update
+    assert "expected_status:expectedStatus" in compact_update
+    assert "expected_updated_at:expectedUpdatedAt" in compact_update
+    assert "confirm(" in update
+
+    assert "/enforcement/receipt" in receipt
+    assert "expected_status:expectedStatus" in compact_receipt
+    assert "expected_updated_at:expectedUpdatedAt" in compact_receipt
+    assert "final:final" in compact_receipt
+    assert "Сумма этого поступления" in receipt
+    assert "confirm(" in receipt
 
 
 def test_lawyer_transport_and_reload_are_observable_and_non_cached():

@@ -9,6 +9,8 @@ from app.domain.cases.assignment_service import CaseAssignmentService
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
 from app.domain.cases.case_transition_policy import CaseTransitionError
+from app.domain.cases.enforcement_service import EnforcementError, EnforcementService
+from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.payments.payment_webhook_service import PaymentWebhookService
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
@@ -368,6 +370,22 @@ async def case_detail(
             "status": case.status,
             "next_action": case.next_action,
             "lawyer_id": case.assigned_lawyer_id,
+            "enforcement_number": case.enforcement_number,
+            "enforcement_status": case.enforcement_status,
+            "enforcement_started_at": (
+                case.enforcement_started_at.isoformat()
+                if case.enforcement_started_at
+                else None
+            ),
+            "received_amount": (
+                str(case.received_amount) if case.received_amount is not None else None
+            ),
+            "received_at": case.received_at.isoformat() if case.received_at else None,
+            "success_fee_amount": (
+                str(case.success_fee_amount)
+                if case.success_fee_amount is not None
+                else None
+            ),
             "updated_at": case.updated_at.isoformat(),
         },
         "client": (
@@ -461,6 +479,79 @@ async def manual_status(
         "status": case.status,
         "route": case.route,
         "next_action": case.next_action,
+    }
+
+
+@router.post("/cases/{case_id}/enforcement/receipt")
+async def admin_record_enforcement_receipt(
+    case_id: int,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    actor = require_admin(x_admin_token)
+    final = payload.get("final") is True
+    try:
+        case = (
+            await db.execute(
+                select(Case).where(Case.id == case_id).with_for_update()
+            )
+        ).scalar_one_or_none()
+        if not case:
+            raise HTTPException(status_code=404, detail="case not found")
+        expected_status = payload.get("expected_status")
+        if expected_status is not None and str(case.status) != str(expected_status):
+            raise HTTPException(
+                status_code=409,
+                detail="Статус дела изменился после загрузки экрана. Обновите карточку",
+            )
+        expected_updated_at = payload.get("expected_updated_at")
+        if (
+            expected_updated_at is not None
+            and case.updated_at.isoformat() != str(expected_updated_at)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Дело изменилось после загрузки экрана. Обновите карточку",
+            )
+        source_version = case.updated_at.isoformat()
+        await EnforcementService(db).record_receipt(
+            case=case,
+            amount=payload.get("amount"),
+            final=final,
+            actor_type="admin",
+            actor_id=actor_id_from_token(actor),
+            comment=str(payload.get("comment") or "").strip() or None,
+        )
+        if final:
+            await NotificationEngine(db).emit(
+                event_code="M1_MONEY_RECEIVED",
+                case_id=case.id,
+                payload={
+                    "case_number": case.case_number,
+                    "amount": str(case.received_amount),
+                },
+                dedupe_key=f"case:{case.id}:money-received:{source_version}",
+            )
+        await db.commit()
+        await db.refresh(case)
+    except HTTPException:
+        await db.rollback()
+        raise
+    except (EnforcementError, ValueError) as error:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except Exception:
+        await db.rollback()
+        raise
+    return {
+        "ok": True,
+        "case_id": case.id,
+        "status": case.status,
+        "received_amount": str(case.received_amount),
+        "received_at": case.received_at.isoformat() if case.received_at else None,
+        "final": final,
+        "updated_at": case.updated_at.isoformat(),
     }
 
 

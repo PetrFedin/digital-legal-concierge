@@ -256,6 +256,34 @@ async def test_external_waiting_status_pauses_sla(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_money_received_pauses_lawyer_sla_for_client_final_payment(tmp_path):
+    engine, factory = await create_database(tmp_path, "sla-money-received.db")
+    async with factory() as session:
+        context = await create_context(session, suffix=55)
+        case = await CaseAssignmentService(session).assign_case(
+            case_id=context["case"].id,
+            lawyer_id=context["lawyer"].id,
+            actor_type="admin",
+            actor_id=context["admin"].id,
+        )
+        await session.commit()
+
+        case.status = "M1_MONEY_RECEIVED"
+        case = await CaseSLAService(session).record_lawyer_activity(
+            case=case,
+            lawyer_id=context["lawyer"].id,
+            action="M1_MONEY_RECEIVED",
+            comment="Поступление подтверждено, ожидается финальный платёж клиента",
+        )
+        await session.commit()
+
+        assert case.sla_status == SLA_PAUSED
+        assert case.sla_due_at is None
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_scheduler_escalates_and_deduplicates_until_next_deadline(tmp_path):
     engine, factory = await create_database(tmp_path, "sla-escalation.db")
     async with factory() as session:

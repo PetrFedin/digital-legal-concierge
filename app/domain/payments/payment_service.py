@@ -141,6 +141,19 @@ class PaymentService:
             query = query.where(Payment.reservation_key == reservation_key)
         payment = (await self.db.execute(query)).scalars().first()
         if payment:
+            if payment_code == PaymentCode.M1_SUCCESS_FEE:
+                expected_amount = (
+                    amount
+                    if amount is not None
+                    else await self.estimate_success_fee_for_case(case.id)
+                )
+                if payment.amount != expected_amount:
+                    raise ValueError(
+                        "Существующий финальный платёж не соответствует "
+                        "фактической сумме поступления клиенту"
+                    )
+                case.success_fee_amount = expected_amount
+                await self.db.flush()
             return payment
 
         final_amount = amount
@@ -149,6 +162,9 @@ class PaymentService:
                 final_amount = await self.estimate_success_fee_for_case(case.id)
             else:
                 final_amount = await self.amount_for_code(payment_code)
+
+        if payment_code == PaymentCode.M1_SUCCESS_FEE:
+            case.success_fee_amount = final_amount
 
         payment = Payment(
             case_id=case.id,
@@ -177,23 +193,22 @@ class PaymentService:
         return payment
 
     async def estimate_success_fee_for_case(self, case_id: int):
-        from app.models.calculation import Calculation
-
         settings = SettingsService(self.db)
         percent = Decimal(
             str(await settings.get_value("payments.m1_success_fee_percent"))
         )
-        result = await self.db.execute(
-            select(Calculation).where(Calculation.case_id == case_id)
-        )
-        calculation = result.scalars().first()
-        base = (
-            calculation.penalty_amount
-            if calculation and calculation.penalty_amount
-            else Decimal("0")
-        )
+        case = await self.db.get(Case, case_id)
+        if not case:
+            raise ValueError("Дело не найдено")
+        base = Decimal(str(case.received_amount or "0"))
+        if base <= 0:
+            raise ValueError(
+                "Финальный платёж нельзя рассчитать без фактической суммы поступления клиенту"
+            )
         amount = (base * percent / Decimal("100")).quantize(Decimal("0.01"))
-        return amount if amount > 0 else Decimal("1.00")
+        if amount <= 0:
+            raise ValueError("Рассчитанный финальный платёж должен быть больше нуля")
+        return amount
 
     async def create_payment_link(self, payment: Payment):
         if not payment.payment_url:

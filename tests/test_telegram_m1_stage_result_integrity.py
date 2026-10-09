@@ -125,6 +125,17 @@ def test_disabled_payment_mode_never_offers_online_m1_payment_cta():
     assert "Онлайн-оплата сейчас отключена" in success_source
 
 
+def test_success_fee_is_derived_from_actual_receipt_before_status_change():
+    source = inspect.getsource(m1_stages.pay_success_fee)
+
+    estimate = source.index("estimate_success_fee_for_case")
+    transition = source.index("next_status=CaseStatus.M1_WAITING_SUCCESS_FEE")
+    assert estimate < transition
+    assert "existing.amount != amount" in source
+    assert "фактическому поступлению" in source
+    assert "case.success_fee_amount = amount" in source
+
+
 def test_success_fee_uses_shared_readable_payment_ui_after_commit():
     source = inspect.getsource(m1_stages.pay_success_fee)
     commit = source.index("await db.commit()")

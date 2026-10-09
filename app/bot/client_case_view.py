@@ -62,6 +62,7 @@ class ClientCaseView:
     calculation_summary: str
     consultation_summary: str
     payments_summary: str | None
+    enforcement_summary: str | None
     updated_at: datetime | None
     unread_team_messages: int = 0
     latest_team_message_at: datetime | None = None
@@ -352,6 +353,31 @@ def _consultation_summary(consultation: Consultation | None) -> str:
     return f"{status_label} · {scheduled}" if scheduled else status_label
 
 
+def _enforcement_summary(case) -> str | None:
+    if not any(
+        (
+            getattr(case, "enforcement_started_at", None),
+            getattr(case, "enforcement_number", None),
+            getattr(case, "received_amount", None),
+        )
+    ):
+        return None
+
+    status_label = {
+        "STARTED": "Исполнение начато",
+        "PARTIAL_PAYMENT": "Есть частичное поступление",
+        "MONEY_RECEIVED": "Поступление подтверждено",
+    }.get(str(getattr(case, "enforcement_status", "") or "").strip().upper())
+    parts: list[str] = []
+    if status_label:
+        parts.append(status_label)
+    if getattr(case, "enforcement_number", None):
+        parts.append(f"ИП № {case.enforcement_number}")
+    if getattr(case, "received_amount", None) is not None:
+        parts.append(f"поступило {money(case.received_amount)}")
+    return " · ".join(parts) if parts else "Исполнительный этап активен"
+
+
 def _calculation_summary(case, calculation: Calculation | None) -> str:
     if str(case.route or "") == "M2":
         return "Не требуется для консультации"
@@ -501,6 +527,7 @@ async def load_client_case_view(
         calculation_summary=_calculation_summary(case, calculation),
         consultation_summary=_consultation_summary(consultation),
         payments_summary=payments_summary,
+        enforcement_summary=_enforcement_summary(case),
         updated_at=updated_at,
         unread_team_messages=unread_team_messages,
         latest_team_message_at=latest_team_message_at,

@@ -133,6 +133,13 @@ class CaseService:
         }
         case.status = destination
         now = datetime.now(timezone.utc)
+        if (
+            destination == CaseStatus.M1_ENFORCEMENT
+            and getattr(case, "enforcement_started_at", None) is None
+        ):
+            case.enforcement_started_at = now
+            if not getattr(case, "enforcement_status", None):
+                case.enforcement_status = "STARTED"
         if destination in TERMINAL_STATUSES:
             if case.closed_at is None:
                 case.closed_at = now
