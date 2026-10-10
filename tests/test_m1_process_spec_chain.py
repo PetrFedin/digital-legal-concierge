@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import app.domain.cases.m1_process_service as m1_process_module
 from app.domain.cases.m1_process_service import M1ProcessError, M1ProcessService
 from app.domain.payments import payment_webhook_service
 from app.domain.payments.payment_types import PaymentCode
@@ -12,6 +13,12 @@ from app.domain.statuses.case_statuses import CaseStatus
 
 
 class FakeDB:
+    def __init__(self):
+        self.added = []
+
+    def add(self, value):
+        self.added.append(value)
+
     async def flush(self):
         return None
 
@@ -73,6 +80,9 @@ async def test_claim_action_opens_explicit_thirty_day_wait():
         CaseStatus.M1_WAITING_30_DAYS,
     ]
     assert case.status == CaseStatus.M1_WAITING_30_DAYS
+    assert case.claim_sent_at is not None
+    assert case.claim_waiting_until is not None
+    assert case.developer_response_status == "WAITING"
 
 
 @pytest.mark.asyncio
@@ -96,6 +106,50 @@ async def test_court_decision_is_required_before_second_payment_stage():
     ]
     assert service.payments.created == [str(PaymentCode.M1_COURT_PAYMENT)]
     assert service.notifications.events == ["M1_COURT_DECISION_RECEIVED"]
+
+
+@pytest.mark.asyncio
+async def test_structured_court_decision_stores_event_and_opens_payment(monkeypatch):
+    history = []
+
+    async def fake_history(_db, **kwargs):
+        history.append(kwargs)
+
+    monkeypatch.setattr(m1_process_module, "add_case_history_event", fake_history)
+    service = service_with_fakes()
+    case = SimpleNamespace(
+        id=22,
+        case_number="DLC-22",
+        status=CaseStatus.M1_LAWSUIT_FILED,
+        decision_date=None,
+    )
+
+    event = await service.record_court_event(
+        case=case,
+        lawyer_id=7,
+        event_type="decision",
+        event_date="2026-10-20T10:30:00+00:00",
+        court_name="Арбитражный суд",
+        court_number="A40-12345/2026",
+        result="Внутренняя юридическая оценка результата",
+        client_comment="Решение суда получено.",
+    )
+
+    assert event.event_type == "decision"
+    assert event.court_number == "A40-12345/2026"
+    assert [status for status, _ in service.cases.transitions] == [
+        CaseStatus.M1_COURT_STAGE,
+        CaseStatus.M1_DECISION_RECEIVED,
+        CaseStatus.M1_WAITING_PAYMENT_70000,
+    ]
+    assert service.payments.created == [str(PaymentCode.M1_COURT_PAYMENT)]
+    assert service.notifications.events == [
+        "COURT_STAGE_STARTED",
+        "M1_COURT_DECISION_RECEIVED",
+    ]
+    assert history[0]["action"] == "COURT_EVENT_ADDED"
+    assert history[0]["new_value"]["client_comment"] == "Решение суда получено."
+    assert "Внутренняя юридическая оценка" not in str(history[0]["new_value"])
 
 
 @pytest.mark.asyncio
