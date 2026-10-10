@@ -90,9 +90,10 @@ def _history_buttons(page: dict[str, object], *, cursor: int | None, read_only: 
         )
     if cursor is not None:
         buttons.append(("⬆️ К последним событиям", "case_history_open"))
+    if not read_only:
+        buttons.append(("✉️ Задать вопрос по делу", "message_create"))
     buttons.extend(
         [
-            ("✉️ Задать вопрос по делу", "message_create"),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         ]
