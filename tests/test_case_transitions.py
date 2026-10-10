@@ -315,6 +315,7 @@ async def test_terminal_transition_sets_closed_at_and_forced_reopen_clears_it(
 ):
     db = FakeDB()
     case = make_case(CaseStatus.M1_SUCCESS_FEE_RECEIVED)
+    case.closure_reason = "Финальное закрытие подтверждено"
 
     await CaseService(db).change_status(
         case=case,
@@ -335,6 +336,7 @@ async def test_terminal_transition_sets_closed_at_and_forced_reopen_clears_it(
     )
     assert first_closed_at is not None
     assert case.closed_at is None
+    assert case.closure_reason is None
 
 
 @pytest.mark.asyncio
