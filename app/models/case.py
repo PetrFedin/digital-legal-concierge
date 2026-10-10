@@ -123,6 +123,11 @@ class Case(Base, TimestampMixin):
         back_populates="case",
         foreign_keys="Consultation.case_id",
     )
+    court_events = relationship(
+        "CourtEvent",
+        back_populates="case",
+        order_by="CourtEvent.event_date",
+    )
     messages = relationship("Message", back_populates="case")
     notifications = relationship("Notification", back_populates="case")
     retention_record = relationship(
