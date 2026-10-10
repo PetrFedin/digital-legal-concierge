@@ -124,17 +124,23 @@ async def _render_history(
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     case = await ctx.case_service.get_active_case_for_user(user.id)
+    read_only = False
     if not case:
-        await _safe_edit(
-            callback,
-            "🕘 История дела\n\nАктивного дела нет. Создайте обращение или вернитесь на главную.",
-            reply_markup=one(
-                ("🧮 Рассчитать неустойку", "calc_start"),
-                ("💬 Связаться с юристом", "contact_lawyer"),
-                ("🏠 Главная", "nav_home"),
-            ),
-        )
-        return
+        latest = await ctx.case_service.get_latest_case_for_user(user.id)
+        if latest and str(latest.status) in {"M1_CLOSED", "M2_CLOSED", "ARCHIVED"}:
+            case = latest
+            read_only = True
+        else:
+            await _safe_edit(
+                callback,
+                "🕘 История дела\n\nАктивного дела нет. Создайте обращение или вернитесь на главную.",
+                reply_markup=one(
+                    ("🧮 Рассчитать неустойку", "calc_start"),
+                    ("💬 Связаться с юристом", "contact_lawyer"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+            )
+            return
 
     try:
         page = await CaseActivityService(db).page(
@@ -166,7 +172,7 @@ async def _render_history(
     await _safe_edit(
         callback,
         _format_timeline(page),
-        reply_markup=_history_buttons(page, cursor=cursor),
+        reply_markup=_history_buttons(page, cursor=cursor, read_only=read_only),
     )
 
 
