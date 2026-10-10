@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.domain.cases.enforcement_service import EnforcementError, EnforcementService
+from app.domain.cases.m1_process_service import M1ProcessError, M1ProcessService
 from app.domain.cases.sla_service import CaseSLAError, CaseSLAService
 from app.domain.consultations.outcome_service import (
     ConsultationOutcomeError,
@@ -139,9 +140,107 @@ async def lawyer_cases(
             ),
             "can_update_enforcement": case.status == CaseStatus.M1_ENFORCEMENT,
             "can_record_money_received": case.status == CaseStatus.M1_ENFORCEMENT,
+            "can_send_claim": case.status in {
+                CaseStatus.M1_POA_RECEIVED,
+                CaseStatus.M1_CLAIM_PREPARATION,
+            },
+            "can_start_lawsuit": case.status == CaseStatus.M1_WAITING_30_DAYS,
+            "can_file_lawsuit": case.status == CaseStatus.M1_LAWSUIT_PREPARATION,
+            "can_start_court": case.status == CaseStatus.M1_LAWSUIT_FILED,
+            "can_record_court_decision": case.status == CaseStatus.M1_COURT_STAGE,
+            "can_close_after_success_fee": (
+                case.status == CaseStatus.M1_SUCCESS_FEE_RECEIVED
+            ),
+            "can_close_review": case.status in {
+                CaseStatus.M1_LAWYER_REVIEW,
+                CaseStatus.M1_DOCS_REQUESTED,
+            },
         }
         for case, user in rows
     ]
+
+
+@router.post("/cases/{case_id}/m1-process")
+async def advance_m1_process(
+    case_id: int,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    actor = await require_lawyer_actor(db, x_admin_token)
+    action = str(payload.get("action") or "").strip()
+    comment = str(payload.get("comment") or "").strip()
+    expected_status = payload.get("expected_status")
+    expected_updated_at = payload.get("expected_updated_at")
+    service = M1ProcessService(db)
+    handlers = {
+        "claim_sent": service.mark_claim_sent,
+        "lawsuit_preparation": service.start_lawsuit_preparation,
+        "lawsuit_filed": service.mark_lawsuit_filed,
+        "court_started": service.start_court_stage,
+        "court_decision": service.record_court_decision,
+        "close_success": service.close_after_success_fee,
+        "close_review": service.close_from_review,
+    }
+    if action not in handlers:
+        raise HTTPException(status_code=400, detail="Неизвестное действие M1")
+    try:
+        case = await assigned_case(
+            db,
+            case_id,
+            actor.lawyer.id,
+            for_update=True,
+        )
+        assert_case_snapshot(
+            case,
+            expected_status=expected_status,
+            expected_updated_at=expected_updated_at,
+        )
+        if action == "close_success":
+            await service.close_after_success_fee(
+                case=case,
+                actor_type="lawyer",
+                actor_id=actor.lawyer.id,
+                reason=comment,
+            )
+        elif action == "close_review":
+            await service.close_from_review(
+                case=case,
+                lawyer_id=actor.lawyer.id,
+                reason=comment,
+            )
+        else:
+            await handlers[action](
+                case=case,
+                lawyer_id=actor.lawyer.id,
+                comment=comment,
+            )
+        await CaseSLAService(db).record_lawyer_activity(
+            case=case,
+            lawyer_id=actor.lawyer.id,
+            action=f"M1_PROCESS_{action.upper()}",
+            comment=comment,
+        )
+        await db.commit()
+        await db.refresh(case)
+    except HTTPException:
+        await db.rollback()
+        raise
+    except (M1ProcessError, CaseSLAError, ValueError) as error:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except Exception:
+        await db.rollback()
+        raise
+    return {
+        "ok": True,
+        "case_id": case.id,
+        "status": case.status,
+        "route": case.route,
+        "next_action": case.next_action,
+        "closure_reason": case.closure_reason,
+        "updated_at": case.updated_at.isoformat(),
+    }
 
 
 @router.post("/cases/{case_id}/enforcement")
@@ -675,7 +774,7 @@ function slaClass(v){return String(v||'').includes('OVERDUE')?'badge overdue':'b
 function decisionOptions(id){return `<select data-consultation-id="${id}" id="decision_${id}"><option value="">Выберите итоговое решение</option><option value="close">Закрыть обращение</option><option value="to_m1">Перевести в маршрут М1</option><option value="follow_up">Нужна следующая консультация</option><option value="other">Иное решение</option></select>`}
 function decisionLabel(value){return {close:'закрыть обращение',to_m1:'перевести дело в маршрут М1',follow_up:'назначить следующую консультацию',other:'зафиксировать иное решение'}[value]||value}
 function enforcementSummary(x){if(!x.enforcement_started_at&&!x.enforcement_number&&!x.received_amount)return'';const parts=[];if(x.enforcement_number)parts.push('ИП '+esc(x.enforcement_number));if(x.enforcement_status)parts.push(esc(x.enforcement_status));if(x.received_amount)parts.push('поступило '+esc(x.received_amount)+' ₽');return `<div class="muted">${parts.join(' · ')}</div>`}
-function caseActions(x){const items=[];const attrs=`data-case-id="${x.case_id}" data-expected-status="${esc(x.status)}" data-expected-updated-at="${esc(x.updated_at)}"`;if(x.can_accept)items.push(`<button ${attrs} class="green" onclick="acceptCase(${x.case_id},this)">Принять дело</button>`);if(x.can_request_documents)items.push(`<button ${attrs} class="amber" onclick="requestDocuments(${x.case_id},this)">Запросить документы</button>`);if(x.can_transfer_to_m2)items.push(`<button ${attrs} class="red" onclick="transferToM2(${x.case_id},this)">Перевести в консультацию</button>`);if(x.can_update_enforcement)items.push(`<button ${attrs} onclick="updateEnforcement(${x.case_id},this)">Данные ИП</button>`);if(x.can_record_money_received){items.push(`<button ${attrs} class="amber" onclick="recordReceipt(${x.case_id},this,false)">Частичное поступление</button>`);items.push(`<button ${attrs} class="green" onclick="recordReceipt(${x.case_id},this,true)">Деньги поступили</button>`)}return items.join('')||'—'}
+function caseActions(x){const items=[];const attrs=`data-case-id="${x.case_id}" data-expected-status="${esc(x.status)}" data-expected-updated-at="${esc(x.updated_at)}"`;if(x.can_accept)items.push(`<button ${attrs} class="green" onclick="acceptCase(${x.case_id},this)">Принять дело</button>`);if(x.can_request_documents)items.push(`<button ${attrs} class="amber" onclick="requestDocuments(${x.case_id},this)">Запросить документы</button>`);if(x.can_transfer_to_m2)items.push(`<button ${attrs} onclick="transferToM2(${x.case_id},this)">Перевести в консультацию</button>`);if(x.can_close_review)items.push(`<button ${attrs} class="red" onclick="m1Process(${x.case_id},this,'close_review','Закрыть обращение',10)">Закрыть обращение</button>`);if(x.can_send_claim)items.push(`<button ${attrs} onclick="m1Process(${x.case_id},this,'claim_sent','Претензия направлена',5)">Претензия направлена</button>`);if(x.can_start_lawsuit)items.push(`<button ${attrs} onclick="m1Process(${x.case_id},this,'lawsuit_preparation','Начать подготовку иска',5)">Готовить иск</button>`);if(x.can_file_lawsuit)items.push(`<button ${attrs} onclick="m1Process(${x.case_id},this,'lawsuit_filed','Иск подан',5)">Иск подан</button>`);if(x.can_start_court)items.push(`<button ${attrs} onclick="m1Process(${x.case_id},this,'court_started','Открыть судебный этап',5)">Судебный этап</button>`);if(x.can_record_court_decision)items.push(`<button ${attrs} class="green" onclick="m1Process(${x.case_id},this,'court_decision','Решение суда получено',10)">Решение суда</button>`);if(x.can_update_enforcement)items.push(`<button ${attrs} onclick="updateEnforcement(${x.case_id},this)">Данные ИП</button>`);if(x.can_record_money_received){items.push(`<button ${attrs} class="amber" onclick="recordReceipt(${x.case_id},this,false)">Частичное поступление</button>`);items.push(`<button ${attrs} class="green" onclick="recordReceipt(${x.case_id},this,true)">Деньги поступили</button>`)}if(x.can_close_after_success_fee)items.push(`<button ${attrs} class="green" onclick="m1Process(${x.case_id},this,'close_success','Закрыть дело',10)">Закрыть дело</button>`);return items.join('')||'—'}
 async function boot(){const r=await fetch('/auth/session',{credentials:'same-origin',cache:'no-store'});if(!r.ok){location.href='/login';return}const s=await r.json();if(!(s.roles||[s.role]).includes('lawyer')){casesContent.innerHTML='Недостаточно прав: требуется роль юриста.';consultationsContent.innerHTML='';return}token=s.api_token;try{await load()}catch(e){feedback(e.message,'bad')}}
 async function load(){if(loadController)loadController.abort();const controller=new AbortController();loadController=controller;casesContent.innerHTML='Загрузка…';consultationsContent.innerHTML='Загрузка…';try{await Promise.all([loadCases(controller),loadConsultations(controller)])}catch(e){if(e.name!=='AbortError')throw e}finally{if(loadController===controller)loadController=null}}
 async function loadCases(controller){const rows=await api('/lawyer/cases',{signal:controller.signal});casesContent.innerHTML=rows.length?`<table><tr><th>Дело / клиент</th><th>Маршрут</th><th>Статус / SLA</th><th>Следующее действие</th><th>Решение</th></tr>${rows.map(x=>`<tr><td><b>${esc(x.case_number)}</b><br>${esc(x.client_name)}<br><span class="muted">TG ${esc(x.telegram_id)} · обновлено ${esc(dt(x.updated_at))}</span></td><td>${esc(x.route||'—')}</td><td><span class="badge">${esc(x.status)}</span><br><span class="${slaClass(x.sla_status)}">${esc(x.sla_status||'NOT_STARTED')}</span><br><span class="muted">до ${esc(dt(x.sla_due_at))}<br>эскалация ${esc(x.escalation_level)}</span></td><td>${esc(x.next_action||'—')}${enforcementSummary(x)}</td><td><div class="actions">${caseActions(x)}</div></td></tr>`).join('')}</table>`:'Назначенных активных дел нет.'}
@@ -684,6 +783,7 @@ async function acceptCase(id,button){const expectedStatus=button.dataset.expecte
 async function requestDocuments(id,button){const expectedStatus=button.dataset.expectedStatus||'',expectedUpdatedAt=button.dataset.expectedUpdatedAt||'';const comment=prompt('Перечислите недостающие документы (минимум 5 символов):');if(comment===null)return;if(comment.trim().length<5){feedback('Комментарий должен содержать не менее 5 символов','bad');return}if(!confirm(`Запросить дополнительные документы по делу #${id}? Клиент получит новое следующее действие.`))return;return withCaseAction(id,button,async()=>{try{const response=await api('/lawyer/cases/'+id+'/request-documents',{method:'POST',body:JSON.stringify({comment:comment.trim(),expected_status:expectedStatus,expected_updated_at:expectedUpdatedAt})});feedback(`Запрос документов по делу #${response.case_id} сохранён`,'ok');try{await load()}catch(e){feedback(`Запрос сохранён, но список не обновился: ${e.message}`,'warn')}}catch(e){feedback(`Запрос документов по делу #${id} не сохранён: ${e.message}`,'bad')}})}
 async function transferToM2(id,button){const expectedStatus=button.dataset.expectedStatus||'',expectedUpdatedAt=button.dataset.expectedUpdatedAt||'';const reason=prompt('Укажите причину перевода в консультационный маршрут (минимум 10 символов):');if(reason===null)return;if(reason.trim().length<10){feedback('Причина должна содержать не менее 10 символов','bad');return}if(!confirm(`Перевести дело #${id} из полного сопровождения M1 в консультационный маршрут M2? Действие изменит клиентский сценарий.`))return;return withCaseAction(id,button,async()=>{try{const response=await api('/lawyer/cases/'+id+'/transfer-to-m2',{method:'POST',body:JSON.stringify({reason:reason.trim(),expected_status:expectedStatus,expected_updated_at:expectedUpdatedAt})});feedback(`Дело #${response.case_id} переведено в маршрут ${response.route}: ${response.status}`,'ok');try{await load()}catch(e){feedback(`Перевод сохранён, но список не обновился: ${e.message}`,'warn')}}catch(e){feedback(`Дело #${id} не переведено: ${e.message}`,'bad')}})}
 
+async function m1Process(id,button,action,label,minLength){const expectedStatus=button.dataset.expectedStatus||'',expectedUpdatedAt=button.dataset.expectedUpdatedAt||'';const comment=prompt(label+': укажите основание/детали действия:');if(comment===null)return;if(comment.trim().length<minLength){feedback('Комментарий должен содержать не менее '+minLength+' символов','bad');return}if(!confirm(label+' по делу #'+id+'?'))return;return withCaseAction(id,button,async()=>{try{const response=await api('/lawyer/cases/'+id+'/m1-process',{method:'POST',body:JSON.stringify({action:action,comment:comment.trim(),expected_status:expectedStatus,expected_updated_at:expectedUpdatedAt})});feedback('Дело #'+response.case_id+': '+response.status,'ok');try{await load()}catch(e){feedback('Действие сохранено, но список не обновился: '+e.message,'warn')}}catch(e){feedback(label+' не выполнено: '+e.message,'bad')}})}
 async function updateEnforcement(id,button){const expectedStatus=button.dataset.expectedStatus||'',expectedUpdatedAt=button.dataset.expectedUpdatedAt||'';const number=prompt('Номер исполнительного производства (можно оставить пустым, если номера ещё нет):');if(number===null)return;const status=prompt('Текущий статус исполнительного производства:');if(status===null)return;if(!number.trim()&&!status.trim()){feedback('Укажите номер ИП или статус исполнения','bad');return}const comment=prompt('Комментарий к обновлению (необязательно):')||'';if(!confirm(`Сохранить данные исполнительного производства по делу #${id}?`))return;return withCaseAction(id,button,async()=>{try{const response=await api('/lawyer/cases/'+id+'/enforcement',{method:'POST',body:JSON.stringify({enforcement_number:number.trim(),enforcement_status:status.trim(),comment:comment.trim(),expected_status:expectedStatus,expected_updated_at:expectedUpdatedAt})});feedback(`Исполнительное производство по делу #${response.case_id} обновлено`,'ok');try{await load()}catch(e){feedback(`Данные ИП сохранены, но список не обновился: ${e.message}`,'warn')}}catch(e){feedback(`Данные ИП по делу #${id} не сохранены: ${e.message}`,'bad')}})}
 async function recordReceipt(id,button,final){const expectedStatus=button.dataset.expectedStatus||'',expectedUpdatedAt=button.dataset.expectedUpdatedAt||'';const raw=prompt(final?'Сумма последнего поступления клиенту, ₽:':'Сумма частичного поступления клиенту, ₽:');if(raw===null)return;const normalized=raw.trim().replace(',','.');const amount=Number(normalized);if(!Number.isFinite(amount)||amount<=0){feedback('Укажите сумму поступления больше нуля','bad');return}const comment=prompt('Комментарий/основание поступления (необязательно):')||'';const action=final?'зафиксировать окончательное поступление и открыть финальный платёж 10%':'зафиксировать частичное поступление без смены этапа';if(!confirm(`По делу #${id}: ${action}. Сумма этого поступления ${normalized} ₽?`))return;return withCaseAction(id,button,async()=>{try{const response=await api('/lawyer/cases/'+id+'/enforcement/receipt',{method:'POST',body:JSON.stringify({amount:normalized,final:final,comment:comment.trim(),expected_status:expectedStatus,expected_updated_at:expectedUpdatedAt})});feedback(`Поступление по делу #${response.case_id} сохранено. Всего: ${response.received_amount} ₽`,'ok');try{await load()}catch(e){feedback(`Поступление сохранено, но список не обновился: ${e.message}`,'warn')}}catch(e){feedback(`Поступление по делу #${id} не сохранено: ${e.message}`,'bad')}})}
 
