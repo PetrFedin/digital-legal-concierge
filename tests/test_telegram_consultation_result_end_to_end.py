@@ -123,6 +123,36 @@ def test_my_case_detects_terminal_consultation_even_with_scheduled_time():
     assert ("🔄 Обновить статус", "my_case_open") not in buttons
 
 
+def test_pending_m2_to_m1_requires_explicit_client_confirmation():
+    from app.bot.client_case_view import CLIENT_ACTIONS
+    from app.bot.screens.consultation_results import (
+        _result_buttons,
+        m2_to_m1_continue,
+    )
+
+    consultation = Consultation(
+        case_id=1,
+        status=ConsultationStatus.DONE,
+        decision="to_m1",
+        lawyer_result="Юрист рекомендует продолжить стандартное взыскание.",
+    )
+    view = consultation_result_view(consultation)
+    case = Case(
+        case_number="M2-PENDING-CONFIRMATION",
+        client_id=1,
+        route="M2",
+        status=CaseStatus.M2_TO_M1,
+        title="Ожидается решение клиента",
+    )
+    assert view is not None
+    assert ("✅ Подтвердить продолжение М1", "m2_to_m1_continue") in _result_buttons(
+        view, case=case
+    )
+    assert CLIENT_ACTIONS["M2_TO_M1"].callback == "consultation_result_open"
+    assert "transfer_to_m1(" in inspect.getsource(m2_to_m1_continue)
+    assert 'actor_type="client"' in inspect.getsource(m2_to_m1_continue)
+
+
 def test_closed_result_has_no_stale_message_or_case_action():
     consultation = Consultation(
         case_id=1,
