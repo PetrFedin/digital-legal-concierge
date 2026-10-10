@@ -312,9 +312,20 @@ async def court_status(callback: CallbackQuery, db):
 
     status = _status(case)
     if status == CaseStatus.M1_WAITING_30_DAYS:
+        deadline = (
+            case.claim_waiting_until.astimezone(timezone.utc).strftime("%d.%m.%Y")
+            if case.claim_waiting_until
+            else None
+        )
+        deadline_text = (
+            f" Контрольная дата: {deadline}."
+            if deadline
+            else " Контрольная дата уточняется юридической командой."
+        )
         text = (
             "⏳ Идёт контрольный срок после отправки претензии.\n\n"
-            "Просмотр этого экрана ничего не меняет. После истечения 30 дней "
+            + deadline_text
+            + "\n\nПросмотр этого экрана ничего не меняет. После истечения 30 дней "
             "юрист сможет начать подготовку иска."
         )
         buttons = (
