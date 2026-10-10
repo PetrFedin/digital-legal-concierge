@@ -71,6 +71,22 @@ def _has_consultation_result(view) -> bool:
 
 
 def _case_buttons(view) -> list[tuple[str, str]]:
+    if str(view.case_status) in {
+        "M1_CLOSED",
+        "M2_CLOSED",
+        "ARCHIVED",
+    }:
+        buttons: list[tuple[str, str]] = [("📄 Документы", "documents_open")]
+        if not payments_disabled():
+            buttons.append(("💳 Оплаты", "payments_open"))
+        buttons.extend(
+            [
+                ("🕘 История дела", "case_history_open"),
+                ("🏠 Главная", "nav_home"),
+            ]
+        )
+        return buttons
+
     buttons: list[tuple[str, str]] = []
     if view.unread_team_messages:
         buttons.append(
