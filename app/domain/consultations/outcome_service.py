@@ -157,13 +157,7 @@ class ConsultationOutcomeService:
                 next_status=CaseStatus.M2_TO_M1,
                 actor_type="lawyer",
                 actor_id=lawyer_id,
-                comment="Юрист выбрал продолжение по стандартному маршруту М1",
-            )
-            await self.cases.transfer_to_m1(
-                case=case,
-                actor_type="lawyer",
-                actor_id=lawyer_id,
-                comment="Перевод в маршрут М1 по результату консультации",
+                comment="Юрист рекомендовал М1. Ожидается согласие клиента на продолжение работы",
             )
         elif normalized_decision == "close":
             case.closure_reason = normalized_result
