@@ -112,6 +112,26 @@ def test_court_payment_cannot_start_before_explicit_payment_stage():
     assert "Новый платёж не создавался" in payment_source
 
 
+def test_court_status_renders_full_spec_stage_chain_without_early_payment():
+    source = inspect.getsource(m1_stages.court_status)
+
+    for status in (
+        "M1_WAITING_30_DAYS",
+        "M1_LAWSUIT_PREPARATION",
+        "M1_LAWSUIT_FILED",
+        "M1_COURT_STAGE",
+        "M1_DECISION_RECEIVED",
+        "M1_WAITING_PAYMENT_70000",
+    ):
+        assert f"CaseStatus.{status}" in source
+
+    before_payment = source.split(
+        "status == CaseStatus.M1_WAITING_PAYMENT_70000", 1
+    )[0]
+    assert "pay_court_70000" not in before_payment
+    assert "решения суда" in source.lower()
+
+
 def test_disabled_payment_mode_never_offers_online_m1_payment_cta():
     contract_source = inspect.getsource(m1_stages.contract_sign)
     court_source = inspect.getsource(m1_stages.court_status)
