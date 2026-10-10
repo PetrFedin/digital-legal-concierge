@@ -344,6 +344,8 @@ def _document_overview(documents: list[Document]) -> DocumentOverview:
 
 
 def _priority_action(case, documents: DocumentOverview) -> ClientAction | None:
+    if str(case.status) in {"M1_CLOSED", "M2_CLOSED", "ARCHIVED"}:
+        return None
     if documents.replacement_count:
         return ClientAction(
             "Загрузить новую версию",
