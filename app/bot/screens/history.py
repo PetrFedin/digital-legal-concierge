@@ -78,7 +78,7 @@ def _format_timeline(page: dict[str, object]) -> str:
     return "\n".join(blocks)
 
 
-def _history_buttons(page: dict[str, object], *, cursor: int | None):
+def _history_buttons(page: dict[str, object], *, cursor: int | None, read_only: bool = False):
     buttons: list[tuple[str, str]] = []
     next_before_id = page.get("next_before_id")
     if page.get("has_more") and next_before_id:
