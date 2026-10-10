@@ -152,6 +152,8 @@ async def payments(callback: CallbackQuery, db):
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     case = await ctx.case_service.get_active_case_for_user(user.id)
+    if not case:
+        case = await ctx.case_service.get_latest_case_for_user(user.id)
     payments_list = (
         await PaymentService(db).list_case_payments(case.id)
         if case
