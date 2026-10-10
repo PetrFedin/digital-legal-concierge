@@ -170,6 +170,11 @@ CLIENT_ACTIONS: dict[str, ClientAction] = {
         "consult_pay",
         "Подтвердите выбранное время консультации.",
     ),
+    "M2_TO_M1": ClientAction(
+        "Подтвердить продолжение М1",
+        "consultation_result_open",
+        "Юрист рекомендовал стандартное взыскание. Откройте итог консультации и подтвердите переход.",
+    ),
     "M2_CONSULTATION_BOOKED": ClientAction(
         "Открыть запись",
         "consultation_booked_open",
