@@ -200,6 +200,9 @@ async def test_complete_consultation_closes_case_and_slot(tmp_path):
         assert consultation.decision == "close"
         assert slot.status == "completed"
         assert case.status == CaseStatus.M2_CLOSED
+        assert case.closure_reason == (
+            "Клиенту разъяснены риски, сроки и порядок дальнейших действий."
+        )
 
         status_events = (
             await session.execute(
