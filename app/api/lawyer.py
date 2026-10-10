@@ -138,6 +138,22 @@ async def lawyer_cases(
                 if case.success_fee_amount is not None
                 else None
             ),
+            "claim_sent_at": (
+                case.claim_sent_at.isoformat() if case.claim_sent_at else None
+            ),
+            "claim_waiting_until": (
+                case.claim_waiting_until.isoformat()
+                if case.claim_waiting_until
+                else None
+            ),
+            "lawsuit_filed_at": (
+                case.lawsuit_filed_at.isoformat()
+                if case.lawsuit_filed_at
+                else None
+            ),
+            "decision_date": (
+                case.decision_date.isoformat() if case.decision_date else None
+            ),
             "can_update_enforcement": case.status == CaseStatus.M1_ENFORCEMENT,
             "can_record_money_received": case.status == CaseStatus.M1_ENFORCEMENT,
             "can_send_claim": case.status in {
@@ -838,7 +854,7 @@ function dt(v){return v?new Date(v).toLocaleString('ru-RU'):'—'}
 function slaClass(v){return String(v||'').includes('OVERDUE')?'badge overdue':'badge'}
 function decisionOptions(id){return `<select data-consultation-id="${id}" id="decision_${id}"><option value="">Выберите итоговое решение</option><option value="close">Закрыть обращение</option><option value="to_m1">Перевести в маршрут М1</option><option value="follow_up">Нужна следующая консультация</option><option value="other">Иное решение</option></select>`}
 function decisionLabel(value){return {close:'закрыть обращение',to_m1:'перевести дело в маршрут М1',follow_up:'назначить следующую консультацию',other:'зафиксировать иное решение'}[value]||value}
-function enforcementSummary(x){if(!x.enforcement_started_at&&!x.enforcement_number&&!x.received_amount)return'';const parts=[];if(x.enforcement_number)parts.push('ИП '+esc(x.enforcement_number));if(x.enforcement_status)parts.push(esc(x.enforcement_status));if(x.received_amount)parts.push('поступило '+esc(x.received_amount)+' ₽');return `<div class="muted">${parts.join(' · ')}</div>`}
+function enforcementSummary(x){const parts=[];if(x.claim_waiting_until)parts.push('30 дней до '+esc(dt(x.claim_waiting_until)));if(x.lawsuit_filed_at)parts.push('иск '+esc(dt(x.lawsuit_filed_at)));if(x.decision_date)parts.push('решение '+esc(dt(x.decision_date)));if(x.enforcement_number)parts.push('ИП '+esc(x.enforcement_number));if(x.enforcement_status)parts.push(esc(x.enforcement_status));if(x.received_amount)parts.push('поступило '+esc(x.received_amount)+' ₽');return parts.length?`<div class="muted">${parts.join(' · ')}</div>`:''}
 function caseActions(x){const items=[];const attrs=`data-case-id="${x.case_id}" data-expected-status="${esc(x.status)}" data-expected-updated-at="${esc(x.updated_at)}"`;if(x.can_accept)items.push(`<button ${attrs} class="green" onclick="acceptCase(${x.case_id},this)">Принять дело</button>`);if(x.can_request_documents)items.push(`<button ${attrs} class="amber" onclick="requestDocuments(${x.case_id},this)">Запросить документы</button>`);if(x.can_transfer_to_m2)items.push(`<button ${attrs} onclick="transferToM2(${x.case_id},this)">Перевести в консультацию</button>`);if(x.can_close_review)items.push(`<button ${attrs} class="red" onclick="m1Process(${x.case_id},this,'close_review','Закрыть обращение',10)">Закрыть обращение</button>`);if(x.can_send_claim)items.push(`<button ${attrs} onclick="m1Process(${x.case_id},this,'claim_sent','Претензия направлена',5)">Претензия направлена</button>`);if(x.can_start_lawsuit)items.push(`<button ${attrs} onclick="m1Process(${x.case_id},this,'lawsuit_preparation','Начать подготовку иска',5)">Готовить иск</button>`);if(x.can_file_lawsuit)items.push(`<button ${attrs} onclick="m1Process(${x.case_id},this,'lawsuit_filed','Иск подан',5)">Иск подан</button>`);if(x.can_start_court)items.push(`<button ${attrs} onclick="m1Process(${x.case_id},this,'court_started','Открыть судебный этап',5)">Судебный этап</button>`);if(x.can_add_court_event)items.push(`<button ${attrs} onclick="courtEvent(${x.case_id},this,false)">Судебное событие</button>`);if(x.can_record_court_decision)items.push(`<button ${attrs} class="green" onclick="courtEvent(${x.case_id},this,true)">Решение суда</button>`);if(x.can_update_enforcement)items.push(`<button ${attrs} onclick="updateEnforcement(${x.case_id},this)">Данные ИП</button>`);if(x.can_record_money_received){items.push(`<button ${attrs} class="amber" onclick="recordReceipt(${x.case_id},this,false)">Частичное поступление</button>`);items.push(`<button ${attrs} class="green" onclick="recordReceipt(${x.case_id},this,true)">Деньги поступили</button>`)}if(x.can_close_after_success_fee)items.push(`<button ${attrs} class="green" onclick="m1Process(${x.case_id},this,'close_success','Закрыть дело',10)">Закрыть дело</button>`);return items.join('')||'—'}
 async function boot(){const r=await fetch('/auth/session',{credentials:'same-origin',cache:'no-store'});if(!r.ok){location.href='/login';return}const s=await r.json();if(!(s.roles||[s.role]).includes('lawyer')){casesContent.innerHTML='Недостаточно прав: требуется роль юриста.';consultationsContent.innerHTML='';return}token=s.api_token;try{await load()}catch(e){feedback(e.message,'bad')}}
 async function load(){if(loadController)loadController.abort();const controller=new AbortController();loadController=controller;casesContent.innerHTML='Загрузка…';consultationsContent.innerHTML='Загрузка…';try{await Promise.all([loadCases(controller),loadConsultations(controller)])}catch(e){if(e.name!=='AbortError')throw e}finally{if(loadController===controller)loadController=null}}
