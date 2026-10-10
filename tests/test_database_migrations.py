@@ -5,7 +5,7 @@ from pathlib import Path
 
 from app.db.migrations import run_database_migrations
 
-HEAD_REVISION = "20261010_0015"
+HEAD_REVISION = "20261010_0017"
 RETENTION_TRIGGER = "trg_retention_destroy_document_keys"
 MESSAGE_SOURCE_INDEX = "uq_messages_sender_source_message"
 DOCUMENT_REVIEW_STARTED_INDEX = "ix_documents_review_started_at"
@@ -76,6 +76,7 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "revoked_access_tokens",
         "document_access_grants",
         "case_retention_records",
+        "court_events",
         "alembic_version",
     }.issubset(tables)
     assert current_revision(database_path) == HEAD_REVISION
@@ -95,6 +96,14 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "received_at",
         "success_fee_amount",
         "closure_reason",
+        "contract_signed_at",
+        "poa_instruction_sent_at",
+        "poa_received_at",
+        "claim_sent_at",
+        "claim_waiting_until",
+        "developer_response_status",
+        "lawsuit_filed_at",
+        "decision_date",
     }.issubset(column_names(database_path, "cases"))
     assert {
         "sha256",
@@ -113,14 +122,6 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "encrypted_at",
         "review_started_at",
     }.issubset(column_names(database_path, "documents"))
-    assert {
-        "enforcement_number",
-        "enforcement_status",
-        "enforcement_started_at",
-        "received_amount",
-        "received_at",
-        "success_fee_amount",
-    }.issubset(column_names(database_path, "cases"))
     assert "source_message_id" in column_names(database_path, "messages")
     assert MESSAGE_SOURCE_INDEX in index_names(database_path, "messages")
     assert {
@@ -167,6 +168,20 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
     assert DOCUMENT_REVIEW_STARTED_INDEX in index_names(
         database_path, "documents"
     )
+    assert "ix_cases_claim_waiting_until" in index_names(
+        database_path, "cases"
+    )
+    assert {
+        "case_id",
+        "lawyer_id",
+        "event_type",
+        "event_date",
+        "court_name",
+        "court_number",
+        "result",
+        "client_comment",
+        "attachments_note",
+    }.issubset(column_names(database_path, "court_events"))
     with sqlite3.connect(database_path) as connection:
         head = connection.execute(
             "SELECT event_count, last_hash FROM audit_chain_heads WHERE id=1"
@@ -418,6 +433,7 @@ def test_legacy_database_is_adopted_without_data_loss(tmp_path):
         "payment_webhook_events",
         "case_retention_records",
         "messages",
+        "court_events",
     }.issubset(table_names(database_path))
     assert RETENTION_TRIGGER in trigger_names(database_path)
     assert {
