@@ -63,6 +63,7 @@ class ClientCaseView:
     consultation_summary: str
     payments_summary: str | None
     enforcement_summary: str | None
+    closure_reason: str | None
     updated_at: datetime | None
     unread_team_messages: int = 0
     latest_team_message_at: datetime | None = None
@@ -528,6 +529,7 @@ async def load_client_case_view(
         consultation_summary=_consultation_summary(consultation),
         payments_summary=payments_summary,
         enforcement_summary=_enforcement_summary(case),
+        closure_reason=_short_comment(getattr(case, "closure_reason", None), limit=220),
         updated_at=updated_at,
         unread_team_messages=unread_team_messages,
         latest_team_message_at=latest_team_message_at,
