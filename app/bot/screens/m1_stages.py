@@ -261,7 +261,10 @@ async def poa_done(callback: CallbackQuery, db):
         CaseStatus.M1_CLAIM_PREPARATION,
         CaseStatus.M1_CLAIM_SENT,
         CaseStatus.M1_WAITING_30_DAYS,
+        CaseStatus.M1_LAWSUIT_PREPARATION,
+        CaseStatus.M1_LAWSUIT_FILED,
         CaseStatus.M1_COURT_STAGE,
+        CaseStatus.M1_DECISION_RECEIVED,
         CaseStatus.M1_WAITING_PAYMENT_70000,
         CaseStatus.M1_PAYMENT_70000_RECEIVED,
         CaseStatus.M1_ENFORCEMENT,
@@ -299,8 +302,32 @@ async def court_status(callback: CallbackQuery, db):
     if status == CaseStatus.M1_WAITING_30_DAYS:
         text = (
             "⏳ Идёт контрольный срок после отправки претензии.\n\n"
-            "Просмотр этого экрана не открывает судебный этап. "
-            "Юрист обновит статус после истечения срока и принятия решения."
+            "Просмотр этого экрана ничего не меняет. После истечения 30 дней "
+            "юрист сможет начать подготовку иска."
+        )
+        buttons = (
+            ("🕘 История", "case_history_open"),
+            ("✉️ Задать вопрос команде", "message_create"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        )
+    elif status == CaseStatus.M1_LAWSUIT_PREPARATION:
+        text = (
+            "⚖️ Юрист готовит иск.\n\n"
+            "От вас сейчас не требуется отдельного действия. После фактической "
+            "подачи иска этап будет обновлён в истории дела."
+        )
+        buttons = (
+            ("🕘 История", "case_history_open"),
+            ("✉️ Задать вопрос команде", "message_create"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        )
+    elif status == CaseStatus.M1_LAWSUIT_FILED:
+        text = (
+            "⚖️ Иск подан.\n\n"
+            "Ожидаем начала судебного этапа. Значимые события фиксируются "
+            "юристом и появляются в истории дела."
         )
         buttons = (
             ("🕘 История", "case_history_open"),
@@ -312,11 +339,22 @@ async def court_status(callback: CallbackQuery, db):
         text = (
             "🏛 Судебный этап открыт юристом.\n\n"
             "Значимые события будут появляться в истории дела. Второй платёж "
-            "станет доступен только после решения юриста и перехода дела на платёжный этап."
+            "станет доступен только после получения и фиксации решения суда."
         )
         buttons = (
             ("🕘 История", "case_history_open"),
             ("✉️ Задать вопрос команде", "message_create"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        )
+    elif status == CaseStatus.M1_DECISION_RECEIVED:
+        text = (
+            "✅ Решение суда получено и зафиксировано.\n\n"
+            "Система готовит следующий договорный платёж. До перехода дела в "
+            "платёжный этап кнопка оплаты не показывается."
+        )
+        buttons = (
+            ("🕘 История", "case_history_open"),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         )
