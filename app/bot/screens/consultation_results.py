@@ -121,6 +121,12 @@ def _format_scheduled_at(consultation) -> str | None:
 def _result_buttons(view, *, case) -> list[tuple[str, str]]:
     if _case_is_closed(case):
         return [("🏠 На главную", "nav_home")]
+    if str(case.status) == CaseStatus.M2_TO_M1.value and str(getattr(view, "primary_callback", "")) == "documents_open":
+        return [
+            ("✅ Подтвердить продолжение М1", "m2_to_m1_continue"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ]
 
     buttons: list[tuple[str, str]] = [
         (view.primary_label, view.primary_callback),
@@ -253,6 +259,60 @@ async def consultation_result_open(callback: CallbackQuery, db):
 
     case, consultation = latest
     await _render_result(callback, case=case, consultation=consultation)
+
+
+@router.callback_query(lambda c: c.data == "m2_to_m1_continue")
+async def m2_to_m1_continue(callback: CallbackQuery, db):
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    case = await ctx.case_service.get_active_case_for_user(user.id)
+    if not case or str(case.status) != CaseStatus.M2_TO_M1.value:
+        await _safe_edit(
+            callback,
+            "Предложение продолжить работу по стандартному маршруту уже не актуально.",
+            reply_markup=one(("📁 Моё дело", "my_case_open"), ("🏠 Главная", "nav_home")),
+        )
+        return
+    latest = await latest_terminal_client_consultation(
+        db, client_id=user.id, case_id=case.id
+    )
+    if not latest or str(latest[1].decision) != "to_m1":
+        await _safe_edit(
+            callback,
+            "Решение юриста о переходе в стандартный маршрут не найдено.",
+            reply_markup=one(("📁 Моё дело", "my_case_open"), ("🏠 Главная", "nav_home")),
+        )
+        return
+    try:
+        await ctx.case_service.transfer_to_m1(
+            case=case,
+            actor_type="client",
+            actor_id=user.id,
+            comment="Клиент подтвердил продолжение М1 после консультации",
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        logger.exception("Не удалось подтвердить переход М2 в М1")
+        await _safe_edit(
+            callback,
+            "Не удалось сохранить подтверждение. Дело осталось на прежнем этапе. Попробуйте ещё раз.",
+            reply_markup=one(
+                ("🔄 Повторить", "m2_to_m1_continue"),
+                ("📁 Моё дело", "my_case_open"),
+            ),
+        )
+        return
+    await _safe_edit(
+        callback,
+        "✅ Вы подтвердили продолжение работы по стандартному маршруту М1. "
+        "История консультации сохранена. Следующий шаг — документы.",
+        reply_markup=one(
+            ("📄 Документы", "documents_open"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ),
+    )
 
 
 @router.callback_query(lambda c: c.data == "consult_follow_up_start")
