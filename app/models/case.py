@@ -59,6 +59,7 @@ class Case(Base, TimestampMixin):
     escalation_level: Mapped[int] = mapped_column(Integer, default=0)
     next_action: Mapped[str | None] = mapped_column(String(255), nullable=True)
     internal_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    closure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     enforcement_number: Mapped[str | None] = mapped_column(
         String(255), nullable=True
     )
