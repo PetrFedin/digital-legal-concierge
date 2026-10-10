@@ -112,19 +112,26 @@ class CaseService:
             and source == CaseStatus.M1_WAITING_30_DAYS
             and destination == CaseStatus.M1_LAWSUIT_PREPARATION
         ):
-            waiting_since = getattr(case, "updated_at", None)
-            if waiting_since is None:
-                raise CaseTransitionError(
-                    "Нельзя открыть судебный этап без даты начала 30-дневного срока"
-                )
-            if waiting_since.tzinfo is None:
-                waiting_since = waiting_since.replace(tzinfo=timezone.utc)
+            waiting_until = getattr(case, "claim_waiting_until", None)
+            if waiting_until is None:
+                claim_sent_at = getattr(case, "claim_sent_at", None)
+                if claim_sent_at is None:
+                    raise CaseTransitionError(
+                        "Нельзя начать подготовку иска без даты направления претензии"
+                    )
+                if claim_sent_at.tzinfo is None:
+                    claim_sent_at = claim_sent_at.replace(tzinfo=timezone.utc)
+                else:
+                    claim_sent_at = claim_sent_at.astimezone(timezone.utc)
+                waiting_until = claim_sent_at + timedelta(days=30)
+            elif waiting_until.tzinfo is None:
+                waiting_until = waiting_until.replace(tzinfo=timezone.utc)
             else:
-                waiting_since = waiting_since.astimezone(timezone.utc)
-            if datetime.now(timezone.utc) < waiting_since + timedelta(days=30):
+                waiting_until = waiting_until.astimezone(timezone.utc)
+            if datetime.now(timezone.utc) < waiting_until:
                 raise CaseTransitionError(
-                    "Судебный этап нельзя открыть до истечения 30 календарных дней "
-                    "после начала контрольного срока"
+                    "Подготовку иска нельзя начать до истечения 30 календарных дней "
+                    "с даты направления претензии"
                 )
         if (
             getattr(case, "content_deleted_at", None) is not None
