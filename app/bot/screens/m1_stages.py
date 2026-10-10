@@ -127,6 +127,8 @@ async def contract_sign(callback: CallbackQuery, db):
     service = PaymentService(db)
     try:
         if status == CaseStatus.M1_CONTRACT_READY:
+            if case.contract_signed_at is None:
+                case.contract_signed_at = datetime.now(timezone.utc)
             await ctx.case_service.change_status(
                 case=case,
                 next_status=CaseStatus.M1_WAITING_PAYMENT_30000,
@@ -185,7 +187,15 @@ async def contract_sign(callback: CallbackQuery, db):
 
 
 @router.callback_query(lambda c: c.data == "poa_instruction")
-async def poa_instruction(callback: CallbackQuery):
+async def poa_instruction(callback: CallbackQuery, db):
+    ctx, _user, case = await _case(callback, db)
+    if case and _status(case) in {
+        CaseStatus.M1_PAYMENT_30000_RECEIVED,
+        CaseStatus.M1_POWER_OF_ATTORNEY,
+    }:
+        if case.poa_instruction_sent_at is None:
+            case.poa_instruction_sent_at = datetime.now(timezone.utc)
+            await db.commit()
     await callback.message.edit_text(
         "📑 Доверенность\n\n"
         "Оформите доверенность и нотариальные копии по инструкции юриста. "
@@ -215,6 +225,8 @@ async def poa_done(callback: CallbackQuery, db):
     status = _status(case)
     if status == CaseStatus.M1_POWER_OF_ATTORNEY:
         try:
+            if case.poa_received_at is None:
+                case.poa_received_at = datetime.now(timezone.utc)
             await ctx.case_service.change_status(
                 case=case,
                 next_status=CaseStatus.M1_POA_RECEIVED,
