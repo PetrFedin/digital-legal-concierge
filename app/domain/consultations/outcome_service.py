@@ -166,12 +166,13 @@ class ConsultationOutcomeService:
                 comment="Перевод в маршрут М1 по результату консультации",
             )
         elif normalized_decision == "close":
+            case.closure_reason = normalized_result
             await self.cases.change_status(
                 case=case,
                 next_status=CaseStatus.M2_CLOSED,
                 actor_type="lawyer",
                 actor_id=lawyer_id,
-                comment="Консультация завершена, обращение закрыто",
+                comment=normalized_result,
             )
         else:
             case.next_action = (
