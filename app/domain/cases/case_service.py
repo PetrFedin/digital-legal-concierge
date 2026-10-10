@@ -139,6 +139,7 @@ class CaseService:
             "route": case.route,
             "next_action": case.next_action,
             "closed_at": case.closed_at.isoformat() if case.closed_at else None,
+            "closure_reason": getattr(case, "closure_reason", None),
         }
         case.status = destination
         now = datetime.now(timezone.utc)
@@ -154,6 +155,7 @@ class CaseService:
                 case.closed_at = now
         elif source in TERMINAL_STATUSES and force:
             case.closed_at = None
+            case.closure_reason = None
         if destination.value.startswith("M1_"):
             case.route = RouteCode.M1
         elif destination.value.startswith("M2_"):
@@ -172,6 +174,7 @@ class CaseService:
                 "route": case.route,
                 "next_action": case.next_action,
                 "closed_at": case.closed_at.isoformat() if case.closed_at else None,
+                "closure_reason": getattr(case, "closure_reason", None),
                 "forced": force,
             },
             comment=comment,
