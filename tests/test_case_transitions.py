@@ -55,6 +55,9 @@ def make_case(status=CaseStatus.NEW):
         closed_at=None,
         content_deleted_at=None,
         updated_at=datetime.now(timezone.utc),
+        claim_sent_at=None,
+        claim_waiting_until=None,
+        closure_reason=None,
     )
 
 
@@ -178,7 +181,8 @@ async def test_lawsuit_preparation_is_blocked_before_thirty_day_wait_expires(
 ):
     db = FakeDB()
     case = make_case(CaseStatus.M1_WAITING_30_DAYS)
-    case.updated_at = datetime.now(timezone.utc) - timedelta(days=29)
+    case.claim_sent_at = datetime.now(timezone.utc) - timedelta(days=10)
+    case.claim_waiting_until = datetime.now(timezone.utc) + timedelta(days=20)
 
     with pytest.raises(CaseTransitionError, match="30 календарных дней"):
         await CaseService(db).change_status(
@@ -199,7 +203,8 @@ async def test_lawsuit_preparation_is_allowed_after_thirty_day_wait_expires(
 ):
     db = FakeDB()
     case = make_case(CaseStatus.M1_WAITING_30_DAYS)
-    case.updated_at = datetime.now(timezone.utc) - timedelta(days=31)
+    case.claim_sent_at = datetime.now(timezone.utc) - timedelta(days=31)
+    case.claim_waiting_until = datetime.now(timezone.utc) - timedelta(days=1)
 
     await CaseService(db).change_status(
         case=case,
