@@ -105,6 +105,31 @@ CLIENT_ACTIONS: dict[str, ClientAction] = {
         "poa_instruction",
         "Откройте инструкцию по оформлению доверенности.",
     ),
+    "M1_WAITING_30_DAYS": ClientAction(
+        "Открыть статус этапа",
+        "court_status",
+        "Проверьте контрольный срок и следующий судебный шаг.",
+    ),
+    "M1_LAWSUIT_PREPARATION": ClientAction(
+        "Открыть статус этапа",
+        "court_status",
+        "Посмотрите актуальный статус подготовки иска.",
+    ),
+    "M1_LAWSUIT_FILED": ClientAction(
+        "Открыть статус этапа",
+        "court_status",
+        "Посмотрите актуальный статус после подачи иска.",
+    ),
+    "M1_COURT_STAGE": ClientAction(
+        "Открыть статус суда",
+        "court_status",
+        "Посмотрите актуальный судебный статус дела.",
+    ),
+    "M1_DECISION_RECEIVED": ClientAction(
+        "Открыть решение по этапу",
+        "court_status",
+        "Посмотрите следующий шаг после получения решения суда.",
+    ),
     "M1_WAITING_PAYMENT_70000": ClientAction(
         "Продолжить исполнение",
         "pay_court_70000",
