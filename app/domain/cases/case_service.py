@@ -43,6 +43,15 @@ class CaseService:
         )
         return result.scalars().first()
 
+    async def get_latest_case_for_user(self, user_id: int):
+        result = await self.db.execute(
+            select(Case)
+            .where(Case.client_id == user_id)
+            .order_by(Case.created_at.desc(), Case.id.desc())
+            .limit(1)
+        )
+        return result.scalars().first()
+
     async def create_case(
         self,
         *,
