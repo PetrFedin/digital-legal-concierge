@@ -5,7 +5,7 @@ from pathlib import Path
 
 from app.db.migrations import run_database_migrations
 
-HEAD_REVISION = "20261006_0014"
+HEAD_REVISION = "20261010_0015"
 RETENTION_TRIGGER = "trg_retention_destroy_document_keys"
 MESSAGE_SOURCE_INDEX = "uq_messages_sender_source_message"
 DOCUMENT_REVIEW_STARTED_INDEX = "ix_documents_review_started_at"
@@ -94,6 +94,7 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "received_amount",
         "received_at",
         "success_fee_amount",
+        "closure_reason",
     }.issubset(column_names(database_path, "cases"))
     assert {
         "sha256",
