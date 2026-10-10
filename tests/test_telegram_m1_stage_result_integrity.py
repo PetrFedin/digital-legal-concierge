@@ -112,6 +112,23 @@ def test_court_payment_cannot_start_before_explicit_payment_stage():
     assert "Новый платёж не создавался" in payment_source
 
 
+def test_contract_and_poa_handlers_persist_legal_milestone_dates():
+    contract = inspect.getsource(m1_stages.contract_sign)
+    instruction = inspect.getsource(m1_stages.poa_instruction)
+    poa = inspect.getsource(m1_stages.poa_done)
+
+    assert "case.contract_signed_at = datetime.now(timezone.utc)" in contract
+    assert contract.index("case.contract_signed_at") < contract.index(
+        "next_status=CaseStatus.M1_WAITING_PAYMENT_30000"
+    )
+    assert "case.poa_instruction_sent_at = datetime.now(timezone.utc)" in instruction
+    assert "await db.commit()" in instruction
+    assert "case.poa_received_at = datetime.now(timezone.utc)" in poa
+    assert poa.index("case.poa_received_at") < poa.index(
+        "next_status=CaseStatus.M1_POA_RECEIVED"
+    )
+
+
 def test_court_status_renders_full_spec_stage_chain_without_early_payment():
     source = inspect.getsource(m1_stages.court_status)
 
