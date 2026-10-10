@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from app.domain.cases.case_service import CaseService
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.payments.payment_service import PaymentService
@@ -59,6 +61,10 @@ class M1ProcessService:
                 actor_id=lawyer_id,
                 comment="Юрист начал подготовку претензии",
             )
+        now = datetime.now(timezone.utc)
+        case.claim_sent_at = now
+        case.claim_waiting_until = now + timedelta(days=30)
+        case.developer_response_status = "WAITING"
         await self.cases.change_status(
             case=case,
             next_status=CaseStatus.M1_CLAIM_SENT,
@@ -102,6 +108,7 @@ class M1ProcessService:
     ):
         reason = self._reason(comment, minimum=5)
         self._require_status(case, CaseStatus.M1_LAWSUIT_PREPARATION)
+        case.lawsuit_filed_at = datetime.now(timezone.utc)
         await self.cases.change_status(
             case=case,
             next_status=CaseStatus.M1_LAWSUIT_FILED,
@@ -144,6 +151,7 @@ class M1ProcessService:
     ):
         reason = self._reason(comment, minimum=10)
         self._require_status(case, CaseStatus.M1_COURT_STAGE)
+        case.decision_date = datetime.now(timezone.utc)
         await self.cases.change_status(
             case=case,
             next_status=CaseStatus.M1_DECISION_RECEIVED,
