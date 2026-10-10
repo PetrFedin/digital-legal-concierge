@@ -53,6 +53,8 @@ async def _active_case_context(callback: CallbackQuery, db):
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     case = await ctx.case_service.get_active_case_for_user(user.id)
+    if not case:
+        case = await ctx.case_service.get_latest_case_for_user(user.id)
     return ctx, user, case
 
 
@@ -202,6 +204,8 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
         lines.append(f"💳 Оплаты: {view.payments_summary}")
     if view.enforcement_summary:
         lines.append(f"⚖️ Исполнение: {view.enforcement_summary}")
+    if view.closure_reason:
+        lines.append(f"✅ Основание закрытия: {view.closure_reason}")
     lines.extend(["", f"Обновлено: {format_updated_at(view.updated_at)}"])
 
     await _safe_edit(
