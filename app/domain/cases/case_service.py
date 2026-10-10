@@ -101,7 +101,7 @@ class CaseService:
         if (
             not force
             and source == CaseStatus.M1_WAITING_30_DAYS
-            and destination == CaseStatus.M1_COURT_STAGE
+            and destination == CaseStatus.M1_LAWSUIT_PREPARATION
         ):
             waiting_since = getattr(case, "updated_at", None)
             if waiting_since is None:
@@ -287,7 +287,10 @@ class CaseService:
             CaseStatus.M1_CLAIM_PREPARATION: "Ожидать отправки претензии",
             CaseStatus.M1_CLAIM_SENT: "Ожидать начала контрольного срока",
             CaseStatus.M1_WAITING_30_DAYS: "Ожидать 30 дней после претензии",
+            CaseStatus.M1_LAWSUIT_PREPARATION: "Юрист готовит иск",
+            CaseStatus.M1_LAWSUIT_FILED: "Ожидать начала судебного этапа",
             CaseStatus.M1_COURT_STAGE: "Следить за судебным этапом",
+            CaseStatus.M1_DECISION_RECEIVED: "Ожидать выставления второго платежа",
             CaseStatus.M1_WAITING_PAYMENT_70000: "Оплатить второй платеж",
             CaseStatus.M1_PAYMENT_70000_RECEIVED: "Ожидать исполнения решения",
             CaseStatus.M1_ENFORCEMENT: "Ожидать исполнения решения",
