@@ -71,7 +71,7 @@ def _has_consultation_result(view) -> bool:
 
 
 def _case_buttons(view) -> list[tuple[str, str]]:
-    if str(view.case_status) in {
+    if str(getattr(view, "case_status", "") or "") in {
         "M1_CLOSED",
         "M2_CLOSED",
         "ARCHIVED",
