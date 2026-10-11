@@ -19,6 +19,8 @@ from app.bot.consultation_result import (
     prepare_follow_up_consultation,
 )
 from app.bot.context import BotContextService
+from app.config import settings
+from app.legal.consent_contract import consent_document_prompt, consent_publication_ready, consent_publication_reference
 from app.domain.cases.case_service import CaseService
 from app.domain.cases.case_history import add_case_history_event
 from app.bot.keyboards import one
@@ -384,7 +386,8 @@ async def m2_to_m1_continue(callback: CallbackQuery, db):
         "явное согласие на обработку персональных данных в рамках дела.\n\n"
         "Подтверждение сохранится в истории обращения с датой и ID клиента. "
         "До согласия дело останется в М2, ранее переданные документы и оплата "
-        "консультации не изменятся.",
+        "консультации не изменятся.\n\n"
+        + consent_document_prompt(),
         reply_markup=one(
             ("✅ Согласен, продолжить в М1", f"m2_to_m1_accept:{case.id}"),
             ("❌ Не согласен", f"m2_to_m1_decline:{case.id}"),
@@ -431,7 +434,8 @@ async def m2_to_m1_reconsider(callback: CallbackQuery, db):
         callback,
         "Предыдущее решение об отказе осталось в истории дела. "
         "Чтобы продолжить М1, подтвердите согласие на обработку "
-        "персональных данных. Если вы не согласны, М1 не начнётся.",
+        "персональных данных. Если вы не согласны, М1 не начнётся.\n\n"
+        + consent_document_prompt(),
         reply_markup=one(
             ("✅ Согласен, продолжить в М1", f"m2_to_m1_accept:{case.id}"),
             ("❌ Не согласен", f"m2_to_m1_decline:{case.id}"),
@@ -445,6 +449,17 @@ async def m2_to_m1_reconsider(callback: CallbackQuery, db):
     lambda c: (c.data or "").startswith("m2_to_m1_accept")
 )
 async def m2_to_m1_accept(callback: CallbackQuery, db):
+    if settings.app_env == "production" and not consent_publication_ready():
+        await _safe_edit(
+            callback,
+            "Нельзя подтвердить М1: утверждённый текст согласия "
+            "на обработку персональных данных не опубликован.",
+            reply_markup=one(
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
     try:
         case, user = await _pending_m2_to_m1_case(
             callback, db, action="m2_to_m1_accept", lock=True
@@ -455,9 +470,24 @@ async def m2_to_m1_accept(callback: CallbackQuery, db):
             return
 
         now = datetime.now(timezone.utc)
-        case.consent_status = 'GIVEN'
+        document = consent_publication_reference()
+        case.consent_status = "GIVEN"
         case.consent_date = now
-        await add_case_history_event(db, actor_type='client', actor_id=user.id, case_id=case.id, action='CONSENT_GIVEN', new_value={'consent_status': 'GIVEN', 'consent_date': now.isoformat()}, comment='Согласие на обработку ПД при М2 → М1')
+        case.consent_policy_version = document.get("consent_version")
+        case.consent_document_sha256 = document.get("consent_sha256")
+        await add_case_history_event(
+            db,
+            actor_type="client",
+            actor_id=user.id,
+            case_id=case.id,
+            action="CONSENT_GIVEN",
+            new_value={
+                "consent_status": "GIVEN",
+                "consent_date": now.isoformat(),
+                **document,
+            },
+            comment="Согласие на обработку ПД при переходе М2 → М1",
+        )
         await CaseService(db).transfer_to_m1(
             case=case,
             actor_type="client",
