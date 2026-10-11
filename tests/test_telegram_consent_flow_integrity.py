@@ -95,6 +95,8 @@ def _callbacks(markup) -> list[str]:
 
 
 def _patch_context(monkeypatch, case):
+    if case is not None and not hasattr(case, "id"):
+        case.id = 77
     fake = FakeContext(case)
     monkeypatch.setattr(consent_flow, "BotContextService", lambda _db: fake)
     return fake
