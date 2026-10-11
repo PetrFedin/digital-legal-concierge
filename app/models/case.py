@@ -60,6 +60,14 @@ class Case(Base, TimestampMixin):
     next_action: Mapped[str | None] = mapped_column(String(255), nullable=True)
     internal_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     closure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # B-007: consent evidence is a Case-owned fact, not an inferred status.
+    consent_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    consent_date: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    decline_date: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     contract_signed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
