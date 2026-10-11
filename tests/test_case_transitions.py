@@ -55,6 +55,9 @@ def make_case(status=CaseStatus.NEW):
         closed_at=None,
         content_deleted_at=None,
         updated_at=datetime.now(timezone.utc),
+        claim_sent_at=None,
+        claim_waiting_until=None,
+        closure_reason=None,
     )
 
 
@@ -69,6 +72,30 @@ def test_expected_m1_and_m2_paths_are_allowed():
         CaseStatus.M1_PAYMENT_30000_RECEIVED,
     )
     assert transition_allowed(
+        CaseStatus.M1_WAITING_30_DAYS,
+        CaseStatus.M1_LAWSUIT_PREPARATION,
+    )
+    assert transition_allowed(
+        CaseStatus.M1_LAWSUIT_PREPARATION,
+        CaseStatus.M1_LAWSUIT_FILED,
+    )
+    assert transition_allowed(
+        CaseStatus.M1_LAWSUIT_FILED,
+        CaseStatus.M1_COURT_STAGE,
+    )
+    assert transition_allowed(
+        CaseStatus.M1_COURT_STAGE,
+        CaseStatus.M1_DECISION_RECEIVED,
+    )
+    assert transition_allowed(
+        CaseStatus.M1_DECISION_RECEIVED,
+        CaseStatus.M1_WAITING_PAYMENT_70000,
+    )
+    assert not transition_allowed(
+        CaseStatus.M1_WAITING_30_DAYS,
+        CaseStatus.M1_COURT_STAGE,
+    )
+    assert not transition_allowed(
         CaseStatus.M1_COURT_STAGE,
         CaseStatus.M1_WAITING_PAYMENT_70000,
     )
@@ -149,17 +176,18 @@ async def test_normal_transition_updates_route_history_and_sla(
     assert len(FakeSLAService.calls) == 1
 
 
-async def test_court_stage_is_blocked_before_thirty_day_wait_expires(
+async def test_lawsuit_preparation_is_blocked_before_thirty_day_wait_expires(
     patch_transition_side_effects,
 ):
     db = FakeDB()
     case = make_case(CaseStatus.M1_WAITING_30_DAYS)
-    case.updated_at = datetime.now(timezone.utc) - timedelta(days=29)
+    case.claim_sent_at = datetime.now(timezone.utc) - timedelta(days=10)
+    case.claim_waiting_until = datetime.now(timezone.utc) + timedelta(days=20)
 
     with pytest.raises(CaseTransitionError, match="30 календарных дней"):
         await CaseService(db).change_status(
             case=case,
-            next_status=CaseStatus.M1_COURT_STAGE,
+            next_status=CaseStatus.M1_LAWSUIT_PREPARATION,
             actor_type="lawyer",
             actor_id=5,
             comment="Попытка открыть суд раньше контрольного срока",
@@ -170,22 +198,23 @@ async def test_court_stage_is_blocked_before_thirty_day_wait_expires(
     assert patch_transition_side_effects == []
 
 
-async def test_court_stage_is_allowed_after_thirty_day_wait_expires(
+async def test_lawsuit_preparation_is_allowed_after_thirty_day_wait_expires(
     patch_transition_side_effects,
 ):
     db = FakeDB()
     case = make_case(CaseStatus.M1_WAITING_30_DAYS)
-    case.updated_at = datetime.now(timezone.utc) - timedelta(days=31)
+    case.claim_sent_at = datetime.now(timezone.utc) - timedelta(days=31)
+    case.claim_waiting_until = datetime.now(timezone.utc) - timedelta(days=1)
 
     await CaseService(db).change_status(
         case=case,
-        next_status=CaseStatus.M1_COURT_STAGE,
+        next_status=CaseStatus.M1_LAWSUIT_PREPARATION,
         actor_type="lawyer",
         actor_id=5,
         comment="Контрольный 30-дневный срок истёк",
     )
 
-    assert case.status == CaseStatus.M1_COURT_STAGE
+    assert case.status == CaseStatus.M1_LAWSUIT_PREPARATION
     assert db.flush_count == 1
     assert len(patch_transition_side_effects) == 1
 
@@ -291,6 +320,7 @@ async def test_terminal_transition_sets_closed_at_and_forced_reopen_clears_it(
 ):
     db = FakeDB()
     case = make_case(CaseStatus.M1_SUCCESS_FEE_RECEIVED)
+    case.closure_reason = "Финальное закрытие подтверждено"
 
     await CaseService(db).change_status(
         case=case,
@@ -311,6 +341,7 @@ async def test_terminal_transition_sets_closed_at_and_forced_reopen_clears_it(
     )
     assert first_closed_at is not None
     assert case.closed_at is None
+    assert case.closure_reason is None
 
 
 @pytest.mark.asyncio

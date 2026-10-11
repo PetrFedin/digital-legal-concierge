@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import logging
 
 from aiogram import Router
@@ -7,6 +9,9 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery
 
 from app.bot.context import BotContextService
+from app.config import settings
+from app.domain.cases.case_history import add_case_history_event
+from app.legal.consent_contract import consent_document_prompt, consent_publication_ready, consent_publication_reference
 from app.bot.keyboards import one
 from app.domain.statuses.case_statuses import CaseStatus
 
@@ -177,7 +182,8 @@ async def consent_open(callback: CallbackQuery, db):
             "📄 Согласие на обработку персональных данных\n\n"
             "Для загрузки документов и передачи их юристу нужно подтвердить согласие.\n\n"
             "Подтверждая согласие, вы разрешаете обработку данных и документов только в рамках обращения. "
-            "Если согласие не предоставлено, документы по маршруту ведения дела не передаются.",
+            "Если согласие не предоставлено, документы по маршруту ведения дела не передаются.\n\n"
+            + consent_document_prompt(),
             reply_markup=one(
                 ("✅ Подтверждаю согласие", "consent_accept"),
                 ("Не даю согласие", "consent_decline"),
@@ -236,7 +242,39 @@ async def consent_accept(callback: CallbackQuery, db):
         )
         return
 
+    if settings.app_env == "production" and not consent_publication_ready():
+        await _safe_edit(
+            callback,
+            "Согласие пока нельзя принять: юридически утверждённый документ "
+            "не подключён. Дело осталось на прежнем этапе.",
+            reply_markup=one(
+                ("✉️ Написать команде", "message_create"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+
     try:
+        now = datetime.now(timezone.utc)
+        document = consent_publication_reference()
+        case.consent_status = "GIVEN"
+        case.consent_date = now
+        case.consent_policy_version = document.get("consent_version")
+        case.consent_document_sha256 = document.get("consent_sha256")
+        await add_case_history_event(
+            db,
+            actor_type="client",
+            actor_id=user.id,
+            case_id=case.id,
+            action="CONSENT_GIVEN",
+            new_value={
+                "consent_status": "GIVEN",
+                "consent_date": now.isoformat(),
+                **document,
+            },
+            comment="Клиент подтвердил согласие на обработку персональных данных",
+        )
         await ctx.case_service.change_status(
             case=case,
             next_status=CaseStatus.M1_DOCUMENTS_PENDING,
@@ -367,6 +405,18 @@ async def consent_decline_confirm(callback: CallbackQuery, db):
         return
 
     try:
+        now = datetime.now(timezone.utc)
+        case.consent_status = "DECLINED"
+        case.decline_date = now
+        await add_case_history_event(
+            db,
+            actor_type="client",
+            actor_id=user.id,
+            case_id=case.id,
+            action="CONSENT_DECLINED",
+            new_value={"consent_status": "DECLINED", "decline_date": now.isoformat()},
+            comment="Клиент отказался от согласия на обработку ПД для М1",
+        )
         await ctx.case_service.change_status(
             case=case,
             next_status=CaseStatus.CALCULATED,

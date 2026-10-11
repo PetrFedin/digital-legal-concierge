@@ -63,6 +63,14 @@ bash ./generate-secrets.sh
 совпадать с `POSTGRES_PASSWORD`. Секреты не передаются через Git и не выводятся в
 acceptance evidence.
 
+До реальной обработки ПД обязательно укажите URL утверждённого согласия B-007,
+его SHA-256, номер версии и ссылку на юридическое согласование:
+`LEGAL_CONSENT_DOCUMENT_URL`, `LEGAL_CONSENT_DOCUMENT_SHA256`,
+`LEGAL_CONSENT_VERSION`, `LEGAL_CONSENT_APPROVAL_REFERENCE`.
+Без них production preflight не пропустит запуск. Формальные значения недостаточны:
+требуется юридическое утверждение и публикация точного текста.
+Процедура: [B-007 legal approval gate](LEGAL_CONSENT_B007_RELEASE_GATE.md).
+
 После настройки:
 
 ```bash

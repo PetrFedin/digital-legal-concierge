@@ -1,0 +1,92 @@
+name: Browser Staff E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: browser-staff-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  chromium-staff:
+    name: Chromium admin and lawyer acceptance on PostgreSQL
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: dlc_browser_ci
+          POSTGRES_USER: concierge
+          POSTGRES_PASSWORD: concierge-browser-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U concierge -d dlc_browser_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgresql+asyncpg://concierge:concierge-browser-ci@localhost:5432/dlc_browser_ci
+      BOT_TOKEN: CHANGE_ME
+      RUN_BOT: "false"
+      RUN_SCHEDULER: "false"
+      BOOTSTRAP_ADMIN: "false"
+      BOOTSTRAP_DEMO_DATA: "false"
+      ADMIN_USERNAME: ci-browser-account
+      ADMIN_PASSWORD: ci-browser-unused-password
+      ADMIN_API_TOKEN: ci-browser-api-token
+      BROWSER_E2E_BASE_URL: http://127.0.0.1:18101
+    steps:
+      - name: Checkout exact PR revision
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install isolated app and Chromium test dependencies
+        run: |
+          pip install -e ".[test]" playwright==1.56.0
+          python -m playwright install --with-deps chromium
+
+      - name: Migrate fresh PostgreSQL browser database
+        run: |
+          python scripts/init_db.py
+          alembic current
+
+      - name: Start real FastAPI server
+        run: |
+          uvicorn app.main:app --host 127.0.0.1 --port 18101 > browser-staff-server.log 2>&1 &
+          echo $! > browser-staff-server.pid
+          for attempt in $(seq 1 50); do
+            if curl --fail --silent http://127.0.0.1:18101/health > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat browser-staff-server.log
+          exit 1
+
+      - name: Exercise personal admin and lawyer browser sessions
+        run: python scripts/browser_staff_e2e.py
+
+      - name: Upload browser server diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-staff-server-diagnostics
+          path: browser-staff-server.log
+          if-no-files-found: warn
+          retention-days: 7

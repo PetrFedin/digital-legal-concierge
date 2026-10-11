@@ -142,6 +142,9 @@ def test_my_case_uses_one_primary_action_and_document_aware_snapshot():
     assert "Ваш следующий шаг" in source
     assert "Готовность" in source
     assert "view.enforcement_summary" in source
+    assert "view.closure_reason" in source
+    assert "get_latest_case_for_user" in source
+    assert "Основание закрытия" in source
     assert "Что мешает продолжить" in source
     assert "message is not modified" in source
     assert 'c.data.startswith("next_action:")' in source
@@ -179,6 +182,11 @@ def test_existing_case_status_actions_remain_available():
     assert CLIENT_ACTIONS["CALCULATED"].callback == "calc_decision_open"
     assert CLIENT_ACTIONS["CLIENT_DECISION"].callback == "consent_open"
     assert CLIENT_ACTIONS["M1_CONTRACT_READY"].callback == "contract_open"
+    assert CLIENT_ACTIONS["M1_WAITING_30_DAYS"].callback == "court_status"
+    assert CLIENT_ACTIONS["M1_LAWSUIT_PREPARATION"].callback == "court_status"
+    assert CLIENT_ACTIONS["M1_LAWSUIT_FILED"].callback == "court_status"
+    assert CLIENT_ACTIONS["M1_COURT_STAGE"].callback == "court_status"
+    assert CLIENT_ACTIONS["M1_DECISION_RECEIVED"].callback == "court_status"
     assert CLIENT_ACTIONS["M2_SLOT_PENDING"].callback == "consult_slot_open"
     assert CLIENT_ACTIONS["M2_CONSULTATION_BOOKED"].callback == (
         "consultation_booked_open"

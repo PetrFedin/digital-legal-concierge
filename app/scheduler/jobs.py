@@ -289,12 +289,13 @@ class SchedulerJobs:
         }
 
     async def check_claim_waiting_30_days(self) -> int:
-        deadline = datetime.now(timezone.utc) - timedelta(days=30)
+        now = datetime.now(timezone.utc)
         cases = (
             await self.db.execute(
                 select(Case)
                 .where(Case.status == "M1_WAITING_30_DAYS")
-                .where(Case.updated_at < deadline)
+                .where(Case.claim_waiting_until.is_not(None))
+                .where(Case.claim_waiting_until <= now)
             )
         ).scalars().all()
 
@@ -303,7 +304,14 @@ class SchedulerJobs:
             created = await self.notifications.emit(
                 event_code="CLAIM_30_DAYS_EXPIRED",
                 case_id=case.id,
-                payload={"case_number": case.case_number},
+                payload={
+                    "case_number": case.case_number,
+                    "waiting_until": (
+                        as_utc(case.claim_waiting_until).isoformat()
+                        if case.claim_waiting_until
+                        else None
+                    ),
+                },
                 dedupe_key=f"case:{case.id}:claim-30-days-expired",
             )
             if created:

@@ -10,6 +10,7 @@ from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
 from app.domain.cases.case_transition_policy import CaseTransitionError
 from app.domain.cases.enforcement_service import EnforcementError, EnforcementService
+from app.domain.cases.m1_process_service import M1ProcessError, M1ProcessService
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.payments.payment_webhook_service import PaymentWebhookService
 from app.domain.statuses.case_statuses import CaseStatus
@@ -479,6 +480,64 @@ async def manual_status(
         "status": case.status,
         "route": case.route,
         "next_action": case.next_action,
+    }
+
+
+@router.post("/cases/{case_id}/close")
+async def admin_close_case(
+    case_id: int,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    actor = require_admin(x_admin_token)
+    reason = str(payload.get("reason") or "").strip()
+    expected_status = payload.get("expected_status")
+    expected_updated_at = payload.get("expected_updated_at")
+    try:
+        case = (
+            await db.execute(
+                select(Case).where(Case.id == case_id).with_for_update()
+            )
+        ).scalar_one_or_none()
+        if not case:
+            raise HTTPException(status_code=404, detail="case not found")
+        if expected_status is not None and str(case.status) != str(expected_status):
+            raise HTTPException(
+                status_code=409,
+                detail="Статус дела изменился после загрузки экрана. Обновите карточку",
+            )
+        if (
+            expected_updated_at is not None
+            and case.updated_at.isoformat() != str(expected_updated_at)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Дело изменилось после загрузки экрана. Обновите карточку",
+            )
+        await M1ProcessService(db).close_after_success_fee(
+            case=case,
+            actor_type="admin",
+            actor_id=actor_id_from_token(actor),
+            reason=reason,
+        )
+        await db.commit()
+        await db.refresh(case)
+    except HTTPException:
+        await db.rollback()
+        raise
+    except (M1ProcessError, ValueError) as error:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except Exception:
+        await db.rollback()
+        raise
+    return {
+        "ok": True,
+        "case_id": case.id,
+        "status": case.status,
+        "closure_reason": case.closure_reason,
+        "updated_at": case.updated_at.isoformat(),
     }
 
 

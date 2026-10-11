@@ -292,6 +292,22 @@ def _safe_detail(log: AuditLog, audience: ActivityAudience) -> str | None:
         )
         return f"Новое время: {scheduled}." if scheduled else None
 
+    if action == "COURT_EVENT_ADDED":
+        scheduled = _format_datetime(payload.get("event_date"))
+        court_name = _clean_text(payload.get("court_name"), 120)
+        court_number = _clean_text(payload.get("court_number"), 100)
+        client_comment = _clean_text(payload.get("client_comment"), 180)
+        parts = []
+        if scheduled:
+            parts.append(f"Дата: {scheduled}")
+        if court_name:
+            parts.append(f"Суд: {court_name}")
+        if court_number:
+            parts.append(f"Дело № {court_number}")
+        if client_comment:
+            parts.append(client_comment)
+        return ". ".join(parts) + ("." if parts else "") or None
+
     if action in {"PAYMENT_CREATED", "PAYMENT_PAID", "PAYMENT_CONFIRMED"}:
         amount = _format_money(payload.get("amount"))
         title = _clean_text(payload.get("title"), 100)

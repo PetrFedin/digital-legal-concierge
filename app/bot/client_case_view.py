@@ -63,6 +63,7 @@ class ClientCaseView:
     consultation_summary: str
     payments_summary: str | None
     enforcement_summary: str | None
+    closure_reason: str | None
     updated_at: datetime | None
     unread_team_messages: int = 0
     latest_team_message_at: datetime | None = None
@@ -104,6 +105,31 @@ CLIENT_ACTIONS: dict[str, ClientAction] = {
         "poa_instruction",
         "Откройте инструкцию по оформлению доверенности.",
     ),
+    "M1_WAITING_30_DAYS": ClientAction(
+        "Открыть статус этапа",
+        "court_status",
+        "Проверьте контрольный срок и следующий судебный шаг.",
+    ),
+    "M1_LAWSUIT_PREPARATION": ClientAction(
+        "Открыть статус этапа",
+        "court_status",
+        "Посмотрите актуальный статус подготовки иска.",
+    ),
+    "M1_LAWSUIT_FILED": ClientAction(
+        "Открыть статус этапа",
+        "court_status",
+        "Посмотрите актуальный статус после подачи иска.",
+    ),
+    "M1_COURT_STAGE": ClientAction(
+        "Открыть статус суда",
+        "court_status",
+        "Посмотрите актуальный судебный статус дела.",
+    ),
+    "M1_DECISION_RECEIVED": ClientAction(
+        "Открыть решение по этапу",
+        "court_status",
+        "Посмотрите следующий шаг после получения решения суда.",
+    ),
     "M1_WAITING_PAYMENT_70000": ClientAction(
         "Продолжить исполнение",
         "pay_court_70000",
@@ -143,6 +169,11 @@ CLIENT_ACTIONS: dict[str, ClientAction] = {
         "Подтвердить запись",
         "consult_pay",
         "Подтвердите выбранное время консультации.",
+    ),
+    "M2_TO_M1": ClientAction(
+        "Подтвердить продолжение М1",
+        "consultation_result_open",
+        "Юрист рекомендовал стандартное взыскание. Откройте итог консультации и подтвердите переход.",
     ),
     "M2_CONSULTATION_BOOKED": ClientAction(
         "Открыть запись",
@@ -313,6 +344,8 @@ def _document_overview(documents: list[Document]) -> DocumentOverview:
 
 
 def _priority_action(case, documents: DocumentOverview) -> ClientAction | None:
+    if str(case.status) in {"M1_CLOSED", "M2_CLOSED", "ARCHIVED"}:
+        return None
     if documents.replacement_count:
         return ClientAction(
             "Загрузить новую версию",
@@ -528,6 +561,7 @@ async def load_client_case_view(
         consultation_summary=_consultation_summary(consultation),
         payments_summary=payments_summary,
         enforcement_summary=_enforcement_summary(case),
+        closure_reason=_short_comment(getattr(case, "closure_reason", None), limit=220),
         updated_at=updated_at,
         unread_team_messages=unread_team_messages,
         latest_team_message_at=latest_team_message_at,

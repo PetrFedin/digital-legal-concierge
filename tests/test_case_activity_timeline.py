@@ -127,6 +127,32 @@ def test_document_decision_keeps_bounded_client_comment_only():
     assert "document_id" not in item.detail
 
 
+def test_court_event_exposes_only_client_safe_fields():
+    item = present_case_activity(
+        audit(
+            "COURT_EVENT_ADDED",
+            new_value={
+                "event_type": "hearing",
+                "event_date": "2026-10-20T10:30:00+00:00",
+                "court_name": "Арбитражный суд",
+                "court_number": "A40-12345/2026",
+                "client_comment": "Назначено судебное заседание.",
+                "attachments_present": True,
+            },
+            comment="Внутренняя стратегия, которую клиент не должен видеть",
+            actor_type="lawyer",
+        ),
+        audience="client",
+    )
+
+    assert item is not None
+    assert "20.10.2026" in item.detail
+    assert "Арбитражный суд" in item.detail
+    assert "A40-12345/2026" in item.detail
+    assert "Назначено судебное заседание" in item.detail
+    assert "Внутренняя стратегия" not in item.detail
+
+
 def test_telegram_timeline_has_stable_cursor_and_readable_output():
     assert HISTORY_PAGE_SIZE == 7
     assert _history_cursor("case_history_before:42") == 42

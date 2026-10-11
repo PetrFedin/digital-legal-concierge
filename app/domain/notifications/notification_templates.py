@@ -124,6 +124,13 @@ TEMPLATES = {
         "Проверьте следующий шаг."
     ),
     "court_stage_started": "Дело {case_number} перешло в судебный этап.",
+    "m1_court_decision_received": (
+        "По делу {case_number} зафиксировано решение суда. "
+        "Открыт второй договорный платёж: {amount} ₽."
+    ),
+    "m1_case_closed": (
+        "Дело {case_number} закрыто. Основание: {reason}."
+    ),
     "m1_money_received": (
         "По делу {case_number} зафиксировано поступление {amount} ₽. "
         "Следующий шаг — финальный договорный платёж 10%."

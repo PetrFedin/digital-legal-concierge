@@ -100,12 +100,21 @@ _TRANSITIONS: dict[CaseStatus, frozenset[CaseStatus]] = {
     CaseStatus.M1_CLAIM_PREPARATION: frozenset({CaseStatus.M1_CLAIM_SENT}),
     CaseStatus.M1_CLAIM_SENT: frozenset({CaseStatus.M1_WAITING_30_DAYS}),
     CaseStatus.M1_WAITING_30_DAYS: frozenset(
+        {CaseStatus.M1_LAWSUIT_PREPARATION}
+    ),
+    CaseStatus.M1_LAWSUIT_PREPARATION: frozenset(
+        {CaseStatus.M1_LAWSUIT_FILED}
+    ),
+    CaseStatus.M1_LAWSUIT_FILED: frozenset(
         {CaseStatus.M1_COURT_STAGE}
     ),
     CaseStatus.M1_COURT_STAGE: frozenset(
         {
-            CaseStatus.M1_WAITING_PAYMENT_70000,
+            CaseStatus.M1_DECISION_RECEIVED,
         }
+    ),
+    CaseStatus.M1_DECISION_RECEIVED: frozenset(
+        {CaseStatus.M1_WAITING_PAYMENT_70000}
     ),
     CaseStatus.M1_WAITING_PAYMENT_70000: frozenset(
         {CaseStatus.M1_PAYMENT_70000_RECEIVED}

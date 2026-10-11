@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 import pytest
@@ -253,6 +254,15 @@ async def test_automatic_backup_fails_closed_for_invalid_restore_policy(
 
     with pytest.raises(RuntimeError, match="restore_fence_invalid"):
         await scheduler_jobs_without_database().create_encrypted_backup_if_due()
+
+
+def test_claim_deadline_scheduler_uses_persisted_legal_deadline():
+    source = inspect.getsource(SchedulerJobs.check_claim_waiting_30_days)
+
+    assert "Case.claim_waiting_until.is_not(None)" in source
+    assert "Case.claim_waiting_until <= now" in source
+    assert "Case.updated_at <" not in source
+    assert '"waiting_until"' in source
 
 
 def test_automatic_backup_is_the_first_scheduler_job():

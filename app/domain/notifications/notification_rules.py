@@ -140,6 +140,14 @@ NOTIFICATION_RULES = {
         "recipients": ["client", "lawyer"],
         "template": "court_stage_started",
     },
+    "M1_COURT_DECISION_RECEIVED": {
+        "recipients": ["client", "admin"],
+        "template": "m1_court_decision_received",
+    },
+    "M1_CASE_CLOSED": {
+        "recipients": ["client", "admin"],
+        "template": "m1_case_closed",
+    },
     "M1_MONEY_RECEIVED": {
         "recipients": ["client", "admin"],
         "template": "m1_money_received",

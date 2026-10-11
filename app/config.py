@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     backup_encryption_previous_keys: str = ""
     allow_legacy_security_key_fallback: bool = False
 
+    # Frozen B-007 legal copy: must be independently approved before real clients.
+    legal_consent_document_url: str = ""
+    legal_consent_document_sha256: str = ""
+    legal_consent_version: str = ""
+    legal_consent_approval_reference: str = ""
+
     legal_key_rate: Decimal = Decimal("0.16")
     storage_dir: str = "./storage"
     max_document_upload_mb: int = 20

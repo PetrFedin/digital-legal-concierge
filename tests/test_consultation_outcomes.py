@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.domain.consultations.no_show_resolution_service import (
     NoShowResolutionService,
 )
+from app.domain.cases.case_service import CaseService
 from app.domain.consultations.outcome_service import (
     ConsultationOutcomeError,
     ConsultationOutcomeService,
@@ -200,6 +201,9 @@ async def test_complete_consultation_closes_case_and_slot(tmp_path):
         assert consultation.decision == "close"
         assert slot.status == "completed"
         assert case.status == CaseStatus.M2_CLOSED
+        assert case.closure_reason == (
+            "Клиенту разъяснены риски, сроки и порядок дальнейших действий."
+        )
 
         status_events = (
             await session.execute(
@@ -250,6 +254,15 @@ async def test_complete_consultation_to_m1_preserves_explicit_route_states(tmp_p
         case = await session.get(Case, context["case"].id)
 
         assert consultation.status == ConsultationStatus.DONE
+        assert case.status == CaseStatus.M2_TO_M1
+        assert str(case.route) == "M2"
+        await CaseService(session).transfer_to_m1(
+            case=case,
+            actor_type="client",
+            actor_id=context["case"].client_id,
+            comment="Клиент подтвердил стандартный маршрут после консультации",
+        )
+        await session.commit()
         assert case.status == CaseStatus.M1_DOCUMENTS_PENDING
         assert str(case.route) == "M1"
 

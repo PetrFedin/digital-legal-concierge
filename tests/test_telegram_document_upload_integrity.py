@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import inspect
+from types import SimpleNamespace
 
 import pytest
 from aiogram.exceptions import TelegramBadRequest
 
+from app.bot.screens import documents
 from app.bot.screens.documents import (
+    _client_document_upload_allowed,
+    upload,
     _present_committed_result,
     choose,
     finish,
@@ -152,3 +156,38 @@ def test_skip_commits_before_rendering_durable_result():
     assert commit < present
     assert "Переход не выполнен" in source
     assert "Переход уже сохранён" in source
+
+
+def test_m1_document_writes_require_explicit_recorded_consent():
+    cases = [
+        (SimpleNamespace(route="M1", consent_status=None), False),
+        (SimpleNamespace(route="M1", consent_status="DECLINED"), False),
+        (SimpleNamespace(route="M1", consent_status="PENDING"), False),
+        (SimpleNamespace(route="M1", consent_status="GIVEN"), True),
+        (SimpleNamespace(route=None, consent_status=None), False),
+        (SimpleNamespace(route="M2", consent_status=None), True),
+    ]
+    for case, expected in cases:
+        assert _client_document_upload_allowed(case) is expected
+
+    for mutating_screen in (upload_menu, upload, finish):
+        assert "_client_document_upload_allowed(case)" in inspect.getsource(mutating_screen)
+
+
+@pytest.mark.asyncio
+async def test_stale_m1_document_upload_button_never_opens_fsm_without_consent(
+    monkeypatch,
+):
+    case = SimpleNamespace(route="M1", status="M1_DOCUMENTS_PENDING", consent_status=None)
+
+    async def fake_case_documents(_callback, _db):
+        return case, []
+
+    monkeypatch.setattr(documents, "_load_case_documents", fake_case_documents)
+    callback = FakeCallback("documents_upload_open")
+    state = FakeState(current=DocumentUploadStates.waiting_file.state)
+    await upload_menu(callback, state, db=None)
+    assert state.current is None
+    assert state.data == {}
+    assert "не зафиксировано" in callback.message.edits[-1][0]
+    assert "message_create" in _callbacks(callback.message.edits[-1][1])
