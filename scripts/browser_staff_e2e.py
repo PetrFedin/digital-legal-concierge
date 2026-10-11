@@ -186,8 +186,13 @@ def check_staff_ui(own_case: str, foreign_case: str, foreign_id: int) -> None:
 def main() -> None:
     if os.getenv("APP_ENV") != "test":
         raise SystemExit("Browser staff E2E requires APP_ENV=test")
-    if not os.getenv("DATABASE_URL", "").startswith("sqlite+aiosqlite:///"):
-        raise SystemExit("Browser staff E2E requires an isolated test SQLite database")
+    database_url = os.getenv("DATABASE_URL", "")
+    if not database_url.startswith(
+        ("sqlite+aiosqlite:///", "postgresql+asyncpg://")
+    ):
+        raise SystemExit(
+            "Browser staff E2E requires an isolated test SQLite or PostgreSQL database"
+        )
     own, foreign, foreign_id = asyncio.run(seed_staff())
     check_staff_ui(own, foreign, foreign_id)
 
