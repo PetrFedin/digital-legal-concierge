@@ -93,10 +93,12 @@ class CaseService:
         route: str | None = None,
         status: str = CaseStatus.NEW,
         title: str | None = None,
+        creation_request_key: str | None = None,
     ):
         normalized_status = normalize_status(status)
         case = Case(
             case_number="TEMP",
+            creation_request_key=creation_request_key,
             client_id=client.id,
             route=route,
             status=normalized_status,
