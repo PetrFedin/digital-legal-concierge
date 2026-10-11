@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import logging
 
 from aiogram import Router
@@ -18,6 +20,7 @@ from app.bot.consultation_result import (
 )
 from app.bot.context import BotContextService
 from app.domain.cases.case_service import CaseService
+from app.domain.cases.case_history import add_case_history_event
 from app.bot.keyboards import one
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.consultation_statuses import ConsultationStatus
@@ -362,11 +365,12 @@ async def m2_to_m1_continue(callback: CallbackQuery, db):
         "После консультации юрист рекомендовал стандартное сопровождение. "
         "Для продолжения работы и передачи документов юристу нужно ваше "
         "явное согласие на обработку персональных данных в рамках дела.\n\n"
-        "Подтверждение сохранится в истории обращения с датой и вашим Telegram ID. "
+        "Подтверждение сохранится в истории обращения с датой и ID клиента. "
         "До согласия дело останется в М2, ранее переданные документы и оплата "
         "консультации не изменятся.",
         reply_markup=one(
-            ("✅ Подтверждаю М1 и согласие", f"m2_to_m1_accept:{case.id}"),
+            ("✅ Согласен, продолжить в М1", f"m2_to_m1_accept:{case.id}"),
+            ("❌ Не согласен", f"m2_to_m1_decline:{case.id}"),
             ("↩️ Вернуться к итогу", "consultation_result_open"),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
@@ -387,6 +391,10 @@ async def m2_to_m1_accept(callback: CallbackQuery, db):
             await _stale_m2_to_m1(callback)
             return
 
+        now = datetime.now(timezone.utc)
+        case.consent_status = 'GIVEN'
+        case.consent_date = now
+        await add_case_history_event(db, actor_type='client', actor_id=user.id, case_id=case.id, action='CONSENT_GIVEN', new_value={'consent_status': 'GIVEN', 'consent_date': now.isoformat()}, comment='Согласие на обработку ПД при М2 → М1')
         await CaseService(db).transfer_to_m1(
             case=case,
             actor_type="client",
@@ -419,6 +427,43 @@ async def m2_to_m1_accept(callback: CallbackQuery, db):
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         ),
+    )
+
+
+
+@router.callback_query(lambda c: (c.data or "").startswith("m2_to_m1_decline"))
+async def m2_to_m1_decline(callback: CallbackQuery, db):
+    try:
+        case, user = await _pending_m2_to_m1_case(
+            callback, db, action="m2_to_m1_decline", lock=True
+        )
+        if not case:
+            await db.rollback()
+            await _stale_m2_to_m1(callback)
+            return
+        now = datetime.now(timezone.utc)
+        case.consent_status = "DECLINED"
+        case.decline_date = now
+        await add_case_history_event(
+            db, actor_type="client", actor_id=user.id,
+            case_id=case.id, action="CONSENT_DECLINED",
+            new_value={"consent_status": "DECLINED", "decline_date": now.isoformat()},
+            comment="Клиент отказался от согласия для М1 после консультации",
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        logger.exception("Отказ М2 → М1 не сохранён")
+        await _safe_edit(
+            callback, "Не удалось сохранить отказ. Откройте итог консультации.",
+            reply_markup=one(("👨‍⚖ Итог консультации", "consultation_result_open"), ("📁 Моё дело", "my_case_open")),
+        )
+        return
+    await _safe_edit(
+        callback,
+        "Отказ сохранён. Переход в М1 не выполнен. "
+        "История консультации, документы и платежи сохранены.",
+        reply_markup=one(("✉️ Написать команде", "message_create"), ("📁 Моё дело", "my_case_open"), ("🏠 Главная", "nav_home")),
     )
 
 
