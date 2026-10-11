@@ -34,17 +34,20 @@ def upgrade():
         if "uq_cases_creation_request_key" not in indexes:
             op.create_index("uq_cases_creation_request_key", "cases", ["creation_request_key"], unique=True)
     if "calculations" in tables:
-        for c in inspect(bind).get_unique_constraints("calculations"):
-            if set(c.get("column_names") or []) == {"case_id"} and c.get("name"):
-                with op.batch_alter_table("calculations") as batch:
-                    batch.drop_constraint(c["name"], type_="unique")
-        # Old unnamed SQLite and unique autoindex constraints are removed by
-        # a controlled batch recreation only when the column remains unique.
-        if bind.dialect.name == "sqlite":
-            uniques = inspect(bind).get_indexes("calculations")
-            if any(i.get("unique") and i.get("column_names") == ["case_id"] for i in uniques):
-                with op.batch_alter_table("calculations", recreate="always") as batch:
-                    pass
+        # SQLite declares the historical UNIQUE as an unnamed table constraint.
+        # A naming convention identifies it for batch-table recreation; a plain
+        # index recreation would retain that constraint and block repeats.
+        old_unique = any(
+            set(c.get("column_names") or []) == {"case_id"}
+            for c in inspect(bind).get_unique_constraints("calculations")
+        )
+        if old_unique:
+            with op.batch_alter_table(
+                "calculations",
+                recreate="always" if bind.dialect.name == "sqlite" else "auto",
+                naming_convention={"uq": "uq_%(table_name)s_%(column_0_name)s"},
+            ) as batch:
+                batch.drop_constraint("uq_calculations_case_id", type_="unique")
         indexes = {i["name"] for i in inspect(bind).get_indexes("calculations")}
         if "ix_calculations_case_id" not in indexes:
             op.create_index("ix_calculations_case_id", "calculations", ["case_id"])
