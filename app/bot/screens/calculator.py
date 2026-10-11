@@ -1,4 +1,5 @@
 import logging
+import secrets
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -11,6 +12,7 @@ from app.bot.client_case_view import load_client_case_view
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.states import CalculatorStates
+from app.domain.cases.new_object_service import NewObjectSaveService, NewObjectSaveError
 from app.domain.calculator.calculator_result_formatter import format_calculation_result
 from app.domain.calculator.calculator_service import CalculatorService
 from app.domain.calculator.penalty_calculator import parse_money
@@ -186,7 +188,7 @@ async def calc_preview_start(callback: CallbackQuery, state: FSMContext, db):
         )
         return
     await state.clear()
-    await state.update_data(preview_case_id=case.id)
+    await state.update_data(preview_case_id=case.id, preview_request_key=secrets.token_hex(16))
     await state.set_state(CalculatorStates.waiting_contract_price)
     await callback.message.edit_text(
         "🧮 Предварительный расчёт по другому объекту\n\n"
@@ -387,7 +389,10 @@ async def calculate_show_message(message: Message, state: FSMContext, db):
         )
         return
 
-    await state.clear()
+    if is_preview:
+        await state.set_state(None)
+    else:
+        await state.clear()
     try:
         await message.answer(
             format_calculation_result(result)
@@ -424,7 +429,10 @@ async def calculate_show_callback(callback: CallbackQuery, state: FSMContext, db
         )
         return
 
-    await state.clear()
+    if is_preview:
+        await state.set_state(None)
+    else:
+        await state.clear()
     await _present_committed_callback(
         callback,
         format_calculation_result(result)
@@ -434,8 +442,69 @@ async def calculate_show_callback(callback: CallbackQuery, state: FSMContext, db
     )
 
 
+@router.callback_query(lambda c: c.data == "calc_preview_save")
+async def save_preview_as_new_case(callback: CallbackQuery, state: FSMContext, db):
+    data = await state.get_data()
+    if not data.get("preview_case_id") or not data.get("preview_request_key") or not _base_data_ready(data):
+        await callback.message.edit_text(
+            "Этот предварительный расчёт уже не доступен. Начните повторный расчёт.",
+            reply_markup=_result_recovery_keyboard(),
+        )
+        return
+    try:
+        ctx = BotContextService(db)
+        user = await ctx.get_user_from_callback(callback)
+        case = await NewObjectSaveService(db).save(
+            user=user,
+            preview_case_id=int(data["preview_case_id"]),
+            request_key=str(data["preview_request_key"]),
+            contract_price=Decimal(data["contract_price"]),
+            planned_transfer_date=date.fromisoformat(data["planned_transfer_date"]),
+            calculation_date=date.today(),
+            object_transferred=bool(data["object_transferred"]),
+            actual_transfer_date=(
+                date.fromisoformat(data["actual_transfer_date"])
+                if data.get("actual_transfer_date") else None
+            ),
+        )
+        await db.commit()
+    except NewObjectSaveError as error:
+        await db.rollback()
+        await callback.message.edit_text(
+            f"⚠️ {error}",
+            reply_markup=one(("📂 Все обращения", "cases_list"), ("🏠 Главная", "nav_home")),
+        )
+        return
+    except Exception:
+        await db.rollback()
+        logger.exception("New object case creation could not be committed")
+        await callback.message.edit_text(
+            "⚠️ Сохранение не подтверждено. Повторите попытку — второе дело не создастся.",
+            reply_markup=one(
+                ("🔄 Повторить сохранение", "calc_preview_save"),
+                ("📂 Все обращения", "cases_list"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+    await state.clear()
+    await _present_committed_callback(
+        callback,
+        f"✅ Для другого объекта сохранено отдельное дело № {case.case_number}.\\n"
+        "Документы, расчёты и платежи действующего дела не изменены.\\n\\n"
+        "Переключитесь на новое дело, чтобы выбрать М1 или М2.",
+        reply_markup=one(
+            ("📁 Открыть новое дело", f"cases_select:{case.id}"),
+            ("📂 Все обращения", "cases_list"),
+            ("🏠 Главная", "nav_home"),
+        ),
+        saved_notice="Отдельное дело уже сохранено.",
+    )
+
+
 def preview_result_kb():
     return one(
+        ("💾 Сохранить как отдельное дело", "calc_preview_save"),
         ("🧮 Ещё один расчёт", "calc_preview_start"),
         ("📁 Вернуться к действующему делу", "my_case_open"),
         ("💬 Задать вопрос по делу", "message_create"),
