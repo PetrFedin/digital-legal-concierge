@@ -145,12 +145,17 @@ def test_pending_m2_to_m1_requires_explicit_client_confirmation():
         title="Ожидается решение клиента",
     )
     assert view is not None
-    assert ("✅ Подтвердить продолжение М1", "m2_to_m1_continue") in _result_buttons(
+    assert ("✅ Продолжить: согласие на данные", f"m2_to_m1_continue:{case.id}") in _result_buttons(
         view, case=case
     )
     assert CLIENT_ACTIONS["M2_TO_M1"].callback == "consultation_result_open"
-    assert "transfer_to_m1(" in inspect.getsource(m2_to_m1_continue)
-    assert 'actor_type="client"' in inspect.getsource(m2_to_m1_continue)
+    from app.bot.screens.consultation_results import m2_to_m1_accept, _m2_to_m1_case_id
+    assert "m2_to_m1_accept" in inspect.getsource(m2_to_m1_continue)
+    assert "transfer_to_m1(" in inspect.getsource(m2_to_m1_accept)
+    assert 'actor_type="client"' in inspect.getsource(m2_to_m1_accept)
+    assert _m2_to_m1_case_id("m2_to_m1_accept:42", action="m2_to_m1_accept") == 42
+    assert _m2_to_m1_case_id("m2_to_m1_accept", action="m2_to_m1_accept") is None
+    assert _m2_to_m1_case_id("m2_to_m1_accept:wrong", action="m2_to_m1_accept") is None
 
 
 def test_closed_result_has_no_stale_message_or_case_action():
