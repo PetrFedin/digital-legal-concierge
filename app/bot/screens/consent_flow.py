@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import logging
 
 from aiogram import Router
@@ -237,6 +239,8 @@ async def consent_accept(callback: CallbackQuery, db):
         return
 
     try:
+        case.consent_status = 'GIVEN'
+        case.consent_date = datetime.now(timezone.utc)
         await ctx.case_service.change_status(
             case=case,
             next_status=CaseStatus.M1_DOCUMENTS_PENDING,
@@ -367,6 +371,8 @@ async def consent_decline_confirm(callback: CallbackQuery, db):
         return
 
     try:
+        case.consent_status = 'DECLINED'
+        case.decline_date = datetime.now(timezone.utc)
         await ctx.case_service.change_status(
             case=case,
             next_status=CaseStatus.CALCULATED,
