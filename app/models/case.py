@@ -59,6 +59,39 @@ class Case(Base, TimestampMixin):
     escalation_level: Mapped[int] = mapped_column(Integer, default=0)
     next_action: Mapped[str | None] = mapped_column(String(255), nullable=True)
     internal_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    closure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # B-007: consent evidence is a Case-owned fact, not an inferred status.
+    consent_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    consent_date: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    decline_date: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    contract_signed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    poa_instruction_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    poa_received_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    claim_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    claim_waiting_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    developer_response_status: Mapped[str | None] = mapped_column(
+        String(100), nullable=True
+    )
+    lawsuit_filed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    decision_date: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     enforcement_number: Mapped[str | None] = mapped_column(
         String(255), nullable=True
     )
@@ -97,6 +130,11 @@ class Case(Base, TimestampMixin):
         "Consultation",
         back_populates="case",
         foreign_keys="Consultation.case_id",
+    )
+    court_events = relationship(
+        "CourtEvent",
+        back_populates="case",
+        order_by="CourtEvent.event_date",
     )
     messages = relationship("Message", back_populates="case")
     notifications = relationship("Notification", back_populates="case")

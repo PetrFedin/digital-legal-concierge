@@ -114,7 +114,7 @@ def test_database_enforces_telegram_source_idempotency():
     assert "if INDEX_NAME not in indexes" in migration
     assert 'revision = "20260806_0013"' in next_migration
     assert 'down_revision = "20260805_0012"' in next_migration
-    assert 'HEAD_REVISION = "20261006_0014"' in migration_test
+    assert 'HEAD_REVISION = "20261010_0017"' in migration_test
     assert "MESSAGE_SOURCE_INDEX" in migration_test
 
 

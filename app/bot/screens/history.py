@@ -78,7 +78,7 @@ def _format_timeline(page: dict[str, object]) -> str:
     return "\n".join(blocks)
 
 
-def _history_buttons(page: dict[str, object], *, cursor: int | None):
+def _history_buttons(page: dict[str, object], *, cursor: int | None, read_only: bool = False):
     buttons: list[tuple[str, str]] = []
     next_before_id = page.get("next_before_id")
     if page.get("has_more") and next_before_id:
@@ -90,9 +90,10 @@ def _history_buttons(page: dict[str, object], *, cursor: int | None):
         )
     if cursor is not None:
         buttons.append(("⬆️ К последним событиям", "case_history_open"))
+    if not read_only:
+        buttons.append(("✉️ Задать вопрос по делу", "message_create"))
     buttons.extend(
         [
-            ("✉️ Задать вопрос по делу", "message_create"),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         ]
@@ -123,17 +124,23 @@ async def _render_history(
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     case = await ctx.case_service.get_active_case_for_user(user.id)
+    read_only = False
     if not case:
-        await _safe_edit(
-            callback,
-            "🕘 История дела\n\nАктивного дела нет. Создайте обращение или вернитесь на главную.",
-            reply_markup=one(
-                ("🧮 Рассчитать неустойку", "calc_start"),
-                ("💬 Связаться с юристом", "contact_lawyer"),
-                ("🏠 Главная", "nav_home"),
-            ),
-        )
-        return
+        latest = await ctx.case_service.get_latest_case_for_user(user.id)
+        if latest and str(latest.status) in {"M1_CLOSED", "M2_CLOSED", "ARCHIVED"}:
+            case = latest
+            read_only = True
+        else:
+            await _safe_edit(
+                callback,
+                "🕘 История дела\n\nАктивного дела нет. Создайте обращение или вернитесь на главную.",
+                reply_markup=one(
+                    ("🧮 Рассчитать неустойку", "calc_start"),
+                    ("💬 Связаться с юристом", "contact_lawyer"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+            )
+            return
 
     try:
         page = await CaseActivityService(db).page(
@@ -165,7 +172,7 @@ async def _render_history(
     await _safe_edit(
         callback,
         _format_timeline(page),
-        reply_markup=_history_buttons(page, cursor=cursor),
+        reply_markup=_history_buttons(page, cursor=cursor, read_only=read_only),
     )
 
 

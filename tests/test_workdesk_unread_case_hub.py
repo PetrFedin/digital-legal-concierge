@@ -206,7 +206,11 @@ def test_workdesk_routes_actions_to_exact_case_workflows_without_generic_status_
     assert "/message-center/ui?case_id=${x.id}" in ui
     assert "recordWorkdeskReceipt(${id},this,false)" in ui
     assert "recordWorkdeskReceipt(${id},this,true)" in ui
+    assert "closeWorkdeskCase(${id},this)" in ui
     assert "/enforcement/receipt" in ui
+    assert "/admin/cases/'+id+'/close" in ui
+    assert "expected_status:expectedStatus" in ui.replace(" ", "")
+    assert "expected_updated_at:expectedUpdatedAt" in ui.replace(" ", "")
     assert "expected_updated_at:expectedUpdatedAt" in ui.replace(" ", "")
     assert "Очередь пуста" in ui
     assert "Повторить" in ui

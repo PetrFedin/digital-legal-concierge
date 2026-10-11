@@ -6,8 +6,10 @@ import re
 import pytest
 
 from app.api.lawyer import (
+    add_court_event,
     LAWYER_HTML,
     accept,
+    advance_m1_process,
     assigned_case,
     assert_case_snapshot,
     lawyer_cases,
@@ -49,6 +51,13 @@ def test_lawyer_ui_exposes_assigned_cases_and_locks_each_case_action():
     assert "updateEnforcement(${x.case_id},this)" in LAWYER_HTML
     assert "recordReceipt(${x.case_id},this,false)" in LAWYER_HTML
     assert "recordReceipt(${x.case_id},this,true)" in LAWYER_HTML
+    assert "m1Process(${x.case_id},this,'claim_sent'" in LAWYER_HTML
+    assert "m1Process(${x.case_id},this,'lawsuit_preparation'" in LAWYER_HTML
+    assert "m1Process(${x.case_id},this,'lawsuit_filed'" in LAWYER_HTML
+    assert "m1Process(${x.case_id},this,'court_started'" in LAWYER_HTML
+    assert "courtEvent(${x.case_id},this,false)" in LAWYER_HTML
+    assert "courtEvent(${x.case_id},this,true)" in LAWYER_HTML
+    assert "m1Process(${x.case_id},this,'close_success'" in LAWYER_HTML
 
 
 @pytest.mark.parametrize(
@@ -113,6 +122,10 @@ def test_case_reads_are_personal_and_action_availability_matches_transition_poli
     assert '"updated_at"' in source
     assert '"can_update_enforcement"' in source
     assert '"can_record_money_received"' in source
+    assert '"can_start_lawsuit"' in source
+    assert '"can_file_lawsuit"' in source
+    assert '"can_record_court_decision"' in source
+    assert '"can_close_after_success_fee"' in source
     assert '"received_amount"' in source
 
 
@@ -139,6 +152,8 @@ def test_snapshot_rejects_changed_status_or_row_version():
         accept,
         request_docs,
         transfer_to_m2,
+        advance_m1_process,
+        add_court_event,
         update_enforcement,
         record_enforcement_receipt,
     ),
@@ -153,6 +168,47 @@ def test_case_action_endpoints_lock_recheck_and_rollback_every_failure(endpoint)
     assert 'get("expected_updated_at")' in source
     assert "except HTTPException" in source
     assert "except Exception" in source
+    assert source.count("await db.rollback()") >= 3
+
+
+def test_m1_process_ui_and_endpoint_are_snapshot_guarded():
+    function = _action_function("m1Process")
+    compact = _compact(function)
+    source = inspect.getsource(advance_m1_process)
+
+    assert "/m1-process" in function
+    assert "expected_status:expectedStatus" in compact
+    assert "expected_updated_at:expectedUpdatedAt" in compact
+    assert "confirm(" in function
+    assert "for_update=True" in _compact(source)
+    assert "assert_case_snapshot(" in source
+    assert 'get("expected_status")' in source
+    assert 'get("expected_updated_at")' in source
+    assert "M1ProcessService(db)" in source
+    assert source.count("await db.rollback()") >= 3
+
+
+def test_court_event_action_is_structured_snapshot_guarded_and_client_safe():
+    function = _action_function("courtEvent")
+    compact = _compact(function)
+    source = inspect.getsource(add_court_event)
+
+    assert "/court-events" in function
+    for field in (
+        "event_type:type",
+        "event_date:eventDate.trim()",
+        "court_name:courtName.trim()",
+        "court_number:courtNumber.trim()",
+        "result:result.trim()",
+        "client_comment:clientComment.trim()",
+    ):
+        assert field in compact
+    assert "expected_status:expectedStatus" in compact
+    assert "expected_updated_at:expectedUpdatedAt" in compact
+    assert "confirm(" in function
+    assert "for_update=True" in _compact(source)
+    assert "assert_case_snapshot(" in source
+    assert "record_court_event(" in source
     assert source.count("await db.rollback()") >= 3
 
 

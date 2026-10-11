@@ -196,7 +196,6 @@ class PaymentWebhookService:
                 ],
                 PaymentCode.M1_SUCCESS_FEE: [
                     CaseStatus.M1_SUCCESS_FEE_RECEIVED,
-                    CaseStatus.M1_CLOSED,
                 ],
             }
             for status in mapping.get(payment.payment_code, []):

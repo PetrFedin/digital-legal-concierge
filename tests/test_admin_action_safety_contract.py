@@ -6,6 +6,7 @@ import re
 import pytest
 
 from app.api.admin import (
+    admin_close_case,
     admin_record_enforcement_receipt,
     auto_assign,
     create_lawyer,
@@ -69,6 +70,7 @@ def test_admin_write_actions_share_a_single_flight_guard():
         "saveStatus(${id},this)",
         "recordAdminReceipt(${id},this,false)",
         "recordAdminReceipt(${id},this,true)",
+        "closeAdminCase(${id},this)",
         "createLawyer(this)",
         "saveSetting(this)",
     ):
@@ -83,6 +85,7 @@ def test_admin_write_actions_share_a_single_flight_guard():
         ("confirmPayment", "payment:", "подтверждён", "не подтверждён"),
         ("saveStatus", "case:", "сохранён", "не изменён"),
         ("recordAdminReceipt", "case:", "сохранено", "не сохранено"),
+        ("closeAdminCase", "case:", "закрыто", "не закрыто"),
         ("createLawyer", "global:create-lawyer", "создан", "не создан"),
         ("saveSetting", "setting:", "сохранена", "не сохранена"),
     ),
@@ -134,6 +137,23 @@ def test_admin_receipt_ui_sends_case_snapshot_and_explicit_final_flag():
     assert "final:final" in compact
     assert "/enforcement/receipt" in function
     assert "confirm(" in function
+
+
+def test_admin_final_close_requires_reason_and_stale_snapshot():
+    function = _function("closeAdminCase")
+    compact = _compact(function)
+    source = inspect.getsource(admin_close_case)
+
+    assert "reason.trim().length<10" in compact
+    assert "expected_status:expectedStatus" in compact
+    assert "expected_updated_at:expectedUpdatedAt" in compact
+    assert "/admin/cases/'+id+'/close" in function
+    assert "confirm(" in function
+    assert ".with_for_update()" in source
+    assert "expected_status" in source
+    assert "expected_updated_at" in source
+    assert "M1ProcessService(db).close_after_success_fee" in source
+    assert source.count("await db.rollback()") >= 3
 
 
 def test_admin_setting_service_locks_and_rejects_stale_updates():
@@ -207,6 +227,7 @@ def test_manual_payment_confirmation_locks_payment_and_case():
         auto_assign,
         manual_status,
         admin_record_enforcement_receipt,
+        admin_close_case,
         manual_confirm_payment,
     ),
 )

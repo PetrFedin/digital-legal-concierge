@@ -54,6 +54,11 @@ _M2_CAN_SKIP_STATUSES = {
     CaseStatus.M2_DOCUMENTS_OPTIONAL,
     CaseStatus.M2_SLOT_PENDING,
 }
+_READ_ONLY_CASE_STATUSES = {
+    CaseStatus.M1_CLOSED,
+    CaseStatus.M2_CLOSED,
+    CaseStatus.ARCHIVED,
+}
 _DOCUMENT_STATUS_LABELS = {
     "UPLOADED": "Безопасно загружен",
     "PENDING": "Статус уточняется",
@@ -253,6 +258,11 @@ def _document_counts(documents: list) -> dict[str, int]:
 
 
 def _recommended_step(case, documents: list) -> tuple[str, list[tuple[str, str]]]:
+    if _case_status(case) in _READ_ONLY_CASE_STATUSES:
+        return (
+            "Дело закрыто. Документы доступны только для просмотра.",
+            [],
+        )
     counts = _document_counts(documents)
     if counts["replacement"]:
         return (
@@ -308,9 +318,27 @@ async def _load_case_documents(callback: CallbackQuery, db):
     return case, documents
 
 
-async def _render_documents_home(callback: CallbackQuery, db):
-    case, documents = await _load_case_documents(callback, db)
+async def _load_case_documents_for_view(callback: CallbackQuery, db):
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    case = await ctx.case_service.get_active_case_for_user(user.id)
     if not case:
+        latest = await ctx.case_service.get_latest_case_for_user(user.id)
+        if latest and _case_status(latest) in _READ_ONLY_CASE_STATUSES:
+            case = latest
+    if not case:
+        return None, []
+    return case, await DocumentService(db).list_case_documents(case.id)
+
+
+async def _render_documents_home(callback: CallbackQuery, db):
+    case, documents = await _load_case_documents_for_view(callback, db)
+    if not case:
+        await callback.message.edit_text(
+            "📄 Документы можно добавить после создания обращения.\n\n"
+            "Начните с расчёта неустойки или записи на консультацию.",
+            reply_markup=one(*_new_case_buttons()),
+        )
         return
 
     active = _active_documents(documents)
@@ -333,15 +361,21 @@ async def _render_documents_home(callback: CallbackQuery, db):
 
     buttons = list(primary_buttons)
     primary_callbacks = {callback_data for _, callback_data in primary_buttons}
+    read_only = _case_status(case) in _READ_ONLY_CASE_STATUSES
     if active:
         buttons.append(("📋 Все актуальные документы", "documents_list_open"))
-    if "documents_upload_open" not in primary_callbacks and not counts["replacement"]:
+    if (
+        not read_only
+        and "documents_upload_open" not in primary_callbacks
+        and not counts["replacement"]
+    ):
         buttons.append(("➕ Добавить документ", "documents_upload_open"))
     if archived:
         buttons.append((f"🕘 История версий ({len(archived)})", "documents_history_open"))
+    if not read_only:
+        buttons.append(("✉️ Задать вопрос по делу", "message_create"))
     buttons.extend(
         [
-            ("✉️ Задать вопрос по делу", "message_create"),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         ]
@@ -621,7 +655,7 @@ async def upload(message: Message, state: FSMContext, db):
 
 
 async def _render_current_documents(callback: CallbackQuery, db, page: int = 0):
-    case, documents = await _load_case_documents(callback, db)
+    case, documents = await _load_case_documents_for_view(callback, db)
     if not case:
         return
     active = _active_documents(documents)
@@ -651,10 +685,11 @@ async def _render_current_documents(callback: CallbackQuery, db, page: int = 0):
     buttons.extend(action_buttons)
     if archived:
         buttons.append((f"🕘 История версий ({len(archived)})", "documents_history_open"))
+    buttons.append(("⬅️ К обзору", "documents_open"))
+    if _case_status(case) not in _READ_ONLY_CASE_STATUSES:
+        buttons.append(("✉️ Задать вопрос по делу", "message_create"))
     buttons.extend(
         [
-            ("⬅️ К обзору", "documents_open"),
-            ("✉️ Задать вопрос по делу", "message_create"),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         ]
@@ -685,7 +720,7 @@ async def list_docs_page(callback: CallbackQuery, db):
 
 
 async def _render_document_history(callback: CallbackQuery, db, page: int = 0):
-    case, documents = await _load_case_documents(callback, db)
+    case, documents = await _load_case_documents_for_view(callback, db)
     if not case:
         return
     archived = _archived_documents(documents)
