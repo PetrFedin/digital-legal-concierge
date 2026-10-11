@@ -284,13 +284,6 @@ async def actual(message: Message, state: FSMContext, db):
             reply_markup=_result_recovery_keyboard(),
         )
         return
-    planned_date = date.fromisoformat(data["planned_transfer_date"])
-    if actual_date < planned_date:
-        await message.answer(
-            "⚠️ Фактическая дата передачи не может быть раньше даты по ДДУ. Ранее введённые данные сохранены.",
-            reply_markup=_actual_keyboard(),
-        )
-        return
     if actual_date > date.today():
         await message.answer(
             "⚠️ Фактическая дата передачи не может быть в будущем. Ранее введённые данные сохранены.",
