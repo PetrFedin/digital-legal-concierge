@@ -176,6 +176,8 @@ async def test_old_calculated_accept_is_explicit_legacy_m1_consent_and_still_saf
     assert ctx.case_service.transitions[0]["next_status"] == CaseStatus.M1_DOCUMENTS_PENDING
     assert db.commits == 1
     assert case.route == "M1"
+    assert case.consent_status == "GIVEN"
+    assert case.consent_date is not None
 
 
 @pytest.mark.asyncio
@@ -207,6 +209,8 @@ async def test_confirmed_decline_returns_to_saved_calculation(monkeypatch):
     assert db.commits == 1
     text, markup = callback.message.edits[-1]
     assert "Согласие не предоставлено" in text
+    assert case.consent_status == "DECLINED"
+    assert case.decline_date is not None
     assert _callbacks(markup)[:2] == ["calc_decision_open", "calc_to_m2"]
 
 
