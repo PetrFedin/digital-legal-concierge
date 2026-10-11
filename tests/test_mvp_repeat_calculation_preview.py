@@ -80,7 +80,8 @@ async def test_active_case_preview_start_is_explicit_and_nonmutating(monkeypatch
     state = FakeState({"stale_field": "must vanish"})
     callback = FakeCallback()
     await calculator.calc_preview_start(callback, state, object())
-    assert state.values == {"preview_case_id": 31}
+    assert state.values["preview_case_id"] == 31
+    assert len(state.values["preview_request_key"]) == 32
     assert state.current_state == CalculatorStates.waiting_contract_price
     assert "не изменит действующее дело" in callback.message.edits[-1][0]
     assert case.status == "M1_CLAIM_SENT"
@@ -155,6 +156,7 @@ def test_preview_result_actions_do_not_mutate_m1_or_m2():
     assert "calc_continue_m1" not in callbacks
     assert "calc_to_m2" not in callbacks
     assert callbacks == [
+        "calc_preview_save",
         "calc_preview_start",
         "my_case_open",
         "message_create",
