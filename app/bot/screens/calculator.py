@@ -454,6 +454,20 @@ def result_kb():
 
 @router.callback_query(lambda c: c.data in {"calc_unknown_price", "calc_unknown_date"})
 async def unknown_calc_data(callback: CallbackQuery, state: FSMContext, db):
+    data = await state.get_data()
+    if data.get("preview_case_id") is not None:
+        await state.clear()
+        await callback.message.edit_text(
+            "Не хватает данных для предварительного расчёта другого объекта. "
+            "Текущее дело не изменено. Юрист может помочь с исходными данными.",
+            reply_markup=one(
+                ("🧮 Повторить расчёт", "calc_preview_start"),
+                ("📁 Моё дело", "my_case_open"),
+                ("💬 Задать вопрос", "message_create"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
     await state.clear()
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
