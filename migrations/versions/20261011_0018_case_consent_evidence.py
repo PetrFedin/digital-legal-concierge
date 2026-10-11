@@ -19,6 +19,8 @@ _COLUMNS = {
     "consent_status": sa.String(length=20),
     "consent_date": sa.DateTime(timezone=True),
     "decline_date": sa.DateTime(timezone=True),
+    "consent_policy_version": sa.String(length=80),
+    "consent_document_sha256": sa.String(length=64),
 }
 
 def upgrade() -> None:
