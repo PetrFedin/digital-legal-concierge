@@ -22,6 +22,13 @@ class FakeDb:
     def __init__(self):
         self.commits = 0
         self.rollbacks = 0
+        self.added = []
+
+    def add(self, item):
+        self.added.append(item)
+
+    async def flush(self):
+        return None
 
     async def commit(self):
         self.commits += 1
@@ -158,6 +165,7 @@ async def test_accept_commits_m1_documents_transition_before_result(monkeypatch)
     assert transition["actor_type"] == "client"
     assert db.commits == 1
     assert db.rollbacks == 0
+    assert [event.action for event in db.added] == ["CONSENT_GIVEN"]
     assert "✅ Согласие сохранено" in callback.message.edits[-1][0]
     assert _callbacks(callback.message.edits[-1][1])[0] == "documents_open"
 
@@ -211,6 +219,7 @@ async def test_confirmed_decline_returns_to_saved_calculation(monkeypatch):
     assert "Согласие не предоставлено" in text
     assert case.consent_status == "DECLINED"
     assert case.decline_date is not None
+    assert [event.action for event in db.added] == ["CONSENT_DECLINED"]
     assert _callbacks(markup)[:2] == ["calc_decision_open", "calc_to_m2"]
 
 
