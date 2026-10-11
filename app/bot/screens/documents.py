@@ -87,6 +87,42 @@ def _case_status(case) -> CaseStatus:
     return CaseStatus(str(case.status))
 
 
+def _client_document_upload_allowed(case) -> bool:
+    """Never accept M1 evidence before explicit B-007 consent."""
+    route = str(getattr(case, "route", "") or "")
+    if route == "M1":
+        return str(getattr(case, "consent_status", "") or "") == "GIVEN"
+    return route == "M2"
+
+
+def _upload_denied_buttons(case) -> tuple[tuple[str, str], ...]:
+    if str(getattr(case, "route", "") or "") == "M1":
+        return (
+            ("✉️ Запросить проверку согласия", "message_create"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        )
+    return (
+        ("🧭 Выбрать маршрут", "calc_decision_open"),
+        ("💬 Консультация", "contact_lawyer"),
+        ("📁 Моё дело", "my_case_open"),
+        ("🏠 Главная", "nav_home"),
+    )
+
+
+def _upload_denied_text(case) -> str:
+    if str(getattr(case, "route", "") or "") == "M1":
+        return (
+            "Документы не принимаются: в этом деле не зафиксировано "
+            "согласие на обработку персональных данных для маршрута М1. "
+            "Обратитесь к команде для проверки и подтверждения согласия."
+        )
+    return (
+        "Перед загрузкой документов выберите маршрут обращения и "
+        "подтвердите необходимые условия. Ваши данные не изменены."
+    )
+
+
 def _status(document) -> str:
     return str(document.status)
 
@@ -402,6 +438,14 @@ async def upload_menu(callback: CallbackQuery, state: FSMContext, db):
     if not case:
         await state.clear()
         return
+    if not _client_document_upload_allowed(case):
+        await state.clear()
+        await _safe_edit(
+            callback,
+            _upload_denied_text(case),
+            reply_markup=one(*_upload_denied_buttons(case)),
+        )
+        return
 
     await state.clear()
     await state.set_state(DocumentUploadStates.choosing_type)
@@ -485,6 +529,14 @@ async def upload(message: Message, state: FSMContext, db):
         await message.answer(
             "Активное дело больше не найдено. Файл не загружен.",
             reply_markup=one(*_new_case_buttons()),
+        )
+        return
+
+    if not _client_document_upload_allowed(case):
+        await state.clear()
+        await message.answer(
+            _upload_denied_text(case),
+            reply_markup=one(*_upload_denied_buttons(case)),
         )
         return
 
@@ -782,6 +834,14 @@ async def finish(callback: CallbackQuery, db):
         await callback.message.edit_text(
             "Активное дело не найдено. Документы не переданы.",
             reply_markup=one(*_new_case_buttons()),
+        )
+        return
+
+    if not _client_document_upload_allowed(case):
+        await _safe_edit(
+            callback,
+            _upload_denied_text(case),
+            reply_markup=one(*_upload_denied_buttons(case)),
         )
         return
 
