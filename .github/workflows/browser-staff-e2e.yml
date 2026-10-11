@@ -15,12 +15,26 @@ concurrency:
 
 jobs:
   chromium-staff:
-    name: Chromium admin and lawyer acceptance
+    name: Chromium admin and lawyer acceptance on PostgreSQL
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: dlc_browser_ci
+          POSTGRES_USER: concierge
+          POSTGRES_PASSWORD: concierge-browser-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U concierge -d dlc_browser_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     env:
       APP_ENV: test
-      DATABASE_URL: sqlite+aiosqlite:///./browser_staff_ci.db
+      DATABASE_URL: postgresql+asyncpg://concierge:concierge-browser-ci@localhost:5432/dlc_browser_ci
       BOT_TOKEN: CHANGE_ME
       RUN_BOT: "false"
       RUN_SCHEDULER: "false"
@@ -47,7 +61,7 @@ jobs:
           pip install -e ".[test]" playwright==1.56.0
           python -m playwright install --with-deps chromium
 
-      - name: Migrate fresh test database
+      - name: Migrate fresh PostgreSQL browser database
         run: |
           python scripts/init_db.py
           alembic current
