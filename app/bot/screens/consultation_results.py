@@ -322,6 +322,9 @@ async def _pending_m2_to_m1_case(
     case = (await db.execute(statement)).scalar_one_or_none()
     if not case or str(case.status) != CaseStatus.M2_TO_M1.value:
         return None, None
+    if action == "m2_to_m1_accept" and case.consent_status == "DECLINED":
+        # A consent button rendered before refusal must never overturn it.
+        return None, None
 
     latest = await latest_terminal_client_consultation(
         db,
@@ -359,6 +362,20 @@ async def m2_to_m1_continue(callback: CallbackQuery, db):
     if not case:
         await _stale_m2_to_m1(callback)
         return
+    if case.consent_status == "DECLINED":
+        await _safe_edit(
+            callback,
+            "Вы ранее отказались от продолжения М1. Отказ сохранён. "
+            "Чтобы снова рассмотреть предложение юриста, сначала "
+            "отдельно подтвердите изменение своего решения.",
+            reply_markup=one(
+                ("🔄 Вернуться к рассмотрению М1", f"m2_to_m1_reconsider:{case.id}"),
+                ("✉️ Написать команде", "message_create"),
+                ("📁 Моё дело", "my_case_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
     await _safe_edit(
         callback,
         "📄 Подтверждение перехода М2 → М1\n\n"
@@ -372,6 +389,52 @@ async def m2_to_m1_continue(callback: CallbackQuery, db):
             ("✅ Согласен, продолжить в М1", f"m2_to_m1_accept:{case.id}"),
             ("❌ Не согласен", f"m2_to_m1_decline:{case.id}"),
             ("↩️ Вернуться к итогу", "consultation_result_open"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ),
+    )
+
+
+@router.callback_query(
+    lambda c: (c.data or "").startswith("m2_to_m1_reconsider")
+)
+async def m2_to_m1_reconsider(callback: CallbackQuery, db):
+    try:
+        case, user = await _pending_m2_to_m1_case(
+            callback, db, action="m2_to_m1_reconsider", lock=True
+        )
+        if not case or case.consent_status != "DECLINED":
+            await db.rollback()
+            await _stale_m2_to_m1(callback)
+            return
+        case.consent_status = "PENDING"
+        await add_case_history_event(
+            db,
+            actor_type="client",
+            actor_id=user.id,
+            case_id=case.id,
+            action="CONSENT_RECONSIDERED",
+            new_value={"consent_status": "PENDING"},
+            comment="Клиент снова рассматривает предложение М1 после отказа",
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        logger.exception("Не удалось восстановить выбор согласия после отказа")
+        await _safe_edit(
+            callback,
+            "Не удалось сохранить изменение решения. Откройте актуальное дело.",
+            reply_markup=one(("📁 Моё дело", "my_case_open")),
+        )
+        return
+    await _safe_edit(
+        callback,
+        "Предыдущее решение об отказе осталось в истории дела. "
+        "Чтобы продолжить М1, подтвердите согласие на обработку "
+        "персональных данных. Если вы не согласны, М1 не начнётся.",
+        reply_markup=one(
+            ("✅ Согласен, продолжить в М1", f"m2_to_m1_accept:{case.id}"),
+            ("❌ Не согласен", f"m2_to_m1_decline:{case.id}"),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         ),
@@ -440,6 +503,17 @@ async def m2_to_m1_decline(callback: CallbackQuery, db):
         if not case:
             await db.rollback()
             await _stale_m2_to_m1(callback)
+            return
+        if case.consent_status == "DECLINED":
+            await db.rollback()
+            await _safe_edit(
+                callback,
+                "Ваш отказ уже сохранён. Повторная запись не создавалась.",
+                reply_markup=one(
+                    ("📁 Моё дело", "my_case_open"),
+                    ("🏠 Главная", "nav_home"),
+                ),
+            )
             return
         now = datetime.now(timezone.utc)
         case.consent_status = "DECLINED"
