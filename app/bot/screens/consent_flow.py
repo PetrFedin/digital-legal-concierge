@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 import logging
 
 from aiogram import Router
@@ -9,7 +7,6 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery
 
 from app.bot.context import BotContextService
-from app.domain.cases.case_history import add_case_history_event
 from app.bot.keyboards import one
 from app.domain.statuses.case_statuses import CaseStatus
 
@@ -240,10 +237,6 @@ async def consent_accept(callback: CallbackQuery, db):
         return
 
     try:
-        now = datetime.now(timezone.utc)
-        case.consent_status = 'GIVEN'
-        case.consent_date = now
-        await add_case_history_event(db, actor_type='client', actor_id=user.id, case_id=case.id, action='CONSENT_GIVEN', new_value={'consent_status': 'GIVEN', 'consent_date': now.isoformat()})
         await ctx.case_service.change_status(
             case=case,
             next_status=CaseStatus.M1_DOCUMENTS_PENDING,
@@ -374,10 +367,6 @@ async def consent_decline_confirm(callback: CallbackQuery, db):
         return
 
     try:
-        now = datetime.now(timezone.utc)
-        case.consent_status = 'DECLINED'
-        case.decline_date = now
-        await add_case_history_event(db, actor_type='client', actor_id=user.id, case_id=case.id, action='CONSENT_DECLINED', new_value={'consent_status': 'DECLINED', 'decline_date': now.isoformat()})
         await ctx.case_service.change_status(
             case=case,
             next_status=CaseStatus.CALCULATED,
