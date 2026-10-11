@@ -68,6 +68,12 @@ class Case(Base, TimestampMixin):
     decline_date: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    consent_policy_version: Mapped[str | None] = mapped_column(
+        String(80), nullable=True
+    )
+    consent_document_sha256: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
     contract_signed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
