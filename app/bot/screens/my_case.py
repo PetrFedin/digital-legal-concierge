@@ -82,6 +82,8 @@ def _case_buttons(view) -> list[tuple[str, str]]:
         buttons.extend(
             [
                 ("🕘 История дела", "case_history_open"),
+                ("📂 Все обращения", "cases_list"),
+            ("📂 Все обращения", "cases_list"),
                 ("🏠 Главная", "nav_home"),
             ]
         )
@@ -126,6 +128,7 @@ def _case_buttons(view) -> list[tuple[str, str]]:
     buttons.extend(
         [
             ("🕘 История дела", "case_history_open"),
+            ("📂 Все обращения", "cases_list"),
             ("💬 Связаться с юристом", "contact_lawyer"),
             ("🏠 Главная", "nav_home"),
         ]
@@ -228,6 +231,65 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
         callback,
         "\n".join(lines),
         reply_markup=one(*_case_buttons(view)),
+    )
+
+
+@router.callback_query(lambda c: c.data == "cases_list")
+async def list_my_cases(callback: CallbackQuery, db):
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    cases = await ctx.case_service.list_cases_for_user(user.id)
+    if not cases:
+        await _safe_edit(
+            callback, "Пока нет обращений.",
+            reply_markup=one(
+                ("🧮 Рассчитать неустойку", "calc_start"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+    current = await ctx.case_service.get_active_case_for_user(user.id)
+    lines = ["📂 Ваши обращения", "", "Выберите действующее дело. Закрытые доступны только для истории."]
+    buttons = []
+    for case in cases[:25]:
+        is_closed = str(case.status) in {"M1_CLOSED", "M2_CLOSED", "ARCHIVED"}
+        label = f"{'🔒' if is_closed else '📁'} {case.case_number}"
+        if current is not None and case.id == current.id:
+            label = "✅ " + label
+        lines.append(f"• {case.case_number} · {str(case.route or 'Новый')} · {str(case.status)}")
+        if not is_closed:
+            buttons.append((label[:55], f"cases_select:{case.id}"))
+    if len(cases) > 25:
+        lines.append("Показаны последние 25 обращений. Для остальных обратитесь к команде.")
+    buttons.append(("📁 Моё дело", "my_case_open"))
+    buttons.append(("🏠 Главная", "nav_home"))
+    await db.commit()
+    await _safe_edit(callback, "\n".join(lines)[:3900], reply_markup=one(*buttons))
+
+
+@router.callback_query(lambda c: c.data.startswith("cases_select:"))
+async def select_my_case(callback: CallbackQuery, db):
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    try:
+        case_id = int(str(callback.data).split(":", 1)[1])
+    except (TypeError, ValueError):
+        await _safe_edit(callback, "Некорректная кнопка. Откройте список дел.",
+                         reply_markup=one(("📂 Все обращения", "cases_list"), ("🏠 Главная", "nav_home")))
+        return
+    selected = await ctx.case_service.select_active_case(user=user, case_id=case_id)
+    if selected is None:
+        await db.rollback()
+        await _safe_edit(callback, "Дело недоступно. Нельзя открыть чужое или закрытое обращение.",
+                         reply_markup=one(("📂 Все обращения", "cases_list"), ("🏠 Главная", "nav_home")))
+        return
+    await db.commit()
+    await _safe_edit(
+        callback,
+        f"✅ Выбрано дело № {selected.case_number}. Теперь разделы бота относятся именно к этому обращению.",
+        reply_markup=one(("📁 Открыть дело", "my_case_open"),
+                         ("📂 Все обращения", "cases_list"),
+                         ("🏠 Главная", "nav_home")),
     )
 
 
