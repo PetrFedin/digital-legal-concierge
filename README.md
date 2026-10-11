@@ -288,3 +288,7 @@ Canonical implementation plan:
 - [docs/DIGITAL_LEGAL_CONCIERGE_INTEGRATION_MASTER_PLAN_2026-10-01.md](./docs/DIGITAL_LEGAL_CONCIERGE_INTEGRATION_MASTER_PLAN_2026-10-01.md)
 
 This document is a planned implementation source. Future full-roadmap work should cite this filename explicitly and follow its phases, authority boundaries, dependencies and acceptance gates.
+
+## Обязательное внедрение без новых затрат
+
+Перед работой прочитать [план приоритетов, интеграций и доказательств](docs/REQUIRED_ZERO_COST_IMPLEMENTATION_2026-10-12.md). Дополнительный бюджет **0 ₽**; этот план не заменяет архитектуру, AGENTS.md, CI или обязательное ревью. Без доказательства работы кода/релиза пункт не считается выполненным.
