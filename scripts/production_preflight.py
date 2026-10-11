@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from app.config import settings
+from app.legal.consent_contract import consent_publication_ready
 
 
 PLACEHOLDERS = {
@@ -190,6 +191,7 @@ def build_report() -> dict[str, object]:
                 ),
                 "recovery_actions_disabled": not settings.enable_recovery_actions,
                 "payment_provider_ready": payment_ready,
+                "approved_legal_consent_document_ready": consent_publication_ready(),
                 "retention_is_dry_run": bool(settings.case_retention_dry_run),
                 "telegram_wait_valid": 10
                 <= int(settings.telegram_singleton_wait_seconds)
