@@ -6,6 +6,7 @@ from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Filter
 from aiogram.types import CallbackQuery
+from sqlalchemy import select
 
 from app.bot.consultation_result import (
     clip_client_result,
@@ -16,8 +17,11 @@ from app.bot.consultation_result import (
     prepare_follow_up_consultation,
 )
 from app.bot.context import BotContextService
+from app.domain.cases.case_service import CaseService
 from app.bot.keyboards import one
 from app.domain.statuses.case_statuses import CaseStatus
+from app.domain.statuses.consultation_statuses import ConsultationStatus
+from app.models.case import Case
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -123,7 +127,7 @@ def _result_buttons(view, *, case) -> list[tuple[str, str]]:
         return [("🏠 На главную", "nav_home")]
     if str(case.status) == CaseStatus.M2_TO_M1.value and str(getattr(view, "primary_callback", "")) == "documents_open":
         return [
-            ("✅ Подтвердить продолжение М1", "m2_to_m1_continue"),
+            ("✅ Продолжить: согласие на данные", f"m2_to_m1_continue:{case.id}"),
             ("📁 Моё дело", "my_case_open"),
             ("🏠 Главная", "nav_home"),
         ]
@@ -162,7 +166,19 @@ async def _render_result(callback: CallbackQuery, *, case, consultation) -> None
     scheduled_at = _format_scheduled_at(consultation)
     if scheduled_at:
         lines.append(f"Время встречи: {scheduled_at}")
-    lines.extend(["", view.status_text])
+    pending_m1_consent = (
+        str(case.status) == CaseStatus.M2_TO_M1.value
+        and view.primary_callback == "documents_open"
+    )
+    lines.extend([
+        "",
+        (
+            "Юрист рекомендует стандартное сопровождение М1. "
+            "Переход состоится только после вашего подтверждения."
+            if pending_m1_consent
+            else view.status_text
+        ),
+    ])
 
     if view.show_lawyer_result:
         result = clip_client_result(consultation.lawyer_result)
@@ -185,7 +201,16 @@ async def _render_result(callback: CallbackQuery, *, case, consultation) -> None
             ]
         )
     else:
-        lines.extend(["", "Что дальше:", view.next_step])
+        lines.extend([
+            "",
+            "Что дальше:",
+            (
+                "Подтвердите продолжение и согласие на обработку персональных "
+                "данных для маршрута М1. Результат консультации сохранится."
+                if pending_m1_consent
+                else view.next_step
+            ),
+        ])
     await _safe_edit(
         callback,
         "\n".join(lines),
@@ -261,52 +286,134 @@ async def consultation_result_open(callback: CallbackQuery, db):
     await _render_result(callback, case=case, consultation=consultation)
 
 
-@router.callback_query(lambda c: c.data == "m2_to_m1_continue")
-async def m2_to_m1_continue(callback: CallbackQuery, db):
+def _m2_to_m1_case_id(data: str | None, *, action: str) -> int | None:
+    prefix = f"{action}:"
+    if not data or not data.startswith(prefix):
+        return None
+    try:
+        case_id = int(data[len(prefix):])
+    except ValueError:
+        return None
+    return case_id if case_id > 0 else None
+
+
+async def _pending_m2_to_m1_case(
+    callback: CallbackQuery,
+    db,
+    *,
+    action: str,
+    lock: bool = False,
+):
+    case_id = _m2_to_m1_case_id(callback.data, action=action)
+    if case_id is None:
+        return None, None
+
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
-    case = await ctx.case_service.get_active_case_for_user(user.id)
-    if not case or str(case.status) != CaseStatus.M2_TO_M1.value:
-        await _safe_edit(
-            callback,
-            "Предложение продолжить работу по стандартному маршруту уже не актуально.",
-            reply_markup=one(("📁 Моё дело", "my_case_open"), ("🏠 Главная", "nav_home")),
-        )
-        return
-    latest = await latest_terminal_client_consultation(
-        db, client_id=user.id, case_id=case.id
+    statement = select(Case).where(
+        Case.id == case_id,
+        Case.client_id == user.id,
     )
-    if not latest or str(latest[1].decision) != "to_m1":
-        await _safe_edit(
-            callback,
-            "Решение юриста о переходе в стандартный маршрут не найдено.",
-            reply_markup=one(("📁 Моё дело", "my_case_open"), ("🏠 Главная", "nav_home")),
-        )
+    if lock:
+        statement = statement.with_for_update()
+    case = (await db.execute(statement)).scalar_one_or_none()
+    if not case or str(case.status) != CaseStatus.M2_TO_M1.value:
+        return None, None
+
+    latest = await latest_terminal_client_consultation(
+        db,
+        client_id=user.id,
+        case_id=case.id,
+    )
+    if not latest or (
+        str(latest[1].status) != ConsultationStatus.DONE.value
+        or str(latest[1].decision or "").strip().lower() != "to_m1"
+    ):
+        return None, None
+    return case, user
+
+
+async def _stale_m2_to_m1(callback: CallbackQuery) -> None:
+    await _safe_edit(
+        callback,
+        "Предложение о переходе в М1 уже не актуально или относится к другому делу. "
+        "Никаких изменений не внесено. Откройте текущее дело.",
+        reply_markup=one(
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ),
+    )
+
+
+@router.callback_query(
+    lambda c: (c.data or "").startswith("m2_to_m1_continue")
+)
+async def m2_to_m1_continue(callback: CallbackQuery, db):
+    # Old unscoped buttons cannot mutate whichever Case happened to be active.
+    case, _user = await _pending_m2_to_m1_case(
+        callback, db, action="m2_to_m1_continue"
+    )
+    if not case:
+        await _stale_m2_to_m1(callback)
         return
+    await _safe_edit(
+        callback,
+        "📄 Подтверждение перехода М2 → М1\n\n"
+        "После консультации юрист рекомендовал стандартное сопровождение. "
+        "Для продолжения работы и передачи документов юристу нужно ваше "
+        "явное согласие на обработку персональных данных в рамках дела.\n\n"
+        "Подтверждение сохранится в истории обращения с датой и вашим Telegram ID. "
+        "До согласия дело останется в М2, ранее переданные документы и оплата "
+        "консультации не изменятся.",
+        reply_markup=one(
+            ("✅ Подтверждаю М1 и согласие", f"m2_to_m1_accept:{case.id}"),
+            ("↩️ Вернуться к итогу", "consultation_result_open"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        ),
+    )
+
+
+@router.callback_query(
+    lambda c: (c.data or "").startswith("m2_to_m1_accept")
+)
+async def m2_to_m1_accept(callback: CallbackQuery, db):
     try:
-        await ctx.case_service.transfer_to_m1(
+        case, user = await _pending_m2_to_m1_case(
+            callback, db, action="m2_to_m1_accept", lock=True
+        )
+        if not case:
+            await db.rollback()
+            await _stale_m2_to_m1(callback)
+            return
+
+        await CaseService(db).transfer_to_m1(
             case=case,
             actor_type="client",
             actor_id=user.id,
-            comment="Клиент подтвердил продолжение М1 после консультации",
+            comment=(
+                "Клиент подтвердил переход М2 → М1 и дал согласие на "
+                "обработку персональных данных для сопровождения дела"
+            ),
         )
         await db.commit()
     except Exception:
         await db.rollback()
-        logger.exception("Не удалось подтвердить переход М2 в М1")
+        logger.exception("Не удалось подтвердить переход и согласие М2 → М1")
         await _safe_edit(
             callback,
-            "Не удалось сохранить подтверждение. Дело осталось на прежнем этапе. Попробуйте ещё раз.",
+            "Не удалось сохранить подтверждение. Дело осталось на прежнем этапе. "
+            "Повторите действие или откройте актуальный статус.",
             reply_markup=one(
-                ("🔄 Повторить", "m2_to_m1_continue"),
+                ("🔄 Повторить подтверждение", callback.data),
                 ("📁 Моё дело", "my_case_open"),
             ),
         )
         return
     await _safe_edit(
         callback,
-        "✅ Вы подтвердили продолжение работы по стандартному маршруту М1. "
-        "История консультации сохранена. Следующий шаг — документы.",
+        "✅ Переход в М1 и согласие сохранены. История консультации, "
+        "документы и платёж остаются в деле. Следующий шаг — документы.",
         reply_markup=one(
             ("📄 Документы", "documents_open"),
             ("📁 Моё дело", "my_case_open"),
