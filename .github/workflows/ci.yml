@@ -159,6 +159,9 @@ jobs:
           asyncio.run(main())
           PY
 
+      - name: Verify PostgreSQL consent concurrency on the real database
+        run: pytest -q tests/test_postgresql_m2_concurrency_gate.py
+
       - name: Seed disaster recovery probe
         run: |
           export PGPASSWORD=concierge-ci-password
