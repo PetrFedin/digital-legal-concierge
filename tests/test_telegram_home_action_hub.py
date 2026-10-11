@@ -46,6 +46,7 @@ def test_active_case_home_starts_with_snapshot_safe_primary_action():
     assert callbacks(markup) == [
         "next_action:v2:17:abc123",
         "my_case_open",
+        "calc_preview_start",
         "documents_open",
         "message_history",
         "message_create",
@@ -53,7 +54,8 @@ def test_active_case_home_starts_with_snapshot_safe_primary_action():
     ]
     assert texts(markup)[0] == "▶️ Передать документы юристу"
     assert "calc_start" not in callbacks(markup)
-    assert [len(row) for row in markup.inline_keyboard] == [1, 2, 2, 1]
+    assert "calc_preview_start" in callbacks(markup)
+    assert [len(row) for row in markup.inline_keyboard] == [1, 2, 1, 2, 1]
 
 
 def test_home_uses_shared_case_presenter_and_direct_next_action():
@@ -73,7 +75,7 @@ def test_reply_calculator_entry_recovers_to_active_case():
 
     handler = source[source.index("async def menu_calc"): source.index("async def menu_my_case")]
     assert "get_active_case_for_user" in handler
-    assert "Чтобы не смешивать расчёты, документы и статусы" in handler
+    assert "повторный расчёт по другому" in handler
     assert "_result_view_for_case" in handler
     assert "CONSULTATION_RESULT_ACTION if result_view else _primary_action(view)" in handler
     assert "primary_action=primary_action" in handler
@@ -89,5 +91,5 @@ def test_stale_inline_calculator_button_cannot_overwrite_active_case():
     assert active_case_check < state_start
     assert "load_client_case_view" in handler
     assert 'f"next_action:v2:{view.case_id}:{view.action_key}"' in handler
-    assert "Новый расчёт станет доступен после" in handler
+    assert "calc_preview_start" in handler
     assert "await state.clear()" in handler
