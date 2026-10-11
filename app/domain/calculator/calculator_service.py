@@ -82,13 +82,10 @@ class CalculatorService:
             consumer_multiplier=consumer_multiplier,
         )
 
-        query = await self.db.execute(
-            select(Calculation).where(Calculation.case_id == case.id)
-        )
-        calculation = query.scalars().first()
-        if calculation is None:
-            calculation = Calculation(case_id=case.id)
-            self.db.add(calculation)
+        # Each calculation is an immutable historical snapshot; keep older
+        # values for audit and show the newest by id in the case view.
+        calculation = Calculation(case_id=case.id)
+        self.db.add(calculation)
 
         calculation.contract_price = result.contract_price
         calculation.planned_transfer_date = result.planned_transfer_date
