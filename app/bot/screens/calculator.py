@@ -150,10 +150,11 @@ async def calc_start(callback: CallbackQuery, state: FSMContext, db):
         await callback.message.edit_text(
             "📁 У вас уже есть активное дело.\n\n"
             "Чтобы не смешивать расчёты, документы и статусы разных обращений, "
-            "сначала продолжите текущее дело. Новый расчёт станет доступен после "
-            "его завершения.",
+            "Вы можете продолжить дело или отдельно рассчитать другой объект. "
+            "Предварительный расчёт другого объекта не изменит текущее дело.",
             reply_markup=one(
                 primary_action,
+                ("🧮 Рассчитать другой объект", "calc_preview_start"),
                 ("📁 Моё дело", "my_case_open"),
                 ("💬 Связаться с юристом", "contact_lawyer"),
                 ("🏠 Главная", "nav_home"),
@@ -165,6 +166,32 @@ async def calc_start(callback: CallbackQuery, state: FSMContext, db):
     await state.set_state(CalculatorStates.waiting_contract_price)
     await callback.message.edit_text(
         _price_prompt(),
+        reply_markup=one(
+            ("Не знаю стоимость", "calc_unknown_price"),
+            ("Отменить расчёт", "nav_home"),
+        ),
+    )
+
+
+@router.callback_query(lambda c: c.data == "calc_preview_start")
+async def calc_preview_start(callback: CallbackQuery, state: FSMContext, db):
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    case = await ctx.case_service.get_active_case_for_user(user.id)
+    if not case:
+        await state.clear()
+        await callback.message.edit_text(
+            "Активного дела больше нет. Начните обычный расчёт.",
+            reply_markup=_result_recovery_keyboard(),
+        )
+        return
+    await state.clear()
+    await state.update_data(preview_case_id=case.id)
+    await state.set_state(CalculatorStates.waiting_contract_price)
+    await callback.message.edit_text(
+        "🧮 Предварительный расчёт по другому объекту\n\n"
+        "Этот расчёт не изменит действующее дело, его документы или платежи.\n\n"
+        + _price_prompt(),
         reply_markup=one(
             ("Не знаю стоимость", "calc_unknown_price"),
             ("Отменить расчёт", "nav_home"),
@@ -308,7 +335,22 @@ async def calc_result(state, db, case):
     data = await state.get_data()
     if not _base_data_ready(data) or "object_transferred" not in data:
         raise ValueError("Данные расчёта устарели. Начните расчёт заново.")
-    return await CalculatorService(db).calculate_and_save(
+    service = CalculatorService(db)
+    preview_case_id = data.get("preview_case_id")
+    if preview_case_id is not None:
+        if case is None or case.id != preview_case_id:
+            raise ValueError("Активное дело изменилось во время расчёта.")
+        return service.calculate_preview(
+            contract_price=Decimal(data["contract_price"]),
+            planned_transfer_date=date.fromisoformat(data["planned_transfer_date"]),
+            calculation_date=date.today(),
+            object_transferred=bool(data["object_transferred"]),
+            actual_transfer_date=(
+                date.fromisoformat(data["actual_transfer_date"])
+                if data.get("actual_transfer_date") else None
+            ),
+        )
+    return await service.calculate_and_save(
         case=case,
         contract_price=Decimal(data["contract_price"]),
         planned_transfer_date=date.fromisoformat(data["planned_transfer_date"]),
@@ -326,8 +368,14 @@ async def calculate_show_message(message: Message, state: FSMContext, db):
     try:
         ctx = BotContextService(db)
         user = await ctx.get_user_from_message(message)
-        case = await ctx.get_or_create_active_case_for_user(user)
+        data = await state.get_data()
+        case = (
+            await ctx.case_service.get_active_case_for_user(user.id)
+            if data.get("preview_case_id") is not None
+            else await ctx.get_or_create_active_case_for_user(user)
+        )
         result = await calc_result(state, db, case)
+        is_preview = data.get("preview_case_id") is not None
         await db.commit()
     except Exception:
         await db.rollback()
@@ -341,7 +389,11 @@ async def calculate_show_message(message: Message, state: FSMContext, db):
 
     await state.clear()
     try:
-        await message.answer(format_calculation_result(result), reply_markup=result_kb())
+        await message.answer(
+            format_calculation_result(result)
+            + ("\n\nℹ️ Результат другого объекта не записан в текущее дело." if is_preview else ""),
+            reply_markup=preview_result_kb() if is_preview else result_kb(),
+        )
     except Exception:
         logger.exception("Committed calculator result could not be rendered to message")
 
@@ -350,8 +402,14 @@ async def calculate_show_callback(callback: CallbackQuery, state: FSMContext, db
     try:
         ctx = BotContextService(db)
         user = await ctx.get_user_from_callback(callback)
-        case = await ctx.get_or_create_active_case_for_user(user)
+        data = await state.get_data()
+        case = (
+            await ctx.case_service.get_active_case_for_user(user.id)
+            if data.get("preview_case_id") is not None
+            else await ctx.get_or_create_active_case_for_user(user)
+        )
         result = await calc_result(state, db, case)
+        is_preview = data.get("preview_case_id") is not None
         await db.commit()
     except Exception:
         await db.rollback()
@@ -369,9 +427,19 @@ async def calculate_show_callback(callback: CallbackQuery, state: FSMContext, db
     await state.clear()
     await _present_committed_callback(
         callback,
-        format_calculation_result(result),
-        reply_markup=result_kb(),
+        format_calculation_result(result)
+        + ("\n\nℹ️ Результат другого объекта не записан в текущее дело." if is_preview else ""),
+        reply_markup=preview_result_kb() if is_preview else result_kb(),
         saved_notice="Расчёт уже сохранён.",
+    )
+
+
+def preview_result_kb():
+    return one(
+        ("🧮 Ещё один расчёт", "calc_preview_start"),
+        ("📁 Вернуться к действующему делу", "my_case_open"),
+        ("💬 Задать вопрос по делу", "message_create"),
+        ("🏠 Главная", "nav_home"),
     )
 
 
