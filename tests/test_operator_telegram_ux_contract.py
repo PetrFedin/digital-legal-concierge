@@ -36,7 +36,7 @@ def test_inline_menu_hides_disabled_payments_and_parallel_calculation():
         "message_create",
         "contact_lawyer",
     ]
-    assert [len(row) for row in markup.inline_keyboard] == [2, 2, 1]
+    assert [len(row) for row in markup.inline_keyboard] == [2, 1, 2, 1]
 
 
 def test_inline_menu_shows_payments_when_provider_is_enabled():
