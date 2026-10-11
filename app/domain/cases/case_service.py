@@ -27,21 +27,55 @@ class CaseService:
         self.db = db
 
     async def get_active_case_for_user(self, user_id: int):
+        # The persisted client selection wins over the most recently created case.
+        user = await self.db.get(User, user_id)
+        if user is not None and user.active_case_id is not None:
+            chosen = await self.db.scalar(
+                select(Case).where(
+                    Case.id == user.active_case_id,
+                    Case.client_id == user_id,
+                    Case.status.notin_(
+                        [CaseStatus.M1_CLOSED, CaseStatus.M2_CLOSED, CaseStatus.ARCHIVED]
+                    ),
+                )
+            )
+            if chosen is not None:
+                return chosen
         result = await self.db.execute(
             select(Case)
             .where(Case.client_id == user_id)
             .where(
                 Case.status.notin_(
-                    [
-                        CaseStatus.M1_CLOSED,
-                        CaseStatus.M2_CLOSED,
-                        CaseStatus.ARCHIVED,
-                    ]
+                    [CaseStatus.M1_CLOSED, CaseStatus.M2_CLOSED, CaseStatus.ARCHIVED]
                 )
             )
-            .order_by(Case.created_at.desc())
+            .order_by(Case.created_at.desc(), Case.id.desc())
+            .limit(1)
         )
         return result.scalars().first()
+
+    async def list_cases_for_user(self, user_id: int):
+        result = await self.db.execute(
+            select(Case).where(Case.client_id == user_id)
+            .order_by(Case.created_at.desc(), Case.id.desc())
+        )
+        return list(result.scalars().all())
+
+    async def select_active_case(self, *, user: User, case_id: int) -> Case | None:
+        case = await self.db.scalar(
+            select(Case).where(
+                Case.id == case_id,
+                Case.client_id == user.id,
+                Case.status.notin_(
+                    [CaseStatus.M1_CLOSED, CaseStatus.M2_CLOSED, CaseStatus.ARCHIVED]
+                ),
+            )
+        )
+        if case is None:
+            return None
+        user.active_case_id = case.id
+        await self.db.flush()
+        return case
 
     async def get_latest_case_for_user(self, user_id: int):
         result = await self.db.execute(
@@ -59,10 +93,12 @@ class CaseService:
         route: str | None = None,
         status: str = CaseStatus.NEW,
         title: str | None = None,
+        creation_request_key: str | None = None,
     ):
         normalized_status = normalize_status(status)
         case = Case(
             case_number="TEMP",
+            creation_request_key=creation_request_key,
             client_id=client.id,
             route=route,
             status=normalized_status,
