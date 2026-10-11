@@ -99,6 +99,8 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "consent_status",
         "consent_date",
         "decline_date",
+        "consent_policy_version",
+        "consent_document_sha256",
         "contract_signed_at",
         "poa_instruction_sent_at",
         "poa_received_at",
