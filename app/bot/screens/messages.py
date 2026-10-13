@@ -641,6 +641,22 @@ async def message_submit(callback: CallbackQuery, state: FSMContext, db):
             )
             await callback.answer("Дело изменилось. Вопрос не отправлен.")
             return
+        if intended_case_id is None and case is not None:
+            # Draft started as a new inquiry. Another session may have opened
+            # a Case meanwhile. Never silently attach it to that new matter.
+            await _replace_or_send(
+                callback,
+                "⚠️ Пока вы готовили вопрос, появилось активное дело. "
+                "Вопрос не отправлен, текст сохранён. Чтобы не перепутать "
+                "обращения, выберите дело и начните отправку для него заново.",
+                reply_markup=one(
+                    ("📂 Выбрать обращение", "cases_list"),
+                    ("↩️ Вернуться к черновику", "message_review_return"),
+                    ("✖️ Отменить черновик", "message_discard_confirm"),
+                ),
+            )
+            await callback.answer("Активное дело изменилось. Вопрос не отправлен.")
+            return
         if not case:
             case = await ctx.get_or_create_active_case_for_user(user)
 
