@@ -58,12 +58,25 @@ class NewObjectSaveService:
     ) -> Case:
         if not request_key or len(request_key) != 32 or any(c not in "0123456789abcdef" for c in request_key):
             raise NewObjectSaveError("Недействительный идентификатор расчёта")
+        # Serialize an explicit matter switch against this save. Do not let the
+        # latest-created fallback silently select a new Case on save.
+        owner = await self.db.scalar(
+            select(User)
+            .where(User.id == user.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if owner is None:
+            raise NewObjectSaveError("Пользователь не найден. Войдите в бот заново.")
         cases = CaseService(self.db)
-        current = await cases.get_active_case_for_user(user.id)
-        # Always validate ownership and the active case, including retries.
+        current = await cases.get_active_case_for_user(owner.id)
+        # Always validate ownership and the selected source case, including retries.
         if current is None or current.id != preview_case_id:
             raise NewObjectSaveError("Текущее дело изменилось. Начните новый расчёт.")
-        key = f"new-object:{user.id}:{request_key}"
+        if owner.active_case_id != current.id:
+            owner.active_case_id = current.id
+            await self.db.flush()
+        key = f"new-object:{owner.id}:{request_key}"
         existing = await self.db.scalar(
             select(Case).where(Case.client_id == user.id, Case.creation_request_key == key)
         )
