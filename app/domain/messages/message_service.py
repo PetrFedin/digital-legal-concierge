@@ -8,8 +8,28 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_history import add_case_history_event
+from app.domain.cases.case_transition_policy import TERMINAL_STATUSES
+from app.domain.statuses.case_statuses import CaseStatus
 from app.models.case import Case
+from app.models.case_retention import CaseRetentionRecord
 from app.models.message import Message
+from app.models.user import User
+
+
+# Closed, erased and system-error cases are not client message targets.
+_CLIENT_MESSAGE_DENIED_STATUSES = frozenset(
+    {str(item) for item in TERMINAL_STATUSES} | {str(CaseStatus.ERROR)}
+)
+_CLIENT_MESSAGE_DENIED_RETENTION = frozenset(
+    {"APPROVED", "EXECUTING", "FAILED", "COMPLETED"}
+)
+
+
+class ClientMessageAccessDenied(ValueError):
+    """Uniform denial: do not disclose foreign case or stale message identities."""
+
+    def __init__(self):
+        super().__init__("Сообщение по этому делу недоступно.")
 
 
 class MessageService:
@@ -78,6 +98,41 @@ class MessageService:
             )
         ).scalar_one_or_none()
 
+    async def _assert_client_message_access(self, *, case: Case, user_id: int) -> None:
+        """Check current database authority under the already locked Case row."""
+        if (
+            isinstance(user_id, bool)
+            or not isinstance(user_id, int)
+            or user_id <= 0
+            or int(case.client_id) != user_id
+            or str(case.status) in _CLIENT_MESSAGE_DENIED_STATUSES
+            or case.content_deleted_at is not None
+        ):
+            raise ClientMessageAccessDenied()
+
+        blocked = await self.db.scalar(
+            select(User.is_blocked).where(User.id == user_id)
+        )
+        if blocked is None or bool(blocked):
+            raise ClientMessageAccessDenied()
+
+        restricted = await self.db.scalar(
+            select(CaseRetentionRecord.id).where(
+                CaseRetentionRecord.case_id == case.id,
+                CaseRetentionRecord.status.in_(_CLIENT_MESSAGE_DENIED_RETENTION),
+            ).limit(1)
+        )
+        if restricted is not None:
+            raise ClientMessageAccessDenied()
+
+    @staticmethod
+    def _assert_idempotent_case(existing: Message | None, case_id: int) -> Message | None:
+        # Telegram message IDs are unique for a sender, not transferable
+        # between distinct legal matters even when the sender owns both.
+        if existing is not None and int(existing.case_id) != int(case_id):
+            raise ClientMessageAccessDenied()
+        return existing
+
     async def get_or_create_client_message(
         self,
         *,
@@ -86,17 +141,16 @@ class MessageService:
         text: str,
         source_message_id: int | None = None,
     ) -> tuple[Message, bool]:
-        existing = await self.find_client_message_by_source(
-            user_id=user_id,
-            source_message_id=source_message_id,
-        )
-        if existing is not None:
-            return existing, False
-
+        # Lock and authorize before any replay lookup. Otherwise a guessed
+        # source ID could return a Message from a different or closed Case.
         case = await self.lock_case(case.id)
-        existing = await self.find_client_message_by_source(
-            user_id=user_id,
-            source_message_id=source_message_id,
+        await self._assert_client_message_access(case=case, user_id=user_id)
+        existing = self._assert_idempotent_case(
+            await self.find_client_message_by_source(
+                user_id=user_id,
+                source_message_id=source_message_id,
+            ),
+            case.id,
         )
         if existing is not None:
             return existing, False
@@ -114,9 +168,12 @@ class MessageService:
                 self.db.add(msg)
                 await self.db.flush()
         except IntegrityError:
-            existing = await self.find_client_message_by_source(
-                user_id=user_id,
-                source_message_id=source_message_id,
+            existing = self._assert_idempotent_case(
+                await self.find_client_message_by_source(
+                    user_id=user_id,
+                    source_message_id=source_message_id,
+                ),
+                case.id,
             )
             if existing is None:
                 raise
@@ -128,11 +185,9 @@ class MessageService:
             actor_id=user_id,
             case_id=case.id,
             action="CLIENT_MESSAGE_CREATED",
-            new_value={
-                "message_id": msg.id,
-                "source_message_id": source_message_id,
-                "text": text[:500],
-            },
+            # Audit proves the event, not its sensitive body. The separately
+            # retention-governed Message row is the sole business text source.
+            new_value={"message_id": msg.id},
         )
         return msg, True
 
@@ -175,7 +230,8 @@ class MessageService:
             actor_id=lawyer_id,
             case_id=case.id,
             action="LAWYER_MESSAGE_CREATED",
-            new_value={"message_id": msg.id, "text": text[:500]},
+            # Never duplicate privileged legal correspondence in immutable audit.
+            new_value={"message_id": msg.id},
         )
         return msg
 
@@ -191,6 +247,29 @@ class MessageService:
             .limit(limit)
         )
         return list(result.scalars().all())
+
+    async def list_case_messages_page(
+        self, case_id: int, *, page: int = 0, page_size: int = 5
+    ) -> tuple[list[Message], int, int]:
+        """Read-only pagination. The Telegram route must authorize case ownership first."""
+        bounded_size = min(max(int(page_size), 1), 10)
+        total = int(
+            await self.db.scalar(
+                select(func.count(Message.id)).where(Message.case_id == case_id)
+            ) or 0
+        )
+        total_pages = max(1, (total + bounded_size - 1) // bounded_size)
+        selected = min(max(int(page), 0), total_pages - 1)
+        rows = (
+            await self.db.execute(
+                select(Message)
+                .where(Message.case_id == case_id)
+                .order_by(Message.created_at.desc(), Message.id.desc())
+                .offset(selected * bounded_size)
+                .limit(bounded_size)
+            )
+        ).scalars().all()
+        return list(rows), selected, total_pages
 
     async def mark_client_messages_read(self, case_id: int) -> int:
         result = await self.db.execute(
