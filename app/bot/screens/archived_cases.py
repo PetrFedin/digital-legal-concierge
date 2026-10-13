@@ -8,7 +8,6 @@ from __future__ import annotations
 from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery
-from sqlalchemy import select
 
 from app.bot.client_case_view import format_updated_at, load_client_case_view
 from app.bot.context import BotContextService
@@ -95,12 +94,8 @@ async def _load_owned_archived_case(callback: CallbackQuery, db, case_id: int):
     """Fail closed: a terminal, owned Case is required for every archive read."""
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
-    return await db.scalar(
-        select(Case).where(
-            Case.id == case_id,
-            Case.client_id == user.id,
-            Case.status.in_(tuple(ARCHIVE_STATUSES)),
-        )
+    return await ctx.case_service.get_terminal_case_for_user(
+        user_id=user.id, case_id=case_id
     )
 
 
@@ -152,13 +147,12 @@ async def _render_documents(callback: CallbackQuery, db, case: Case, page: int):
         buttons.append(("⬅️ Новые документы", f"archive_docs:{case.id}:{current_page - 1}"))
     if current_page + 1 < pages:
         buttons.append(("Старые документы ➡️", f"archive_docs:{case.id}:{current_page + 1}"))
-    await _safe_edit(callback, text, reply_markup=_back_buttons(
-        case.id, more=None
-    ) if not buttons else one(*buttons, *[
+    buttons.extend([
         ("🔒 Карточка закрытого дела", f"cases_archive:{case.id}"),
         ("📂 Все обращения", "cases_list"),
         ("🏠 Главная", "nav_home"),
-    ]))
+    ])
+    await _safe_edit(callback, text, reply_markup=one(*buttons))
 
 
 async def _render_payments(callback: CallbackQuery, db, case: Case, page: int):
