@@ -257,7 +257,10 @@ async def list_my_cases(callback: CallbackQuery, db):
         if current is not None and case.id == current.id:
             label = "✅ " + label
         lines.append(f"• {case.case_number} · {str(case.route or 'Новый')} · {str(case.status)}")
-        if not is_closed:
+        if is_closed:
+            # Never route archived cases through the mutable active-case pointer.
+            buttons.append((label[:55], f"cases_archive:{case.id}"))
+        else:
             buttons.append((label[:55], f"cases_select:{case.id}"))
     if len(cases) > 25:
         lines.append("Показаны последние 25 обращений. Для остальных обратитесь к команде.")
