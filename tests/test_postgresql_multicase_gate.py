@@ -171,6 +171,20 @@ async def test_postgresql_terminal_archive_owner_acl_and_selection_invariance():
             foreign_id, live_id, owner_id, stranger_id = (
                 foreign.id, live.id, owner.id, stranger.id
             )
+            db.add_all([
+                Message(
+                    case_id=old_m1.id,
+                    sender_type="client",
+                    sender_id=owner.id,
+                    text=f"Archive message {i}",
+                )
+                for i in range(12)
+            ] + [
+                Message(
+                    case_id=foreign.id, sender_type="client",
+                    sender_id=stranger.id, text="Other tenant secret",
+                )
+            ])
             assert await cases.select_active_case(user=owner, case_id=live_id) is not None
             await db.commit()
 
@@ -194,6 +208,12 @@ async def test_postgresql_terminal_archive_owner_acl_and_selection_invariance():
             ) is None
             assert owner.active_case_id == selected_before
             assert (await cases.get_active_case_for_user(owner_id)).id == live_id
+            archive_messages, page, pages = await MessageService(db).list_case_messages_page(
+                owned_ids[0], page=1, page_size=5
+            )
+            assert (page, pages, len(archive_messages)) == (1, 3, 5)
+            assert {item.case_id for item in archive_messages} == {owned_ids[0]}
+            assert all("Other tenant secret" not in item.text for item in archive_messages)
             assert (await cases.select_active_case(
                 user=owner, case_id=owned_ids[0]
             )) is None
