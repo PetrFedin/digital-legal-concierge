@@ -17,6 +17,7 @@ from app.bot.screens.history import _format_timeline
 from app.bot.screens.payments import payment_summary_line
 from app.domain.cases.case_activity import CaseActivityService
 from app.domain.documents.document_service import DocumentService
+from app.domain.messages.message_service import MessageService
 from app.domain.payments.payment_service import PaymentService
 from app.models.case import Case
 
@@ -26,9 +27,10 @@ ARCHIVE_STATUSES = frozenset({"M1_CLOSED", "M2_CLOSED", "ARCHIVED"})
 DOCS_PAGE_SIZE = 6
 PAYMENTS_PAGE_SIZE = 6
 HISTORY_PAGE_SIZE = 7
+MESSAGE_PAGE_SIZE = 5
 MAX_TELEGRAM_TEXT = 3800
 
-_ARCHIVE_PREFIXES = ("cases_archive:", "archive_docs:", "archive_payments:", "archive_history:")
+_ARCHIVE_PREFIXES = ("cases_archive:", "archive_docs:", "archive_payments:", "archive_history:", "archive_messages:")
 
 
 def _number(value: str, *, allow_zero: bool = False) -> int | None:
@@ -47,7 +49,7 @@ def parse_archive_callback(data: str | None) -> tuple[str, int, int] | None:
         case_id = _number(parts[1])
         return ("case", case_id, 0) if case_id is not None else None
     if len(parts) == 3 and parts[0] in {
-        "archive_docs", "archive_payments", "archive_history"
+        "archive_docs", "archive_payments", "archive_history", "archive_messages"
     }:
         case_id = _number(parts[1])
         position = _number(parts[2], allow_zero=True)
@@ -64,6 +66,7 @@ def _archive_buttons(case_id: int):
         ("📄 Документы и версии", f"archive_docs:{case_id}:0"),
         ("💳 История оплат", f"archive_payments:{case_id}:0"),
         ("🕘 История событий", f"archive_history:{case_id}:0"),
+        ("💬 Переписка", f"archive_messages:{case_id}:0"),
         ("📂 Все обращения", "cases_list"),
         ("🏠 Главная", "nav_home"),
     )
@@ -205,6 +208,40 @@ async def _render_history(callback: CallbackQuery, db, case: Case, cursor: int):
     await _safe_edit(callback, text, reply_markup=one(*buttons))
 
 
+async def _render_messages(callback: CallbackQuery, db, case: Case, page: int):
+    rows, current_page, pages = await MessageService(db).list_case_messages_page(
+        case.id, page=page, page_size=MESSAGE_PAGE_SIZE
+    )
+    blocks = []
+    for message in rows:
+        role = "Вы" if message.sender_type == "client" else "Команда"
+        timestamp = (
+            message.created_at.strftime("%d.%m.%Y %H:%M")
+            if message.created_at else "дата не указана"
+        )
+        body = " ".join(str(message.text or "").split())
+        if len(body) > 540:
+            body = body[:539].rstrip() + "…"
+        blocks.append(f"{role} · {timestamp}\\n{body}")
+    text = (
+        f"💬 Архив переписки № {case.case_number}\\n"
+        "Сохранённые сообщения. Новая отправка из архива недоступна.\\n\\n"
+        + ("\\n\\n".join(blocks) if blocks else "Сообщений пока нет.")
+        + f"\\n\\nСтраница {current_page + 1} из {pages}."
+    )
+    buttons = []
+    if current_page:
+        buttons.append(("⬅️ Более новые", f"archive_messages:{case.id}:{current_page - 1}"))
+    if current_page + 1 < pages:
+        buttons.append(("Более ранние ➡️", f"archive_messages:{case.id}:{current_page + 1}"))
+    buttons.extend([
+        ("🔒 Карточка закрытого дела", f"cases_archive:{case.id}"),
+        ("📂 Все обращения", "cases_list"),
+        ("🏠 Главная", "nav_home"),
+    ])
+    await _safe_edit(callback, text, reply_markup=one(*buttons))
+
+
 @router.callback_query(lambda c: str(c.data or "").startswith(_ARCHIVE_PREFIXES))
 async def open_readonly_archive(callback: CallbackQuery, db):
     parsed = parse_archive_callback(callback.data)
@@ -233,6 +270,8 @@ async def open_readonly_archive(callback: CallbackQuery, db):
             await _render_payments(callback, db, case, position)
         elif screen == "archive_history":
             await _render_history(callback, db, case, position)
+        elif screen == "archive_messages":
+            await _render_messages(callback, db, case, position)
     except TelegramBadRequest:
         raise
     except Exception:
