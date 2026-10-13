@@ -15,7 +15,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.domain.cases.case_service import CaseService
-from app.domain.cases.new_object_service import NewObjectSaveService
+from app.domain.cases.new_object_service import NewObjectSaveError, NewObjectSaveService
+from app.domain.calculator.calculator_service import CalculatorService
+from app.domain.calculator.preview_receipt import preview_receipt
 from app.domain.documents.document_service import DocumentService
 from app.domain.messages.message_service import MessageService
 from app.domain.payments.payment_service import PaymentService
@@ -64,13 +66,16 @@ async def test_postgresql_concurrent_new_object_save_scoped_visibility():
         async def save_once():
             async with factory() as db:
                 user = await db.get(User, owner_id)
-                created = await NewObjectSaveService(db).save(
-                    user=user, preview_case_id=original_id,
-                    request_key=token,
+                facts = dict(
                     contract_price=Decimal("2500000"),
                     planned_transfer_date=date(2025, 1, 1),
                     calculation_date=date(2025, 3, 1),
                     object_transferred=False, actual_transfer_date=None,
+                )
+                receipt = preview_receipt(CalculatorService(db).calculate_preview(**facts))
+                created = await NewObjectSaveService(db).save(
+                    user=user, preview_case_id=original_id,
+                    request_key=token, expected_receipt=receipt, **facts,
                 )
                 case_id = created.id
                 await db.commit()
@@ -93,6 +98,19 @@ async def test_postgresql_concurrent_new_object_save_scoped_visibility():
                 Calculation.case_id == first,
             )) == 1
             assert (await db.get(Case, original_id)).status == "M1_DOCUMENTS_PENDING"
+            facts = dict(
+                contract_price=Decimal("2500000"),
+                planned_transfer_date=date(2025, 1, 1),
+                calculation_date=date(2025, 3, 1),
+                object_transferred=False, actual_transfer_date=None,
+            )
+            mismatched = preview_receipt(CalculatorService(db).calculate_preview(**facts))
+            mismatched["penalty_amount"] = "0"
+            with pytest.raises(NewObjectSaveError, match="ключ уже использован"):
+                await NewObjectSaveService(db).save(
+                    user=owner, preview_case_id=original_id,
+                    request_key=token, expected_receipt=mismatched, **facts,
+                )
             assert await CaseService(db).select_active_case(
                 user=stranger, case_id=first,
             ) is None
