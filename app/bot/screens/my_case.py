@@ -234,7 +234,13 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
     )
 
 
-@router.callback_query(lambda c: c.data == "cases_list")
+_CASE_LIST_PAGE_SIZE = 8
+
+
+@router.callback_query(
+    lambda c: str(c.data or "") == "cases_list"
+    or str(c.data or "").startswith("cases_page:")
+)
 async def list_my_cases(callback: CallbackQuery, db):
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
@@ -248,25 +254,39 @@ async def list_my_cases(callback: CallbackQuery, db):
             ),
         )
         return
+    raw = str(callback.data or "")
+    page = 0
+    if raw.startswith("cases_page:"):
+        candidate = raw.partition(":")[2]
+        if candidate.isascii() and candidate.isdecimal() and len(candidate) <= 9:
+            page = int(candidate)
+    total_pages = max(1, (len(cases) + _CASE_LIST_PAGE_SIZE - 1) // _CASE_LIST_PAGE_SIZE)
+    page = min(page, total_pages - 1)
     current = await ctx.case_service.get_active_case_for_user(user.id)
-    lines = ["📂 Ваши обращения", "", "Выберите действующее дело. Закрытые доступны только для истории."]
+    lines = [
+        "📂 Ваши обращения",
+        f"Страница {page + 1} из {total_pages}",
+        "",
+        "Действующее дело можно выбрать. Закрытые дела доступны только для просмотра.",
+    ]
     buttons = []
-    for case in cases[:25]:
+    start = page * _CASE_LIST_PAGE_SIZE
+    for case in cases[start : start + _CASE_LIST_PAGE_SIZE]:
         is_closed = str(case.status) in {"M1_CLOSED", "M2_CLOSED", "ARCHIVED"}
         label = f"{'🔒' if is_closed else '📁'} {case.case_number}"
         if current is not None and case.id == current.id:
             label = "✅ " + label
         lines.append(f"• {case.case_number} · {str(case.route or 'Новый')} · {str(case.status)}")
         if is_closed:
-            # Never route archived cases through the mutable active-case pointer.
             buttons.append((label[:55], f"cases_archive:{case.id}"))
         else:
             buttons.append((label[:55], f"cases_select:{case.id}"))
-    if len(cases) > 25:
-        lines.append("Показаны последние 25 обращений. Для остальных обратитесь к команде.")
+    if page > 0:
+        buttons.append(("⬅️ Более новые", f"cases_page:{page - 1}"))
+    if page + 1 < total_pages:
+        buttons.append(("Более ранние ➡️", f"cases_page:{page + 1}"))
     buttons.append(("📁 Моё дело", "my_case_open"))
     buttons.append(("🏠 Главная", "nav_home"))
-    await db.commit()
     await _safe_edit(callback, "\n".join(lines)[:3900], reply_markup=one(*buttons))
 
 
