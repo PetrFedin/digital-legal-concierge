@@ -67,6 +67,7 @@ async def test_inbox_and_thread_hide_private_text_after_erasure_gate(
     monkeypatch.setattr(message_center, "require_staff_scope", _staff_scope)
     async with factory() as db:
         _user, case, message = await _seed(db)
+        case_id, message_id = case.id, message.id
         if retention == "ERASED":
             case.content_deleted_at = datetime.now(timezone.utc)
         else:
@@ -86,14 +87,14 @@ async def test_inbox_and_thread_hide_private_text_after_erasure_gate(
 
         with pytest.raises(HTTPException) as denied:
             await message_center.case_messages(
-                case_id=case.id, request=object(), db=db,
+                case_id=case_id, request=object(), db=db,
                 x_admin_token=None,
             )
         assert denied.value.status_code == 410
 
         with pytest.raises(HTTPException) as denied_read:
             await message_center.mark_message_read(
-                message_id=message.id, request=object(), db=db,
+                message_id=message_id, request=object(), db=db,
                 x_admin_token=None,
             )
         assert denied_read.value.status_code == 410
@@ -106,19 +107,20 @@ async def test_closed_thread_remains_readable_but_does_not_mark_read(factory, mo
     monkeypatch.setattr(message_center, "require_staff_scope", _staff_scope)
     async with factory() as db:
         _, case, message = await _seed(db)
+        case_id, message_id = case.id, message.id
         await db.commit()
 
         thread = await message_center.case_messages(
-            case_id=case.id, request=object(), db=db, x_admin_token=None,
+            case_id=case_id, request=object(), db=db, x_admin_token=None,
         )
-        assert thread["case"]["id"] == case.id
+        assert thread["case"]["id"] == case_id
         assert thread["messages"][0]["text"] == message.text
 
         await db.refresh(message)
         assert message.is_read is False
         with pytest.raises(HTTPException) as denied:
             await message_center.mark_message_read(
-                message_id=message.id, request=object(), db=db,
+                message_id=message_id, request=object(), db=db,
                 x_admin_token=None,
             )
         assert denied.value.status_code == 409
@@ -127,8 +129,8 @@ async def test_closed_thread_remains_readable_but_does_not_mark_read(factory, mo
 
         # Both service-level read-marking paths also respect archive immutability.
         svc = MessageService(db)
-        assert await svc.mark_client_messages_read(case.id) == 0
-        assert await svc.mark_lawyer_messages_read(case.id) == 0
+        assert await svc.mark_client_messages_read(case_id) == 0
+        assert await svc.mark_lawyer_messages_read(case_id) == 0
         await db.refresh(message)
         assert message.is_read is False
 
