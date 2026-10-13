@@ -132,13 +132,13 @@ async def test_owned_archive_shows_only_safe_navigation_without_switching(monkey
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("request", [
+@pytest.mark.parametrize("callback_data", [
     "cases_archive:41", "archive_docs:41:0",
     "archive_payments:41:0", "archive_history:41:0",
     "archive_messages:41:0",
 ])
 async def test_foreign_case_denied_before_any_domain_data_read(
-    monkeypatch, request
+    monkeypatch, callback_data
 ):
     service = FakeCaseService({41: closed_case(41, client_id=8)})
     setup_context(monkeypatch, service)
@@ -152,7 +152,7 @@ async def test_foreign_case_denied_before_any_domain_data_read(
     monkeypatch.setattr(archive, "PaymentService", NoRead)
     monkeypatch.setattr(archive, "CaseActivityService", NoRead)
     monkeypatch.setattr(archive, "MessageService", NoRead)
-    callback = FakeCallback(request)
+    callback = FakeCallback(callback_data)
     await archive.open_readonly_archive(callback, db)
     text, markup = callback.message.edits[-1]
     assert text == "Архивное дело недоступно. Откройте список своих обращений."
@@ -161,17 +161,17 @@ async def test_foreign_case_denied_before_any_domain_data_read(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("request", [
+@pytest.mark.parametrize("callback_data", [
     "cases_archive:-1", "cases_archive:0", "cases_archive:7:extra",
     "archive_docs:7:-1", "archive_docs:7:10001",
     "archive_history:7:not-a-cursor", "archive_payments:7:１",
     "archive_messages:7:10001",
     "archive_docs:7:0:extra",
 ])
-async def test_malformed_archive_callbacks_fail_closed(monkeypatch, request):
+async def test_malformed_archive_callbacks_fail_closed(monkeypatch, callback_data):
     setup_context(monkeypatch, FakeCaseService({}))
     db = FakeDB()
-    callback = FakeCallback(request)
+    callback = FakeCallback(callback_data)
     await archive.open_readonly_archive(callback, db)
     assert "недействительна" in callback.message.edits[-1][0]
     assert db.commits == 0
