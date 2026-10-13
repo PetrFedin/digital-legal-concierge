@@ -110,3 +110,33 @@ async def test_corrupt_unverified_or_revoked_metadata_fail_closed(db_factory,cor
             await ClientArchiveDocumentAccessService(db).preflight(
                 user_id=owner.id,case_id=own.id,document_id=docs[0].id
             )
+
+
+@pytest.mark.asyncio
+async def test_erased_blocked_and_forged_ids_fail_closed(db_factory):
+    from datetime import datetime, timezone
+    async with db_factory() as db:
+        owner,_,own,_,_,docs=await seed(db)
+        gate=ClientArchiveDocumentAccessService(db)
+        for user_id,case_id,document_id in [
+            (True,own.id,docs[0].id),
+            (owner.id,0,docs[0].id),
+            (owner.id,own.id,"1"),
+        ]:
+            with pytest.raises(ClientArchiveDocumentDenied):
+                await gate.preflight(
+                    user_id=user_id,case_id=case_id,document_id=document_id
+                )
+        owner.is_blocked=True
+        await db.flush()
+        with pytest.raises(ClientArchiveDocumentDenied):
+            await gate.preflight(
+                user_id=owner.id,case_id=own.id,document_id=docs[0].id
+            )
+        owner.is_blocked=False
+        own.content_deleted_at=datetime.now(timezone.utc)
+        await db.flush()
+        with pytest.raises(ClientArchiveDocumentDenied):
+            await gate.preflight(
+                user_id=owner.id,case_id=own.id,document_id=docs[0].id
+            )
