@@ -117,3 +117,17 @@ def test_isolated_opt_in_runs_synthetic_flow_without_claiming_live_proof(
     output = capsys.readouterr().out
     assert "SYNTHETIC TEST ONLY" in output
     assert "НЕ ПРОДАКШЕН И НЕ ПРИЁМКА" in output
+
+
+@pytest.mark.parametrize(
+    "entrypoint",
+    ("scripts/e2e_smoke.py", "scripts/e2e_m1_m2_full.py"),
+)
+def test_direct_synthetic_entrypoints_require_the_same_disposable_guard(entrypoint):
+    source = (acceptance.ROOT / entrypoint).read_text(encoding="utf-8")
+    main_block = source.split('if __name__ == "__main__":', 1)
+    assert len(main_block) == 2
+    block = main_block[1]
+    assert "synthetic_environment_errors(os.environ)" in block
+    assert block.index("synthetic_environment_errors(os.environ)") < block.index("asyncio.run(main())")
+    assert "raise SystemExit(2)" in block
