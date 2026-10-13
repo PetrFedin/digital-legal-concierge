@@ -72,10 +72,8 @@ class PenaltyCalculator:
                 raise PenaltyCalculationError(
                     "Для переданного объекта нужна фактическая дата передачи"
                 )
-            if data.actual_transfer_date < data.planned_transfer_date:
-                raise PenaltyCalculationError(
-                    "Фактическая дата передачи не может быть раньше договорной"
-                )
+            # Early transfer is a valid factual outcome under the approved
+            # intake specification. Delay is clamped to zero below.
             if data.actual_transfer_date > data.calculation_date:
                 raise PenaltyCalculationError(
                     "Фактическая дата передачи не может быть позже даты расчёта"
