@@ -192,6 +192,29 @@ class MessageService:
         )
         return list(result.scalars().all())
 
+    async def list_case_messages_page(
+        self, case_id: int, *, page: int = 0, page_size: int = 5
+    ) -> tuple[list[Message], int, int]:
+        """Read-only pagination. The Telegram route must authorize case ownership first."""
+        bounded_size = min(max(int(page_size), 1), 10)
+        total = int(
+            await self.db.scalar(
+                select(func.count(Message.id)).where(Message.case_id == case_id)
+            ) or 0
+        )
+        total_pages = max(1, (total + bounded_size - 1) // bounded_size)
+        selected = min(max(int(page), 0), total_pages - 1)
+        rows = (
+            await self.db.execute(
+                select(Message)
+                .where(Message.case_id == case_id)
+                .order_by(Message.created_at.desc(), Message.id.desc())
+                .offset(selected * bounded_size)
+                .limit(bounded_size)
+            )
+        ).scalars().all()
+        return list(rows), selected, total_pages
+
     async def mark_client_messages_read(self, case_id: int) -> int:
         result = await self.db.execute(
             select(Message).where(

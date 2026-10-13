@@ -448,6 +448,7 @@ async def upload_menu(callback: CallbackQuery, state: FSMContext, db):
         return
 
     await state.clear()
+    await state.update_data(upload_case_id=int(case.id))
     await state.set_state(DocumentUploadStates.choosing_type)
 
     items = [(f"Загрузить: {title}", f"doc_type:{code}") for title, code in TYPES]
@@ -541,6 +542,17 @@ async def upload(message: Message, state: FSMContext, db):
         return
 
     data = await state.get_data()
+    if data.get("upload_case_id") is None or int(data["upload_case_id"]) != int(case.id):
+        await message.answer(
+            "⚠️ Активное дело изменилось во время загрузки. Файл не принят. "
+            "Откройте исходное дело и начните загрузку заново.",
+            reply_markup=one(
+                ("📂 Выбрать дело", "cases_list"),
+                ("📄 Начать загрузку заново", "documents_upload_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
     document_type = data.get("document_type")
     if not document_type:
         await state.clear()
