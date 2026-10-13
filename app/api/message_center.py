@@ -19,7 +19,7 @@ from app.domain.messages.message_priority import (
     present_message,
     queue_bucket,
 )
-from app.domain.messages.message_service import MessageService
+from app.domain.messages.message_service import MessageService, StaffMessageReadOnlyError
 from app.domain.notifications.immediate_delivery import deliver_selected_notifications
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.models.case import Case
@@ -411,6 +411,9 @@ async def reply_to_client(
     except HTTPException:
         await db.rollback()
         raise
+    except StaffMessageReadOnlyError as error:
+        await db.rollback()
+        raise HTTPException(409, str(error)) from error
     except LookupError as error:
         await db.rollback()
         raise HTTPException(404, str(error)) from error
