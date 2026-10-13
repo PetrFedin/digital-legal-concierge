@@ -128,6 +128,7 @@ class ClientDocumentGrantService:
                 ClientDocumentGrant.expires_at > now,
             )
             .values(status="CLAIMED", claimed_at=now)
+            .execution_options(synchronize_session=False)
         )
         if claimed.rowcount != 1:
             raise ClientGrantDenied()
