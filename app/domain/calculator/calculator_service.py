@@ -31,6 +31,35 @@ class CalculatorService:
         self.db = db
         self.calculator = PenaltyCalculator()
 
+    def calculate_preview(
+        self,
+        *,
+        contract_price: Decimal,
+        planned_transfer_date: date,
+        calculation_date: date,
+        object_transferred: bool,
+        actual_transfer_date: date | None = None,
+        key_rate: Decimal | None = None,
+        consumer_multiplier: Decimal = Decimal("2"),
+    ):
+        """Same validated calculation without touching Case or Calculation."""
+        effective_rate = (
+            Decimal(str(settings.legal_key_rate))
+            if key_rate is None
+            else Decimal(str(key_rate))
+        )
+        return self.calculator.calculate(
+            PenaltyCalculationInput(
+                contract_price=contract_price,
+                planned_transfer_date=planned_transfer_date,
+                calculation_date=calculation_date,
+                object_transferred=object_transferred,
+                actual_transfer_date=actual_transfer_date,
+                key_rate=effective_rate,
+                consumer_multiplier=consumer_multiplier,
+            )
+        )
+
     async def calculate_and_save(
         self,
         *,
@@ -43,30 +72,20 @@ class CalculatorService:
         key_rate: Decimal | None = None,
         consumer_multiplier: Decimal = Decimal("2"),
     ):
-        effective_rate = (
-            Decimal(str(settings.legal_key_rate))
-            if key_rate is None
-            else Decimal(str(key_rate))
-        )
-        result = self.calculator.calculate(
-            PenaltyCalculationInput(
-                contract_price=contract_price,
-                planned_transfer_date=planned_transfer_date,
-                calculation_date=calculation_date,
-                object_transferred=object_transferred,
-                actual_transfer_date=actual_transfer_date,
-                key_rate=effective_rate,
-                consumer_multiplier=consumer_multiplier,
-            )
+        result = self.calculate_preview(
+            contract_price=contract_price,
+            planned_transfer_date=planned_transfer_date,
+            calculation_date=calculation_date,
+            object_transferred=object_transferred,
+            actual_transfer_date=actual_transfer_date,
+            key_rate=key_rate,
+            consumer_multiplier=consumer_multiplier,
         )
 
-        query = await self.db.execute(
-            select(Calculation).where(Calculation.case_id == case.id)
-        )
-        calculation = query.scalars().first()
-        if calculation is None:
-            calculation = Calculation(case_id=case.id)
-            self.db.add(calculation)
+        # Each calculation is an immutable historical snapshot; keep older
+        # values for audit and show the newest by id in the case view.
+        calculation = Calculation(case_id=case.id)
+        self.db.add(calculation)
 
         calculation.contract_price = result.contract_price
         calculation.planned_transfer_date = result.planned_transfer_date
