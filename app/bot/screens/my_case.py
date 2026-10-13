@@ -169,6 +169,12 @@ async def _render_case(callback: CallbackQuery, db, *, notice: str | None = None
         )
         return
 
+    if getattr(case, "content_deleted_at", None) is not None:
+        from app.bot.screens.archived_cases import _render_erased
+
+        await _render_erased(callback, case)
+        return
+
     view = await load_client_case_view(db, case)
     has_consultation_result = _has_consultation_result(view)
     stale_booking_action = bool(
