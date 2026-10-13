@@ -50,6 +50,7 @@ def closed_case(case_id=40, client_id=5, status="M1_CLOSED"):
         id=case_id,
         client_id=client_id,
         status=status,
+        route="M2" if status == "M2_CLOSED" else "M1",
         case_number=f"DLC-2026-{case_id:06d}",
     )
 
