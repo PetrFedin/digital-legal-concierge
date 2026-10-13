@@ -105,12 +105,9 @@ class MessageService:
             )
         ).scalar_one_or_none()
 
-    async def _case_messages_read_only(self, case: Case) -> bool:
-        """Shared client/staff write fence, checked under the Case row lock."""
-        if (
-            str(case.status) in _CLIENT_MESSAGE_DENIED_STATUSES
-            or case.content_deleted_at is not None
-        ):
+    async def case_private_content_unavailable(self, case: Case) -> bool:
+        """A tombstone or deletion approval prohibits private content access."""
+        if case.content_deleted_at is not None:
             return True
         restricted = await self.db.scalar(
             select(CaseRetentionRecord.id).where(
@@ -119,6 +116,12 @@ class MessageService:
             ).limit(1)
         )
         return restricted is not None
+
+    async def _case_messages_read_only(self, case: Case) -> bool:
+        """Shared client/staff write fence, checked under the Case row lock."""
+        if str(case.status) in _CLIENT_MESSAGE_DENIED_STATUSES:
+            return True
+        return await self.case_private_content_unavailable(case)
 
     async def _assert_client_message_access(self, *, case: Case, user_id: int) -> None:
         """Check current database authority under the already locked Case row."""
@@ -286,6 +289,11 @@ class MessageService:
         return list(rows), selected, total_pages
 
     async def mark_client_messages_read(self, case_id: int) -> int:
+        case = await self.db.scalar(
+            select(Case).where(Case.id == int(case_id)).with_for_update()
+        )
+        if case is None or await self._case_messages_read_only(case):
+            return 0
         result = await self.db.execute(
             select(Message).where(
                 Message.case_id == case_id,
@@ -305,6 +313,11 @@ class MessageService:
         *,
         message_ids: Collection[int] | None = None,
     ) -> int:
+        case = await self.db.scalar(
+            select(Case).where(Case.id == int(case_id)).with_for_update()
+        )
+        if case is None or await self._case_messages_read_only(case):
+            return 0
         query = select(Message).where(
             Message.case_id == case_id,
             Message.sender_type == "lawyer",
