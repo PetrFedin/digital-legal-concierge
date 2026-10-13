@@ -151,6 +151,7 @@ async def test_foreign_case_denied_before_any_domain_data_read(
     monkeypatch.setattr(archive, "DocumentService", NoRead)
     monkeypatch.setattr(archive, "PaymentService", NoRead)
     monkeypatch.setattr(archive, "CaseActivityService", NoRead)
+    monkeypatch.setattr(archive, "MessageService", NoRead)
     callback = FakeCallback(request)
     await archive.open_readonly_archive(callback, db)
     text, markup = callback.message.edits[-1]
