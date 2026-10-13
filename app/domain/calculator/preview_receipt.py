@@ -7,6 +7,8 @@ matter can be materialized. Decimal values are normalized for DB round-trips.
 from __future__ import annotations
 
 from decimal import Decimal
+from hashlib import sha256
+import json
 from typing import Any
 
 
@@ -30,3 +32,10 @@ def preview_receipt(result: Any) -> dict[str, str | int | bool | None]:
         "penalty_amount": _number(result.penalty_amount),
         "formula_version": str(result.formula_version),
     }
+
+def preview_receipt_fingerprint(receipt: dict) -> str:
+    """Short identity tag used with the per-preview random callback token."""
+    payload = json.dumps(
+        receipt, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    return sha256(payload).hexdigest()[:12]
