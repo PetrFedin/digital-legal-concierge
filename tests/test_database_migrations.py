@@ -5,7 +5,7 @@ from pathlib import Path
 
 from app.db.migrations import run_database_migrations
 
-HEAD_REVISION = "20261012_0019"
+HEAD_REVISION = "20261013_0020"
 RETENTION_TRIGGER = "trg_retention_destroy_document_keys"
 MESSAGE_SOURCE_INDEX = "uq_messages_sender_source_message"
 DOCUMENT_REVIEW_STARTED_INDEX = "ix_documents_review_started_at"
@@ -75,6 +75,7 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "login_security_states",
         "revoked_access_tokens",
         "document_access_grants",
+        "client_document_grants",
         "case_retention_records",
         "court_events",
         "alembic_version",
