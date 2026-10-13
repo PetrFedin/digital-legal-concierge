@@ -140,3 +140,65 @@ async def test_postgresql_concurrent_new_object_save_scoped_visibility():
             await db.rollback()
     finally:
         await engine.dispose()
+
+
+async def test_postgresql_terminal_archive_owner_acl_and_selection_invariance():
+    """Disposable PostgreSQL only: terminal lookup never crosses tenants or switches matters."""
+    url = os.environ.get("DATABASE_URL", "")
+    if not url.startswith("postgresql+asyncpg://"):
+        pytest.skip("Disposable real PostgreSQL service required")
+    engine = create_async_engine(url, pool_size=3, max_overflow=0)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    token = uuid4().hex
+    try:
+        async with factory() as db:
+            owner = User(telegram_id=600000000000000 + int(token[:10], 16))
+            stranger = User(telegram_id=700000000000000 + int(token[10:20], 16))
+            db.add_all([owner, stranger])
+            await db.flush()
+            cases = CaseService(db)
+            live = await cases.create_case(client=owner, title="Live source")
+            old_m1 = await cases.create_case(
+                client=owner, route="M1", status="M1_CLOSED", title="Archived M1"
+            )
+            old_m2 = await cases.create_case(
+                client=owner, route="M2", status="M2_CLOSED", title="Archived M2"
+            )
+            foreign = await cases.create_case(
+                client=stranger, route="M1", status="M1_CLOSED", title="Other tenant"
+            )
+            owned_ids = (old_m1.id, old_m2.id)
+            foreign_id, live_id, owner_id, stranger_id = (
+                foreign.id, live.id, owner.id, stranger.id
+            )
+            assert await cases.select_active_case(user=owner, case_id=live_id) is not None
+            await db.commit()
+
+        async with factory() as db:
+            cases = CaseService(db)
+            owner = await db.get(User, owner_id)
+            selected_before = owner.active_case_id
+            assert selected_before == live_id
+            for case_id in owned_ids:
+                target = await cases.get_terminal_case_for_user(
+                    user_id=owner_id, case_id=case_id
+                )
+                assert target is not None and target.id == case_id
+                assert target.client_id == owner_id
+            for bad_id in (foreign_id, live_id, 987654321):
+                assert await cases.get_terminal_case_for_user(
+                    user_id=owner_id, case_id=bad_id
+                ) is None
+            assert await cases.get_terminal_case_for_user(
+                user_id=stranger_id, case_id=owned_ids[0]
+            ) is None
+            assert owner.active_case_id == selected_before
+            assert (await cases.get_active_case_for_user(owner_id)).id == live_id
+            assert (await cases.select_active_case(
+                user=owner, case_id=owned_ids[0]
+            )) is None
+            assert owner.active_case_id == selected_before
+            assert not db.dirty and not db.new
+            await db.rollback()
+    finally:
+        await engine.dispose()
