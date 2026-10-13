@@ -142,6 +142,12 @@ async def _render_history(
             )
             return
 
+    if getattr(case, "content_deleted_at", None) is not None:
+        from app.bot.screens.archived_cases import _render_erased
+
+        await _render_erased(callback, case)
+        return
+
     try:
         page = await CaseActivityService(db).page(
             case_id=case.id,
