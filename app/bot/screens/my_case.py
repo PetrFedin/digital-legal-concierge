@@ -360,6 +360,12 @@ async def next_action(callback: CallbackQuery, db):
         )
         return
 
+    if getattr(case, "content_deleted_at", None) is not None:
+        from app.bot.screens.archived_cases import _render_erased
+
+        await _render_erased(callback, case)
+        return
+
     view = await load_client_case_view(db, case)
     if requested_case_id is not None and requested_case_id != case.id:
         await _render_case(
