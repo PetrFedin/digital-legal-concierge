@@ -32,6 +32,7 @@ async def test_issue_claim_retry_and_cross_account(tmp_path, monkeypatch):
                 await service.claim(user_id=owner.id, public_id=issued.public_id, secret="invalid")
             await service.claim(user_id=owner.id, public_id=issued.public_id, secret=issued.secret)
             await db.commit()
+            await db.refresh(row)
             assert row.status == "CLAIMED"
             assert row.claimed_at is not None
             with pytest.raises(ClientGrantDenied):
