@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.calculator.calculator_service import CalculatorService
-from app.domain.calculator.preview_receipt import preview_receipt
+from app.domain.calculator.preview_receipt import preview_input_facts, preview_receipt
 from app.domain.cases.case_service import CaseService
 from app.models.calculation import Calculation
 from app.models.case import Case
@@ -58,6 +58,20 @@ class NewObjectSaveService:
     ) -> Case:
         if not request_key or len(request_key) != 32 or any(c not in "0123456789abcdef" for c in request_key):
             raise NewObjectSaveError("Недействительный идентификатор расчёта")
+        facts = preview_input_facts(
+            contract_price=contract_price,
+            planned_transfer_date=planned_transfer_date,
+            calculation_date=calculation_date,
+            object_transferred=object_transferred,
+            actual_transfer_date=actual_transfer_date,
+        )
+        if not isinstance(expected_receipt, dict) or any(
+            expected_receipt.get(field) != value for field, value in facts.items()
+        ):
+            raise NewObjectSaveError(
+                "Введённые данные не соответствуют показанному расчёту. "
+                "Пересчитайте сумму перед сохранением."
+            )
         # Serialize an explicit matter switch against this save. Do not let the
         # latest-created fallback silently select a new Case on save.
         owner = await self.db.scalar(
