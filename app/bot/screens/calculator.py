@@ -1,4 +1,5 @@
 import logging
+import secrets
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -11,8 +12,10 @@ from app.bot.client_case_view import load_client_case_view
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
 from app.bot.states import CalculatorStates
+from app.domain.cases.new_object_service import NewObjectSaveService, NewObjectSaveError
 from app.domain.calculator.calculator_result_formatter import format_calculation_result
 from app.domain.calculator.calculator_service import CalculatorService
+from app.domain.calculator.preview_receipt import preview_receipt, preview_receipt_fingerprint
 from app.domain.calculator.penalty_calculator import parse_money
 from app.domain.statuses.case_statuses import CaseStatus
 
@@ -150,10 +153,11 @@ async def calc_start(callback: CallbackQuery, state: FSMContext, db):
         await callback.message.edit_text(
             "📁 У вас уже есть активное дело.\n\n"
             "Чтобы не смешивать расчёты, документы и статусы разных обращений, "
-            "сначала продолжите текущее дело. Новый расчёт станет доступен после "
-            "его завершения.",
+            "Вы можете продолжить дело или отдельно рассчитать другой объект. "
+            "Предварительный расчёт другого объекта не изменит текущее дело.",
             reply_markup=one(
                 primary_action,
+                ("🧮 Рассчитать другой объект", "calc_preview_start"),
                 ("📁 Моё дело", "my_case_open"),
                 ("💬 Связаться с юристом", "contact_lawyer"),
                 ("🏠 Главная", "nav_home"),
@@ -165,6 +169,32 @@ async def calc_start(callback: CallbackQuery, state: FSMContext, db):
     await state.set_state(CalculatorStates.waiting_contract_price)
     await callback.message.edit_text(
         _price_prompt(),
+        reply_markup=one(
+            ("Не знаю стоимость", "calc_unknown_price"),
+            ("Отменить расчёт", "nav_home"),
+        ),
+    )
+
+
+@router.callback_query(lambda c: c.data == "calc_preview_start")
+async def calc_preview_start(callback: CallbackQuery, state: FSMContext, db):
+    ctx = BotContextService(db)
+    user = await ctx.get_user_from_callback(callback)
+    case = await ctx.case_service.get_active_case_for_user(user.id)
+    if not case:
+        await state.clear()
+        await callback.message.edit_text(
+            "Активного дела больше нет. Начните обычный расчёт.",
+            reply_markup=_result_recovery_keyboard(),
+        )
+        return
+    await state.clear()
+    await state.update_data(preview_case_id=case.id, preview_request_key=secrets.token_hex(16))
+    await state.set_state(CalculatorStates.waiting_contract_price)
+    await callback.message.edit_text(
+        "🧮 Предварительный расчёт по другому объекту\n\n"
+        "Этот расчёт не изменит действующее дело, его документы или платежи.\n\n"
+        + _price_prompt(),
         reply_markup=one(
             ("Не знаю стоимость", "calc_unknown_price"),
             ("Отменить расчёт", "nav_home"),
@@ -284,13 +314,6 @@ async def actual(message: Message, state: FSMContext, db):
             reply_markup=_result_recovery_keyboard(),
         )
         return
-    planned_date = date.fromisoformat(data["planned_transfer_date"])
-    if actual_date < planned_date:
-        await message.answer(
-            "⚠️ Фактическая дата передачи не может быть раньше даты по ДДУ. Ранее введённые данные сохранены.",
-            reply_markup=_actual_keyboard(),
-        )
-        return
     if actual_date > date.today():
         await message.answer(
             "⚠️ Фактическая дата передачи не может быть в будущем. Ранее введённые данные сохранены.",
@@ -315,7 +338,22 @@ async def calc_result(state, db, case):
     data = await state.get_data()
     if not _base_data_ready(data) or "object_transferred" not in data:
         raise ValueError("Данные расчёта устарели. Начните расчёт заново.")
-    return await CalculatorService(db).calculate_and_save(
+    service = CalculatorService(db)
+    preview_case_id = data.get("preview_case_id")
+    if preview_case_id is not None:
+        if case is None or case.id != preview_case_id:
+            raise ValueError("Активное дело изменилось во время расчёта.")
+        return service.calculate_preview(
+            contract_price=Decimal(data["contract_price"]),
+            planned_transfer_date=date.fromisoformat(data["planned_transfer_date"]),
+            calculation_date=date.today(),
+            object_transferred=bool(data["object_transferred"]),
+            actual_transfer_date=(
+                date.fromisoformat(data["actual_transfer_date"])
+                if data.get("actual_transfer_date") else None
+            ),
+        )
+    return await service.calculate_and_save(
         case=case,
         contract_price=Decimal(data["contract_price"]),
         planned_transfer_date=date.fromisoformat(data["planned_transfer_date"]),
@@ -333,8 +371,14 @@ async def calculate_show_message(message: Message, state: FSMContext, db):
     try:
         ctx = BotContextService(db)
         user = await ctx.get_user_from_message(message)
-        case = await ctx.get_or_create_active_case_for_user(user)
+        data = await state.get_data()
+        case = (
+            await ctx.case_service.get_active_case_for_user(user.id)
+            if data.get("preview_case_id") is not None
+            else await ctx.get_or_create_active_case_for_user(user)
+        )
         result = await calc_result(state, db, case)
+        is_preview = data.get("preview_case_id") is not None
         await db.commit()
     except Exception:
         await db.rollback()
@@ -346,9 +390,21 @@ async def calculate_show_message(message: Message, state: FSMContext, db):
         )
         return
 
-    await state.clear()
+    if is_preview:
+        receipt = preview_receipt(result)
+        await state.update_data(preview_receipt=receipt)
+        await state.set_state(None)
+    else:
+        await state.clear()
     try:
-        await message.answer(format_calculation_result(result), reply_markup=result_kb())
+        await message.answer(
+            format_calculation_result(result)
+            + ("\n\nℹ️ Результат другого объекта не записан в текущее дело." if is_preview else ""),
+            reply_markup=(
+            preview_result_kb(str(data["preview_request_key"]), receipt)
+            if is_preview else result_kb()
+        ),
+        )
     except Exception:
         logger.exception("Committed calculator result could not be rendered to message")
 
@@ -357,8 +413,14 @@ async def calculate_show_callback(callback: CallbackQuery, state: FSMContext, db
     try:
         ctx = BotContextService(db)
         user = await ctx.get_user_from_callback(callback)
-        case = await ctx.get_or_create_active_case_for_user(user)
+        data = await state.get_data()
+        case = (
+            await ctx.case_service.get_active_case_for_user(user.id)
+            if data.get("preview_case_id") is not None
+            else await ctx.get_or_create_active_case_for_user(user)
+        )
         result = await calc_result(state, db, case)
+        is_preview = data.get("preview_case_id") is not None
         await db.commit()
     except Exception:
         await db.rollback()
@@ -373,12 +435,108 @@ async def calculate_show_callback(callback: CallbackQuery, state: FSMContext, db
         )
         return
 
+    if is_preview:
+        receipt = preview_receipt(result)
+        await state.update_data(preview_receipt=receipt)
+        await state.set_state(None)
+    else:
+        await state.clear()
+    await _present_committed_callback(
+        callback,
+        format_calculation_result(result)
+        + ("\n\nℹ️ Результат другого объекта не записан в текущее дело." if is_preview else ""),
+        reply_markup=(
+            preview_result_kb(str(data["preview_request_key"]), receipt)
+            if is_preview else result_kb()
+        ),
+        saved_notice="Расчёт уже сохранён.",
+    )
+
+
+@router.callback_query(lambda c: str(c.data or "").startswith("calc_preview_save"))
+async def save_preview_as_new_case(callback: CallbackQuery, state: FSMContext, db):
+    data = await state.get_data()
+    receipt = data.get("preview_receipt")
+    parts = str(callback.data or "").split(":")
+    if (
+        not data.get("preview_case_id")
+        or not data.get("preview_request_key")
+        or not _base_data_ready(data)
+        or not isinstance(receipt, dict)
+        or len(parts) != 3
+        or parts[0] != "calc_preview_save"
+        or parts[1] != data["preview_request_key"]
+        or parts[2] != preview_receipt_fingerprint(receipt)
+    ):
+        await callback.message.edit_text(
+            "Этот предварительный расчёт уже не доступен. Начните повторный расчёт.",
+            reply_markup=_result_recovery_keyboard(),
+        )
+        return
+    try:
+        ctx = BotContextService(db)
+        user = await ctx.get_user_from_callback(callback)
+        case = await NewObjectSaveService(db).save(
+            user=user,
+            preview_case_id=int(data["preview_case_id"]),
+            request_key=str(data["preview_request_key"]),
+            contract_price=Decimal(data["contract_price"]),
+            planned_transfer_date=date.fromisoformat(data["planned_transfer_date"]),
+            calculation_date=date.fromisoformat(str(receipt["calculation_date"])),
+            object_transferred=bool(data["object_transferred"]),
+            actual_transfer_date=(
+                date.fromisoformat(data["actual_transfer_date"])
+                if data.get("actual_transfer_date") else None
+            ),
+            expected_receipt=receipt,
+        )
+        await db.commit()
+    except NewObjectSaveError as error:
+        await db.rollback()
+        await callback.message.edit_text(
+            f"⚠️ {error}",
+            reply_markup=one(
+                ("🧮 Пересчитать другой объект", "calc_preview_start"),
+                ("📂 Все обращения", "cases_list"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
+    except Exception:
+        await db.rollback()
+        logger.exception("New object case creation could not be committed")
+        await callback.message.edit_text(
+            "⚠️ Сохранение не подтверждено. Повторите попытку — второе дело не создастся.",
+            reply_markup=one(
+                ("🔄 Повторить сохранение", str(callback.data)),
+                ("📂 Все обращения", "cases_list"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
     await state.clear()
     await _present_committed_callback(
         callback,
-        format_calculation_result(result),
-        reply_markup=result_kb(),
-        saved_notice="Расчёт уже сохранён.",
+        f"✅ Для другого объекта сохранено отдельное дело № {case.case_number}.\n"
+        "Документы, расчёты и платежи действующего дела не изменены.\n\n"
+        "Переключитесь на новое дело, чтобы выбрать М1 или М2.",
+        reply_markup=one(
+            ("📁 Открыть новое дело", f"cases_select:{case.id}"),
+            ("📂 Все обращения", "cases_list"),
+            ("🏠 Главная", "nav_home"),
+        ),
+        saved_notice="Отдельное дело уже сохранено.",
+    )
+
+
+def preview_result_kb(request_key: str, receipt: dict):
+    callback_data = f"calc_preview_save:{request_key}:{preview_receipt_fingerprint(receipt)}"
+    return one(
+        ("💾 Сохранить как отдельное дело", callback_data),
+        ("🧮 Ещё один расчёт", "calc_preview_start"),
+        ("📁 Вернуться к действующему делу", "my_case_open"),
+        ("💬 Задать вопрос по делу", "message_create"),
+        ("🏠 Главная", "nav_home"),
     )
 
 
@@ -393,6 +551,20 @@ def result_kb():
 
 @router.callback_query(lambda c: c.data in {"calc_unknown_price", "calc_unknown_date"})
 async def unknown_calc_data(callback: CallbackQuery, state: FSMContext, db):
+    data = await state.get_data()
+    if data.get("preview_case_id") is not None:
+        await state.clear()
+        await callback.message.edit_text(
+            "Не хватает данных для предварительного расчёта другого объекта. "
+            "Текущее дело не изменено. Юрист может помочь с исходными данными.",
+            reply_markup=one(
+                ("🧮 Повторить расчёт", "calc_preview_start"),
+                ("📁 Моё дело", "my_case_open"),
+                ("💬 Задать вопрос", "message_create"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
     await state.clear()
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
