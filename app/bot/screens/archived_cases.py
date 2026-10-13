@@ -222,12 +222,12 @@ async def _render_messages(callback: CallbackQuery, db, case: Case, page: int):
         body = " ".join(str(message.text or "").split())
         if len(body) > 540:
             body = body[:539].rstrip() + "…"
-        blocks.append(f"{role} · {timestamp}\\n{body}")
+        blocks.append(f"{role} · {timestamp}\n{body}")
     text = (
-        f"💬 Архив переписки № {case.case_number}\\n"
-        "Сохранённые сообщения. Новая отправка из архива недоступна.\\n\\n"
-        + ("\\n\\n".join(blocks) if blocks else "Сообщений пока нет.")
-        + f"\\n\\nСтраница {current_page + 1} из {pages}."
+        f"💬 Архив переписки № {case.case_number}\n"
+        "Сохранённые сообщения. Новая отправка из архива недоступна.\n\n"
+        + ("\n\n".join(blocks) if blocks else "Сообщений пока нет.")
+        + f"\n\nСтраница {current_page + 1} из {pages}."
     )
     buttons = []
     if current_page:
