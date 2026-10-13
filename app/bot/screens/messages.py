@@ -10,7 +10,7 @@ from aiogram.types import CallbackQuery, Message
 
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
-from app.domain.messages.message_service import MessageService
+from app.domain.messages.message_service import ClientMessageAccessDenied, MessageService
 from app.domain.notifications.immediate_delivery import deliver_selected_notifications
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.payments.mode import payments_disabled
@@ -677,6 +677,22 @@ async def message_submit(callback: CallbackQuery, state: FSMContext, db):
         case_number = str(case.case_number)
         lawyer_assigned = bool(case.assigned_lawyer_id)
         await db.commit()
+    except ClientMessageAccessDenied:
+        await db.rollback()
+        # Do not keep a stale, case-bound draft after the server has denied
+        # write access. It must not later be submitted to another legal matter.
+        await state.clear()
+        await _replace_or_send(
+            callback,
+            "⚠️ Вопрос не отправлен. Дело недоступно для новых сообщений. "
+            "Выберите действующее обращение и создайте новый вопрос.",
+            reply_markup=one(
+                ("📂 Выбрать обращение", "cases_list"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        await callback.answer("Отправка по делу недоступна.")
+        return
     except Exception:
         await db.rollback()
         await state.set_state(MessageStates.confirming_message)
