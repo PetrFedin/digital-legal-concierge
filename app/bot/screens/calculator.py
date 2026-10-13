@@ -15,6 +15,7 @@ from app.bot.states import CalculatorStates
 from app.domain.cases.new_object_service import NewObjectSaveService, NewObjectSaveError
 from app.domain.calculator.calculator_result_formatter import format_calculation_result
 from app.domain.calculator.calculator_service import CalculatorService
+from app.domain.calculator.preview_receipt import preview_receipt, preview_receipt_fingerprint
 from app.domain.calculator.penalty_calculator import parse_money
 from app.domain.statuses.case_statuses import CaseStatus
 
@@ -390,6 +391,8 @@ async def calculate_show_message(message: Message, state: FSMContext, db):
         return
 
     if is_preview:
+        receipt = preview_receipt(result)
+        await state.update_data(preview_receipt=receipt)
         await state.set_state(None)
     else:
         await state.clear()
@@ -397,7 +400,10 @@ async def calculate_show_message(message: Message, state: FSMContext, db):
         await message.answer(
             format_calculation_result(result)
             + ("\n\nℹ️ Результат другого объекта не записан в текущее дело." if is_preview else ""),
-            reply_markup=preview_result_kb() if is_preview else result_kb(),
+            reply_markup=(
+            preview_result_kb(str(data["preview_request_key"]), receipt)
+            if is_preview else result_kb()
+        ),
         )
     except Exception:
         logger.exception("Committed calculator result could not be rendered to message")
@@ -430,6 +436,8 @@ async def calculate_show_callback(callback: CallbackQuery, state: FSMContext, db
         return
 
     if is_preview:
+        receipt = preview_receipt(result)
+        await state.update_data(preview_receipt=receipt)
         await state.set_state(None)
     else:
         await state.clear()
@@ -437,15 +445,29 @@ async def calculate_show_callback(callback: CallbackQuery, state: FSMContext, db
         callback,
         format_calculation_result(result)
         + ("\n\nℹ️ Результат другого объекта не записан в текущее дело." if is_preview else ""),
-        reply_markup=preview_result_kb() if is_preview else result_kb(),
+        reply_markup=(
+            preview_result_kb(str(data["preview_request_key"]), receipt)
+            if is_preview else result_kb()
+        ),
         saved_notice="Расчёт уже сохранён.",
     )
 
 
-@router.callback_query(lambda c: c.data == "calc_preview_save")
+@router.callback_query(lambda c: str(c.data or "").startswith("calc_preview_save"))
 async def save_preview_as_new_case(callback: CallbackQuery, state: FSMContext, db):
     data = await state.get_data()
-    if not data.get("preview_case_id") or not data.get("preview_request_key") or not _base_data_ready(data):
+    receipt = data.get("preview_receipt")
+    parts = str(callback.data or "").split(":")
+    if (
+        not data.get("preview_case_id")
+        or not data.get("preview_request_key")
+        or not _base_data_ready(data)
+        or not isinstance(receipt, dict)
+        or len(parts) != 3
+        or parts[0] != "calc_preview_save"
+        or parts[1] != data["preview_request_key"]
+        or parts[2] != preview_receipt_fingerprint(receipt)
+    ):
         await callback.message.edit_text(
             "Этот предварительный расчёт уже не доступен. Начните повторный расчёт.",
             reply_markup=_result_recovery_keyboard(),
@@ -460,19 +482,24 @@ async def save_preview_as_new_case(callback: CallbackQuery, state: FSMContext, d
             request_key=str(data["preview_request_key"]),
             contract_price=Decimal(data["contract_price"]),
             planned_transfer_date=date.fromisoformat(data["planned_transfer_date"]),
-            calculation_date=date.today(),
+            calculation_date=date.fromisoformat(str(receipt["calculation_date"])),
             object_transferred=bool(data["object_transferred"]),
             actual_transfer_date=(
                 date.fromisoformat(data["actual_transfer_date"])
                 if data.get("actual_transfer_date") else None
             ),
+            expected_receipt=receipt,
         )
         await db.commit()
     except NewObjectSaveError as error:
         await db.rollback()
         await callback.message.edit_text(
             f"⚠️ {error}",
-            reply_markup=one(("📂 Все обращения", "cases_list"), ("🏠 Главная", "nav_home")),
+            reply_markup=one(
+                ("🧮 Пересчитать другой объект", "calc_preview_start"),
+                ("📂 Все обращения", "cases_list"),
+                ("🏠 Главная", "nav_home"),
+            ),
         )
         return
     except Exception:
@@ -481,7 +508,7 @@ async def save_preview_as_new_case(callback: CallbackQuery, state: FSMContext, d
         await callback.message.edit_text(
             "⚠️ Сохранение не подтверждено. Повторите попытку — второе дело не создастся.",
             reply_markup=one(
-                ("🔄 Повторить сохранение", "calc_preview_save"),
+                ("🔄 Повторить сохранение", str(callback.data)),
                 ("📂 Все обращения", "cases_list"),
                 ("🏠 Главная", "nav_home"),
             ),
@@ -490,8 +517,8 @@ async def save_preview_as_new_case(callback: CallbackQuery, state: FSMContext, d
     await state.clear()
     await _present_committed_callback(
         callback,
-        f"✅ Для другого объекта сохранено отдельное дело № {case.case_number}.\\n"
-        "Документы, расчёты и платежи действующего дела не изменены.\\n\\n"
+        f"✅ Для другого объекта сохранено отдельное дело № {case.case_number}.\n"
+        "Документы, расчёты и платежи действующего дела не изменены.\n\n"
         "Переключитесь на новое дело, чтобы выбрать М1 или М2.",
         reply_markup=one(
             ("📁 Открыть новое дело", f"cases_select:{case.id}"),
@@ -502,9 +529,10 @@ async def save_preview_as_new_case(callback: CallbackQuery, state: FSMContext, d
     )
 
 
-def preview_result_kb():
+def preview_result_kb(request_key: str, receipt: dict):
+    callback_data = f"calc_preview_save:{request_key}:{preview_receipt_fingerprint(receipt)}"
     return one(
-        ("💾 Сохранить как отдельное дело", "calc_preview_save"),
+        ("💾 Сохранить как отдельное дело", callback_data),
         ("🧮 Ещё один расчёт", "calc_preview_start"),
         ("📁 Вернуться к действующему делу", "my_case_open"),
         ("💬 Задать вопрос по делу", "message_create"),
