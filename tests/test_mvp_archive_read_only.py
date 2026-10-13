@@ -123,7 +123,7 @@ async def test_owned_archive_shows_only_safe_navigation_without_switching(monkey
     assert "Основание закрытия: Исполнено" in text
     assert callbacks(markup) == [
         "archive_docs:40:0", "archive_payments:40:0",
-        "archive_history:40:0", "cases_list", "nav_home",
+        "archive_history:40:0", "archive_messages:40:0", "cases_list", "nav_home",
     ]
     assert service.lookups == [(5, 40)]
     assert user.active_case_id == 7
@@ -135,6 +135,7 @@ async def test_owned_archive_shows_only_safe_navigation_without_switching(monkey
 @pytest.mark.parametrize("request", [
     "cases_archive:41", "archive_docs:41:0",
     "archive_payments:41:0", "archive_history:41:0",
+    "archive_messages:41:0",
 ])
 async def test_foreign_case_denied_before_any_domain_data_read(
     monkeypatch, request
@@ -163,6 +164,7 @@ async def test_foreign_case_denied_before_any_domain_data_read(
     "cases_archive:-1", "cases_archive:0", "cases_archive:7:extra",
     "archive_docs:7:-1", "archive_docs:7:10001",
     "archive_history:7:not-a-cursor", "archive_payments:7:１",
+    "archive_messages:7:10001",
     "archive_docs:7:0:extra",
 ])
 async def test_malformed_archive_callbacks_fail_closed(monkeypatch, request):
@@ -287,3 +289,38 @@ async def test_case_list_pagination_can_reach_oldest_closed_matter(monkeypatch):
     assert "cases_select:1" in choices
     assert "cases_page:2" in choices
     assert db.commits == 0
+
+
+@pytest.mark.asyncio
+async def test_archive_correspondence_is_read_only_and_case_scoped(monkeypatch):
+    case = closed_case()
+    setup_context(monkeypatch, FakeCaseService({40: case}))
+    class Messages:
+        def __init__(self, db):
+            pass
+        async def list_case_messages_page(self, case_id, *, page, page_size):
+            assert (case_id, page, page_size) == (40, 1, 5)
+            return [
+                SimpleNamespace(
+                    text="Сообщение без повторной отправки", sender_type="lawyer",
+                    created_at=None,
+                )
+            ], 1, 3
+    monkeypatch.setattr(archive, "MessageService", Messages)
+    callback = FakeCallback("archive_messages:40:1")
+    await archive.open_readonly_archive(callback, FakeDB())
+    text, markup = callback.message.edits[-1]
+    assert "Сообщение без повторной отправки" in text
+    assert "Страница 2 из 3" in text
+    choices = callbacks(markup)
+    assert choices[:2] == ["archive_messages:40:0", "archive_messages:40:2"]
+    assert "message_submit" not in choices
+    assert "message_create" not in choices
+
+
+def test_archive_router_has_all_required_safe_handlers():
+    registered = [route.callback for route in archive.router.callback_query.handlers]
+    assert len(registered) == 1
+    assert archive.parse_archive_callback("archive_messages:14:1") == (
+        "archive_messages", 14, 1
+    )
