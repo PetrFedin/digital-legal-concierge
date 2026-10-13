@@ -61,6 +61,22 @@ class CaseService:
         )
         return list(result.scalars().all())
 
+    async def get_terminal_case_for_user(
+        self, *, user_id: int, case_id: int
+    ) -> Case | None:
+        """Read-only owned lookup; never updates the active matter pointer."""
+        return await self.db.scalar(
+            select(Case).where(
+                Case.id == case_id,
+                Case.client_id == user_id,
+                Case.status.in_([
+                    CaseStatus.M1_CLOSED,
+                    CaseStatus.M2_CLOSED,
+                    CaseStatus.ARCHIVED,
+                ]),
+            )
+        )
+
     async def select_active_case(self, *, user: User, case_id: int) -> Case | None:
         case = await self.db.scalar(
             select(Case).where(
