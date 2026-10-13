@@ -1,4 +1,5 @@
 """Dynamic aiogram-facing tests for fail-closed, case-scoped read-only archive."""
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -326,3 +327,66 @@ def test_archive_router_has_all_required_safe_handlers():
     assert archive.parse_archive_callback("archive_messages:14:1") == (
         "archive_messages", 14, 1
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("callback_data", [
+    "cases_archive:40",
+    "archive_docs:40:0",
+    "archive_docs:40:1",
+    "archive_payments:40:0",
+    "archive_history:40:0",
+    "archive_history:40:55",
+    "archive_messages:40:0",
+    "archive_messages:40:3",
+])
+async def test_approved_erasure_blocks_every_stale_archive_callback(
+    monkeypatch, callback_data
+):
+    """Even preserved audit and payment rows may not be projected after erasure."""
+    case = closed_case()
+    case.content_deleted_at = datetime(2026, 10, 12, tzinfo=timezone.utc)
+    service = FakeCaseService({case.id: case})
+    user = setup_context(monkeypatch, service)
+    db = FakeDB()
+
+    async def forbidden_view(*args, **kwargs):
+        raise AssertionError("Erased archive must not load private case view")
+
+    class ForbiddenService:
+        def __init__(self, db):
+            raise AssertionError("Erased archive must not query old private records")
+
+    monkeypatch.setattr(archive, "load_client_case_view", forbidden_view)
+    for name in ("DocumentService", "PaymentService", "CaseActivityService", "MessageService"):
+        monkeypatch.setattr(archive, name, ForbiddenService)
+
+    callback = FakeCallback(callback_data)
+    await archive.open_readonly_archive(callback, db)
+    text, markup = callback.message.edits[-1]
+    assert "Содержимое дела удалено" in text
+    assert "12.10.2026" in text
+    assert "не раскрываются" in text
+    assert "secret" not in text
+    assert callbacks(markup) == ["cases_list", "nav_home"]
+    assert service.lookups == [(5, 40)]
+    assert user.active_case_id == 7
+    assert service.selections == 0
+    assert db.commits == db.rollbacks == 0
+
+
+@pytest.mark.asyncio
+async def test_erasure_notice_does_not_leak_retained_payment_or_closure(
+    monkeypatch,
+):
+    case = closed_case()
+    case.content_deleted_at = datetime(2026, 10, 12, tzinfo=timezone.utc)
+    case.closure_reason = "SECRET_CLOSURE"
+    case.received_amount = 350000
+    setup_context(monkeypatch, FakeCaseService({40: case}))
+    callback = FakeCallback("archive_payments:40:0")
+    await archive.open_readonly_archive(callback, FakeDB())
+    text, markup = callback.message.edits[-1]
+    assert "350000" not in text and "SECRET_CLOSURE" not in text
+    assert "Архивное дело №" in text
+    assert callbacks(markup) == ["cases_list", "nav_home"]
