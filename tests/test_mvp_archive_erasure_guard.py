@@ -161,8 +161,9 @@ async def test_old_document_views_never_load_erased_files(monkeypatch, view):
 
 
 @pytest.mark.asyncio
-async def test_old_pay_open_refuses_erased_case_even_if_payment_row_survives():
+async def test_old_pay_open_refuses_erased_case_even_if_payment_row_survives(monkeypatch):
     case = erased_case()
+    monkeypatch.setattr(payments, "BotContextService", lambda db: FakeContext(case))
     payment = SimpleNamespace(
         id=4, case_id=case.id, status="PENDING",
         title="Previously issued bill", amount=Decimal("30000"),
