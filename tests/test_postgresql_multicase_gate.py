@@ -222,3 +222,78 @@ async def test_postgresql_terminal_archive_owner_acl_and_selection_invariance():
             await db.rollback()
     finally:
         await engine.dispose()
+
+
+async def test_postgresql_client_message_source_and_tenant_binding_fail_closed():
+    """Real PostgreSQL: an old Telegram update never becomes another Case's message."""
+    from app.domain.messages.message_service import ClientMessageAccessDenied
+    from app.models.audit_log import AuditLog
+
+    url = os.environ.get("DATABASE_URL", "")
+    if not url.startswith("postgresql+asyncpg://"):
+        pytest.skip("Disposable real PostgreSQL service required")
+    engine = create_async_engine(url, pool_size=3, max_overflow=0)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    token = uuid4().hex
+    try:
+        async with factory() as db:
+            owner = User(telegram_id=500000000000000 + int(token[:10], 16))
+            stranger = User(telegram_id=600000000000000 + int(token[10:20], 16))
+            db.add_all((owner, stranger))
+            await db.flush()
+            service = CaseService(db)
+            original = await service.create_case(client=owner, title="Original message matter")
+            second = await service.create_case(client=owner, title="Second message matter")
+            foreign = await service.create_case(client=stranger, title="Foreign private matter")
+            owner_id, original_id, second_id, foreign_id = (
+                owner.id, original.id, second.id, foreign.id
+            )
+            await db.commit()
+
+        async with factory() as db:
+            service = MessageService(db)
+            original = await db.get(Case, original_id)
+            second = await db.get(Case, second_id)
+            foreign = await db.get(Case, foreign_id)
+
+            first, created = await service.get_or_create_client_message(
+                case=original,
+                user_id=owner_id, text="Original private message",
+                source_message_id=912345,
+            )
+            assert created
+            with pytest.raises(ClientMessageAccessDenied):
+                await service.get_or_create_client_message(
+                    case=second,
+                    user_id=owner_id, text="Never rebind source to a second matter",
+                    source_message_id=912345,
+                )
+            with pytest.raises(ClientMessageAccessDenied):
+                await service.get_or_create_client_message(
+                    case=foreign,
+                    user_id=owner_id, text="Never write in another tenant",
+                    source_message_id=912346,
+                )
+            again, new = await service.get_or_create_client_message(
+                case=original,
+                user_id=owner_id, text="Duplicate replay with changed text",
+                source_message_id=912345,
+            )
+            assert not new and again.id == first.id
+            assert [m.id for m in await service.list_case_messages(original_id)] == [first.id]
+            assert await service.list_case_messages(second_id) == []
+            assert await service.list_case_messages(foreign_id) == []
+            audits = (
+                await db.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "CLIENT_MESSAGE_CREATED",
+                        AuditLog.entity_id.in_((original_id, second_id, foreign_id)),
+                    )
+                )
+            ).scalars().all()
+            assert len(audits) == 1
+            assert audits[0].entity_id == original_id
+            assert audits[0].new_value == {"message_id": first.id}
+            await db.rollback()
+    finally:
+        await engine.dispose()
