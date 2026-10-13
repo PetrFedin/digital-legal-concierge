@@ -116,3 +116,34 @@ async def test_domain_denial_discards_case_bound_draft_and_does_not_claim_delive
     assert "Sensitive message" not in text
     assert _callbacks(markup) == ["cases_list", "nav_home"]
     assert callback.answers[-1][0] == "Отправка по делу недоступна."
+
+
+@pytest.mark.asyncio
+async def test_new_inquiry_draft_is_not_attached_when_another_case_appears(monkeypatch):
+    monkeypatch.setattr(messages, "BotContextService", Context)
+
+    class MustNotWrite:
+        def __init__(self, db):
+            pass
+
+        async def get_or_create_client_message(self, **kwargs):
+            raise AssertionError("Draft from no-case phase must not be rebound to a new case")
+
+    monkeypatch.setattr(messages, "MessageService", MustNotWrite)
+    db = Session()
+    state = State()
+    state.data["case_id"] = None
+    callback = Callback()
+
+    await messages.message_submit(callback, state, db)
+
+    assert db.commits == 0
+    assert state.clear_count == 0
+    assert state.data["draft_text"].startswith("Sensitive message")
+    text, markup = callback.message.edits[-1]
+    assert "появилось активное дело" in text
+    assert "Вопрос не отправлен" in text
+    assert "Sensitive message" not in text
+    assert _callbacks(markup) == [
+        "cases_list", "message_review_return", "message_discard_confirm"
+    ]
