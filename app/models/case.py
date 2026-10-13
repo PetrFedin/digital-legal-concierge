@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -9,6 +9,7 @@ from app.models.base import Base, TimestampMixin
 
 class Case(Base, TimestampMixin):
     __tablename__ = "cases"
+    __table_args__ = (Index("uq_cases_creation_request_key", "creation_request_key", unique=True),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     case_number: Mapped[str] = mapped_column(
@@ -16,6 +17,7 @@ class Case(Base, TimestampMixin):
         unique=True,
         index=True,
     )
+    creation_request_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     client_id: Mapped[int] = mapped_column(
         ForeignKey("users.id"),
         index=True,
@@ -125,11 +127,16 @@ class Case(Base, TimestampMixin):
 
     client = relationship("User", back_populates="cases")
     lawyer = relationship("Lawyer", back_populates="cases")
-    calculation = relationship(
+    calculations = relationship(
         "Calculation",
         back_populates="case",
-        uselist=False,
+        order_by="Calculation.id.desc()",
     )
+
+    @property
+    def calculation(self):
+        """Compatibility access to the latest calculation in a loaded case."""
+        return self.calculations[0] if self.calculations else None
     documents = relationship("Document", back_populates="case")
     payments = relationship("Payment", back_populates="case")
     consultations = relationship(
