@@ -364,6 +364,8 @@ async def _load_case_documents_for_view(callback: CallbackQuery, db):
             case = latest
     if not case:
         return None, []
+    if getattr(case, "content_deleted_at", None) is not None:
+        return case, []
     return case, await DocumentService(db).list_case_documents(case.id)
 
 
@@ -375,6 +377,11 @@ async def _render_documents_home(callback: CallbackQuery, db):
             "Начните с расчёта неустойки или записи на консультацию.",
             reply_markup=one(*_new_case_buttons()),
         )
+        return
+    if getattr(case, "content_deleted_at", None) is not None:
+        from app.bot.screens.archived_cases import _render_erased
+
+        await _render_erased(callback, case)
         return
 
     active = _active_documents(documents)
@@ -722,6 +729,11 @@ async def _render_current_documents(callback: CallbackQuery, db, page: int = 0):
     case, documents = await _load_case_documents_for_view(callback, db)
     if not case:
         return
+    if getattr(case, "content_deleted_at", None) is not None:
+        from app.bot.screens.archived_cases import _render_erased
+
+        await _render_erased(callback, case)
+        return
     active = _active_documents(documents)
     archived = _archived_documents(documents)
     if not active:
@@ -786,6 +798,11 @@ async def list_docs_page(callback: CallbackQuery, db):
 async def _render_document_history(callback: CallbackQuery, db, page: int = 0):
     case, documents = await _load_case_documents_for_view(callback, db)
     if not case:
+        return
+    if getattr(case, "content_deleted_at", None) is not None:
+        from app.bot.screens.archived_cases import _render_erased
+
+        await _render_erased(callback, case)
         return
     archived = _archived_documents(documents)
     if not archived:
