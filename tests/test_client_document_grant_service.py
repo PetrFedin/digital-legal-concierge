@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.models import Base
 from app.models.client_document_grant import ClientDocumentGrant
 from app.domain.documents.client_grant_service import ClientDocumentGrantService, ClientGrantDenied
-from tests.test_client_archive_document_preflight import seed
+from test_client_archive_document_preflight import seed
 
 
 @pytest.mark.asyncio
