@@ -98,6 +98,9 @@ async def test_postgresql_concurrent_new_object_save_scoped_visibility():
                 Calculation.case_id == first,
             )) == 1
             assert (await db.get(Case, original_id)).status == "M1_DOCUMENTS_PENDING"
+            # Creating a second object must not implicitly switch the current matter.
+            assert (await CaseService(db).get_active_case_for_user(owner_id)).id == original_id
+            assert owner.active_case_id == original_id
             facts = dict(
                 contract_price=Decimal("2500000"),
                 planned_transfer_date=date(2025, 1, 1),
