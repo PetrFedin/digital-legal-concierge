@@ -114,6 +114,15 @@ async def test_postgresql_concurrent_new_object_save_scoped_visibility():
                     user=owner, preview_case_id=original_id,
                     request_key=token, expected_receipt=mismatched, **facts,
                 )
+            with pytest.raises(NewObjectSaveError, match="не соответствуют показанному"):
+                await NewObjectSaveService(db).save(
+                    user=owner, preview_case_id=original_id,
+                    request_key=token,
+                    expected_receipt=preview_receipt(
+                        CalculatorService(db).calculate_preview(**facts)
+                    ),
+                    **{**facts, "contract_price": Decimal("2600000")},
+                )
             assert await CaseService(db).select_active_case(
                 user=stranger, case_id=first,
             ) is None
