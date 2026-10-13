@@ -20,7 +20,7 @@ from app.models.user import User
 _CLIENT_MESSAGE_DENIED_STATUSES = frozenset(
     {str(item) for item in TERMINAL_STATUSES} | {str(CaseStatus.ERROR)}
 )
-_CLIENT_MESSAGE_DENIED_RETENTION = frozenset(
+RESTRICTED_MESSAGE_RETENTION_STATES = frozenset(
     {"APPROVED", "EXECUTING", "FAILED", "COMPLETED"}
 )
 
@@ -112,12 +112,12 @@ class MessageService:
         restricted = await self.db.scalar(
             select(CaseRetentionRecord.id).where(
                 CaseRetentionRecord.case_id == case.id,
-                CaseRetentionRecord.status.in_(_CLIENT_MESSAGE_DENIED_RETENTION),
+                CaseRetentionRecord.status.in_(RESTRICTED_MESSAGE_RETENTION_STATES),
             ).limit(1)
         )
         return restricted is not None
 
-    async def _case_messages_read_only(self, case: Case) -> bool:
+    async def case_messages_read_only(self, case: Case) -> bool:
         """Shared client/staff write fence, checked under the Case row lock."""
         if str(case.status) in _CLIENT_MESSAGE_DENIED_STATUSES:
             return True
@@ -130,7 +130,7 @@ class MessageService:
             or not isinstance(user_id, int)
             or user_id <= 0
             or int(case.client_id) != user_id
-            or await self._case_messages_read_only(case)
+            or await self.case_messages_read_only(case)
         ):
             raise ClientMessageAccessDenied()
 
@@ -230,7 +230,7 @@ class MessageService:
         text: str,
     ) -> Message:
         case = await self.lock_case(case.id)
-        if await self._case_messages_read_only(case):
+        if await self.case_messages_read_only(case):
             raise StaffMessageReadOnlyError()
         msg = Message(
             case_id=case.id,
@@ -292,7 +292,7 @@ class MessageService:
         case = await self.db.scalar(
             select(Case).where(Case.id == int(case_id)).with_for_update()
         )
-        if case is None or await self._case_messages_read_only(case):
+        if case is None or await self.case_messages_read_only(case):
             return 0
         result = await self.db.execute(
             select(Message).where(
@@ -316,7 +316,7 @@ class MessageService:
         case = await self.db.scalar(
             select(Case).where(Case.id == int(case_id)).with_for_update()
         )
-        if case is None or await self._case_messages_read_only(case):
+        if case is None or await self.case_messages_read_only(case):
             return 0
         query = select(Message).where(
             Message.case_id == case_id,
