@@ -32,6 +32,13 @@ class ClientMessageAccessDenied(ValueError):
         super().__init__("Сообщение по этому делу недоступно.")
 
 
+class StaffMessageReadOnlyError(ValueError):
+    """Staff cannot send replies after a Case is closed or content is erased."""
+
+    def __init__(self):
+        super().__init__("Переписка доступна только для чтения. Новые ответы не принимаются.")
+
+
 class MessageService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -98,6 +105,21 @@ class MessageService:
             )
         ).scalar_one_or_none()
 
+    async def _case_messages_read_only(self, case: Case) -> bool:
+        """Shared client/staff write fence, checked under the Case row lock."""
+        if (
+            str(case.status) in _CLIENT_MESSAGE_DENIED_STATUSES
+            or case.content_deleted_at is not None
+        ):
+            return True
+        restricted = await self.db.scalar(
+            select(CaseRetentionRecord.id).where(
+                CaseRetentionRecord.case_id == case.id,
+                CaseRetentionRecord.status.in_(_CLIENT_MESSAGE_DENIED_RETENTION),
+            ).limit(1)
+        )
+        return restricted is not None
+
     async def _assert_client_message_access(self, *, case: Case, user_id: int) -> None:
         """Check current database authority under the already locked Case row."""
         if (
@@ -105,8 +127,7 @@ class MessageService:
             or not isinstance(user_id, int)
             or user_id <= 0
             or int(case.client_id) != user_id
-            or str(case.status) in _CLIENT_MESSAGE_DENIED_STATUSES
-            or case.content_deleted_at is not None
+            or await self._case_messages_read_only(case)
         ):
             raise ClientMessageAccessDenied()
 
@@ -114,15 +135,6 @@ class MessageService:
             select(User.is_blocked).where(User.id == user_id)
         )
         if blocked is None or bool(blocked):
-            raise ClientMessageAccessDenied()
-
-        restricted = await self.db.scalar(
-            select(CaseRetentionRecord.id).where(
-                CaseRetentionRecord.case_id == case.id,
-                CaseRetentionRecord.status.in_(_CLIENT_MESSAGE_DENIED_RETENTION),
-            ).limit(1)
-        )
-        if restricted is not None:
             raise ClientMessageAccessDenied()
 
     @staticmethod
@@ -215,6 +227,8 @@ class MessageService:
         text: str,
     ) -> Message:
         case = await self.lock_case(case.id)
+        if await self._case_messages_read_only(case):
+            raise StaffMessageReadOnlyError()
         msg = Message(
             case_id=case.id,
             sender_type="lawyer",
