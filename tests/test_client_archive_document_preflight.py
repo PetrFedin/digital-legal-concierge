@@ -41,7 +41,7 @@ async def seed(db):
             sha256="a"*64, security_status="VERIFIED",
             encryption_status="ENCRYPTED", encryption_format_version=2,
             encryption_key_id="documents-v1",
-            encryption_envelope_id="a"*32,
+            encryption_envelope_id=f"{case_id:032x}",
             encrypted_data_key="wrapped-data-key",
             encrypted_data_key_nonce="b"*32,
             encrypted_at=datetime.now(timezone.utc),
