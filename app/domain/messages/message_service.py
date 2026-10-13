@@ -128,11 +128,9 @@ class MessageService:
             actor_id=user_id,
             case_id=case.id,
             action="CLIENT_MESSAGE_CREATED",
-            new_value={
-                "message_id": msg.id,
-                "source_message_id": source_message_id,
-                "text": text[:500],
-            },
+            # Audit proves the event, not its sensitive body. The encrypted/
+            # retention-governed Message row is the sole business text source.
+            new_value={"message_id": msg.id},
         )
         return msg, True
 
@@ -175,7 +173,8 @@ class MessageService:
             actor_id=lawyer_id,
             case_id=case.id,
             action="LAWYER_MESSAGE_CREATED",
-            new_value={"message_id": msg.id, "text": text[:500]},
+            # Never duplicate privileged legal correspondence in immutable audit.
+            new_value={"message_id": msg.id},
         )
         return msg
 
