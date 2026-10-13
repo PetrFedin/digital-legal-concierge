@@ -8,6 +8,7 @@ import pytest
 from app.domain.calculator.preview_receipt import preview_receipt
 from app.domain.cases import new_object_service as module
 from app.models.calculation import Calculation
+from app.models.user import User
 
 
 class Savepoint:
@@ -22,12 +23,18 @@ class FakeDB:
     def __init__(self):
         self.created = None
         self.calculation = None
+        self.owner = SimpleNamespace(id=7, active_case_id=None)
         self.select_count = 0
 
     async def scalar(self, query):
         self.select_count += 1
         entity = query.column_descriptions[0]["entity"]
+        if entity is User:
+            return self.owner
         return self.calculation if entity is Calculation else self.created
+
+    async def flush(self):
+        pass
 
     def begin_nested(self):
         return Savepoint()
@@ -120,7 +127,8 @@ async def test_save_creates_one_separate_case_and_replay_reuses_it():
     assert first is second
     assert first.creation_request_key == "new-object:7:" + "a" * 32
     assert first.status == "CALCULATED"
-    assert db.select_count == 3
+    assert db.select_count == 5
+    assert db.owner.active_case_id == 19
 
 
 @pytest.mark.asyncio
