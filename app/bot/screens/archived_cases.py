@@ -102,6 +102,29 @@ async def _load_owned_archived_case(callback: CallbackQuery, db, case_id: int):
     )
 
 
+async def _render_erased(callback: CallbackQuery, case: Case) -> None:
+    """Tombstone only; never derive sensitive details from retained audit/payment rows."""
+    deleted_at = getattr(case, "content_deleted_at", None)
+    deletion_date = (
+        deleted_at.strftime("%d.%m.%Y") if deleted_at is not None else "не указана"
+    )
+    await _safe_edit(
+        callback,
+        (
+            f"🔒 Архивное дело № {case.case_number}\n\n"
+            "Содержимое дела удалено в рамках процедуры хранения данных.\n"
+            f"Дата удаления: {deletion_date}.\n\n"
+            "Документы, переписка, расчёты и детальная история в Telegram "
+            "больше не доступны. Служебные и финансовые записи, "
+            "сохранённые по требованиям учёта, в этом разделе не раскрываются."
+        ),
+        reply_markup=one(
+            ("📂 Все обращения", "cases_list"),
+            ("🏠 Главная", "nav_home"),
+        ),
+    )
+
+
 async def _render_case(callback: CallbackQuery, db, case: Case) -> None:
     view = await load_client_case_view(db, case)
     lines = [
@@ -260,6 +283,11 @@ async def open_readonly_archive(callback: CallbackQuery, db):
             "Архивное дело недоступно. Откройте список своих обращений.",
             reply_markup=one(("📂 Все обращения", "cases_list"), ("🏠 Главная", "nav_home")),
         )
+        return
+    # Retention erasure takes precedence over all archive subroutes, including
+    # old Telegram callbacks and retained financial/audit ledger projections.
+    if getattr(case, "content_deleted_at", None) is not None:
+        await _render_erased(callback, case)
         return
     try:
         if screen == "case":
