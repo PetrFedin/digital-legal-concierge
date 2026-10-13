@@ -155,7 +155,7 @@ async def test_changed_facts_cannot_save_receipt_from_old_preview():
     db = FakeDB()
     data = arguments()
     data["calculation_date"] = date(2026, 3, 2)
-    with pytest.raises(module.NewObjectSaveError, match="Условия расчёта изменились"):
+    with pytest.raises(module.NewObjectSaveError, match="не соответствуют показанному"):
         await module.NewObjectSaveService(db).save(**data)
     assert db.created is None
 
@@ -183,3 +183,16 @@ async def test_used_token_cannot_be_replayed_with_different_receipt():
     with pytest.raises(module.NewObjectSaveError, match="ключ уже использован"):
         await service.save(**changed)
     assert db.created is first
+
+
+@pytest.mark.asyncio
+async def test_same_receipt_cannot_mask_changed_input_during_retry():
+    db = FakeDB()
+    service = module.NewObjectSaveService(db)
+    first = await service.save(**arguments())
+    changed = arguments()
+    changed["contract_price"] = Decimal("2600000")
+    with pytest.raises(module.NewObjectSaveError, match="не соответствуют показанному"):
+        await service.save(**changed)
+    assert db.created is first
+    assert db.owner.active_case_id == 19
