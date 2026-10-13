@@ -370,6 +370,8 @@ async def message_create(
     case = await ctx.case_service.get_active_case_for_user(user.id)
     await state.update_data(
         case_number=str(case.case_number) if case else None,
+        # Preserve the target matter across edits, retries and other-tab switches.
+        case_id=int(case.id) if case else None,
     )
     await state.set_state(MessageStates.choosing_category)
     data = await state.get_data()
@@ -622,6 +624,23 @@ async def message_submit(callback: CallbackQuery, state: FSMContext, db):
         ctx = BotContextService(db)
         user = await ctx.get_user_from_callback(callback)
         case = await ctx.case_service.get_active_case_for_user(user.id)
+        intended_case_id = data.get("case_id")
+        if intended_case_id is not None and (
+            case is None or int(case.id) != int(intended_case_id)
+        ):
+            await _replace_or_send(
+                callback,
+                "⚠️ Вы переключили активное дело после создания черновика. "
+                "Вопрос не отправлен, текст сохранён. Выберите исходное дело "
+                "или создайте вопрос заново для нового обращения.",
+                reply_markup=one(
+                    ("📂 Выбрать исходное дело", "cases_list"),
+                    ("↩️ Вернуться к черновику", "message_review_return"),
+                    ("✖️ Отменить черновик", "message_discard_confirm"),
+                ),
+            )
+            await callback.answer("Дело изменилось. Вопрос не отправлен.")
+            return
         if not case:
             case = await ctx.get_or_create_active_case_for_user(user)
 

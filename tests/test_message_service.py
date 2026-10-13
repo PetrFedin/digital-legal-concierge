@@ -1,9 +1,11 @@
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.domain.messages.message_service import MessageService
 from app.models import Base
 from app.models.case import Case
+from app.models.audit_log import AuditLog
 from app.models.user import User
 
 
@@ -179,3 +181,52 @@ async def test_only_visible_team_messages_are_marked_read(message_db):
             message_ids=[],
         )
         assert empty_count == 0
+
+
+@pytest.mark.asyncio
+async def test_new_message_bodies_are_absent_from_immutable_audit(message_db):
+    """Old audit rows remain immutable; new rows must never carry correspondence."""
+    async with message_db() as session:
+        user, case = await create_case(session)
+        service = MessageService(session)
+        client_secret = "Клиент: паспортный номер 9999 999999"
+        lawyer_secret = "Юрист: конфиденциальная тактика защиты"
+
+        client = await service.create_client_message(
+            case=case, user_id=user.id, text=client_secret,
+        )
+        lawyer = await service.create_lawyer_message(
+            case=case, lawyer_id=None, text=lawyer_secret,
+        )
+        await session.commit()
+
+        # Full text remains available in the separate, retention-governed messages.
+        messages = await service.list_case_messages(case.id)
+        assert [item.text for item in messages] == [client_secret, lawyer_secret]
+        assert [item.id for item in messages] == [client.id, lawyer.id]
+
+        events = list((
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.entity_type == "case",
+                    AuditLog.entity_id == case.id,
+                    AuditLog.action.in_((
+                        "CLIENT_MESSAGE_CREATED", "LAWYER_MESSAGE_CREATED",
+                    )),
+                )
+                .order_by(AuditLog.id)
+            )
+        ).scalars().all())
+        assert len(events) == 2
+        assert [e.action for e in events] == [
+            "CLIENT_MESSAGE_CREATED", "LAWYER_MESSAGE_CREATED",
+        ]
+        assert [e.new_value for e in events] == [
+            {"message_id": client.id},
+            {"message_id": lawyer.id},
+        ]
+        for event in events:
+            event_dump = repr((event.old_value, event.new_value, event.comment))
+            assert client_secret not in event_dump
+            assert lawyer_secret not in event_dump
+            assert event.event_hash is not None
