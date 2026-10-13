@@ -128,7 +128,7 @@ class MessageService:
             actor_id=user_id,
             case_id=case.id,
             action="CLIENT_MESSAGE_CREATED",
-            # Audit proves the event, not its sensitive body. The encrypted/
+            # Audit proves the event, not its sensitive body. The separately
             # retention-governed Message row is the sole business text source.
             new_value={"message_id": msg.id},
         )
