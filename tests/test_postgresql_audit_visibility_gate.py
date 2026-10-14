@@ -25,13 +25,16 @@ from app.security.audit_integrity import verify_audit_chain
 pytestmark = pytest.mark.asyncio
 
 
+async def allow_synthetic_admin(db, token):
+    return {"roles": ["superadmin"]}
+
+
 async def test_postgresql_approved_retention_hides_sealed_audit_before_deletion(monkeypatch):
     url = os.environ.get("DATABASE_URL", "")
     if not url.startswith("postgresql+asyncpg://"):
         pytest.skip("Disposable migrated PostgreSQL runner required")
     monkeypatch.setattr(
-        audit_center, "require_audit_superadmin",
-        lambda token: {"roles": ["superadmin"]},
+        audit_center, "require_audit_superadmin", allow_synthetic_admin,
     )
     engine = create_async_engine(url, pool_size=3, max_overflow=0)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
