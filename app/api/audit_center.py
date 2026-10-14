@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
+from app.domain.retention.content_visibility import restricted_case_ids
 from app.models.audit_log import AuditLog
 from app.security.access_control import (
     ROLE_SUPERADMIN,
@@ -44,6 +45,23 @@ async def audit_center_status(
             .limit(limit)
         )
     ).scalars().all()
+    case_ids = {
+        int(audit.entity_id)
+        for audit in rows
+        if audit.entity_type == "case"
+        and audit.entity_id is not None
+        and int(audit.entity_id) > 0
+    }
+    restricted = await restricted_case_ids(db, case_ids=case_ids)
+
+    def protected(audit: AuditLog) -> bool:
+        # Orphaned Case references are not proof that disclosure is permitted.
+        return audit.entity_type != "case" or (
+            audit.entity_id is None
+            or int(audit.entity_id) <= 0
+            or int(audit.entity_id) in restricted
+        )
+
     integrity = await verify_audit_chain(db)
     return {
         "count": len(rows),
@@ -53,11 +71,12 @@ async def audit_center_status(
                 "id": audit.id,
                 "chain_sequence": audit.chain_sequence,
                 "actor_type": audit.actor_type,
-                "actor_id": audit.actor_id,
+                "actor_id": None if protected(audit) else audit.actor_id,
                 "action": audit.action,
                 "entity_type": audit.entity_type,
-                "entity_id": audit.entity_id,
-                "comment": audit.comment,
+                "entity_id": None if protected(audit) else audit.entity_id,
+                "comment": None if protected(audit) else audit.comment,
+                "comment_redacted": bool(audit.comment and protected(audit)),
                 "integrity_key_id": audit.integrity_key_id,
                 "event_hash_prefix": audit.event_hash[:12] if audit.event_hash else None,
                 "created_at": audit.created_at.isoformat() if audit.created_at else None,
