@@ -46,6 +46,19 @@ def test_transferred_object_uses_actual_transfer_date_not_calculation_date():
     assert result.penalty_amount == Decimal("5333.33")
 
 
+def test_early_actual_transfer_is_valid_zero_delay():
+    result = calculate(
+        object_transferred=True,
+        actual_transfer_date=date(2025, 12, 31),
+    )
+
+    assert result.actual_transfer_date == date(2025, 12, 31)
+    assert result.delay_days == 0
+    assert result.penalty_amount == Decimal("0.00")
+    assert result.recommended_route == "M2"
+    assert "Просрочка" in result.warning
+
+
 def test_zero_delay_is_zero_and_routes_to_manual_review():
     result = calculate(
         planned_transfer_date=date(2026, 1, 11),
@@ -76,13 +89,6 @@ def test_zero_delay_is_zero_and_routes_to_manual_review():
                 "actual_transfer_date": date(2026, 1, 6),
             },
             "не передаётся",
-        ),
-        (
-            {
-                "object_transferred": True,
-                "actual_transfer_date": date(2025, 12, 31),
-            },
-            "раньше договорной",
         ),
         (
             {
