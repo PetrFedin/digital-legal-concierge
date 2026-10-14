@@ -8,25 +8,53 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.domain.retention.content_visibility import restricted_case_ids
 from app.models.audit_log import AuditLog
+from app.models.admin_user import AdminUser
 from app.security.access_control import (
     ROLE_SUPERADMIN,
     decode_access_token,
     normalize_roles,
 )
 from app.security.audit_integrity import verify_audit_chain
+from app.security.token_revocation import is_token_revoked
 
 router = APIRouter(tags=["audit-center"])
 
 
-def require_audit_superadmin(token: str | None) -> dict:
+async def require_audit_superadmin(db: AsyncSession, token: str | None) -> dict:
+    """Audit of legal matters requires a current, revocable *personal* MFA actor."""
     payload = decode_access_token(token)
-    if not payload or ROLE_SUPERADMIN not in normalize_roles(payload.get("roles")):
+    if (
+        not payload
+        or payload.get("legacy")
+        or payload.get("mfa") is not True
+        or ROLE_SUPERADMIN not in normalize_roles(payload.get("roles"))
+        or not str(payload.get("jti") or "")
+    ):
         raise HTTPException(
             status_code=403,
-            detail="Доступ к журналу только для суперадминистратора",
+            detail="Требуется персональная MFA-сессия суперадминистратора",
         )
-    if not payload.get("legacy") and not payload.get("mfa"):
-        raise HTTPException(status_code=403, detail="Требуется подтверждённая MFA-сессия")
+    try:
+        account_id = int(payload.get("uid") or 0)
+        session_version = int(payload.get("sv") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(403, "Недействительная административная сессия") from None
+    if account_id <= 0 or session_version <= 0:
+        raise HTTPException(403, "Недействительная административная сессия")
+
+    if await is_token_revoked(db, token):
+        raise HTTPException(401, "Сессия отозвана. Выполните вход повторно")
+    account = await db.get(AdminUser, account_id)
+    actual_roles = normalize_roles(account.role) if account else []
+    if (
+        account is None
+        or not account.is_active
+        or not account.mfa_enabled
+        or ROLE_SUPERADMIN not in actual_roles
+        or set(actual_roles) != set(normalize_roles(payload.get("roles")))
+        or int(account.session_version or 1) != session_version
+    ):
+        raise HTTPException(403, "Права или подтверждение MFA изменены")
     return payload
 
 
@@ -36,7 +64,7 @@ async def audit_center_status(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    require_audit_superadmin(x_admin_token)
+    await require_audit_superadmin(db, x_admin_token)
     limit = min(max(limit, 1), 500)
     rows = (
         await db.execute(
@@ -91,7 +119,7 @@ async def audit_integrity_status(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    require_audit_superadmin(x_admin_token)
+    await require_audit_superadmin(db, x_admin_token)
     return await verify_audit_chain(db)
 
 
