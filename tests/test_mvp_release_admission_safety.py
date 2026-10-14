@@ -332,7 +332,7 @@ def test_run_sh_only_autopins_local_compose(
     )
     (tmp_path / "deploy.sh").write_text(
         "#!/usr/bin/env bash\n"
-        "printf 'sha=%s;compose=%s\\n' \"\\$DEPLOY_EXACT_SHA\" \"\\$COMPOSE_FILE\"\n",
+        "printf 'sha=%s;compose=%s\\n' \"$DEPLOY_EXACT_SHA\" \"$COMPOSE_FILE\"\n",
         encoding="utf-8",
     )
     fake_bin = tmp_path / "fakebin"
