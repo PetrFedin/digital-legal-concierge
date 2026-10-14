@@ -23,16 +23,18 @@ image tag и ожидаемые Alembic heads. `status.sh` сравнивает 
 
 `deploy.sh`:
 
-1. требует Git checkout без изменений tracked-файлов;
-2. по умолчанию разрешает production deploy только из `main`;
+1. требует Git checkout без изменений tracked-файлов, **полный `DEPLOY_EXACT_SHA` из 40 символов** и совпадение его с текущим commit;
+2. по умолчанию разрешает запуск только из `main`; изолированный Draft/staging может использовать `ALLOW_NON_MAIN_DEPLOY=true` **только** по явной инструкции оператора;
 3. собирает image `<repository>:<12-char-sha>`;
-4. проверяет OCI revision;
-5. определяет Alembic head нового image;
-6. выполняет production preflight;
-7. создаёт encrypted backup работающей версии;
-8. запускает новый image;
-9. проверяет Redis, `/health`, `/ready` и `/runtime/release`;
+4. запускает **предварительную проверку допуска внутри candidate image** через `scripts/deploy_admission.py`, до резервного копирования и перезапуска;
+5. при `APP_ENV=production` отклоняет деплой, пока внешний подтверждённый допуск `status=ACCEPTED`, `customer_accepted=True` и `release_authorized=True` не реализован и не утверждён;
+6. при `APP_ENV=local/development/test/staging` разрешает **только нетиражируемый тестовый запуск**, не выдавая его за production acceptance;
+7. проверяет OCI revision и Alembic head нового image, выполняет конфигурационный production preflight;
+8. создаёт encrypted backup ранее работающей версии;
+9. только после допусков запускает новый image и проверяет Redis, `/health`, `/ready`, `/runtime/release`;
 10. только после успеха записывает `.release/current.env` и `.release/previous.env`.
+
+**Текущий релиз — HOLD.** Наличие `DEPLOY_EXACT_SHA`, `/ready=200`, настроенного YooKassa или локального score 100% не означает юридическое согласование, независимое ревью и подписанную приёмку М1/М2. Не изменяйте `APP_ENV` ради обхода production-блокировки. Для staging используйте отдельные PostgreSQL, Redis, зашифрованное файловое хранилище, тестовый Telegram и sandbox-платежи, только с разрешения инфраструктурного владельца.
 
 Release state не содержит секретов, исключён из Git и Docker build context, имеет права
 `0600`. Старый image не пересобирается и остаётся локальным rollback-кандидатом.
