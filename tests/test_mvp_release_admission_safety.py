@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from pathlib import Path
+import os
 import subprocess
 
 import httpx
@@ -311,3 +312,48 @@ def test_deploy_script_requires_exact_sha_and_gate_before_mutating_app():
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "compose_file,explicit_sha,expected_sha",
+    [
+        ("docker-compose.yml", "", "a" * 40),
+        ("docker-compose.yml", "b" * 40, "b" * 40),
+        ("docker-compose.timeweb.yml", "", ""),
+        ("docker-compose.production.yml", "c" * 40, "c" * 40),
+    ],
+)
+def test_run_sh_only_autopins_local_compose(
+    tmp_path, compose_file, explicit_sha, expected_sha,
+):
+    root = Path(__file__).resolve().parents[1]
+    (tmp_path / "run.sh").write_text(
+        (root / "run.sh").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (tmp_path / "deploy.sh").write_text(
+        "#!/usr/bin/env bash\n"
+        "printf 'sha=%s;compose=%s\\n' \"\\$DEPLOY_EXACT_SHA\" \"\\$COMPOSE_FILE\"\n",
+        encoding="utf-8",
+    )
+    fake_bin = tmp_path / "fakebin"
+    fake_bin.mkdir()
+    fake_git = fake_bin / "git"
+    fake_git.write_text("#!/bin/sh\necho " + "a" * 40 + "\n", encoding="utf-8")
+    fake_git.chmod(0o755)
+
+    environment = os.environ.copy()
+    environment["PATH"] = str(fake_bin) + os.pathsep + environment["PATH"]
+    environment["COMPOSE_FILE"] = compose_file
+    if explicit_sha:
+        environment["DEPLOY_EXACT_SHA"] = explicit_sha
+    else:
+        environment.pop("DEPLOY_EXACT_SHA", None)
+    response = subprocess.run(
+        ["bash", str(tmp_path / "run.sh")],
+        env=environment, capture_output=True, text=True, check=False,
+    )
+    assert response.returncode == 0, response.stderr
+    assert f"sha={expected_sha};compose={compose_file}" in response.stdout
+
+    menu = (root / "bot-control.sh").read_text(encoding="utf-8")
+    assert '3|deploy|start) COMPOSE_FILE="$compose_file" bash ./run.sh ;;' in menu
