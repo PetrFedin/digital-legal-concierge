@@ -10,6 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_transition_policy import TERMINAL_STATUSES
 from app.domain.statuses.case_statuses import CaseStatus
+from app.domain.retention.content_visibility import (
+    RESTRICTED_CONTENT_RETENTION_STATES,
+    private_case_content_available_clause,
+    private_case_content_unavailable,
+)
 from app.models.case import Case
 from app.models.case_retention import CaseRetentionRecord
 from app.models.message import Message
@@ -20,9 +25,7 @@ from app.models.user import User
 _CLIENT_MESSAGE_DENIED_STATUSES = frozenset(
     {str(item) for item in TERMINAL_STATUSES} | {str(CaseStatus.ERROR)}
 )
-RESTRICTED_MESSAGE_RETENTION_STATES = frozenset(
-    {"APPROVED", "EXECUTING", "FAILED", "COMPLETED"}
-)
+RESTRICTED_MESSAGE_RETENTION_STATES = RESTRICTED_CONTENT_RETENTION_STATES
 
 
 class ClientMessageAccessDenied(ValueError):
@@ -59,7 +62,9 @@ class MessageService:
         return (
             await self.db.execute(
                 select(Message.id)
+                .join(Case, Case.id == Message.case_id)
                 .where(Message.case_id == int(case_id))
+                .where(private_case_content_available_clause())
                 .order_by(Message.created_at.desc(), Message.id.desc())
                 .limit(1)
             )
@@ -70,14 +75,20 @@ class MessageService:
         case_id: int,
     ) -> tuple[int, datetime | None]:
         unread_result = await self.db.execute(
-            select(func.count(Message.id)).where(
+            select(func.count(Message.id)).join(
+                Case, Case.id == Message.case_id
+            ).where(
+                private_case_content_available_clause(),
                 Message.case_id == int(case_id),
                 Message.sender_type == "lawyer",
                 Message.is_read.is_(False),
             )
         )
         latest_result = await self.db.execute(
-            select(func.max(Message.created_at)).where(
+            select(func.max(Message.created_at)).join(
+                Case, Case.id == Message.case_id
+            ).where(
+                private_case_content_available_clause(),
                 Message.case_id == int(case_id),
                 Message.sender_type == "lawyer",
             )
@@ -106,16 +117,8 @@ class MessageService:
         ).scalar_one_or_none()
 
     async def case_private_content_unavailable(self, case: Case) -> bool:
-        """A tombstone or deletion approval prohibits private content access."""
-        if case.content_deleted_at is not None:
-            return True
-        restricted = await self.db.scalar(
-            select(CaseRetentionRecord.id).where(
-                CaseRetentionRecord.case_id == case.id,
-                CaseRetentionRecord.status.in_(RESTRICTED_MESSAGE_RETENTION_STATES),
-            ).limit(1)
-        )
-        return restricted is not None
+        """Use the same tombstone/retention rule for staff and client messages."""
+        return await private_case_content_unavailable(self.db, case=case)
 
     async def case_messages_read_only(self, case: Case) -> bool:
         """Shared client/staff write fence, checked under the Case row lock."""
@@ -259,7 +262,9 @@ class MessageService:
     ) -> list[Message]:
         result = await self.db.execute(
             select(Message)
+            .join(Case, Case.id == Message.case_id)
             .where(Message.case_id == case_id)
+            .where(private_case_content_available_clause())
             .order_by(Message.created_at.asc(), Message.id.asc())
             .limit(limit)
         )
@@ -272,7 +277,10 @@ class MessageService:
         bounded_size = min(max(int(page_size), 1), 10)
         total = int(
             await self.db.scalar(
-                select(func.count(Message.id)).where(Message.case_id == case_id)
+                select(func.count(Message.id))
+                .join(Case, Case.id == Message.case_id)
+                .where(Message.case_id == case_id)
+                .where(private_case_content_available_clause())
             ) or 0
         )
         total_pages = max(1, (total + bounded_size - 1) // bounded_size)
@@ -280,7 +288,9 @@ class MessageService:
         rows = (
             await self.db.execute(
                 select(Message)
+                .join(Case, Case.id == Message.case_id)
                 .where(Message.case_id == case_id)
+                .where(private_case_content_available_clause())
                 .order_by(Message.created_at.desc(), Message.id.desc())
                 .offset(selected * bounded_size)
                 .limit(bounded_size)
