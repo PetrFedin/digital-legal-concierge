@@ -134,6 +134,7 @@ if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
 fi
 
 export GIT_COMMIT_SHA="$(git rev-parse --verify HEAD)"
+[ -n "${DEPLOY_EXACT_SHA:-}" ] || fail "DEPLOY_EXACT_SHA обязателен — выпуск без точного 40-символьного SHA запрещён"
 if [ -n "${DEPLOY_EXACT_SHA:-}" ]; then
   case "$DEPLOY_EXACT_SHA" in
     *[!0-9a-f]*|"") fail "DEPLOY_EXACT_SHA должен быть полным lowercase Git SHA" ;;
@@ -176,6 +177,34 @@ dc config --quiet
 
 echo "Сборка immutable image $APP_IMAGE_REPOSITORY:$APP_IMAGE_TAG..."
 dc build --pull app
+
+# This is an *additional* pre-deployment safety fence. A green /ready only
+# indicates service health; it does not prove signed UAT or legal acceptance.
+# Run against the candidate image before any app restart or production backup.
+dc run --rm --no-deps --entrypoint python app - <<'PY'
+import sys
+
+from app.config import settings
+from app.domain.release_admission import runtime_release_admission
+
+environment = str(settings.app_env or "").strip().lower()
+admission = runtime_release_admission()
+if environment == "production" and not admission["release_authorized"]:
+    print(
+        "PRODUCTION HOLD: юридическая, внешняя и клиентская приёмка "
+        "не подтверждена. Production deployment запрещён.",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+if environment not in {"local", "development", "test", "staging", "production"}:
+    print("Неизвестное APP_ENV: не допускаем развертывание.", file=sys.stderr)
+    raise SystemExit(2)
+print(
+    "Проверка допуска: "
+    + ("production authority verified" if environment == "production" else
+       "только локальный/изолированный тестовый запуск; не production acceptance")
+)
+PY
 
 image_revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$APP_IMAGE_REPOSITORY:$APP_IMAGE_TAG")"
 [ "$image_revision" = "$GIT_COMMIT_SHA" ] || fail "OCI revision не совпадает с Git commit"
