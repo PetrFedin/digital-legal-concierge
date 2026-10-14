@@ -14,8 +14,10 @@ import pytest
 from app.api import (
     acceptance_center,
     final_handover_center,
+    final_qa_center,
     go_live_center,
     production_center,
+    release_manager,
 )
 from app.domain.release_admission import runtime_release_admission
 from app.main import app
@@ -50,6 +52,8 @@ async def test_all_existing_release_status_endpoints_fail_closed_even_if_configu
             "/production-center/status": "ready",
             "/acceptance-center/status": "ok",
             "/final-handover/status": "handover_accepted",
+            "/final-qa/status": "qa_accepted",
+            "/release-manager/status": "ok",
         }
         for path, ready_field in endpoints.items():
             response = await client.get(path)
@@ -60,6 +64,8 @@ async def test_all_existing_release_status_endpoints_fail_closed_even_if_configu
             assert data["release_admission"]["release_authorized"] is False, path
 
     assert (await final_handover_center.final_handover_status())["status"] == "HANDOVER_HOLD"
+    assert (await final_qa_center.final_qa_status())["status"] == "QA_EVIDENCE_PENDING"
+    assert (await release_manager.status())["workflow_available"] is True
     assert (await acceptance_center.status())["source_checks_available"] is True
 
 
@@ -152,3 +158,28 @@ async def test_handover_and_acceptance_never_call_source_present_a_signed_uat():
     assert "READY FOR PRODUCTION" not in acceptance["expected_result"]
     ui = await acceptance_center.ui()
     assert "Статус приёмки: HOLD" in ui.body.decode("utf-8")
+
+
+@pytest.mark.asyncio
+async def test_unsaved_final_qa_checkboxes_are_not_customer_acceptance():
+    result = await final_qa_center.final_qa_status()
+    assert result["status"] == "QA_EVIDENCE_PENDING"
+    assert result["qa_accepted"] is False
+    assert result["checks"] == sum(len(section["items"]) for section in result["qa_sections"])
+    assert result["release_admission"]["release_authorized"] is False
+
+    html = await final_qa_center.final_qa_ui()
+    assert "Статус: HOLD" in html
+    assert "не сохраняют результаты проверки" in html
+    assert "OPERATOR_QA_READY" not in html
+
+
+@pytest.mark.asyncio
+async def test_release_manager_plan_presence_is_not_a_release_decision():
+    response = await release_manager.status()
+    assert response["status"] == "HOLD"
+    assert response["ok"] is False
+    assert response["workflow_available"] is True
+    assert response["release_admission"]["customer_accepted"] is False
+    html = await release_manager.ui()
+    assert "статус HOLD" in html.body.decode("utf-8")
