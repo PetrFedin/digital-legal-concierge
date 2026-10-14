@@ -13,6 +13,10 @@ from app.domain.cases.case_transition_policy import (
     validate_transition,
 )
 from app.domain.cases.sla_service import CaseSLAService
+from app.domain.retention.content_visibility import (
+    approved_erasure_absent_clause,
+    private_case_content_available_clause,
+)
 from app.domain.statuses.case_statuses import CaseStatus, RouteCode
 from app.models.case import Case
 from app.models.user import User
