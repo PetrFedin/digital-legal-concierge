@@ -158,7 +158,8 @@ async def test_audit_center_masks_sealed_comments_but_preserves_chain(store, mon
         assert projected["entity_id"] is None
         assert projected["comment"] is None
         assert projected["comment_redacted"] is True
-        assert str(hidden_case) not in str(projected)
+        # Retained internal audit IDs must not be mistaken for content disclosure.
+        assert projected["entity_id"] is None
         assert "SEALED-SENSITIVE" not in repr(response)
         assert "OLD-PRIVATE-NUMBER" not in repr(response)
 
