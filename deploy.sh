@@ -178,33 +178,9 @@ dc config --quiet
 echo "Сборка immutable image $APP_IMAGE_REPOSITORY:$APP_IMAGE_TAG..."
 dc build --pull app
 
-# This is an *additional* pre-deployment safety fence. A green /ready only
-# indicates service health; it does not prove signed UAT or legal acceptance.
-# Run against the candidate image before any app restart or production backup.
-dc run --rm --no-deps --entrypoint python app - <<'PY'
-import sys
-
-from app.config import settings
-from app.domain.release_admission import runtime_release_admission
-
-environment = str(settings.app_env or "").strip().lower()
-admission = runtime_release_admission()
-if environment == "production" and not admission["release_authorized"]:
-    print(
-        "PRODUCTION HOLD: юридическая, внешняя и клиентская приёмка "
-        "не подтверждена. Production deployment запрещён.",
-        file=sys.stderr,
-    )
-    raise SystemExit(2)
-if environment not in {"local", "development", "test", "staging", "production"}:
-    print("Неизвестное APP_ENV: не допускаем развертывание.", file=sys.stderr)
-    raise SystemExit(2)
-print(
-    "Проверка допуска: "
-    + ("production authority verified" if environment == "production" else
-       "только локальный/изолированный тестовый запуск; не production acceptance")
-)
-PY
+# Enforce release admission in the candidate image, BEFORE backups or app restart.
+# This distinguishes /ready health from signed external customer/legal acceptance.
+dc run --rm --no-deps --entrypoint python app scripts/deploy_admission.py
 
 image_revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$APP_IMAGE_REPOSITORY:$APP_IMAGE_TAG")"
 [ "$image_revision" = "$GIT_COMMIT_SHA" ] || fail "OCI revision не совпадает с Git commit"
