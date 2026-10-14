@@ -18,6 +18,7 @@ from app.domain.consultations.consultation_intake import (
 )
 from app.domain.consultations.slot_service import SlotUnavailableError
 from app.domain.payments.payment_service import PaymentService
+from app.domain.retention.content_visibility import approved_erasure_absent_clause
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.payments.payment_webhook_service import PaymentWebhookService
 from app.domain.statuses.payment_statuses import PaymentStatus
@@ -138,6 +139,7 @@ async def get_owned_payment(
             select(Case).where(
                 Case.id == payment.case_id,
                 Case.client_id == user.id,
+                approved_erasure_absent_clause(),
             )
         )
     ).scalars().first()
