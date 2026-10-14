@@ -7,6 +7,8 @@ no forged live evidence, external providers, or production resources required.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from pathlib import Path
+import subprocess
 
 import httpx
 import pytest
@@ -20,6 +22,7 @@ from app.api import (
     release_manager,
 )
 from app.domain.release_admission import runtime_release_admission
+from scripts import deploy_admission
 from app.main import app
 
 
@@ -183,3 +186,90 @@ async def test_release_manager_plan_presence_is_not_a_release_decision():
     assert response["release_admission"]["customer_accepted"] is False
     html = await release_manager.ui()
     assert "статус HOLD" in html.body.decode("utf-8")
+
+
+@pytest.mark.parametrize("environment", ["local", "test", "staging", "development"])
+def test_deploy_gate_allows_nonproduction_only_for_live_hold(environment):
+    report = deploy_admission.evaluate_deployment_admission(
+        environment, runtime_release_admission()
+    )
+    assert report["ok"] is True
+    assert report["status"] == "NONPRODUCTION_ONLY"
+    assert "production acceptance" not in report["message"].lower()
+
+
+@pytest.mark.parametrize(
+    "admission",
+    [
+        {"status": "HOLD", "release_authorized": False, "customer_accepted": False},
+        {"status": "ACCEPTED", "release_authorized": True, "customer_accepted": False},
+        {"status": "ACCEPTED", "release_authorized": "true", "customer_accepted": True},
+        {"status": "HOLD", "release_authorized": True, "customer_accepted": True},
+        {"status": "ACCEPTED", "release_authorized": False, "customer_accepted": True},
+    ],
+)
+def test_deploy_gate_denies_production_without_all_three_authorities(admission):
+    report = deploy_admission.evaluate_deployment_admission(
+        "production", admission
+    )
+    assert report["ok"] is False
+    assert report["status"] == "PRODUCTION_HOLD"
+
+
+@pytest.mark.parametrize("environment", ["", "unknown", "prod", "live", "qa-production"])
+def test_deploy_gate_denies_unknown_environments(environment):
+    report = deploy_admission.evaluate_deployment_admission(
+        environment, runtime_release_admission()
+    )
+    assert report["ok"] is False
+    assert report["status"] == "UNKNOWN_ENVIRONMENT"
+
+
+def test_production_approval_requires_explicit_accepted_authority():
+    # This is a *contract* example, not a forged signed release receipt.
+    report = deploy_admission.evaluate_deployment_admission(
+        "production",
+        {
+            "status": "ACCEPTED",
+            "release_authorized": True,
+            "customer_accepted": True,
+        },
+    )
+    assert report["ok"] is True
+    assert report["status"] == "PRODUCTION_APPROVED"
+    # The actual runtime authority remains HOLD and cannot issue that receipt.
+    assert deploy_admission.evaluate_deployment_admission(
+        "production", runtime_release_admission()
+    )["ok"] is False
+
+
+def test_deploy_cli_never_claims_release_for_configured_production(monkeypatch, capsys):
+    monkeypatch.setattr(
+        deploy_admission, "settings", SimpleNamespace(app_env="production")
+    )
+    assert deploy_admission.main() == 2
+    output = capsys.readouterr().out
+    assert '"ok": false' in output
+    assert "PRODUCTION_HOLD" in output
+    assert "secret" not in output.lower()
+
+
+def test_deploy_script_requires_exact_sha_and_gate_before_mutating_app():
+    script = (Path(__file__).resolve().parents[1] / "deploy.sh").read_text(
+        encoding="utf-8"
+    )
+    assert '[ -n "${DEPLOY_EXACT_SHA:-}" ] || fail' in script
+    assert "DEPLOY_EXACT_SHA обязателен" in script
+    assert '"$GIT_COMMIT_SHA" = "$DEPLOY_EXACT_SHA"' in script
+    check = "dc run --rm --no-deps --entrypoint python app scripts/deploy_admission.py"
+    assert check in script
+    assert script.index(check) < script.index("backup_cli create")
+    assert script.index(check) < script.index("dc up -d --remove-orphans")
+    assert script.index("dc build --pull app") < script.index(check)
+    result = subprocess.run(
+        ["bash", "-n", str(Path(__file__).resolve().parents[1] / "deploy.sh")],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
