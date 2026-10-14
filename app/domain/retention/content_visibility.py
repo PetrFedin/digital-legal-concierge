@@ -6,7 +6,7 @@ This module does *not* erase or rewrite any immutable audit or backup material.
 """
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.case import Case
@@ -16,6 +16,33 @@ from app.models.case_retention import CaseRetentionRecord
 RESTRICTED_CONTENT_RETENTION_STATES = frozenset(
     {"APPROVED", "EXECUTING", "FAILED", "COMPLETED"}
 )
+
+
+
+def approved_erasure_absent_clause():
+    """SQL filter for retrievals where only closure metadata may still remain.
+
+    Keeping this restriction inside the SELECT prevents client functions from
+    materializing a closed matter whose deletion was approved but not executed.
+    """
+    blocked = (
+        select(CaseRetentionRecord.id)
+        .where(
+            CaseRetentionRecord.case_id == Case.id,
+            CaseRetentionRecord.status.in_(RESTRICTED_CONTENT_RETENTION_STATES),
+        )
+        .exists()
+    )
+    return ~blocked
+
+
+def private_case_content_available_clause():
+    """Read gate for all sensitive client projections, including old callbacks."""
+    return and_(
+        Case.content_deleted_at.is_(None),
+        approved_erasure_absent_clause(),
+    )
+
 
 
 async def private_case_content_unavailable(
