@@ -15,6 +15,30 @@ fail() {
   exit 1
 }
 
+# Safe default follows the compose target, not APP_ENV's permissive local default.
+compose_name="${compose_file##*/}"
+deploy_target="${DEPLOY_TARGET:-}"
+case "$compose_name" in
+  docker-compose.yml)
+    [ -n "$deploy_target" ] || deploy_target="local"
+    [ "$deploy_target" = "local" ] || fail "Локальный Compose допускает только DEPLOY_TARGET=local"
+    ;;
+  docker-compose.production.yml|docker-compose.timeweb.yml)
+    [ -n "$deploy_target" ] || deploy_target="production"
+    case "$deploy_target" in
+      production) ;;
+      staging)
+        case "${COMPOSE_PROJECT_NAME:-}" in
+          dlc-staging-*) ;;
+          *) fail "Для staging нужен отдельный COMPOSE_PROJECT_NAME=dlc-staging-<id>" ;;
+        esac
+        ;;
+      *) fail "Production/Timeweb Compose допускает только staging или production" ;;
+    esac
+    ;;
+  *) fail "Неизвестный COMPOSE_FILE — безопасное назначение не определено" ;;
+esac
+
 safe_value() {
   case "$1" in
     ""|*[!A-Za-z0-9._/:,@+-]*) return 1 ;;
@@ -180,7 +204,7 @@ dc build --pull app
 
 # Enforce release admission in the candidate image, BEFORE backups or app restart.
 # This distinguishes /ready health from signed external customer/legal acceptance.
-dc run --rm --no-deps --entrypoint python app scripts/deploy_admission.py
+dc run --rm --no-deps -e DLC_DEPLOY_TARGET="$deploy_target" --entrypoint python app scripts/deploy_admission.py
 
 image_revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$APP_IMAGE_REPOSITORY:$APP_IMAGE_TAG")"
 [ "$image_revision" = "$GIT_COMMIT_SHA" ] || fail "OCI revision не совпадает с Git commit"
