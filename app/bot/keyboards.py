@@ -65,6 +65,7 @@ def main_menu(
         kb.button(text=text, callback_data=callback_data)
 
     kb.button(text="📁 Статус и следующий шаг", callback_data="my_case_open")
+    kb.button(text="🧮 Другой объект", callback_data="calc_preview_start")
     kb.button(text="📄 Документы", callback_data="documents_open")
     kb.button(text="💬 Переписка", callback_data="message_history")
     kb.button(text="✉️ Задать вопрос по делу", callback_data="message_create")
@@ -78,7 +79,7 @@ def main_menu(
     row_sizes: list[int] = []
     if primary_action:
         row_sizes.append(1)
-    row_sizes.extend([2, 2])
+    row_sizes.extend([2, 1, 2])
     if show_payments:
         row_sizes.append(1)
     row_sizes.append(1)
