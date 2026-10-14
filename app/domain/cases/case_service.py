@@ -34,6 +34,7 @@ class CaseService:
                 select(Case).where(
                     Case.id == user.active_case_id,
                     Case.client_id == user_id,
+                    private_case_content_available_clause(),
                     Case.status.notin_(
                         [CaseStatus.M1_CLOSED, CaseStatus.M2_CLOSED, CaseStatus.ARCHIVED]
                     ),
@@ -44,6 +45,7 @@ class CaseService:
         result = await self.db.execute(
             select(Case)
             .where(Case.client_id == user_id)
+            .where(private_case_content_available_clause())
             .where(
                 Case.status.notin_(
                     [CaseStatus.M1_CLOSED, CaseStatus.M2_CLOSED, CaseStatus.ARCHIVED]
@@ -69,6 +71,7 @@ class CaseService:
             select(Case).where(
                 Case.id == case_id,
                 Case.client_id == user_id,
+                approved_erasure_absent_clause(),
                 Case.status.in_([
                     CaseStatus.M1_CLOSED,
                     CaseStatus.M2_CLOSED,
@@ -82,6 +85,7 @@ class CaseService:
             select(Case).where(
                 Case.id == case_id,
                 Case.client_id == user.id,
+                private_case_content_available_clause(),
                 Case.status.notin_(
                     [CaseStatus.M1_CLOSED, CaseStatus.M2_CLOSED, CaseStatus.ARCHIVED]
                 ),
@@ -97,6 +101,7 @@ class CaseService:
         result = await self.db.execute(
             select(Case)
             .where(Case.client_id == user_id)
+            .where(private_case_content_available_clause())
             .order_by(Case.created_at.desc(), Case.id.desc())
             .limit(1)
         )
