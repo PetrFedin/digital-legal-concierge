@@ -19,10 +19,15 @@ from app.domain.messages.message_priority import (
     present_message,
     queue_bucket,
 )
-from app.domain.messages.message_service import MessageService
+from app.domain.messages.message_service import (
+    MessageService,
+    RESTRICTED_MESSAGE_RETENTION_STATES,
+    StaffMessageReadOnlyError,
+)
 from app.domain.notifications.immediate_delivery import deliver_selected_notifications
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.models.case import Case
+from app.models.case_retention import CaseRetentionRecord
 from app.models.message import Message
 from app.models.user import User
 from app.security.access_control import (
@@ -143,11 +148,23 @@ async def message_center_status(
     x_admin_token: str | None = Header(default=None),
 ):
     scope = await require_staff_scope(request, db, x_admin_token)
-    query = select(Message)
-    if scope.lawyer_id is not None:
-        query = query.join(Case, Case.id == Message.case_id).where(
-            Case.assigned_lawyer_id == scope.lawyer_id
+    restricted_retention = (
+        select(CaseRetentionRecord.id)
+        .where(
+            CaseRetentionRecord.case_id == Case.id,
+            CaseRetentionRecord.status.in_(RESTRICTED_MESSAGE_RETENTION_STATES),
         )
+        .exists()
+    )
+    # Do not enumerate private messages after erasure is approved, including
+    # the interval before the retention worker physically removes the rows.
+    query = (
+        select(Message)
+        .join(Case, Case.id == Message.case_id)
+        .where(Case.content_deleted_at.is_(None), ~restricted_retention)
+    )
+    if scope.lawyer_id is not None:
+        query = query.where(Case.assigned_lawyer_id == scope.lawyer_id)
     messages = (
         await db.execute(
             query.order_by(Message.created_at.desc(), Message.id.desc()).limit(1000)
@@ -301,19 +318,25 @@ async def case_messages(
     scope = await require_staff_scope(request, db, x_admin_token)
     try:
         case = (
-            await db.execute(select(Case).where(Case.id == case_id))
+            await db.execute(
+                select(Case).where(Case.id == case_id).with_for_update()
+            )
         ).scalars().first()
         if not case:
             raise HTTPException(404, "Дело не найдено")
         _ensure_case_access(scope, case)
+        service = MessageService(db)
+        if await service.case_private_content_unavailable(case):
+            raise HTTPException(410, "Содержимое дела недоступно после удаления или его одобрения")
         client = (
             await db.execute(select(User).where(User.id == case.client_id))
         ).scalars().first()
-        service = MessageService(db)
         messages = await service.list_case_messages(case_id)
         latest_message_id = messages[-1].id if messages else None
-        await service.mark_client_messages_read(case_id)
-        await db.commit()
+        # Staff may read a closed matter but may not mutate its read flags.
+        if not await service.case_messages_read_only(case):
+            await service.mark_client_messages_read(case_id)
+            await db.commit()
         return {
             "case": {
                 "id": case.id,
@@ -411,6 +434,9 @@ async def reply_to_client(
     except HTTPException:
         await db.rollback()
         raise
+    except StaffMessageReadOnlyError as error:
+        await db.rollback()
+        raise HTTPException(409, str(error)) from error
     except LookupError as error:
         await db.rollback()
         raise HTTPException(404, str(error)) from error
@@ -433,10 +459,19 @@ async def mark_message_read(
         ).scalars().first()
         if not message:
             raise HTTPException(404, "Сообщение не найдено")
-        case = await db.get(Case, message.case_id)
+        case = (
+            await db.execute(
+                select(Case).where(Case.id == message.case_id).with_for_update()
+            )
+        ).scalars().first()
         if not case:
             raise HTTPException(404, "Дело не найдено")
         _ensure_case_access(scope, case)
+        service = MessageService(db)
+        if await service.case_private_content_unavailable(case):
+            raise HTTPException(410, "Содержимое дела недоступно после удаления или его одобрения")
+        if await service.case_messages_read_only(case):
+            raise HTTPException(409, "Архивное дело доступно только для чтения")
         message.is_read = True
         await db.commit()
         return {"ok": True, "message_id": message.id, "is_read": True}
