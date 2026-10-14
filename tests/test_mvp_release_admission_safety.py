@@ -188,10 +188,19 @@ async def test_release_manager_plan_presence_is_not_a_release_decision():
     assert "статус HOLD" in html.body.decode("utf-8")
 
 
-@pytest.mark.parametrize("environment", ["local", "test", "staging", "development"])
-def test_deploy_gate_allows_nonproduction_only_for_live_hold(environment):
+@pytest.mark.parametrize(
+    "environment,target",
+    [
+        ("local", "local"),
+        ("test", "local"),
+        ("development", "local"),
+        ("staging", "staging"),
+        ("test", "staging"),
+    ],
+)
+def test_deploy_gate_allows_nonproduction_only_for_live_hold(environment, target):
     report = deploy_admission.evaluate_deployment_admission(
-        environment, runtime_release_admission()
+        environment, runtime_release_admission(), target=target
     )
     assert report["ok"] is True
     assert report["status"] == "NONPRODUCTION_ONLY"
@@ -210,7 +219,7 @@ def test_deploy_gate_allows_nonproduction_only_for_live_hold(environment):
 )
 def test_deploy_gate_denies_production_without_all_three_authorities(admission):
     report = deploy_admission.evaluate_deployment_admission(
-        "production", admission
+        "production", admission, target="production"
     )
     assert report["ok"] is False
     assert report["status"] == "PRODUCTION_HOLD"
@@ -219,10 +228,34 @@ def test_deploy_gate_denies_production_without_all_three_authorities(admission):
 @pytest.mark.parametrize("environment", ["", "unknown", "prod", "live", "qa-production"])
 def test_deploy_gate_denies_unknown_environments(environment):
     report = deploy_admission.evaluate_deployment_admission(
-        environment, runtime_release_admission()
+        environment, runtime_release_admission(), target="local"
     )
     assert report["ok"] is False
-    assert report["status"] == "UNKNOWN_ENVIRONMENT"
+    assert report["status"] == "ENVIRONMENT_TARGET_MISMATCH"
+
+
+@pytest.mark.parametrize("target", ["", "unknown", "live", "qa-production"])
+def test_deploy_gate_denies_unknown_targets(target):
+    report = deploy_admission.evaluate_deployment_admission(
+        "local", runtime_release_admission(), target=target
+    )
+    assert report["ok"] is False
+    assert report["status"] == "UNKNOWN_TARGET"
+
+
+@pytest.mark.parametrize("environment,target", [
+    ("local", "production"),
+    ("test", "production"),
+    ("production", "local"),
+    ("production", "staging"),
+    ("local", "staging"),
+    ("staging", "local"),
+])
+def test_compose_target_cannot_be_disguised_with_app_env(environment, target):
+    report = deploy_admission.evaluate_deployment_admission(
+        environment, runtime_release_admission(), target=target
+    )
+    assert report["ok"] is False
 
 
 def test_production_approval_requires_explicit_accepted_authority():
@@ -234,12 +267,13 @@ def test_production_approval_requires_explicit_accepted_authority():
             "release_authorized": True,
             "customer_accepted": True,
         },
+        target="production",
     )
     assert report["ok"] is True
     assert report["status"] == "PRODUCTION_APPROVED"
     # The actual runtime authority remains HOLD and cannot issue that receipt.
     assert deploy_admission.evaluate_deployment_admission(
-        "production", runtime_release_admission()
+        "production", runtime_release_admission(), target="production"
     )["ok"] is False
 
 
@@ -247,6 +281,7 @@ def test_deploy_cli_never_claims_release_for_configured_production(monkeypatch, 
     monkeypatch.setattr(
         deploy_admission, "settings", SimpleNamespace(app_env="production")
     )
+    monkeypatch.setenv("DLC_DEPLOY_TARGET", "production")
     assert deploy_admission.main() == 2
     output = capsys.readouterr().out
     assert '"ok": false' in output
@@ -260,8 +295,11 @@ def test_deploy_script_requires_exact_sha_and_gate_before_mutating_app():
     )
     assert '[ -n "${DEPLOY_EXACT_SHA:-}" ] || fail' in script
     assert "DEPLOY_EXACT_SHA обязателен" in script
+    assert 'compose_name="${compose_file##*/}"' in script
+    assert '[ -n "$deploy_target" ] || deploy_target="production"' in script
+    assert "dlc-staging-*" in script
     assert '"$GIT_COMMIT_SHA" = "$DEPLOY_EXACT_SHA"' in script
-    check = "dc run --rm --no-deps --entrypoint python app scripts/deploy_admission.py"
+    check = 'dc run --rm --no-deps -e DLC_DEPLOY_TARGET="$deploy_target" --entrypoint python app scripts/deploy_admission.py'
     assert check in script
     assert script.index(check) < script.index("backup_cli create")
     assert script.index(check) < script.index("dc up -d --remove-orphans")
