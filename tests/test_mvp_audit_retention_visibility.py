@@ -29,6 +29,10 @@ from app.models.user import User
 from app.security.audit_integrity import verify_audit_chain
 
 
+async def allow_synthetic_admin(db, token):
+    return {"roles": ["superadmin"]}
+
+
 @pytest.fixture
 async def store(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "app_env", "test")
@@ -140,7 +144,7 @@ async def test_staff_timeline_missing_case_returns_not_found(store, monkeypatch)
 @pytest.mark.asyncio
 async def test_audit_center_masks_sealed_comments_but_preserves_chain(store, monkeypatch):
     monkeypatch.setattr(
-        audit_center, "require_audit_superadmin", lambda token: {"roles": ["superadmin"]}
+        audit_center, "require_audit_superadmin", allow_synthetic_admin,
     )
     async with store() as db:
         hidden_case, audit_id, original_hash = await seed_case(
@@ -172,7 +176,7 @@ async def test_audit_center_masks_sealed_comments_but_preserves_chain(store, mon
 @pytest.mark.asyncio
 async def test_orphan_case_and_noncase_audit_comments_are_not_exposed(store, monkeypatch):
     monkeypatch.setattr(
-        audit_center, "require_audit_superadmin", lambda token: {"roles": ["superadmin"]}
+        audit_center, "require_audit_superadmin", allow_synthetic_admin,
     )
     async with store() as db:
         db.add_all((
@@ -203,7 +207,7 @@ async def test_audit_center_keeps_active_case_comment_for_authorized_staff(
     store, monkeypatch,
 ):
     monkeypatch.setattr(
-        audit_center, "require_audit_superadmin", lambda token: {"roles": ["superadmin"]}
+        audit_center, "require_audit_superadmin", allow_synthetic_admin,
     )
     async with store() as db:
         case_id, _, _ = await seed_case(db, case_status="M1_DOCUMENTS_PENDING")
