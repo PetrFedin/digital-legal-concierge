@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 from app.config import settings
+from app.domain.release_admission import runtime_release_admission
 
 router = APIRouter(tags=["Acceptance Center v25"])
 
@@ -21,7 +22,7 @@ pre, code { background:#0b1020; color:#d1e7ff; border-radius:10px; padding:10px;
 table { width:100%; border-collapse:collapse; } td, th { border-bottom:1px solid #e5e7eb; padding:8px; text-align:left; }
 @media(max-width:800px){ .grid { grid-template-columns:1fr; } }
 </style></head><body>
-    <header><h1>Acceptance Center v25</h1><p>Production v25: эксплуатационный слой Telegram-бота.</p></header>
+    <header><h1>Acceptance Center v25</h1><p>Проверка исходного кода и сценариев M1/M2. Статус приёмки: HOLD — без подтверждённого UAT выпуск заблокирован.</p></header>
     <main>
       <section class='grid'><div class='card'><span class='badge'>Telegram</span><h3>Telegram</h3><p>Команды, меню, сценарии B-001—B-028.</p></div><div class='card'><span class='badge'>M1</span><h3>Маршрут М1</h3><p>Расчет → документы → платежи → закрытие.</p></div><div class='card'><span class='badge'>M2</span><h3>Маршрут М2</h3><p>Описание → слот → оплата → решение.</p></div><div class='card'><span class='badge'>Admin</span><h3>Админка</h3><p>Дела, документы, оплаты, настройки.</p></div><div class='card'><span class='badge'>Lawyer</span><h3>Юрист</h3><p>Проверка документов, решения, переводы.</p></div><div class='card'><span class='badge'>Ops</span><h3>Эксплуатация</h3><p>Health, diagnostics, backups, search, audit.</p></div></section>
       <section class='card'><h2>Быстрые действия</h2>
@@ -37,10 +38,17 @@ table { width:100%; border-collapse:collapse; } td, th { border-bottom:1px solid
 
 @router.get("/acceptance-center/status")
 async def status():
+    admission = runtime_release_admission()
     return {
-        'ok': True,
-        'acceptance_command': './acceptance.sh',
-        'checks': ['compile','init_db','e2e_smoke','e2e_m1_m2_full','full_check_v25'],
-        'expected_result': 'READY FOR PRODUCTION AFTER REAL TOKENS AND PROVIDERS',
+        "ok": admission["release_authorized"],
+        "source_checks_available": True,
+        "status": admission["status"],
+        "release_admission": admission,
+        "acceptance_command": "./acceptance.sh",
+        "checks": ["compile", "init_db", "e2e_smoke", "e2e_m1_m2_full", "full_check_v25"],
+        "expected_result": (
+            "SOURCE PREFLIGHT ONLY — EXTERNAL TELEGRAM/PAYMENT/UAT AND LEGAL "
+            "APPROVAL REQUIRED BEFORE RELEASE"
+        ),
     }
 
