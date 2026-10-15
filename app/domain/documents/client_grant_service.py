@@ -14,6 +14,7 @@ from app.domain.documents.client_archive_access import (
     ClientArchiveDocumentAccessService, ClientArchiveDocumentDenied,
 )
 from app.models.client_document_grant import ClientDocumentGrant
+from app.models.case import Case
 from app.models.document import Document
 from app.models.user import User
 from app.security.keyring import active_hmac_digest, hmac_candidates
@@ -53,6 +54,13 @@ class ClientDocumentGrantService:
         # Serialize competing issuance on the authenticated account.
         locked = await self.db.scalar(select(User).where(User.id == user_id).with_for_update())
         if locked is None:
+            raise ClientGrantDenied()
+        # Share a Case-row lock with retention approval. A concurrent deletion
+        # approval must not slip between the owner preflight and grant issue.
+        case_locked = await self.db.scalar(
+            select(Case.id).where(Case.id == case_id).with_for_update()
+        )
+        if case_locked is None:
             raise ClientGrantDenied()
         try:
             descriptor = await ClientArchiveDocumentAccessService(self.db).preflight(
@@ -108,7 +116,14 @@ class ClientDocumentGrantService:
             kid == grant.token_key_id and hmac.compare_digest(digest, grant.token_digest)
             for kid, digest in hmac_candidates(_payload(public_id, secret))
         )
-        if not valid:
+        if not valid or grant.channel != CHANNEL:
+            raise ClientGrantDenied()
+        # Retention approval takes this same Case lock before changing state.
+        # Keep this transaction open until the caller commits or rolls back.
+        case_locked = await self.db.scalar(
+            select(Case.id).where(Case.id == grant.case_id).with_for_update()
+        )
+        if case_locked is None:
             raise ClientGrantDenied()
         try:
             await ClientArchiveDocumentAccessService(self.db).preflight(
@@ -116,7 +131,11 @@ class ClientDocumentGrantService:
             )
         except ClientArchiveDocumentDenied as error:
             raise ClientGrantDenied() from error
-        doc = await self.db.get(Document, grant.document_id)
+        doc = await self.db.scalar(
+            select(Document)
+            .where(Document.id == grant.document_id)
+            .execution_options(populate_existing=True)
+        )
         if (doc is None or doc.version != grant.document_version
             or doc.sha256 != grant.document_sha256):
             raise ClientGrantDenied()
