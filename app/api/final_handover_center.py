@@ -1,12 +1,14 @@
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 
+from app.domain.release_admission import runtime_release_admission
+
 router = APIRouter(prefix="/final-handover", tags=["final-handover"])
 
 HANDOVER_BLOCKS = [
     {
         "title": "1. Запуск",
-        "status": "готово",
+        "status": "ИСХОДНИКИ — БЕЗ LIVE-ПРИЁМКИ",
         "items": [
             "Один основной запуск через ./run.sh",
             "Меню управления через ./bot-control.sh",
@@ -16,7 +18,7 @@ HANDOVER_BLOCKS = [
     },
     {
         "title": "2. Telegram-бот",
-        "status": "готово",
+        "status": "ИСХОДНИКИ — БЕЗ LIVE-ПРИЁМКИ",
         "items": [
             "Команды /start, /menu, /status, /help, /cancel",
             "Главное меню клиента",
@@ -26,7 +28,7 @@ HANDOVER_BLOCKS = [
     },
     {
         "title": "3. Клиентский путь",
-        "status": "готово",
+        "status": "ИСХОДНИКИ — БЕЗ LIVE-ПРИЁМКИ",
         "items": [
             "Калькулятор неустойки",
             "Согласие на обработку персональных данных",
@@ -36,7 +38,7 @@ HANDOVER_BLOCKS = [
     },
     {
         "title": "4. Операционная работа",
-        "status": "готово",
+        "status": "ИСХОДНИКИ — БЕЗ LIVE-ПРИЁМКИ",
         "items": [
             "Админка /admin-ui",
             "Операторский центр /operator",
@@ -46,7 +48,7 @@ HANDOVER_BLOCKS = [
     },
     {
         "title": "5. Эксплуатация",
-        "status": "готово",
+        "status": "ИСХОДНИКИ — БЕЗ LIVE-ПРИЁМКИ",
         "items": [
             "Health, Diagnostic, Recovery, Backup, Search, Audit, Notification Centers",
             "Final QA Center",
@@ -69,9 +71,12 @@ HANDOVER_BLOCKS = [
 
 @router.get("/status")
 async def final_handover_status():
+    admission = runtime_release_admission()
     return {
         "version": "1.0.0-v29",
-        "status": "HANDOVER_READY",
+        "status": "HANDOVER_HOLD",
+        "handover_accepted": admission["customer_accepted"],
+        "release_admission": admission,
         "blocks": HANDOVER_BLOCKS,
         "main_start": "./run.sh",
         "operator_menu": "./bot-control.sh",
@@ -89,10 +94,11 @@ async def final_handover_status():
 
 @router.get("/ui", response_class=HTMLResponse)
 async def final_handover_ui():
+    admission = runtime_release_admission()
     cards = []
     for block in HANDOVER_BLOCKS:
         items = "".join(f"<li>{item}</li>" for item in block["items"])
-        badge_class = "ok" if block["status"] == "готово" else "warn"
+        badge_class = "ok" if block["status"] == "ЮРИДИЧЕСКИ И КЛИЕНТОМ ПРИНЯТО" else "warn"
         cards.append(
             f"<section class='card'><div class='row'><h2>{block['title']}</h2>"
             f"<span class='badge {badge_class}'>{block['status']}</span></div><ul>{items}</ul></section>"
@@ -125,13 +131,15 @@ async def final_handover_ui():
     <body>
       <header>
         <h1>Final Handover v29</h1>
-        <div class="muted">Единая страница передачи Telegram-бота в эксплуатацию</div>
+        <div class="muted">Каталог возможностей и открытых условий приёмки Telegram-бота</div>
       </header>
       <main>
         <section class="hero">
-          <h2>Как запускать</h2>
+          <h2>Статус приёмки: {admission['status']} — выпуск заблокирован</h2>
+          <p>Исходный код подготовлен к дальнейшей проверке. Реальная передача заказчику, юридическое согласование и испытания Telegram/платежей ещё не подтверждены.</p>
+          <h2>Команды для технического оператора, только после авторизованного допуска</h2>
           <p>Основная команда: <code>./run.sh</code>. Меню управления: <code>./bot-control.sh</code>.</p>
-          <p class="muted">Перед реальным запуском заполните .env: BOT_TOKEN, PUBLIC_BASE_URL, доступы администратора и платежи.</p>
+          <p class="muted">Настройка .env сама по себе не является разрешением на реальный запуск.</p>
           <div class="links">
             <a href="/ready">Ready</a>
             <a href="/launch-check">Launch Check</a>
