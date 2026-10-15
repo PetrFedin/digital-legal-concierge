@@ -162,6 +162,12 @@ jobs:
       - name: Verify PostgreSQL consent concurrency on the real database
         run: pytest -q tests/test_postgresql_m2_concurrency_gate.py
 
+      - name: Verify PostgreSQL multiple-matter race and isolation
+        run: pytest -q tests/test_postgresql_multicase_gate.py
+
+      - name: Verify PostgreSQL client-grant issuance and claim concurrency
+        run: pytest -q tests/test_postgresql_client_grant_concurrency.py
+
       - name: Seed disaster recovery probe
         run: |
           export PGPASSWORD=concierge-ci-password
