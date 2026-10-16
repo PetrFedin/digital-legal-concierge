@@ -82,6 +82,11 @@ jobs:
       - name: Exercise personal admin and lawyer browser sessions
         run: python scripts/browser_staff_e2e.py
 
+      - name: Prepare detailed synthetic DDU stages for buyer demo
+        env:
+          DLC_DEMO_CAPTURE: "1"
+        run: python scripts/buyer_demo_rich_seed.py
+
       - name: Capture genuine synthetic-data staff UI for buyer demo
         env:
           DLC_DEMO_CAPTURE: "1"
