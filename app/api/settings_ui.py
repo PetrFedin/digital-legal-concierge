@@ -1,11 +1,12 @@
 """Legacy settings page, with the same auth and validation as /admin/settings."""
 from html import escape
 
-from fastapi import APIRouter, Depends, Form, Header, HTTPException
+from fastapi import APIRouter, Depends, Form, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin import require_admin, actor_id_from_token
+from app.api.auth import extract_admin_token
 from app.db.session import get_db
 from app.system.settings_defaults import DEFAULT_SETTINGS
 from app.system.settings_service import SettingsService
@@ -15,10 +16,11 @@ router = APIRouter(tags=["settings-ui"])
 
 @router.get("/settings-ui", response_class=HTMLResponse)
 async def settings_ui(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    require_admin(x_admin_token)
+    require_admin(extract_admin_token(request, x_admin_token))
     service = SettingsService(db)
     rows = []
     for key, meta in DEFAULT_SETTINGS.items():
@@ -55,12 +57,13 @@ async def settings_ui(
 
 @router.post("/settings-ui/update")
 async def settings_update(
+    request: Request,
     key: str = Form(...),
     value: str = Form(...),
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    actor = require_admin(x_admin_token)
+    actor = require_admin(extract_admin_token(request, x_admin_token))
     try:
         await SettingsService(db).set_value(
             key=key, value=value,
