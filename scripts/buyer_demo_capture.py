@@ -69,6 +69,17 @@ def login_and_capture(browser, *, username: str, target: str, out: Path,
             page.screenshot(path=str(out / "admin_overview.png"), animations="disabled")
             page.locator('button[data-tab="cases"]').click()
             expect(page.locator("#view")).to_contain_text(expected, timeout=15000)
+            page.screenshot(path=str(out / "admin_cases.png"), animations="disabled")
+            page.get_by_role("button", name="Открыть").last.click()
+            expect(page.locator(".side")).to_contain_text("DEMO-DDU-", timeout=15000)
+            page.wait_for_timeout(650)
+            page.screenshot(path=str(out / "admin_case_detail.png"), animations="disabled")
+            page.locator('button[data-tab="payments"]').click()
+            expect(page.locator("#view")).to_contain_text("Этап после судебного решения", timeout=15000)
+            page.wait_for_timeout(600)
+            page.screenshot(path=str(out / "admin_payments.png"), animations="disabled")
+            page.locator('button[data-tab="cases"]').click()
+            expect(page.locator("#view")).to_contain_text(expected, timeout=15000)
         elif name == "lawyer":
             expect(page.locator("#casesContent")).to_contain_text(expected, timeout=15000)
             if forbidden is not None:
@@ -113,7 +124,7 @@ def main() -> None:
                 target="/admin-ui",
                 out=out,
                 name="admin",
-                expected="BROWSER-OWN-2026",
+                expected="DEMO-DDU-001",
             )
             lawyer = login_and_capture(
                 browser,
@@ -121,7 +132,7 @@ def main() -> None:
                 target="/lawyer/ui",
                 out=out,
                 name="lawyer",
-                expected="BROWSER-OWN-2026",
+                expected="DEMO-DDU-001",
                 forbidden="BROWSER-FOREIGN-2026",
             )
         finally:
@@ -143,7 +154,7 @@ def main() -> None:
     (out / "evidence_manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    for item in ("admin.png", "lawyer.png", "admin_overview.png", "admin.webm", "lawyer.webm"):
+    for item in ("admin.png", "lawyer.png", "admin_overview.png", "admin_cases.png", "admin_case_detail.png", "admin_payments.png", "admin.webm", "lawyer.webm"):
         if (out / item).stat().st_size < 1000:
             raise RuntimeError("Missing/empty evidence asset: " + item)
     print(json.dumps(manifest, ensure_ascii=False, indent=2))
