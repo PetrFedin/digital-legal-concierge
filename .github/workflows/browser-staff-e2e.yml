@@ -82,6 +82,20 @@ jobs:
       - name: Exercise personal admin and lawyer browser sessions
         run: python scripts/browser_staff_e2e.py
 
+      - name: Capture genuine synthetic-data staff UI for buyer demo
+        env:
+          DLC_DEMO_CAPTURE: "1"
+        run: python scripts/buyer_demo_capture.py
+
+      - name: Upload isolated buyer demonstration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dlc-buyer-demo-staff-real-ui
+          path: buyer_demo_evidence/
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Upload browser server diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v4
