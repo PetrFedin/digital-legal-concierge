@@ -38,6 +38,7 @@ from app.security.access_control import (
     decode_access_token,
     normalize_roles,
 )
+from app.security.current_admin import require_current_staff_token
 from app.security.lawyer_access import require_lawyer_actor
 
 router = APIRouter(tags=["message-center"])
@@ -74,15 +75,10 @@ async def require_staff_scope(
     header_token: str | None = None,
 ) -> StaffScope:
     token = _request_token(request, header_token)
-    payload = decode_access_token(token)
-    roles = frozenset(normalize_roles(payload.get("roles") if payload else None))
-    if not payload:
-        raise HTTPException(status_code=401, detail="Требуется вход")
-    if not roles.intersection(ALLOWED_ROLES):
-        raise HTTPException(
-            status_code=403,
-            detail="Недостаточно прав для центра сообщений",
-        )
+    payload = await require_current_staff_token(
+        db, token, allowed_roles=ALLOWED_ROLES, allow_test_legacy=True,
+    )
+    roles = frozenset(normalize_roles(payload.get("roles")))
     if roles.intersection(BROAD_ACCESS_ROLES):
         return StaffScope(payload=payload, roles=roles, lawyer_id=None)
 
