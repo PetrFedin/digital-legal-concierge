@@ -23,23 +23,12 @@ from app.models.payment import Payment
 from app.models.user import User
 from app.scheduler.scheduler import AppScheduler
 from app.security.access_control import ROLE_ADMIN, decode_access_token, has_role
-from app.security.current_admin import require_current_staff_token
+from app.security.current_admin import current_admin_gateway
 from app.security.current_admin import require_current_settings_admin
 from app.system.settings_service import SettingsService
 
-async def _live_staff_gateway(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    x_admin_token: str | None = Header(default=None),
-) -> None:
-    token = x_admin_token or request.cookies.get(settings.admin_session_cookie)
-    await require_current_staff_token(
-        db, token, allowed_roles={ROLE_ADMIN}, allow_test_legacy=True,
-    )
-
-
 router = APIRouter(
-    prefix="/admin", tags=["admin"], dependencies=[Depends(_live_staff_gateway)],
+    prefix="/admin", tags=["admin"], dependencies=[Depends(current_admin_gateway)],
 )
 
 

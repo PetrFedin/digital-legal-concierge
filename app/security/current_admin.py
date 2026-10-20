@@ -3,10 +3,11 @@ from __future__ import annotations
 
 from collections.abc import Collection
 
-from fastapi import HTTPException, Request
+from fastapi import Depends, Header, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.db.session import get_db
 from app.models.admin_user import AdminUser
 from app.security.access_control import (
     ROLE_ADMIN,
@@ -79,4 +80,27 @@ async def require_current_settings_admin(
         raise HTTPException(status_code=403, detail="Требуется персональный вход администратора")
     return await require_current_staff_token(
         db, token, allowed_roles={ROLE_ADMIN}, allow_test_legacy=False,
+    )
+
+
+
+async def current_admin_gateway(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+) -> dict:
+    token = x_admin_token or request.cookies.get(settings.admin_session_cookie)
+    return await require_current_staff_token(
+        db, token, allowed_roles={ROLE_ADMIN}, allow_test_legacy=True,
+    )
+
+
+async def current_superadmin_gateway(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+) -> dict:
+    token = x_admin_token or request.cookies.get(settings.admin_session_cookie)
+    return await require_current_staff_token(
+        db, token, allowed_roles={ROLE_SUPERADMIN}, allow_test_legacy=True,
     )
