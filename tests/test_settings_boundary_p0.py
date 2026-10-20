@@ -163,7 +163,7 @@ async def test_settings_recheck_live_account_and_revocation(tmp_path, change):
         )
         app = FastAPI()
         app.include_router(settings_router)
-    app.include_router(admin_router)
+        app.include_router(admin_router)
 
         async def db_override():
             async with factory() as session:
