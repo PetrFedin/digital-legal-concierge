@@ -27,7 +27,7 @@ async def require_current_staff_token(
     """Check token authenticity *and* the live user/session state on each read/write."""
     payload = decode_access_token(token)
     if not payload:
-        raise HTTPException(status_code=403, detail="Требуется вход сотрудника")
+        raise HTTPException(status_code=401, detail="Требуется вход сотрудника")
     allowed = set(allowed_roles)
     token_roles = set(normalize_roles(payload.get("roles")))
     if not token_roles.intersection(allowed):
@@ -75,6 +75,8 @@ async def require_current_settings_admin(
 ) -> dict:
     """Settings never accept the shared legacy token, including in tests."""
     token = header_token or request.cookies.get(settings.admin_session_cookie)
+    if not token:
+        raise HTTPException(status_code=403, detail="Требуется персональный вход администратора")
     return await require_current_staff_token(
         db, token, allowed_roles={ROLE_ADMIN}, allow_test_legacy=False,
     )
