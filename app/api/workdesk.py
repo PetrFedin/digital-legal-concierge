@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.admin import require_admin
 from app.api.case_action_ui import CASE_ACTION_HTML
 from app.api.workdesk_ui import WORKDESK_HTML
+from app.security.current_admin import current_admin_gateway
 from app.config import settings
 from app.db.session import get_db
 from app.domain.cases.case_timeline import get_client_visible_status
@@ -28,7 +29,7 @@ from app.models.lawyer import Lawyer
 from app.models.message import Message
 from app.models.user import User
 
-router = APIRouter(tags=["admin-workdesk"])
+router = APIRouter(tags=["admin-workdesk"], dependencies=[Depends(current_admin_gateway)])
 
 CLOSED_STATUSES = ("M1_CLOSED", "M2_CLOSED", "ARCHIVED")
 OVERDUE_SLA_STATUSES = ("FIRST_RESPONSE_OVERDUE", "ACTION_OVERDUE")

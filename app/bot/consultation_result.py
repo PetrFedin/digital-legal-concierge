@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_history import add_case_history_event
 from app.domain.cases.case_service import CaseService
+from app.domain.retention.content_visibility import private_case_content_available_clause
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.consultation_statuses import ConsultationStatus
 from app.models.case import Case
@@ -168,6 +169,7 @@ async def latest_terminal_client_consultation(
         select(Case, Consultation)
         .join(Consultation, Consultation.case_id == Case.id)
         .where(Case.client_id == client_id)
+        .where(private_case_content_available_clause())
         .where(Consultation.status.in_(terminal_values))
     )
     if case_id is not None:

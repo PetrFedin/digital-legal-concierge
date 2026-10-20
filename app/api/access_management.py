@@ -5,6 +5,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.security.current_admin import current_superadmin_gateway
 from app.db.session import get_db
 from app.models.admin_user import AdminUser
 from app.models.audit_log import AuditLog
@@ -23,7 +24,7 @@ from app.security.access_control import (
 )
 from app.security.mfa import recovery_code_count
 
-router = APIRouter(prefix="/access", tags=["access-management"])
+router = APIRouter(prefix="/access", tags=["access-management"], dependencies=[Depends(current_superadmin_gateway)])
 
 
 def require_superadmin(token: str | None) -> dict:
