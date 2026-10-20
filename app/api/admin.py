@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +23,7 @@ from app.models.payment import Payment
 from app.models.user import User
 from app.scheduler.scheduler import AppScheduler
 from app.security.access_control import ROLE_ADMIN, decode_access_token, has_role
+from app.security.current_admin import require_current_settings_admin
 from app.system.settings_service import SettingsService
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -75,10 +76,11 @@ async def dashboard(
 
 @router.get("/settings")
 async def settings_list(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    require_admin(x_admin_token)
+    await require_current_settings_admin(request, db, x_admin_token)
     items = await SettingsService(db).list_settings()
     return [
         {
@@ -96,10 +98,11 @@ async def settings_list(
 async def set_setting(
     key: str,
     payload: dict,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    actor = require_admin(x_admin_token)
+    actor = await require_current_settings_admin(request, db, x_admin_token)
     try:
         setting = await SettingsService(db).set_value(
             key=key,
