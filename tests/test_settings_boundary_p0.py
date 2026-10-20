@@ -81,10 +81,11 @@ async def test_legacy_settings_reject_unauthorized_reads_and_writes(tmp_path):
         )
         assert get.status_code == 403
         assert post.status_code == 403
-        assert (await client.get("/admin/settings")).status_code == 403
+        # REST requires authentication: anonymous requests use HTTP 401.
+        assert (await client.get("/admin/settings")).status_code == 401
         assert (await client.post(
             "/admin/settings/payments.m1_initial_payment", json={"value": 1}
-        )).status_code == 403
+        )).status_code == 401
 
         async with factory() as seed_db:
             seed_db.add(AdminUser(
