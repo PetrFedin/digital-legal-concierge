@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.settings_ui import router as settings_router
+from app.api.admin import router as admin_router
 from app.db.session import get_db
 from app.models import Base
 from app.models.admin_user import AdminUser
@@ -61,6 +62,7 @@ async def test_legacy_settings_reject_unauthorized_reads_and_writes(tmp_path):
         await conn.run_sync(Base.metadata.create_all)
     app = FastAPI()
     app.include_router(settings_router)
+    app.include_router(admin_router)
 
     async def db_override():
         async with factory() as session:
@@ -79,6 +81,10 @@ async def test_legacy_settings_reject_unauthorized_reads_and_writes(tmp_path):
         )
         assert get.status_code == 403
         assert post.status_code == 403
+        assert (await client.get("/admin/settings")).status_code == 403
+        assert (await client.post(
+            "/admin/settings/payments.m1_initial_payment", json={"value": 1}
+        )).status_code == 403
 
         async with factory() as seed_db:
             seed_db.add(AdminUser(
@@ -96,6 +102,13 @@ async def test_legacy_settings_reject_unauthorized_reads_and_writes(tmp_path):
         get = await client.get("/settings-ui")
         assert get.status_code == 200
         assert "30000" in get.text
+        assert (await client.get(
+            "/admin/settings", headers={"x-admin-token": token}
+        )).status_code == 200
+        assert (await client.post(
+            "/admin/settings/payments.m1_initial_payment",
+            headers={"x-admin-token": token}, json={"value": "-100"}
+        )).status_code == 409
         wrong = await client.post(
             "/settings-ui/update",
             data={"key": "payments.m1_initial_payment", "value": "-100"},
@@ -150,6 +163,7 @@ async def test_settings_recheck_live_account_and_revocation(tmp_path, change):
         )
         app = FastAPI()
         app.include_router(settings_router)
+    app.include_router(admin_router)
 
         async def db_override():
             async with factory() as session:
@@ -183,6 +197,13 @@ async def test_settings_recheck_live_account_and_revocation(tmp_path, change):
             expected = 401 if change == "revoked" else 403
             assert get.status_code == expected
             assert post.status_code == expected
+            assert (await client.get(
+                "/admin/settings", headers={"x-admin-token": token}
+            )).status_code == expected
+            assert (await client.post(
+                "/admin/settings/payments.m1_initial_payment",
+                headers={"x-admin-token": token}, json={"value": 1}
+            )).status_code == expected
         async with factory() as session:
             assert (
                 await SettingsService(session).get_value("payments.m1_initial_payment")
