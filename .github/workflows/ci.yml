@@ -43,8 +43,11 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: Install
-        run: pip install -e ".[test]"
+      - name: Install against approved release constraints
+        run: |
+          pip install -c constraints.txt -e ".[test]"
+          python scripts/verify_constraints.py --require-all
+          pip check
 
       - name: Compile source
         run: python -m compileall -q app scripts migrations tests
@@ -72,15 +75,9 @@ jobs:
           DATABASE_URL=sqlite+aiosqlite:///./migration_smoke.db alembic upgrade head
 
       - name: Run Telegram client-to-lawyer golden path in isolation
-        env:
-          PYTHONTRACEMALLOC: "5"
-          PYTHONASYNCIODEBUG: "1"
         run: pytest -q tests/test_telegram_lawyer_golden_path.py
 
       - name: Run tests
-        env:
-          PYTHONTRACEMALLOC: "5"
-          PYTHONASYNCIODEBUG: "1"
         run: pytest -q
 
   postgres-migrations:
@@ -130,7 +127,9 @@ jobs:
 
       - name: Install application and PostgreSQL client
         run: |
-          pip install -e ".[test]"
+          pip install -c constraints.txt -e ".[test]"
+          python scripts/verify_constraints.py --require-all
+          pip check
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends postgresql-client
 
