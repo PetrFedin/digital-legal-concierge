@@ -71,7 +71,16 @@ jobs:
           DATABASE_URL=sqlite+aiosqlite:///./migration_smoke.db alembic upgrade head
           DATABASE_URL=sqlite+aiosqlite:///./migration_smoke.db alembic upgrade head
 
+      - name: Run Telegram client-to-lawyer golden path in isolation
+        env:
+          PYTHONTRACEMALLOC: "5"
+          PYTHONASYNCIODEBUG: "1"
+        run: pytest -q tests/test_telegram_lawyer_golden_path.py
+
       - name: Run tests
+        env:
+          PYTHONTRACEMALLOC: "5"
+          PYTHONASYNCIODEBUG: "1"
         run: pytest -q
 
   postgres-migrations:
