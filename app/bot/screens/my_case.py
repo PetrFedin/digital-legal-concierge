@@ -71,19 +71,23 @@ def _has_consultation_result(view) -> bool:
 
 
 def _case_buttons(view) -> list[tuple[str, str]]:
+    show_payments = (
+        not payments_disabled()
+        or str(getattr(view, "route", "") or "") == "M1"
+        or str(getattr(view, "case_status", "") or "").startswith("M1_")
+    )
     if str(getattr(view, "case_status", "") or "") in {
         "M1_CLOSED",
         "M2_CLOSED",
         "ARCHIVED",
     }:
         buttons: list[tuple[str, str]] = [("📄 Документы", "documents_open")]
-        if not payments_disabled():
+        if show_payments:
             buttons.append(("💳 Оплаты", "payments_open"))
         buttons.extend(
             [
                 ("🕘 История дела", "case_history_open"),
                 ("📂 Все обращения", "cases_list"),
-            ("📂 Все обращения", "cases_list"),
                 ("🏠 Главная", "nav_home"),
             ]
         )
@@ -123,7 +127,7 @@ def _case_buttons(view) -> list[tuple[str, str]]:
     else:
         buttons.append(("📋 Все документы", "documents_open"))
 
-    if not payments_disabled():
+    if show_payments:
         buttons.append(("💳 Оплаты", "payments_open"))
     buttons.extend(
         [

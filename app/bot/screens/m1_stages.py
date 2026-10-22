@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 
 from aiogram import Router
 from aiogram.exceptions import (
@@ -11,10 +12,16 @@ from sqlalchemy import select
 
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
+from app.domain.cases.case_history import add_case_history_event
+from app.domain.messages.message_service import MessageService
+from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.payments.mode import payments_disabled
 from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
+from app.domain.statuses.payment_statuses import PaymentStatus
+from app.domain.retention.content_visibility import private_case_content_available_clause
+from app.models.case import Case
 from app.models.payment import Payment
 
 router = Router()
@@ -27,11 +34,35 @@ def _status(case) -> CaseStatus:
     return CaseStatus(str(case.status))
 
 
-async def _case(callback: CallbackQuery, db):
+async def _case(callback: CallbackQuery, db, *, lock: bool = False):
     ctx = BotContextService(db)
     user = await ctx.get_user_from_callback(callback)
     case = await ctx.case_service.get_active_case_for_user(user.id)
+    if getattr(user, "is_blocked", False):
+        return ctx, user, None
+    if case and lock:
+        # Refresh under the row lock: old buttons cannot act on an old status
+        # or on content whose erasure was approved in a different transaction.
+        case = (await db.execute(
+            select(Case).where(
+                Case.id == case.id,
+                Case.client_id == user.id,
+                private_case_content_available_clause(),
+            ).with_for_update().execution_options(populate_existing=True)
+        )).scalar_one_or_none()
     return ctx, user, case
+
+
+def _targets_case(callback: CallbackQuery, action: str, case) -> bool:
+    return str(callback.data or "") == f"{action}:{case.id}"
+
+
+async def _initial_payment_confirmed(db, case_id: int) -> bool:
+    return (await db.scalar(select(Payment.id).where(
+        Payment.case_id == case_id,
+        Payment.payment_code == PaymentCode.M1_INITIAL_PAYMENT,
+        Payment.status == PaymentStatus.PAID,
+    ).limit(1))) is not None
 
 
 async def _present_committed_result(
@@ -84,15 +115,21 @@ async def _show_stale_stage(
 
 
 @router.callback_query(lambda c: c.data == "contract_open")
-async def contract_open(callback: CallbackQuery):
+async def contract_open(callback: CallbackQuery, db):
+    _ctx, _user, case = await _case(callback, db)
+    if not case or _status(case) not in {
+        CaseStatus.M1_CONTRACT_READY, CaseStatus.M1_WAITING_PAYMENT_30000,
+    }:
+        await _show_stale_stage(callback, "Договор недоступен на текущем этапе. Откройте актуальное дело.")
+        return
     await callback.message.edit_text(
-        "📝 Договор\n\n"
+        f"📝 Договор по делу № {case.case_number}\n\n"
         "Проверьте реквизиты, объём услуг, стоимость и порядок взаимодействия "
         "в договоре, который направила команда.\n\n"
         "Кнопка ниже фиксирует ваше подтверждение в системе, но не заменяет "
         "обязательную форму подписи, если она предусмотрена договором.",
         reply_markup=one(
-            ("Подтвердить договор", "contract_sign"),
+            ("Подтвердить договор", f"contract_sign:{case.id}"),
             ("✉️ Задать вопрос команде", "message_create"),
             ("📄 Документы", "documents_open"),
             ("📁 Моё дело", "my_case_open"),
@@ -101,13 +138,23 @@ async def contract_open(callback: CallbackQuery):
     )
 
 
-@router.callback_query(lambda c: c.data == "contract_sign")
+@router.callback_query(
+    lambda c: c.data == "contract_sign" or str(c.data or "").startswith("contract_sign:")
+)
 async def contract_sign(callback: CallbackQuery, db):
-    ctx, user, case = await _case(callback, db)
+    ctx, user, case = await _case(callback, db, lock=True)
     if not case:
         await _show_stale_stage(
             callback,
             "Активное дело не найдено. Откройте актуальную карточку перед новым действием.",
+        )
+        return
+
+    if not _targets_case(callback, "contract_sign", case):
+        await _show_stale_stage(
+            callback,
+            "Кнопка договора устарела или относится к другому обращению. "
+            "Дело не изменено. Откройте договор из актуальной карточки.",
         )
         return
 
@@ -121,6 +168,12 @@ async def contract_sign(callback: CallbackQuery, db):
             "Эта кнопка договора больше не соответствует текущему этапу. "
             "Дело не изменено — откройте актуальный следующий шаг.",
             include_documents=True,
+        )
+        return
+
+    if status == CaseStatus.M1_WAITING_PAYMENT_30000 and not case.contract_signed_at:
+        await _show_stale_stage(
+            callback, "Подписание договора ещё не зафиксировано командой. Уточните следующий шаг у юриста."
         )
         return
 
@@ -188,32 +241,64 @@ async def contract_sign(callback: CallbackQuery, db):
 
 @router.callback_query(lambda c: c.data == "poa_instruction")
 async def poa_instruction(callback: CallbackQuery, db):
-    ctx, _user, case = await _case(callback, db)
-    if case and _status(case) in {
+    _ctx, _user, case = await _case(callback, db, lock=True)
+    if not case or _status(case) not in {
         CaseStatus.M1_PAYMENT_30000_RECEIVED,
         CaseStatus.M1_POWER_OF_ATTORNEY,
     }:
+        await _show_stale_stage(
+            callback, "Инструкция по доверенности недоступна на текущем этапе.",
+            include_documents=True,
+        )
+        return
+    if not await _initial_payment_confirmed(db, case.id):
+        await _show_stale_stage(
+            callback, "Инструкция откроется после подтверждения первого платежа командой.",
+        )
+        return
+
+    try:
         if case.poa_instruction_sent_at is None:
             case.poa_instruction_sent_at = datetime.now(timezone.utc)
-            await db.commit()
-    await callback.message.edit_text(
-        "📑 Доверенность\n\n"
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        logger.exception("Не удалось сохранить открытие инструкции по доверенности")
+        await _show_stale_stage(
+            callback, "Инструкция временно недоступна. Повторите открытие из карточки дела."
+        )
+        return
+
+    reported = case.poa_client_confirmed_at is not None
+    text = (
+        f"📑 Доверенность по делу № {case.case_number}\n\n"
         "Оформите доверенность и нотариальные копии по инструкции юриста. "
-        "После оформления подтвердите готовность — команда проверит документы "
-        "до подготовки и отправки претензии.",
-        reply_markup=one(
-            ("Доверенность оформлена", "poa_done"),
-            ("✉️ Задать вопрос команде", "message_create"),
-            ("📄 Добавить документ", "documents_open"),
-            ("📁 Моё дело", "my_case_open"),
-            ("🏠 Главная", "nav_home"),
-        ),
+        "После передачи документов сообщите команде о готовности. "
+        "Получение и правильность доверенности подтвердит юрист."
     )
+    if reported:
+        text += (
+            "\n\nВаше сообщение сохранено. Ожидаем проверки доверенности командой. "
+            "Повторное подтверждение не требуется; при необходимости можно добавить документы."
+        )
+    buttons = []
+    if not reported and _status(case) == CaseStatus.M1_POWER_OF_ATTORNEY:
+        buttons.append(("Сообщить о передаче доверенности", f"poa_done:{case.id}"))
+    buttons.extend([
+        ("📄 Добавить документ", "documents_open"),
+        ("✉️ Задать вопрос команде", "message_create"),
+        ("📁 Моё дело", "my_case_open"),
+        ("🏠 Главная", "nav_home"),
+    ])
+    await _present_committed_result(callback, text, reply_markup=one(*buttons))
 
 
-@router.callback_query(lambda c: c.data == "poa_done")
+@router.callback_query(
+    lambda c: c.data in {"poa_done", "poa_sent_confirm"}
+    or str(c.data or "").startswith(("poa_done:", "poa_sent_confirm:"))
+)
 async def poa_done(callback: CallbackQuery, db):
-    ctx, user, case = await _case(callback, db)
+    _ctx, user, case = await _case(callback, db, lock=True)
     if not case:
         await _show_stale_stage(
             callback,
@@ -221,47 +306,88 @@ async def poa_done(callback: CallbackQuery, db):
             include_documents=True,
         )
         return
+    if not any(
+        _targets_case(callback, action, case) for action in ("poa_done", "poa_sent_confirm")
+    ):
+        await _show_stale_stage(
+            callback,
+            "Кнопка доверенности устарела или относится к другому обращению. "
+            "Дело не изменено. Откройте инструкцию из актуальной карточки.",
+            include_documents=True,
+        )
+        return
 
     status = _status(case)
     if status == CaseStatus.M1_POWER_OF_ATTORNEY:
-        try:
-            if case.poa_received_at is None:
-                case.poa_received_at = datetime.now(timezone.utc)
-            await ctx.case_service.change_status(
-                case=case,
-                next_status=CaseStatus.M1_POA_RECEIVED,
-                actor_type="client",
-                actor_id=user.id,
-                comment="Клиент сообщил об оформлении доверенности",
-            )
-            await db.commit()
-        except ValueError as error:
-            await db.rollback()
+        if not await _initial_payment_confirmed(db, case.id):
             await _show_stale_stage(
                 callback,
-                f"Подтверждение доверенности не сохранено: {error}",
+                "Сначала требуется подтверждение первого платежа. Дело не изменено.",
+            )
+            return
+        if case.poa_client_confirmed_at is not None:
+            await _show_stale_stage(
+                callback,
+                "Ваше сообщение о передаче доверенности уже сохранено. "
+                "Повторная запись не создавалась — ожидаем проверки команды.",
+                include_documents=True,
+            )
+            return
+        try:
+            case.poa_client_confirmed_at = datetime.now(timezone.utc)
+            report = await MessageService(db).create_client_message(
+                case=case, user_id=user.id,
+                text="Сообщаю о передаче оформленной доверенности. Прошу команду проверить получение и документы.",
+            )
+            await add_case_history_event(
+                db, actor_type="client", actor_id=user.id, case_id=case.id,
+                action="POA_READY_REPORTED",
+                new_value={
+                    "poa_client_confirmed_at": case.poa_client_confirmed_at.isoformat(),
+                    "message_id": report.id,
+                },
+            )
+            await NotificationEngine(db).emit(
+                event_code="CLIENT_MESSAGE_RECEIVED", case_id=case.id, user_id=user.id,
+                payload={
+                    "case_number": case.case_number,
+                    "category": "Доверенность",
+                    "urgency": "Обычная",
+                    "assignment": (
+                        "Назначенный юрист и администратор"
+                        if case.assigned_lawyer_id else "Требуется распределение"
+                    ),
+                    "text": "Клиент сообщил о передаче доверенности. Требуется проверка команды.",
+                },
+                dedupe_key=f"case:{case.id}:poa-ready-reported",
+            )
+            await db.commit()
+        except (RuntimeError, ValueError) as error:
+            await db.rollback()
+            await _show_stale_stage(
+                callback, f"Сообщение о доверенности пока не сохранено: {error}",
                 include_documents=True,
             )
             return
         except Exception:
             await db.rollback()
-            logger.exception("Не удалось сохранить подтверждение доверенности")
+            logger.exception("Не удалось сохранить сообщение о доверенности")
             await _show_stale_stage(
                 callback,
-                "Подтверждение доверенности временно не сохранено. "
-                "Данные дела не изменены.",
+                "Сообщение о доверенности временно не сохранено. Данные дела не изменены.",
                 include_documents=True,
             )
             return
 
         await _present_committed_result(
             callback,
-            "✅ Сообщение об оформлении доверенности сохранено.\n\n"
-            "Теперь юрист проверит документы. Отправка претензии и начало "
-            "30-дневного срока будут зафиксированы только после фактического действия.",
+            "✅ Информация о передаче доверенности сохранена для команды.\n\n"
+            "После проверки юрист подтвердит получение, и статус обновится в разделе «Моё дело». "
+            "Отправка претензии и начало 30-дневного срока фиксируются отдельным действием.",
             reply_markup=one(
-                ("📄 Документы", "documents_open"),
                 ("📁 Моё дело", "my_case_open"),
+                ("📄 Документы", "documents_open"),
+                ("📑 Инструкция по доверенности", "poa_instruction"),
                 ("✉️ Задать вопрос команде", "message_create"),
                 ("🏠 Главная", "nav_home"),
             ),
@@ -269,35 +395,28 @@ async def poa_done(callback: CallbackQuery, db):
         return
 
     if status in {
-        CaseStatus.M1_POA_RECEIVED,
-        CaseStatus.M1_CLAIM_PREPARATION,
-        CaseStatus.M1_CLAIM_SENT,
-        CaseStatus.M1_WAITING_30_DAYS,
-        CaseStatus.M1_LAWSUIT_PREPARATION,
-        CaseStatus.M1_LAWSUIT_FILED,
-        CaseStatus.M1_COURT_STAGE,
-        CaseStatus.M1_DECISION_RECEIVED,
-        CaseStatus.M1_WAITING_PAYMENT_70000,
-        CaseStatus.M1_PAYMENT_70000_RECEIVED,
-        CaseStatus.M1_ENFORCEMENT,
-        CaseStatus.M1_MONEY_RECEIVED,
-        CaseStatus.M1_WAITING_SUCCESS_FEE,
-        CaseStatus.M1_SUCCESS_FEE_RECEIVED,
+        CaseStatus.M1_POA_RECEIVED, CaseStatus.M1_CLAIM_PREPARATION,
+        CaseStatus.M1_CLAIM_SENT, CaseStatus.M1_WAITING_30_DAYS,
+        CaseStatus.M1_LAWSUIT_PREPARATION, CaseStatus.M1_LAWSUIT_FILED,
+        CaseStatus.M1_COURT_STAGE, CaseStatus.M1_DECISION_RECEIVED,
+        CaseStatus.M1_WAITING_PAYMENT_70000, CaseStatus.M1_PAYMENT_70000_RECEIVED,
+        CaseStatus.M1_ENFORCEMENT, CaseStatus.M1_MONEY_RECEIVED,
+        CaseStatus.M1_WAITING_SUCCESS_FEE, CaseStatus.M1_SUCCESS_FEE_RECEIVED,
         CaseStatus.M1_CLOSED,
     }:
         await _show_stale_stage(
             callback,
-            "Доверенность уже отмечена. Повторная запись не создавалась — "
+            "Доверенность уже подтверждена командой. Повторная запись не создавалась — "
             "откройте актуальный этап дела.",
             include_documents=True,
         )
         return
-
     await _show_stale_stage(
         callback,
-        "Подтверждение доверенности недоступно на текущем этапе. Дело не изменено.",
+        "Сообщение о доверенности недоступно на текущем этапе. Дело не изменено.",
         include_documents=True,
     )
+
 
 
 @router.callback_query(lambda c: c.data == "court_status")
@@ -547,7 +666,7 @@ async def pay_success_fee(callback: CallbackQuery, db):
             "💳 Финальный платёж открыт.\n\n"
             f"Сумма: {money(payment.amount)}\n\n"
             "Онлайн-оплата сейчас отключена. Команда подтвердит фактический платёж; "
-            "дело будет закрыто только после подтверждения финансового этапа."
+            "закрытие дела выполняется отдельно после подтверждения платежа и завершения работы."
         )
         markup = one(
             ("📁 Моё дело", "my_case_open"),
@@ -558,7 +677,7 @@ async def pay_success_fee(callback: CallbackQuery, db):
         text = (
             "💳 Финальный платёж\n\n"
             f"Сумма: {money(payment.amount)}\n\n"
-            "После подтверждения оплаты система завершит финансовый этап и закроет дело."
+            "После подтверждения оплаты команда подготовит финальные документы и подтвердит завершение работы."
         )
         markup = payment_keyboard(payment)
     await _present_committed_result(callback, text, reply_markup=markup)

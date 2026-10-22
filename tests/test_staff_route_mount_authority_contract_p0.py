@@ -1,5 +1,5 @@
 """Ensure privileged routes preserve live authorization even when mounted separately."""
-from fastapi.routing import APIRoute
+from fastapi.routing import APIRoute, iter_route_contexts
 from app.main import create_app
 from app.security.current_admin import current_admin_gateway, current_superadmin_gateway
 
@@ -17,8 +17,10 @@ GATES = {
 def test_mounted_staff_routers_preserve_live_session_gate():
     observed = set()
     violations = []
-    for route in create_app().routes:
-        if not isinstance(route, APIRoute):
+    # Included routers are lazy branches in the pinned FastAPI version. Inspect
+    # their effective routes so nested endpoints and mounted dependencies count.
+    for route in iter_route_contexts(create_app().routes):
+        if not isinstance(route.original_route, APIRoute):
             continue
         module = route.endpoint.__module__
         gate = GATES.get(module)

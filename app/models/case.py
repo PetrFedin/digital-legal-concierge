@@ -82,6 +82,10 @@ class Case(Base, TimestampMixin):
     poa_instruction_sent_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Client's report is separate from the team's verified receipt (UX-11-016).
+    poa_client_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     poa_received_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

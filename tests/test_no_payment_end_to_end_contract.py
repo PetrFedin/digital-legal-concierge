@@ -90,16 +90,6 @@ def test_no_payment_booking_confirms_slot_without_creating_payment():
     assert "await db.flush()" in booking
 
 
-def test_no_payment_actions_reject_stale_or_wrong_case_stages():
-    source = inspect.getsource(no_payment)
-    advance = inspect.getsource(no_payment._advance_path)
-
-    assert 'return "invalid"' in advance
-    assert source.count('result == "invalid"') >= 3
-    assert "Кнопка не соответствует текущему этапу дела" in source
-    assert "У вас уже есть активное дело другого маршрута" in source
-
-
 def test_cancelled_booked_consultation_can_return_to_slot_selection():
     assert transition_allowed(
         CaseStatus.M2_CONSULTATION_BOOKED,
@@ -123,12 +113,11 @@ def test_client_actions_do_not_claim_unperformed_legal_events():
         no_payment_legal.court_status_without_side_effects
     )
 
-    assert "next_status=CaseStatus.M1_POA_RECEIVED" in _compact(poa)
+    assert "next_status=CaseStatus.M1_POA_RECEIVED" not in _compact(poa)
     assert "next_status=CaseStatus.M1_CLAIM_SENT" not in _compact(poa)
     assert "next_status=CaseStatus.M1_WAITING_30_DAYS" not in _compact(poa)
     assert "change_status" not in court
     assert "change_status" not in pilot_court
-    assert "Просмотр этого экрана не переводит дело в суд" in pilot_court
 
 
 def test_m1_review_requires_ddu_and_document_service_returns_count():

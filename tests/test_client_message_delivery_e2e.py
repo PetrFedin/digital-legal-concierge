@@ -4,6 +4,9 @@ import inspect
 from pathlib import Path
 from types import SimpleNamespace
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+
 from app.bot.screens.messages import (
     HISTORY_PAGE_SIZE,
     HISTORY_TEXT_LIMIT,
@@ -114,7 +117,10 @@ def test_database_enforces_telegram_source_idempotency():
     assert "if INDEX_NAME not in indexes" in migration
     assert 'revision = "20260806_0013"' in next_migration
     assert 'down_revision = "20260805_0012"' in next_migration
-    assert 'HEAD_REVISION = "20261013_0020"' in migration_test
+    scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
+    assert "20260805_0012" in {
+        revision.revision for revision in scripts.walk_revisions(base="base", head="head")
+    }
     assert "MESSAGE_SOURCE_INDEX" in migration_test
 
 

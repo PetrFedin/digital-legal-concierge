@@ -38,6 +38,7 @@ jobs:
       BOT_TOKEN: CHANGE_ME
       RUN_BOT: "false"
       RUN_SCHEDULER: "false"
+      PAYMENT_PROVIDER: disabled
       BOOTSTRAP_ADMIN: "false"
       BOOTSTRAP_DEMO_DATA: "false"
       ADMIN_USERNAME: ci-browser-account

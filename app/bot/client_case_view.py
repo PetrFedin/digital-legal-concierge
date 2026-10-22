@@ -96,9 +96,9 @@ CLIENT_ACTIONS: dict[str, ClientAction] = {
         "Ознакомьтесь с договором и подтвердите продолжение работы.",
     ),
     "M1_WAITING_PAYMENT_30000": ClientAction(
-        "Продолжить оформление",
+        "Первый платёж",
         "pay_start_30000",
-        "Продолжите к этапу оформления доверенности.",
+        "Оплатите первый этап. После подтверждения поступления откроется инструкция по доверенности.",
     ),
     "M1_POWER_OF_ATTORNEY": ClientAction(
         "Оформить доверенность",
@@ -131,19 +131,19 @@ CLIENT_ACTIONS: dict[str, ClientAction] = {
         "Посмотрите следующий шаг после получения решения суда.",
     ),
     "M1_WAITING_PAYMENT_70000": ClientAction(
-        "Продолжить исполнение",
+        "Второй платёж",
         "pay_court_70000",
-        "Продолжите к этапу исполнения решения.",
+        "Оплатите второй этап. После подтверждения поступления начнётся исполнение решения.",
     ),
     "M1_MONEY_RECEIVED": ClientAction(
-        "Завершить финансовый этап",
+        "Финальный платёж",
         "pay_success_fee",
-        "Подтвердите финальный финансовый этап сопровождения.",
+        "Откройте финальный платёж, рассчитанный по фактически полученной сумме.",
     ),
     "M1_WAITING_SUCCESS_FEE": ClientAction(
-        "Завершить финансовый этап",
+        "Финальный платёж",
         "pay_success_fee",
-        "Завершите финальный финансовый этап сопровождения.",
+        "Оплатите финальное вознаграждение. После подтверждения команда подготовит завершение дела.",
     ),
     "M1_REJECTED": ClientAction(
         "Уточнить решение",
@@ -228,6 +228,20 @@ def effective_client_route(case) -> str | None:
 
 
 def client_action_for(case) -> ClientAction | None:
+    if payments_disabled() and str(case.status) in {
+        "M1_WAITING_PAYMENT_30000", "M1_WAITING_PAYMENT_70000", "M1_WAITING_SUCCESS_FEE",
+    }:
+        return ClientAction(
+            "Статус платежа",
+            "payments_open",
+            "Платёж ожидает подтверждения команды. Откройте платежи по делу или уточните порядок оплаты у юриста.",
+        )
+    if str(case.status) == "M1_POWER_OF_ATTORNEY" and getattr(case, "poa_client_confirmed_at", None):
+        return ClientAction(
+            "Статус доверенности",
+            "poa_instruction",
+            "Вы сообщили о передаче доверенности. Ожидаем проверки и подтверждения команды.",
+        )
     return CLIENT_ACTIONS.get(str(case.status))
 
 
@@ -495,8 +509,13 @@ async def load_client_case_view(
         await MessageService(db).unread_lawyer_summary(case.id)
     )
 
+    show_payments = (
+        not payments_disabled()
+        or effective_client_route(case) == "M1"
+        or str(case.status).startswith("M1_")
+    )
     pending_payments = 0
-    if not payments_disabled():
+    if show_payments:
         pending_payments = len(
             list(
                 (
@@ -520,7 +539,7 @@ async def load_client_case_view(
         or "От вас сейчас ничего не требуется. Ожидайте обновления от юридической команды."
     )
     payments_summary = None
-    if not payments_disabled():
+    if show_payments:
         payments_summary = (
             f"Ожидают подтверждения: {pending_payments}"
             if pending_payments
@@ -544,7 +563,12 @@ async def load_client_case_view(
         case_status=str(case.status),
         route=effective_route,
         route_label=route_label(effective_route),
-        status_label=get_client_visible_status(case.status),
+        status_label=(
+            "Доверенность ожидает проверки команды"
+            if str(case.status) == "M1_POWER_OF_ATTORNEY"
+            and getattr(case, "poa_client_confirmed_at", None)
+            else get_client_visible_status(case.status)
+        ),
         progress_percent=get_case_progress_percent(case.status),
         next_action=next_action,
         action=action,

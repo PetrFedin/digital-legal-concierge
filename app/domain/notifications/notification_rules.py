@@ -20,6 +20,10 @@ NOTIFICATION_RULES = {
         "recipients": ["client"],
         "template": "m1_documents_requested",
     },
+    "M1_POA_RECEIVED": {
+        "recipients": ["client"],
+        "template": "m1_poa_received",
+    },
     "M1_CASE_TRANSFERRED_TO_M2": {
         "recipients": ["client", "admin"],
         "template": "m1_case_transferred_to_m2",

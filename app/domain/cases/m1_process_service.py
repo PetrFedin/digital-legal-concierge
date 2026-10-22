@@ -10,7 +10,9 @@ from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.payments.payment_service import PaymentService
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
+from app.domain.statuses.payment_statuses import PaymentStatus
 from app.models.court_event import CourtEvent
+from app.models.payment import Payment
 
 
 class M1ProcessError(ValueError):
@@ -43,6 +45,67 @@ class M1ProcessService:
                 f"Укажите основание не короче {minimum} символов"
             )
         return reason
+
+    async def mark_poa_received(
+        self,
+        *,
+        case,
+        lawyer_id: int,
+        comment: object,
+    ):
+        reason = self._reason(comment, minimum=5)
+        self._require_status(case, CaseStatus.M1_POWER_OF_ATTORNEY)
+        if case.assigned_lawyer_id != lawyer_id:
+            raise M1ProcessError("Дело не назначено текущему юристу")
+        payment_id = await self.db.scalar(
+            select(Payment.id)
+            .where(
+                Payment.case_id == case.id,
+                Payment.payment_code == PaymentCode.M1_INITIAL_PAYMENT,
+                Payment.status == PaymentStatus.PAID,
+            )
+            .order_by(Payment.id.desc())
+            .limit(1)
+        )
+        if payment_id is None:
+            raise M1ProcessError(
+                "Подтвердить получение доверенности можно только после "
+                "подтверждения первого платежа 30 000 ₽"
+            )
+
+        previous_received_at = case.poa_received_at
+        case.poa_received_at = datetime.now(timezone.utc)
+        await self.cases.change_status(
+            case=case,
+            next_status=CaseStatus.M1_POA_RECEIVED,
+            actor_type="lawyer",
+            actor_id=lawyer_id,
+            comment=reason,
+        )
+        await add_case_history_event(
+            self.db,
+            actor_type="lawyer",
+            actor_id=lawyer_id,
+            case_id=case.id,
+            action="POA_RECEIVED",
+            old_value={
+                "poa_received_at": (
+                    previous_received_at.isoformat() if previous_received_at else None
+                ),
+            },
+            new_value={
+                "poa_received_at": case.poa_received_at.isoformat(),
+                "payment_id": payment_id,
+            },
+            comment=reason,
+        )
+        await self.notifications.emit(
+            event_code="M1_POA_RECEIVED",
+            case_id=case.id,
+            payload={"case_number": case.case_number},
+            dedupe_key=f"case:{case.id}:poa-received",
+        )
+        return case
 
     async def mark_claim_sent(
         self,

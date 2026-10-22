@@ -543,7 +543,17 @@ async def cancel_confirm(callback: CallbackQuery, db):
 
 
 @router.callback_query(lambda c: payments_disabled() and c.data == "payments_open")
-async def payments_screen(callback: CallbackQuery):
+async def payments_screen(callback: CallbackQuery, db):
+    ctx, user, case = await _context(callback, db)
+    if case is None:
+        case = await ctx.case_service.get_latest_case_for_user(user.id)
+    if case and case.route == RouteCode.M1:
+        # Disabling the provider does not erase M1 obligations or payment history.
+        from app.bot.screens import payments
+
+        await payments.payments(callback, db)
+        return
+
     await callback.message.edit_text(
         "💳 Онлайн-оплата временно отключена.\n\n"
         "Платёжные ссылки и тестовые платежи не создаются. "
@@ -555,183 +565,40 @@ async def payments_screen(callback: CallbackQuery):
     )
 
 
-async def _advance_path(ctx, case, path: tuple[CaseStatus, ...], comments: dict) -> str:
-    current = _case_status(case)
-    if current == path[-1]:
-        return "already"
-    if current not in path:
-        return "invalid"
-    start = path.index(current)
-    for target in path[start + 1 :]:
-        await ctx.case_service.change_status(
-            case=case,
-            next_status=target,
-            actor_type="system",
-            actor_id=None,
-            comment=comments[target],
-        )
-    return "advanced"
-
-
-_INITIAL_PATH = (
-    CaseStatus.M1_CONTRACT_READY,
-    CaseStatus.M1_WAITING_PAYMENT_30000,
-    CaseStatus.M1_PAYMENT_30000_RECEIVED,
-    CaseStatus.M1_POWER_OF_ATTORNEY,
-)
-_COURT_PATH = (
-    CaseStatus.M1_COURT_STAGE,
-    CaseStatus.M1_WAITING_PAYMENT_70000,
-    CaseStatus.M1_PAYMENT_70000_RECEIVED,
-    CaseStatus.M1_ENFORCEMENT,
-)
-_SUCCESS_PATH = (
-    CaseStatus.M1_MONEY_RECEIVED,
-    CaseStatus.M1_WAITING_SUCCESS_FEE,
-    CaseStatus.M1_SUCCESS_FEE_RECEIVED,
-    CaseStatus.M1_CLOSED,
-)
-
-
 @router.callback_query(
     lambda c: payments_disabled()
     and c.data in {"contract_sign", "pay_start_30000"}
 )
 async def initial_stage(callback: CallbackQuery, db):
-    ctx, _user, case = await _context(callback, db)
-    if not case:
-        await _show_error(callback, ValueError("Активное дело не найдено"))
-        return
-    comments = {
-        CaseStatus.M1_WAITING_PAYMENT_30000: "Клиент подтвердил подписание договора",
-        CaseStatus.M1_PAYMENT_30000_RECEIVED: (
-            "Первый платёж пропущен: онлайн-оплата отключена"
-        ),
-        CaseStatus.M1_POWER_OF_ATTORNEY: "Открыт этап доверенности",
-    }
-    try:
-        result = await _advance_path(ctx, case, _INITIAL_PATH, comments)
-        if result == "invalid":
-            raise ValueError("Кнопка не соответствует текущему этапу дела")
-        await db.commit()
-    except ValueError as error:
-        await db.rollback()
-        await _show_error(callback, error)
-        return
-    await callback.message.edit_text(
-        "✅ Договор подтверждён. Онлайн-оплата не требуется.\n\n"
-        "Следующий этап — оформление доверенности.",
-        reply_markup=one(
-            ("📑 Открыть инструкцию", "poa_instruction"),
-            ("📁 Мое дело", "my_case_open"),
-        ),
-    )
+    # Keep old buttons routable without bypassing case binding or payment proof.
+    from app.bot.screens import m1_stages, payments
+
+    if callback.data == "contract_sign":
+        await m1_stages.contract_sign(callback, db)
+    else:
+        await payments.pay_30000(callback, db)
 
 
 @router.callback_query(lambda c: payments_disabled() and c.data == "court_status")
 async def court_status(callback: CallbackQuery, db):
-    ctx, _user, case = await _context(callback, db)
-    if not case:
-        await _show_error(callback, ValueError("Активное дело не найдено"))
-        return
-    try:
-        status = _case_status(case)
-        if status == CaseStatus.M1_WAITING_30_DAYS:
-            await ctx.case_service.change_status(
-                case=case,
-                next_status=CaseStatus.M1_COURT_STAGE,
-                actor_type="system",
-                actor_id=None,
-                comment="Открыт судебный этап",
-            )
-        elif status not in _COURT_PATH:
-            raise ValueError("Судебный этап для текущего статуса недоступен")
-        await db.commit()
-    except ValueError as error:
-        await db.rollback()
-        await _show_error(callback, error)
-        return
-    await callback.message.edit_text(
-        "🏛 Судебный этап\n\n"
-        "Юрист сопровождает процесс. Онлайн-оплата не требуется. "
-        "Переход к исполнению фиксируется отдельным действием.",
-        reply_markup=one(
-            ("Продолжить к исполнению", "pay_court_70000"),
-            ("📁 Мое дело", "my_case_open"),
-            ("💬 Задать вопрос", "message_create"),
-        ),
-    )
+    from app.bot.screens import m1_stages
+
+    await m1_stages.court_status(callback, db)
 
 
 @router.callback_query(
     lambda c: payments_disabled() and c.data == "pay_court_70000"
 )
 async def court_stage(callback: CallbackQuery, db):
-    ctx, _user, case = await _context(callback, db)
-    if not case:
-        await _show_error(callback, ValueError("Активное дело не найдено"))
-        return
-    comments = {
-        CaseStatus.M1_WAITING_PAYMENT_70000: "Открыт второй договорный этап",
-        CaseStatus.M1_PAYMENT_70000_RECEIVED: (
-            "Второй платёж пропущен: онлайн-оплата отключена"
-        ),
-        CaseStatus.M1_ENFORCEMENT: "Открыт этап исполнения решения",
-    }
-    try:
-        result = await _advance_path(ctx, case, _COURT_PATH, comments)
-        if result == "invalid":
-            raise ValueError("Кнопка не соответствует текущему этапу дела")
-        await db.commit()
-    except ValueError as error:
-        await db.rollback()
-        await _show_error(callback, error)
-        return
-    await callback.message.edit_text(
-        "✅ Дело переведено на этап исполнения решения. "
-        "Онлайн-оплата не создавалась.",
-        reply_markup=one(
-            ("📁 Мое дело", "my_case_open"),
-            ("💬 Задать вопрос", "message_create"),
-        ),
-    )
+    from app.bot.screens import m1_stages
+
+    await m1_stages.pay_court(callback, db)
 
 
 @router.callback_query(
     lambda c: payments_disabled() and c.data == "pay_success_fee"
 )
 async def success_stage(callback: CallbackQuery, db):
-    ctx, _user, case = await _context(callback, db)
-    if not case:
-        await _show_error(callback, ValueError("Активное дело не найдено"))
-        return
-    if _case_status(case) == CaseStatus.M1_ENFORCEMENT:
-        await callback.message.edit_text(
-            "Финальный этап пока недоступен: сначала администратор должен "
-            "зафиксировать получение денег.",
-            reply_markup=one(
-                ("📁 Мое дело", "my_case_open"),
-                ("💬 Задать вопрос", "message_create"),
-            ),
-        )
-        return
-    comments = {
-        CaseStatus.M1_WAITING_SUCCESS_FEE: "Открыт финальный финансовый этап",
-        CaseStatus.M1_SUCCESS_FEE_RECEIVED: (
-            "Финальный платёж пропущен: онлайн-оплата отключена"
-        ),
-        CaseStatus.M1_CLOSED: "Финансовый этап завершён в пилотном режиме",
-    }
-    try:
-        result = await _advance_path(ctx, case, _SUCCESS_PATH, comments)
-        if result == "invalid":
-            raise ValueError("Кнопка не соответствует текущему этапу дела")
-        await db.commit()
-    except ValueError as error:
-        await db.rollback()
-        await _show_error(callback, error)
-        return
-    await callback.message.edit_text(
-        "✅ Финальный этап завершён без онлайн-оплаты. Дело закрыто.",
-        reply_markup=one(("🏠 Главная", "nav_home")),
-    )
+    from app.bot.screens import m1_stages
+
+    await m1_stages.pay_success_fee(callback, db)

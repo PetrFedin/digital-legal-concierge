@@ -43,6 +43,8 @@ CLIENT_VISIBLE_ACTIONS = frozenset(
         "PAYMENT_REFUND_REQUESTED",
         "CONTRACT_READY",
         "CONTRACT_SIGNED",
+        "POA_READY_REPORTED",
+        "POA_RECEIVED",
         "POWER_OF_ATTORNEY_RECEIVED",
         "CLAIM_PREPARED",
         "CLAIM_SENT",
@@ -101,6 +103,8 @@ TITLE_BY_ACTION = {
     "PAYMENT_REFUND_REQUESTED": "Запрошен возврат оплаты",
     "CONTRACT_READY": "Договор готов",
     "CONTRACT_SIGNED": "Договор подписан",
+    "POA_READY_REPORTED": "Сообщение о готовности доверенности сохранено",
+    "POA_RECEIVED": "Получение доверенности подтверждено",
     "POWER_OF_ATTORNEY_RECEIVED": "Доверенность получена",
     "CLAIM_PREPARED": "Претензия подготовлена",
     "CLAIM_SENT": "Претензия направлена",
@@ -141,6 +145,8 @@ CATEGORY_BY_ACTION = {
     "PAYMENT_REFUND_REQUESTED": "payments",
     "CONTRACT_READY": "contract",
     "CONTRACT_SIGNED": "contract",
+    "POA_READY_REPORTED": "documents",
+    "POA_RECEIVED": "documents",
     "POWER_OF_ATTORNEY_RECEIVED": "documents",
     "CLAIM_PREPARED": "legal_stage",
     "CLAIM_SENT": "legal_stage",
@@ -268,6 +274,14 @@ def _safe_detail(log: AuditLog, audience: ActivityAudience) -> str | None:
         if count is not None:
             return f"Передано новых файлов: {count}."
         return "Пакет передан юридической команде."
+
+    # POA audit comments describe internal receipt checks and logistics. The
+    # client timeline exposes the business fact, never those notes or raw JSON.
+    if action == "POA_READY_REPORTED":
+        return "Команда проверит получение доверенности и заверенных копий."
+
+    if action == "POA_RECEIVED":
+        return "Доверенность и заверенные копии получены юридической командой."
 
     if action == "DOCUMENT_REVIEW_DECISION":
         status = DOCUMENT_STATUS_LABELS.get(str(payload.get("status") or ""))

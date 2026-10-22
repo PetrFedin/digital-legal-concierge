@@ -5,7 +5,7 @@ from pathlib import Path
 
 from app.db.migrations import run_database_migrations
 
-HEAD_REVISION = "20261013_0020"
+HEAD_REVISION = "20261022_0022"
 RETENTION_TRIGGER = "trg_retention_destroy_document_keys"
 MESSAGE_SOURCE_INDEX = "uq_messages_sender_source_message"
 DOCUMENT_REVIEW_STARTED_INDEX = "ix_documents_review_started_at"
@@ -117,6 +117,7 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "consent_document_sha256",
         "contract_signed_at",
         "poa_instruction_sent_at",
+        "poa_client_confirmed_at",
         "poa_received_at",
         "claim_sent_at",
         "claim_waiting_until",
@@ -170,6 +171,12 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         "error_code",
     }.issubset(column_names(database_path, "payment_webhook_events"))
     assert {
+        "paid_at",
+        "confirmed_by",
+        "confirmation_reason",
+        "receipt_reference",
+    }.issubset(column_names(database_path, "payments"))
+    assert {
         "chain_version",
         "chain_sequence",
         "previous_hash",
@@ -205,7 +212,13 @@ def test_fresh_database_migrates_to_head_and_is_idempotent(tmp_path):
         head = connection.execute(
             "SELECT event_count, last_hash FROM audit_chain_heads WHERE id=1"
         ).fetchone()
+        payment_foreign_keys = connection.execute(
+            "PRAGMA foreign_key_list(payments)"
+        ).fetchall()
     assert head == (0, "0" * 64)
+    assert ("admin_users", "confirmed_by", "id") in {
+        (row[2], row[3], row[4]) for row in payment_foreign_keys
+    }
 
 
 def _insert_encrypted_document(
@@ -436,6 +449,55 @@ def create_legacy_database(path: Path) -> None:
         connection.commit()
 
 
+def test_poa_report_upgrade_preserves_receipt_without_inventing_client_report(tmp_path):
+    database_path = tmp_path / "poa-report-upgrade.db"
+    url = sqlite_url(database_path)
+    # Start with an existing table so the bootstrap migration cannot create it
+    # from today's ORM metadata and accidentally preinstall the new column.
+    create_legacy_database(database_path)
+    run_database_migrations("20261013_0020", database_url=url)
+
+    assert current_revision(database_path) == "20261013_0020"
+    assert "poa_client_confirmed_at" not in column_names(database_path, "cases")
+    received_at = "2026-10-12 14:30:00"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "UPDATE cases SET status='M1_POA_RECEIVED', poa_received_at=? WHERE id=7",
+            (received_at,),
+        )
+        connection.execute(
+            """
+            INSERT INTO cases (
+                id, case_number, client_id, route, status, source,
+                sla_status, escalation_level, created_at, updated_at
+            ) VALUES (
+                8, 'LEGACY-0008', 99, 'M1', 'M1_POWER_OF_ATTORNEY', 'telegram_bot',
+                'NOT_STARTED', 0, '2026-10-12 15:00:00', '2026-10-12 15:00:00'
+            )
+            """
+        )
+        before = connection.execute(
+            "SELECT id, case_number, status, poa_received_at, updated_at "
+            "FROM cases ORDER BY id"
+        ).fetchall()
+
+    run_database_migrations(database_url=url)
+    run_database_migrations(database_url=url)
+
+    assert current_revision(database_path) == HEAD_REVISION
+    with sqlite3.connect(database_path) as connection:
+        after = connection.execute(
+            "SELECT id, case_number, status, poa_received_at, updated_at "
+            "FROM cases ORDER BY id"
+        ).fetchall()
+        client_reports = connection.execute(
+            "SELECT id, poa_client_confirmed_at FROM cases ORDER BY id"
+        ).fetchall()
+    assert after == before
+    assert after[0][3] == received_at
+    assert client_reports == [(7, None), (8, None)]
+
+
 def test_legacy_database_is_adopted_without_data_loss(tmp_path):
     database_path = tmp_path / "legacy-migrations.db"
     create_legacy_database(database_path)
@@ -468,6 +530,12 @@ def test_legacy_database_is_adopted_without_data_loss(tmp_path):
     )
     assert "source_message_id" in column_names(database_path, "messages")
     assert MESSAGE_SOURCE_INDEX in index_names(database_path, "messages")
+    assert {
+        "paid_at",
+        "confirmed_by",
+        "confirmation_reason",
+        "receipt_reference",
+    }.issubset(column_names(database_path, "payments"))
     with sqlite3.connect(database_path) as connection:
         row = connection.execute(
             "SELECT case_number, title, internal_comment, sla_status, "
@@ -480,6 +548,9 @@ def test_legacy_database_is_adopted_without_data_loss(tmp_path):
         head = connection.execute(
             "SELECT event_count, last_hash FROM audit_chain_heads WHERE id=1"
         ).fetchone()
+        payment_foreign_keys = connection.execute(
+            "PRAGMA foreign_key_list(payments)"
+        ).fetchall()
     assert row == (
         "LEGACY-0007",
         "Существующее дело",
@@ -491,3 +562,6 @@ def test_legacy_database_is_adopted_without_data_loss(tmp_path):
     assert len(audit[4]) == 64
     assert audit[5] == "legacy-admin"
     assert head == (1, audit[4])
+    assert ("admin_users", "confirmed_by", "id") in {
+        (row[2], row[3], row[4]) for row in payment_foreign_keys
+    }

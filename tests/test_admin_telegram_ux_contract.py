@@ -85,13 +85,13 @@ def test_telegram_case_actions_are_current_state_driven():
     assert '"doc_finish_upload"' in presenter
 
 
-def test_telegram_case_screen_does_not_show_payment_controls_when_disabled():
+def test_telegram_case_screen_preserves_m1_ledger_when_online_payments_are_disabled():
     screen = read("app/bot/screens/my_case.py")
     presenter = read("app/bot/client_case_view.py")
 
-    assert "if not payments_disabled():" in screen
+    assert "if show_payments:" in screen
     assert '("💳 Оплаты", "payments_open")' in screen
-    assert presenter.count("if not payments_disabled():") >= 2
+    assert presenter.count("if show_payments:") >= 2
     assert "payments_summary = None" in presenter
     assert "select(Payment.id)" in presenter
     assert "В режиме без онлайн-оплаты" not in screen
