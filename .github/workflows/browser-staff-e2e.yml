@@ -58,7 +58,9 @@ jobs:
 
       - name: Install isolated app and Chromium test dependencies
         run: |
-          pip install -e ".[test]" playwright==1.56.0
+          pip install -c constraints.txt -e ".[test]" playwright==1.56.0
+          python scripts/verify_constraints.py --require-all
+          pip check
           python -m playwright install --with-deps chromium
 
       - name: Migrate fresh PostgreSQL browser database
@@ -81,6 +83,25 @@ jobs:
 
       - name: Exercise personal admin and lawyer browser sessions
         run: python scripts/browser_staff_e2e.py
+
+      - name: Prepare detailed synthetic DDU stages for buyer demo
+        env:
+          DLC_DEMO_CAPTURE: "1"
+        run: python scripts/buyer_demo_rich_seed.py
+
+      - name: Capture genuine synthetic-data staff UI for buyer demo
+        env:
+          DLC_DEMO_CAPTURE: "1"
+        run: python scripts/buyer_demo_capture.py
+
+      - name: Upload isolated buyer demonstration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dlc-buyer-demo-staff-real-ui
+          path: buyer_demo_evidence/
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload browser server diagnostics on failure
         if: failure()

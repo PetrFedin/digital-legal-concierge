@@ -6,26 +6,55 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
+from app.domain.retention.content_visibility import restricted_case_ids
 from app.models.audit_log import AuditLog
+from app.models.admin_user import AdminUser
 from app.security.access_control import (
     ROLE_SUPERADMIN,
     decode_access_token,
     normalize_roles,
 )
 from app.security.audit_integrity import verify_audit_chain
+from app.security.token_revocation import is_token_revoked
 
 router = APIRouter(tags=["audit-center"])
 
 
-def require_audit_superadmin(token: str | None) -> dict:
+async def require_audit_superadmin(db: AsyncSession, token: str | None) -> dict:
+    """Audit of legal matters requires a current, revocable *personal* MFA actor."""
     payload = decode_access_token(token)
-    if not payload or ROLE_SUPERADMIN not in normalize_roles(payload.get("roles")):
+    if (
+        not payload
+        or payload.get("legacy")
+        or payload.get("mfa") is not True
+        or ROLE_SUPERADMIN not in normalize_roles(payload.get("roles"))
+        or not str(payload.get("jti") or "")
+    ):
         raise HTTPException(
             status_code=403,
-            detail="Доступ к журналу только для суперадминистратора",
+            detail="Требуется персональная MFA-сессия суперадминистратора",
         )
-    if not payload.get("legacy") and not payload.get("mfa"):
-        raise HTTPException(status_code=403, detail="Требуется подтверждённая MFA-сессия")
+    try:
+        account_id = int(payload.get("uid") or 0)
+        session_version = int(payload.get("sv") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(403, "Недействительная административная сессия") from None
+    if account_id <= 0 or session_version <= 0:
+        raise HTTPException(403, "Недействительная административная сессия")
+
+    if await is_token_revoked(db, token):
+        raise HTTPException(401, "Сессия отозвана. Выполните вход повторно")
+    account = await db.get(AdminUser, account_id)
+    actual_roles = normalize_roles(account.role) if account else []
+    if (
+        account is None
+        or not account.is_active
+        or not account.mfa_enabled
+        or ROLE_SUPERADMIN not in actual_roles
+        or set(actual_roles) != set(normalize_roles(payload.get("roles")))
+        or int(account.session_version or 1) != session_version
+    ):
+        raise HTTPException(403, "Права или подтверждение MFA изменены")
     return payload
 
 
@@ -35,7 +64,7 @@ async def audit_center_status(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    require_audit_superadmin(x_admin_token)
+    await require_audit_superadmin(db, x_admin_token)
     limit = min(max(limit, 1), 500)
     rows = (
         await db.execute(
@@ -44,6 +73,23 @@ async def audit_center_status(
             .limit(limit)
         )
     ).scalars().all()
+    case_ids = {
+        int(audit.entity_id)
+        for audit in rows
+        if audit.entity_type == "case"
+        and audit.entity_id is not None
+        and int(audit.entity_id) > 0
+    }
+    restricted = await restricted_case_ids(db, case_ids=case_ids)
+
+    def protected(audit: AuditLog) -> bool:
+        # Orphaned Case references are not proof that disclosure is permitted.
+        return audit.entity_type != "case" or (
+            audit.entity_id is None
+            or int(audit.entity_id) <= 0
+            or int(audit.entity_id) in restricted
+        )
+
     integrity = await verify_audit_chain(db)
     return {
         "count": len(rows),
@@ -53,11 +99,12 @@ async def audit_center_status(
                 "id": audit.id,
                 "chain_sequence": audit.chain_sequence,
                 "actor_type": audit.actor_type,
-                "actor_id": audit.actor_id,
+                "actor_id": None if protected(audit) else audit.actor_id,
                 "action": audit.action,
                 "entity_type": audit.entity_type,
-                "entity_id": audit.entity_id,
-                "comment": audit.comment,
+                "entity_id": None if protected(audit) else audit.entity_id,
+                "comment": None if protected(audit) else audit.comment,
+                "comment_redacted": bool(audit.comment and protected(audit)),
                 "integrity_key_id": audit.integrity_key_id,
                 "event_hash_prefix": audit.event_hash[:12] if audit.event_hash else None,
                 "created_at": audit.created_at.isoformat() if audit.created_at else None,
@@ -72,7 +119,7 @@ async def audit_integrity_status(
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    require_audit_superadmin(x_admin_token)
+    await require_audit_superadmin(db, x_admin_token)
     return await verify_audit_chain(db)
 
 
@@ -108,7 +155,7 @@ let token='';
 function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 async function api(path){const response=await fetch(path,{headers:{'x-admin-token':token}});const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.detail||'Ошибка');return data}
 async function boot(){const response=await fetch('/auth/session');if(!response.ok){location.href='/login';return}const session=await response.json();if(!(session.roles||[session.role]).includes('superadmin')){integrity.innerHTML='<span class="bad">Недостаточно прав.</span>';out.textContent='';return}token=session.api_token;await loadAudit()}
-async function loadAudit(){try{const data=await api('/audit-center/status?limit=150');const check=data.integrity;integrity.innerHTML=check.ok?`<b class="ok">Цепочка подтверждена</b><div class="muted">Проверено событий: ${esc(check.checked_count)} · ключи: ${esc((check.key_ids||[]).join(', '))}<br>последний хеш: ${esc(check.last_verified_hash)}</div>`:`<b class="bad">Нарушение целостности</b><pre>${esc(JSON.stringify(check.first_invalid,null,2))}</pre>`;out.innerHTML=`<b>Последние события: ${esc(data.count)}</b>`+data.items.map(a=>`<div class="item"><b>#${esc(a.chain_sequence)} · ${esc(a.action)}</b> · ${esc(a.entity_type)} #${esc(a.entity_id)}<br>Кто: ${esc(a.actor_type)} ${esc(a.actor_id||'')}<br>${esc(a.comment||'')}<br><span class="muted">${esc(a.created_at||'')} · key ${esc(a.integrity_key_id||'')} · hash ${esc(a.event_hash_prefix||'')}</span></div>`).join('')}catch(error){integrity.innerHTML='<span class="bad">'+esc(error.message)+'</span>';out.textContent=''}}
+async function loadAudit(){try{const data=await api('/audit-center/status?limit=150');const check=data.integrity;integrity.innerHTML=check.ok?`<b class="ok">Цепочка подтверждена</b><div class="muted">Проверено событий: ${esc(check.checked_count)} · ключи: ${esc((check.key_ids||[]).join(', '))}<br>последний хеш: ${esc(check.last_verified_hash)}</div>`:`<b class="bad">Нарушение целостности</b><pre>${esc(JSON.stringify(check.first_invalid,null,2))}</pre>`;out.innerHTML=`<b>Последние события: ${esc(data.count)}</b>`+data.items.map(a=>`<div class="item"><b>#${esc(a.chain_sequence)} · ${esc(a.action)}</b> · ${esc(a.entity_type)} #${esc(a.entity_id)}<br>Кто: ${esc(a.actor_type)} ${esc(a.actor_id||'')}<br>${a.comment_redacted?'<span class="muted">Комментарий скрыт для защиты данных</span>':esc(a.comment||'')}<br><span class="muted">${esc(a.created_at||'')} · key ${esc(a.integrity_key_id||'')} · hash ${esc(a.event_hash_prefix||'')}</span></div>`).join('')}catch(error){integrity.innerHTML='<span class="bad">'+esc(error.message)+'</span>';out.textContent=''}}
 boot();
 </script>
 </body>

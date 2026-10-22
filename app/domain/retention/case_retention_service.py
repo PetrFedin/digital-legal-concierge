@@ -21,6 +21,7 @@ from app.models.case_retention import CaseRetentionRecord
 from app.models.consultation import Consultation
 from app.models.document import Document
 from app.models.document_access_grant import DocumentAccessGrant
+from app.models.client_document_grant import ClientDocumentGrant
 from app.models.message import Message
 from app.models.notification import Notification
 from app.models.payment import Payment
@@ -394,7 +395,12 @@ class CaseRetentionService:
         now: datetime | None = None,
     ) -> CaseRetentionRecord:
         record = await self._load_record(record_id)
-        case = await self._load_case(record.case_id)
+        case = await self.db.scalar(
+            select(Case).where(Case.id == record.case_id).with_for_update()
+        )
+        if case is None:
+            raise CaseRetentionError("Дело не найдено")
+        await self.db.refresh(record)
         if record.status == STATUS_COMPLETED:
             return record
         await self._assert_eligible(record, case, now=now)
@@ -633,6 +639,9 @@ class CaseRetentionService:
                 delete(DocumentAccessGrant).where(
                     DocumentAccessGrant.case_id == case.id
                 )
+            )
+            await self.db.execute(
+                delete(ClientDocumentGrant).where(ClientDocumentGrant.case_id == case.id)
             )
             await self.db.execute(delete(Document).where(Document.case_id == case.id))
             message_result = await self.db.execute(

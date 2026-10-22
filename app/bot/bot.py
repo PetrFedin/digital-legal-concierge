@@ -16,6 +16,7 @@ from aiogram.types import BotCommand, BotCommandScopeDefault, CallbackQuery, Mes
 
 from app.bot.lease import TelegramPollingLease
 from app.bot.screens import (
+    archived_cases,
     calculator,
     common,
     consent_flow,
@@ -130,6 +131,7 @@ def build_dispatcher() -> Dispatcher:
     dispatcher.callback_query.middleware(flood_control)
     dispatcher.callback_query.middleware(CallbackAcknowledgeMiddleware())
     for router in [
+        archived_cases.router,
         common.router,
         calculator.router,
         post_calculation.router,

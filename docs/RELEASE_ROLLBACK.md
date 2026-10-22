@@ -23,16 +23,32 @@ image tag и ожидаемые Alembic heads. `status.sh` сравнивает 
 
 `deploy.sh`:
 
-1. требует Git checkout без изменений tracked-файлов;
-2. по умолчанию разрешает production deploy только из `main`;
+1. требует Git checkout без изменений tracked-файлов, **полный `DEPLOY_EXACT_SHA` из 40 символов** и совпадение его с текущим commit;
+2. по умолчанию разрешает запуск только из `main`; изолированный Draft/staging может использовать `ALLOW_NON_MAIN_DEPLOY=true` **только** по явной инструкции оператора;
 3. собирает image `<repository>:<12-char-sha>`;
-4. проверяет OCI revision;
-5. определяет Alembic head нового image;
-6. выполняет production preflight;
-7. создаёт encrypted backup работающей версии;
-8. запускает новый image;
-9. проверяет Redis, `/health`, `/ready` и `/runtime/release`;
-10. только после успеха записывает `.release/current.env` и `.release/previous.env`.
+4. однозначно определяет `DEPLOY_TARGET`: `docker-compose.yml` по умолчанию только `local`, `docker-compose.production.yml` и `docker-compose.timeweb.yml` по умолчанию **`production`** (не `local`);
+5. запускает **предварительную проверку допуска внутри candidate image** через `scripts/deploy_admission.py`, до резервного копирования и перезапуска;
+6. для production требует и `DEPLOY_TARGET=production`, и `APP_ENV=production`, и внешний подтверждённый допуск `status=ACCEPTED`, `customer_accepted=True`, `release_authorized=True`; сейчас он отсутствует, поэтому production блокируется;
+7. для явного staging допускает только `DEPLOY_TARGET=staging` с `APP_ENV=test/staging` и **отдельным `COMPOSE_PROJECT_NAME=dlc-staging-<id>`** на Timeweb/production-compose; для локального запуска — только `DEPLOY_TARGET=local` с `APP_ENV=local/development/test`;
+8. проверяет OCI revision и Alembic head нового image, выполняет конфигурационный production preflight;
+9. создаёт encrypted backup ранее работающей версии;
+10. только после допусков запускает новый image и проверяет Redis, `/health`, `/ready`, `/runtime/release`;
+11. только после успеха записывает `.release/current.env` и `.release/previous.env`.
+
+Для проверки на **изолированном staging** оператор сначала утверждает раздельные тестовые секреты и хранилища, затем использует явное назначение, например:
+
+```bash
+COMPOSE_FILE=docker-compose.timeweb.yml \
+COMPOSE_PROJECT_NAME=dlc-staging-m1m2 \
+DEPLOY_TARGET=staging \
+ALLOW_NON_MAIN_DEPLOY=true \
+DEPLOY_EXACT_SHA="$(git rev-parse --verify HEAD)" \
+bash ./deploy.sh
+```
+
+Этот пример — инструкция, **не подтверждение**, что Timeweb подключён или тестовый запуск выполнен. Для production нельзя подменять `APP_ENV`, `DEPLOY_TARGET` или учётные данные staging ради обхода запрета.
+
+**Текущий релиз — HOLD.** Наличие `DEPLOY_EXACT_SHA`, `/ready=200`, настроенного YooKassa или локального score 100% не означает юридическое согласование, независимое ревью и подписанную приёмку М1/М2. Не изменяйте `APP_ENV` ради обхода production-блокировки. Для staging используйте отдельные PostgreSQL, Redis, зашифрованное файловое хранилище, тестовый Telegram и sandbox-платежи, только с разрешения инфраструктурного владельца.
 
 Release state не содержит секретов, исключён из Git и Docker build context, имеет права
 `0600`. Старый image не пересобирается и остаётся локальным rollback-кандидатом.

@@ -364,6 +364,8 @@ async def _load_case_documents_for_view(callback: CallbackQuery, db):
             case = latest
     if not case:
         return None, []
+    if getattr(case, "content_deleted_at", None) is not None:
+        return case, []
     return case, await DocumentService(db).list_case_documents(case.id)
 
 
@@ -375,6 +377,11 @@ async def _render_documents_home(callback: CallbackQuery, db):
             "Начните с расчёта неустойки или записи на консультацию.",
             reply_markup=one(*_new_case_buttons()),
         )
+        return
+    if getattr(case, "content_deleted_at", None) is not None:
+        from app.bot.screens.archived_cases import _render_erased
+
+        await _render_erased(callback, case)
         return
 
     active = _active_documents(documents)
@@ -448,6 +455,7 @@ async def upload_menu(callback: CallbackQuery, state: FSMContext, db):
         return
 
     await state.clear()
+    await state.update_data(upload_case_id=int(case.id))
     await state.set_state(DocumentUploadStates.choosing_type)
 
     items = [(f"Загрузить: {title}", f"doc_type:{code}") for title, code in TYPES]
@@ -541,6 +549,17 @@ async def upload(message: Message, state: FSMContext, db):
         return
 
     data = await state.get_data()
+    if data.get("upload_case_id") is None or int(data["upload_case_id"]) != int(case.id):
+        await message.answer(
+            "⚠️ Активное дело изменилось во время загрузки. Файл не принят. "
+            "Откройте исходное дело и начните загрузку заново.",
+            reply_markup=one(
+                ("📂 Выбрать дело", "cases_list"),
+                ("📄 Начать загрузку заново", "documents_upload_open"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        return
     document_type = data.get("document_type")
     if not document_type:
         await state.clear()
@@ -710,6 +729,11 @@ async def _render_current_documents(callback: CallbackQuery, db, page: int = 0):
     case, documents = await _load_case_documents_for_view(callback, db)
     if not case:
         return
+    if getattr(case, "content_deleted_at", None) is not None:
+        from app.bot.screens.archived_cases import _render_erased
+
+        await _render_erased(callback, case)
+        return
     active = _active_documents(documents)
     archived = _archived_documents(documents)
     if not active:
@@ -774,6 +798,11 @@ async def list_docs_page(callback: CallbackQuery, db):
 async def _render_document_history(callback: CallbackQuery, db, page: int = 0):
     case, documents = await _load_case_documents_for_view(callback, db)
     if not case:
+        return
+    if getattr(case, "content_deleted_at", None) is not None:
+        from app.bot.screens.archived_cases import _render_erased
+
+        await _render_erased(callback, case)
         return
     archived = _archived_documents(documents)
     if not archived:

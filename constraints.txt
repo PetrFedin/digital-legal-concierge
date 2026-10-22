@@ -1,5 +1,7 @@
-# Reproducible Python 3.11/Linux dependency set validated by GitHub Actions
-# on 2026-08-03 for release restart preparation.
+# Candidate Python 3.11/Linux dependency set, NOT release-approved until
+# exact-head CI, locked production image, PostgreSQL backup/restore and browser UAT.
+# FastAPI/Starlette changed together to reproduce browser-tested routing
+# while leaving SQLAlchemy, aiosqlite and other packages pinned.
 # Update intentionally through a reviewed PR after the full CI, PostgreSQL
 # backup/restore drill, Redis FSM integration and Docker startup gates pass.
 
@@ -20,7 +22,7 @@ certifi==2026.7.22
 cffi==2.1.0
 click==8.4.2
 cryptography==50.0.0
-fastapi==0.141.1
+fastapi==0.161.0
 frozenlist==1.8.0
 greenlet==3.5.4
 h11==0.16.0
@@ -51,7 +53,7 @@ PyYAML==6.0.3
 qrcode==8.2
 redis==8.1.0
 SQLAlchemy==2.0.51
-starlette==1.3.1
+starlette==1.9.0
 typing-extensions==4.16.0
 typing-inspection==0.4.2
 tzlocal==5.4.4
