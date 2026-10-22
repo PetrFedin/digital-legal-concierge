@@ -411,6 +411,12 @@ async def test_logout_revocation_prevents_document_grant_issuance_and_binary_tra
     that the check consults the DB-backed revocation ledger, not merely JWT.
     """
     configure_security(monkeypatch, tmp_path)
+    # Logout writes a tamper-evident audit entry, requiring its own test key.
+    monkeypatch.setattr(settings, "audit_integrity_key_id", "audit-doc-test")
+    monkeypatch.setattr(
+        settings, "audit_integrity_key", "audit-document-session-test-" + "d" * 40,
+    )
+    monkeypatch.setattr(settings, "audit_integrity_previous_keys", "")
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'revoked-document.db'}")
     factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
