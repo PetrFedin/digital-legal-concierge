@@ -91,11 +91,11 @@ async def export_cases(
                 else ""
             ),
             "received_amount": (
-                str(c.received_amount) if c.received_amount is not None else ""
+                c.received_amount if c.received_amount is not None else ""
             ),
             "received_at": c.received_at.isoformat() if c.received_at else "",
             "success_fee_amount": (
-                str(c.success_fee_amount)
+                c.success_fee_amount
                 if c.success_fee_amount is not None
                 else ""
             ),
