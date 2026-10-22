@@ -2,25 +2,19 @@ from __future__ import annotations
 
 import csv
 import io
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app.security.current_admin import current_admin_gateway
 from app.db.session import get_db
 from app.models.case import Case
 from app.models.payment import Payment
 from app.models.document import Document
 from app.models.user import User
 
-router = APIRouter(prefix="/admin/export", tags=["admin-export"])
-
-
-def check(token: str | None, query_token: str | None = None) -> None:
-    final_token = token or (query_token if settings.allow_token_query else None)
-    if final_token != settings.admin_api_token:
-        raise HTTPException(status_code=401, detail="bad token")
+router = APIRouter(prefix="/admin/export", tags=["admin-export"], dependencies=[Depends(current_admin_gateway)])
 
 
 def csv_response(filename: str, rows: list[dict]) -> StreamingResponse:
@@ -42,10 +36,7 @@ def csv_response(filename: str, rows: list[dict]) -> StreamingResponse:
 @router.get("/cases.csv")
 async def export_cases(
     db: AsyncSession = Depends(get_db),
-    x_admin_token: str | None = Header(default=None),
-    token: str | None = Query(default=None),
 ):
-    check(x_admin_token, token)
     result = await db.execute(select(Case).order_by(Case.created_at.desc()).limit(5000))
     rows = [
         {
@@ -83,10 +74,7 @@ async def export_cases(
 @router.get("/clients.csv")
 async def export_clients(
     db: AsyncSession = Depends(get_db),
-    x_admin_token: str | None = Header(default=None),
-    token: str | None = Query(default=None),
 ):
-    check(x_admin_token, token)
     result = await db.execute(select(User).order_by(User.created_at.desc()).limit(5000))
     rows = [
         {
@@ -106,10 +94,7 @@ async def export_clients(
 @router.get("/payments.csv")
 async def export_payments(
     db: AsyncSession = Depends(get_db),
-    x_admin_token: str | None = Header(default=None),
-    token: str | None = Query(default=None),
 ):
-    check(x_admin_token, token)
     result = await db.execute(select(Payment).order_by(Payment.created_at.desc()).limit(5000))
     rows = [
         {
@@ -132,10 +117,7 @@ async def export_payments(
 @router.get("/documents.csv")
 async def export_documents(
     db: AsyncSession = Depends(get_db),
-    x_admin_token: str | None = Header(default=None),
-    token: str | None = Query(default=None),
 ):
-    check(x_admin_token, token)
     result = await db.execute(select(Document).order_by(Document.created_at.desc()).limit(5000))
     rows = [
         {

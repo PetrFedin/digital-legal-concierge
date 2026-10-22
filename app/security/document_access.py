@@ -13,6 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models.admin_user import AdminUser
 from app.models.case import Case
+from app.models.case_retention import CaseRetentionRecord
+from app.domain.documents.client_archive_access import RESTRICTED_RETENTION_STATES
 from app.models.document import Document
 from app.models.document_access_grant import DocumentAccessGrant
 from app.security.access_control import (
@@ -26,6 +28,7 @@ from app.security.access_control import (
 from app.security.document_encryption import ENCRYPTION_STATUS, FORMAT_V2
 from app.security.keyring import active_hmac_digest, hmac_candidates
 from app.security.lawyer_access import require_lawyer_actor
+from app.security.token_revocation import is_token_revoked
 from app.security.security_events import pseudonymize_security_value
 
 
@@ -98,6 +101,8 @@ async def resolve_document_actor(
         raise DocumentAccessError(401, "Сессия отозвана", "session_revoked")
     if not str(payload.get("jti") or ""):
         raise DocumentAccessError(401, "Сессия не содержит идентификатор", "missing_jti")
+    if await is_token_revoked(db, token):
+        raise DocumentAccessError(401, "Сессия отозвана. Войдите повторно", "session_revoked")
 
     if has_role(current_roles, ROLE_SUPERADMIN):
         if not account.mfa_enabled or not bool(payload.get("mfa")):
@@ -134,6 +139,25 @@ async def load_authorized_document(
             "Документ относится к делу, не назначенному текущему юристу",
             "lawyer_not_assigned",
         )
+
+    # Legal erasure is effective at approval, not after a future cleanup job.
+    # The same fail-closed statuses govern client archive preflight. Staff
+    # grants must not expose documents after approval even if keys still exist.
+    if case.content_deleted_at is not None:
+        raise DocumentAccessError(
+            410, "Содержимое дела недоступно", "case_content_deleted",
+        )
+    blocked_retention = await db.scalar(
+        select(CaseRetentionRecord.id).where(
+            CaseRetentionRecord.case_id == case.id,
+            CaseRetentionRecord.status.in_(RESTRICTED_RETENTION_STATES),
+        )
+    )
+    if blocked_retention is not None:
+        raise DocumentAccessError(
+            410, "Содержимое дела недоступно", "retention_blocked",
+        )
+
     if document.security_status != "VERIFIED":
         raise DocumentAccessError(409, "Документ не прошёл проверку безопасности", "not_verified")
     if document.encryption_status != ENCRYPTION_STATUS:

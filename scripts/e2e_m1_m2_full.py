@@ -88,5 +88,17 @@ async def main():
         print(f'M1 final: {m1.case_number} {m1.status} {m1.route}')
         print(f'M2->M1 final: {m2.case_number} {m2.status} {m2.route}')
 
-if __name__ == '__main__':
+if __name__ == "__main__":
+    # Synthetic fixtures create Cases, payments and forced legal transitions.
+    # Refuse to run against a configured operational/customer database.
+    import os
+
+    from scripts.final_acceptance import synthetic_environment_errors
+
+    unsafe = synthetic_environment_errors(os.environ)
+    if unsafe:
+        print("ОТКАЗАНО: E2E создаёт тестовые данные; нужна изолированная база.", file=sys.stderr)
+        for reason in unsafe:
+            print(" - " + reason, file=sys.stderr)
+        raise SystemExit(2)
     asyncio.run(main())

@@ -18,6 +18,7 @@ from app.domain.consultations.consultation_intake import (
 )
 from app.domain.consultations.slot_service import SlotUnavailableError
 from app.domain.payments.payment_service import PaymentService
+from app.domain.retention.content_visibility import approved_erasure_absent_clause
 from app.domain.payments.payment_types import PaymentCode
 from app.domain.payments.payment_webhook_service import PaymentWebhookService
 from app.domain.statuses.payment_statuses import PaymentStatus
@@ -138,10 +139,11 @@ async def get_owned_payment(
             select(Case).where(
                 Case.id == payment.case_id,
                 Case.client_id == user.id,
+                approved_erasure_absent_clause(),
             )
         )
     ).scalars().first()
-    if not case:
+    if not case or getattr(case, "content_deleted_at", None) is not None:
         await callback.answer("Этот платёж вам недоступен.", show_alert=True)
         return None, None
     return payment, case
@@ -154,6 +156,11 @@ async def payments(callback: CallbackQuery, db):
     case = await ctx.case_service.get_active_case_for_user(user.id)
     if not case:
         case = await ctx.case_service.get_latest_case_for_user(user.id)
+    if case and getattr(case, "content_deleted_at", None) is not None:
+        from app.bot.screens.archived_cases import _render_erased
+
+        await _render_erased(callback, case)
+        return
     payments_list = (
         await PaymentService(db).list_case_payments(case.id)
         if case
@@ -264,9 +271,10 @@ async def open_payment(callback: CallbackQuery, db):
             ),
         )
         return
-    payment, _case = await get_owned_payment(callback, db, payment_id)
-    if not payment:
+    payment, case = await get_owned_payment(callback, db, payment_id)
+    if not payment or not case:
         return
+    terminal = str(case.status) in {"M1_CLOSED", "M2_CLOSED", "ARCHIVED"}
     review_note = (
         "\n\n⚠️ Деньги получены, но запись проверяет администратор."
         if payment.status == PaymentStatus.PAID_REVIEW
@@ -276,7 +284,14 @@ async def open_payment(callback: CallbackQuery, db):
         f"💳 {payment.title}\n"
         f"Сумма: {money(payment.amount)}\n"
         f"Статус: {payment_status_label(payment.status)}{review_note}",
-        reply_markup=payment_keyboard(payment),
+        reply_markup=(
+            one(
+                ("🔒 Открыть архив дела", f"cases_archive:{case.id}"),
+                ("📂 Все обращения", "cases_list"),
+                ("🏠 Главная", "nav_home"),
+            )
+            if terminal else payment_keyboard(payment)
+        ),
     )
 
 
@@ -293,6 +308,11 @@ async def fake(callback: CallbackQuery, db):
         return
     payment, case = await get_owned_payment(callback, db, payment_id)
     if not payment or not case:
+        return
+    if str(case.status) in {"M1_CLOSED", "M2_CLOSED", "ARCHIVED"}:
+        await callback.answer(
+            "Закрытое дело: подтверждение оплаты недоступно.", show_alert=True
+        )
         return
     if payment.provider not in {None, "fake"}:
         await callback.answer(
