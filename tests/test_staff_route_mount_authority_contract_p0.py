@@ -1,23 +1,17 @@
-"""Check registered staff endpoints, not Python wrapper metadata.
+"""Protect every mounted sensitive staff API, not Python implementation types.
 
-FastAPI may wrap endpoint callables. Import every protected router object
-and compare its (path, methods) against the final application route map.
-A missing, duplicate or unguarded route fails the CI release gate.
+Different routing layers may wrap or recreate endpoint callables. The HTTP
+path+method is the externally visible authority. It must resolve to exactly
+one FastAPI route with its live revocable session Depends guard.
 """
-from fastapi.routing import APIRoute
-
 from app.api import (
-    access_management,
-    admin,
-    backup_center,
-    consultation_outcomes,
-    exports,
-    payment_review_center,
-    security_event_center,
-    workdesk,
+    access_management, admin, backup_center, consultation_outcomes,
+    exports, payment_review_center, security_event_center, workdesk,
 )
 from app.main import create_app
-from app.security.current_admin import current_admin_gateway, current_superadmin_gateway
+from app.security.current_admin import (
+    current_admin_gateway, current_superadmin_gateway,
+)
 
 ROUTERS = (
     (admin.router, current_admin_gateway),
@@ -31,47 +25,59 @@ ROUTERS = (
 )
 
 
+def _http_routes(router):
+    return [
+        route for route in router.routes
+        if hasattr(route, "endpoint") and hasattr(route, "methods")
+        and bool(getattr(route, "methods", None))
+    ]
+
+
 def test_mounted_staff_routers_preserve_live_session_gate():
-    application = create_app()
-    mounted = [r for r in application.routes if isinstance(r, APIRoute)]
+    mounted = _http_routes(create_app())
     checked = 0
     violations = []
 
-    for router, gate in ROUTERS:
-        defined = [r for r in router.routes if isinstance(r, APIRoute)]
-        assert defined, f"Expected staff router is empty: {router.prefix}"
+    for router, gateway in ROUTERS:
+        defined = _http_routes(router)
+        assert defined, f"Empty protected router: {router.prefix}"
         for expected in defined:
-            # FastAPI may normalize methods or names on cloning routers.
-            # The original endpoint callable must still be mounted exactly once.
+            requested_methods = set(expected.methods)
             candidates = [
-                r for r in mounted
-                if r.endpoint is expected.endpoint
+                route for route in mounted
+                if route.path == expected.path
+                and requested_methods.issubset(set(route.methods))
             ]
             if len(candidates) != 1:
-                route_samples = [(r.path, sorted(r.methods or [])) for r in mounted[:5]]
                 violations.append(
-                    f"{expected.path}: endpoint mounted {len(candidates)} times; "
-                    f"samples={route_samples}"
+                    f"{expected.path} [{','.join(sorted(requested_methods))}]: "
+                    f"expected exactly one mounted HTTP route, got {len(candidates)}"
                 )
                 continue
+
             actual = candidates[0]
-            if actual.path != expected.path:
-                violations.append(
-                    f"{expected.path}: mounted at unexpected path {actual.path}"
-                )
-            if not (expected.methods or set()).issubset(actual.methods or set()):
-                violations.append(
-                    f"{expected.path}: methods differ "
-                    f"{sorted(expected.methods or [])} -> {sorted(actual.methods or [])}"
-                )
             checked += 1
-            if gate not in {d.call for d in actual.dependant.dependencies}:
-                violations.append(f"{actual.path} lacks required live session gate")
+            dependencies = getattr(actual, "dependant", None)
+            if dependencies is None:
+                violations.append(
+                    f"{actual.path}: {type(actual).__name__} lacks FastAPI "
+                    "dependency injection (cannot prove security guard)"
+                )
+                continue
+            calls = {dep.call for dep in dependencies.dependencies}
+            if gateway not in calls:
+                violations.append(
+                    f"{actual.path}: {gateway.__name__} not registered"
+                )
 
             if router is exports.router:
-                query_keys = {q.name for q in actual.dependant.query_params}
-                if query_keys & {"token", "admin_token", "access_token", "api_key"}:
-                    violations.append(f"{actual.path} accepts token in URL")
+                param_names = {p.name for p in dependencies.query_params}
+                if param_names & {"token", "access_token", "admin_token", "api_key"}:
+                    violations.append(f"{actual.path}: bearer token query parameter")
 
-    assert not violations, " | ".join(violations)
-    assert checked >= 20, f"Only {checked} staff routes were found"
+    assert not violations, (
+        f"{len(violations)} staff authorization gaps: "
+        + " | ".join(violations[:12])
+        + f" | actual_route_types={sorted(set(type(r).__name__ for r in mounted))}"
+    )
+    assert checked >= 20, f"Only {checked} sensitive HTTP routes verified"
