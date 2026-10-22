@@ -16,6 +16,7 @@ from app.db.session import get_db
 from app.models import Base
 from app.models.admin_user import AdminUser
 from app.models.case import Case
+from app.models.case_retention import CaseRetentionRecord
 from app.models.document import Document
 from app.models.document_access_grant import DocumentAccessGrant
 from app.models.lawyer import Lawyer
@@ -509,5 +510,80 @@ async def test_logout_revocation_prevents_document_grant_issuance_and_binary_tra
             existing_grant = await db.get(DocumentAccessGrant, grant_id)
             assert existing_grant is not None
             assert existing_grant.used_at is None
+    finally:
+        await engine.dispose()
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "retention_state",
+    ["APPROVED", "EXECUTING", "FAILED", "COMPLETED", "CONTENT_DELETED"],
+)
+async def test_staff_document_download_is_fenced_at_erasure_approval(
+    tmp_path, monkeypatch, retention_state,
+):
+    """An already-issued staff grant cannot outlive the privacy decision."""
+    configure_security(monkeypatch, tmp_path)
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / ('fenced-' + retention_state + '.db')}"
+    )
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        async with factory() as db:
+            staff = AdminUser(
+                full_name="Synthetic retention reviewer",
+                username="retention-reviewer",
+                email="retention-reviewer@example.test",
+                password_hash="unused",
+                role="admin", is_active=True, session_version=1,
+            )
+            db.add(staff)
+            await db.flush()
+            case, document, _ = await seed_document(db, tmp_path)
+            actor = await resolve_document_actor(
+                db, create_access_token(
+                    staff.id, staff.username, staff.role,
+                    session_version=staff.session_version,
+                )
+            )
+            grant = await issue_document_grant(
+                db, actor=actor, document=document, case=case,
+                client_address="127.0.0.1",
+            )
+            await db.commit()
+
+            if retention_state == "CONTENT_DELETED":
+                case.content_deleted_at = datetime.now(timezone.utc)
+                expected_reason = "case_content_deleted"
+            else:
+                db.add(CaseRetentionRecord(
+                    case_id=case.id,
+                    status=retention_state,
+                    retention_due_at=datetime.now(timezone.utc),
+                    legal_hold=False,
+                ))
+                expected_reason = "retention_blocked"
+            await db.commit()
+
+            with pytest.raises(DocumentAccessError) as listing:
+                await load_authorized_document(
+                    db, actor=actor, document_id=document.id,
+                )
+            assert listing.value.status_code == 410
+            assert listing.value.reason == expected_reason
+
+            with pytest.raises(DocumentAccessError) as old_grant:
+                await consume_document_grant(
+                    db, actor=actor, public_id=grant.grant.public_id,
+                    secret=grant.secret,
+                )
+            assert old_grant.value.status_code == 410
+            assert old_grant.value.reason == expected_reason
+            await db.refresh(grant.grant)
+            assert grant.grant.used_at is None
     finally:
         await engine.dispose()
