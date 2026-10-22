@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.security.current_admin import current_superadmin_gateway
 from app.db.session import get_db
 from app.models.admin_user import AdminUser
 from app.models.audit_log import AuditLog
@@ -22,7 +23,7 @@ from app.security.audit_integrity import verify_audit_chain
 from app.security.keyring import security_key_status
 from app.security.security_events import sanitize_security_details, security_event_severity
 
-router = APIRouter(prefix="/security-events", tags=["security-events"])
+router = APIRouter(prefix="/security-events", tags=["security-events"], dependencies=[Depends(current_superadmin_gateway)])
 SECURITY_ACTIONS = {"DOCUMENT_UPLOAD_REJECTED"}
 
 

@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 
 from app.config import settings
+from app.domain.release_admission import runtime_release_admission
 
 router = APIRouter(tags=["production-center"])
 
@@ -22,7 +23,7 @@ def build_production_status() -> dict:
         "storage_dir": Path(settings.storage_dir).exists(),
         "admin_credentials": bool(settings.admin_username and settings.admin_password),
         "admin_token": bool(settings.admin_api_token and settings.admin_api_token != "dev-admin-token"),
-        "payment_configured": settings.payment_provider == "fake" or bool(settings.yookassa_shop_id and settings.yookassa_secret_key),
+        "payment_configured": (settings.payment_provider.strip().lower() == "yookassa" and bool(settings.yookassa_shop_id and settings.yookassa_secret_key)),
         "run_script": _check_file("run.sh"),
         "control_script": _check_file("bot-control.sh"),
         "backup_script": _check_file("backup.sh"),
@@ -38,10 +39,14 @@ def build_production_status() -> dict:
     }
     ready_count = sum(1 for value in checks.values() if value)
     total = len(checks)
+    admission = runtime_release_admission()
     return {
         "version": "v27-production-consolidated",
-        "ready": ready_count == total,
+        "ready": admission["release_authorized"],
+        "configuration_ready": ready_count == total,
         "score": round(ready_count / total * 100, 1),
+        "score_scope": "LOCAL_CONFIGURATION_ONLY",
+        "release_admission": admission,
         "checks": checks,
         "important_urls": {
             "operator": "/operator",
@@ -81,7 +86,7 @@ async def production_ui():
     )
     commands = "<br>".join(f"<code>{cmd}</code>" for cmd in status["launch_commands"])
     badge = "ready" if status["ready"] else "warn"
-    title = "Готово к запуску" if status["ready"] else "Нужно завершить настройку"
+    title = "ВЫПУСК РАЗРЕШЁН" if status["ready"] else "ВЫПУСК ЗАБЛОКИРОВАН"
     return f"""
     <html><head><meta charset='utf-8'><title>Production Center</title>
     <style>
@@ -96,7 +101,9 @@ async def production_ui():
       code {{ background:#111; color:#fff; padding:5px 7px; border-radius:6px; line-height:2.1; }}
     </style></head><body>
       <h1>Production Center v27</h1>
-      <div class='badge {badge}'>{title}: {status['score']}%</div>
+      <div class='badge {badge}'>{title}</div>
+      <p>Локальная конфигурация: {status['score']}%. Это не подтверждает реальные оплаты, Telegram, юридическое согласование или приёмку.</p>
+      <p>Статус релиза: {status['release_admission']['status']}. Реальный выпуск запрещён без независимых внешних доказательств.</p>
       <h2>Быстрые ссылки</h2><div class='grid'>{links}</div>
       <h2>Команды запуска</h2><p>{commands}</p>
       <h2>Проверки</h2><table><tr><th>Проверка</th><th>Статус</th></tr>{rows}</table>

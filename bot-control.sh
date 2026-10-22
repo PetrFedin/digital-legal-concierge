@@ -38,7 +38,7 @@ case "$choice" in
     dc run --rm --no-deps --entrypoint python app scripts/production_preflight.py
     ;;
   2|build) dc build --pull app ;;
-  3|deploy|start) COMPOSE_FILE="$compose_file" bash ./deploy.sh ;;
+  3|deploy|start) COMPOSE_FILE="$compose_file" bash ./run.sh ;;
   4|restart) dc restart app ;;
   5|status) COMPOSE_FILE="$compose_file" bash ./status.sh ;;
   6|logs) dc logs -f --tail=300 app redis ;;

@@ -9,7 +9,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_timeline import get_client_visible_status
+from app.domain.retention.content_visibility import private_case_content_unavailable
 from app.models.audit_log import AuditLog
+from app.models.case import Case
 
 ActivityAudience = Literal["client", "staff"]
 
@@ -349,6 +351,10 @@ def present_case_activity(
     )
 
 
+class CaseActivityUnavailable(LookupError):
+    """Cannot reveal legacy sealed audit content for an erased/blocked Case."""
+
+
 class CaseActivityService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -361,6 +367,11 @@ class CaseActivityService:
         before_id: int | None = None,
         limit: int = 8,
     ) -> dict[str, object]:
+        # Authorize the source Case before querying legacy AuditLog JSON.
+        # Legal-hold/approval policies are evaluated on every history page.
+        case = await self.db.get(Case, int(case_id))
+        if case is None or await private_case_content_unavailable(self.db, case=case):
+            raise CaseActivityUnavailable("История дела недоступна.")
         bounded_limit = min(max(int(limit), 1), 20)
         actions = CLIENT_VISIBLE_ACTIONS | (
             STAFF_ONLY_ACTIONS if audience == "staff" else frozenset()

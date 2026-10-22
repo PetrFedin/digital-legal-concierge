@@ -1,6 +1,8 @@
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 
+from app.domain.release_admission import runtime_release_admission
+
 router = APIRouter(prefix="/final-qa", tags=["final-qa"])
 
 QA_SECTIONS = [
@@ -89,9 +91,12 @@ QA_SECTIONS = [
 @router.get("/status")
 async def final_qa_status():
     total = sum(len(section["items"]) for section in QA_SECTIONS)
+    admission = runtime_release_admission()
     return {
         "version": "1.0.0-v29",
-        "status": "OPERATOR_QA_READY",
+        "status": "QA_EVIDENCE_PENDING",
+        "qa_accepted": admission["customer_accepted"],
+        "release_admission": admission,
         "sections": len(QA_SECTIONS),
         "checks": total,
         "qa_sections": QA_SECTIONS,
@@ -99,6 +104,7 @@ async def final_qa_status():
 
 @router.get("/ui", response_class=HTMLResponse)
 async def final_qa_ui():
+    admission = runtime_release_admission()
     cards = []
     for section in QA_SECTIONS:
         checks = "".join(f"<label class='check'><input type='checkbox'> {item}</label>" for item in section["items"])
@@ -128,7 +134,7 @@ async def final_qa_ui():
     <body>
       <header>
         <h1>Final QA Center v29</h1>
-        <div class="muted" style="color:#ccc">Финальная ручная проверка Telegram-бота перед передачей в эксплуатацию</div>
+        <div class="muted" style="color:#ccc">Ручной чек-лист без подтверждённой внешней приёмки; выпуск HOLD</div>
         <nav>
           <a href="/go-live/ui">Go Live</a>
           <a href="/production-center/ui">Production Center</a>
@@ -138,7 +144,7 @@ async def final_qa_ui():
         </nav>
       </header>
       <main>
-        <div class="note">Отмечайте пункты вручную после проверки в Telegram, админке и операторских центрах. Это контрольный лист, чтобы не выпускать бот “на честном слове и древнем проклятии”.</div>
+        <div class="note">Статус: {admission['status']}. Галочки ниже не сохраняют результаты проверки, подписи или доказательства. Это только рабочий список для оператора, а не подтверждённый UAT.</div>
         <div class="grid">{''.join(cards)}</div>
       </main>
     </body>
