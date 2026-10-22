@@ -4,6 +4,9 @@ Synthetic isolated FastAPI + SQLite. No real Telegram, payments or user records.
 """
 from __future__ import annotations
 
+import csv
+import io
+
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -162,3 +165,34 @@ async def test_revoked_superadmin_cannot_manage_users(factory):
         for url in ("/access/users", "/security-events/status", "/backup-center/status"):
             response = await client.get(url, headers={"x-admin-token": token})
             assert response.status_code == 401, (url, response.text)
+
+
+
+@pytest.mark.asyncio
+async def test_real_clients_csv_sanitizes_user_strings_after_authorization(factory):
+    token = await actor(factory, uid=99781)
+    async with factory() as db:
+        db.add(User(
+            telegram_id=99781234,
+            full_name="=2+2",
+            phone="+79990000000",
+            email="safe.client@example.test",
+            telegram_username="@SUM(1,2)",
+        ))
+        await db.commit()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application(factory)),
+        base_url="http://test", follow_redirects=False,
+    ) as client:
+        response = await client.get(
+            "/admin/export/clients.csv",
+            headers={"x-admin-token": token},
+        )
+    assert response.status_code == 200, response.text
+    rows = list(csv.DictReader(io.StringIO(response.text, newline="")))
+    assert len(rows) == 1
+    assert rows[0]["full_name"] == "'=2+2"
+    assert rows[0]["phone"] == "'+79990000000"
+    assert rows[0]["telegram_username"] == "'@SUM(1,2)"
+    assert rows[0]["email"] == "safe.client@example.test"
+    assert response.headers["cache-control"] == "private, no-store"
