@@ -58,7 +58,9 @@ jobs:
 
       - name: Install isolated app and Chromium test dependencies
         run: |
-          pip install -e ".[test]" playwright==1.56.0
+          pip install -c constraints.txt -e ".[test]" playwright==1.56.0
+          python scripts/verify_constraints.py --require-all
+          pip check
           python -m playwright install --with-deps chromium
 
       - name: Migrate fresh PostgreSQL browser database
