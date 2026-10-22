@@ -100,6 +100,8 @@ def test_grant_is_bound_to_personal_current_session():
     assert "set(current_roles)!=set(token_roles)" in compact
     assert "payload.get(\"sv\")" in source
     assert "payload.get(\"jti\")" in source
+    assert "await is_token_revoked(db, token)" in source
+    assert "session_revoked" in source
     assert "mfa_required" in source
 
 
