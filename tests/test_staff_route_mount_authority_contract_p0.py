@@ -1,34 +1,64 @@
-"""Ensure privileged routes preserve live authorization even when mounted separately."""
+"""Check registered staff endpoints, not Python wrapper metadata.
+
+FastAPI may wrap endpoint callables. Import every protected router object
+and compare its (path, methods) against the final application route map.
+A missing, duplicate or unguarded route fails the CI release gate.
+"""
 from fastapi.routing import APIRoute
+
+from app.api import (
+    access_management,
+    admin,
+    backup_center,
+    consultation_outcomes,
+    exports,
+    payment_review_center,
+    security_event_center,
+    workdesk,
+)
 from app.main import create_app
 from app.security.current_admin import current_admin_gateway, current_superadmin_gateway
 
-GATES = {
- "app.api.admin": current_admin_gateway,
- "app.api.exports": current_admin_gateway,
- "app.api.workdesk": current_admin_gateway,
- "app.api.payment_review_center": current_admin_gateway,
- "app.api.consultation_outcomes": current_admin_gateway,
- "app.api.access_management": current_superadmin_gateway,
- "app.api.security_event_center": current_superadmin_gateway,
- "app.api.backup_center": current_superadmin_gateway,
-}
+ROUTERS = (
+    (admin.router, current_admin_gateway),
+    (exports.router, current_admin_gateway),
+    (workdesk.router, current_admin_gateway),
+    (payment_review_center.router, current_admin_gateway),
+    (consultation_outcomes.router, current_admin_gateway),
+    (access_management.router, current_superadmin_gateway),
+    (security_event_center.router, current_superadmin_gateway),
+    (backup_center.router, current_superadmin_gateway),
+)
+
 
 def test_mounted_staff_routers_preserve_live_session_gate():
-    observed = set()
+    application = create_app()
+    mounted = [r for r in application.routes if isinstance(r, APIRoute)]
+    checked = 0
     violations = []
-    for route in create_app().routes:
-        if not isinstance(route, APIRoute):
-            continue
-        module = route.endpoint.__module__
-        gate = GATES.get(module)
-        if gate is None:
-            continue
-        observed.add(module)
-        if gate not in {item.call for item in route.dependant.dependencies}:
-            violations.append(f"{route.path} lacks live gate")
-        if module == "app.api.exports":
-            if {item.name for item in route.dependant.query_params} & {"token", "access_token", "admin_token", "api_key"}:
-                violations.append(f"{route.path} allows bearer URL parameter")
-    assert observed == set(GATES), f"Missing mounted modules: {set(GATES) - observed}"
-    assert not violations, "; ".join(violations)
+
+    for router, gate in ROUTERS:
+        defined = [r for r in router.routes if isinstance(r, APIRoute)]
+        assert defined, f"Expected staff router is empty: {router.prefix}"
+        for expected in defined:
+            candidates = [
+                r for r in mounted
+                if r.path == expected.path and r.methods == expected.methods
+            ]
+            if len(candidates) != 1:
+                violations.append(
+                    f"{expected.path}: {len(candidates)} mounted endpoints instead of one"
+                )
+                continue
+            actual = candidates[0]
+            checked += 1
+            if gate not in {d.call for d in actual.dependant.dependencies}:
+                violations.append(f"{actual.path} lacks required live session gate")
+
+            if router is exports.router:
+                query_keys = {q.name for q in actual.dependant.query_params}
+                if query_keys & {"token", "admin_token", "access_token", "api_key"}:
+                    violations.append(f"{actual.path} accepts token in URL")
+
+    assert checked >= 20, f"Only {checked} staff routes were found"
+    assert not violations, " | ".join(violations)
