@@ -1,14 +1,14 @@
 """Protect every mounted sensitive staff API, not Python implementation types.
 
-Different routing layers may wrap or recreate endpoint callables. The HTTP
-path+method is the externally visible authority. It must resolve to exactly
+Inspect the canonical ASGI instance served in production, not a second
+application factory invocation. The HTTP path+method is the visible authority. It must resolve to exactly
 one FastAPI route with its live revocable session Depends guard.
 """
 from app.api import (
     access_management, admin, backup_center, consultation_outcomes,
     exports, payment_review_center, security_event_center, workdesk,
 )
-from app.main import create_app
+from app.main import app as canonical_asgi_app
 from app.security.current_admin import (
     current_admin_gateway, current_superadmin_gateway,
 )
@@ -34,7 +34,7 @@ def _http_routes(router):
 
 
 def test_mounted_staff_routers_preserve_live_session_gate():
-    mounted = _http_routes(create_app())
+    mounted = _http_routes(canonical_asgi_app)
     checked = 0
     violations = []
 
