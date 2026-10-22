@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Depends, Header, HTTPException
+from decimal import Decimal
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +15,11 @@ from app.domain.cases.case_transition_policy import CaseTransitionError
 from app.domain.cases.enforcement_service import EnforcementError, EnforcementService
 from app.domain.cases.m1_process_service import M1ProcessError, M1ProcessService
 from app.domain.notifications.notification_engine import NotificationEngine
+from app.domain.payments.m1_offline_receipt_service import (
+    M1OfflineReceiptError,
+    M1OfflineReceiptService,
+    offline_receipt_unavailable_reason,
+)
 from app.domain.payments.payment_webhook_service import PaymentWebhookService
 from app.domain.statuses.case_statuses import CaseStatus
 from app.domain.statuses.payment_statuses import PaymentStatus
@@ -23,9 +31,14 @@ from app.models.payment import Payment
 from app.models.user import User
 from app.scheduler.scheduler import AppScheduler
 from app.security.access_control import ROLE_ADMIN, decode_access_token, has_role
+from app.security.current_admin import current_admin_gateway
+from app.security.current_admin import require_current_settings_admin
+from app.security.current_admin import require_current_staff_token
 from app.system.settings_service import SettingsService
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+router = APIRouter(
+    prefix="/admin", tags=["admin"], dependencies=[Depends(current_admin_gateway)],
+)
 
 
 def require_admin(token: str | None) -> dict:
@@ -64,6 +77,44 @@ def payment_can_be_manually_confirmed(payment: Payment) -> bool:
     )
 
 
+def admin_payment_row(payment: Payment, case: Case | None) -> dict:
+    """Financial details and the exact snapshots required by the receipt form."""
+    return {
+        "id": payment.id,
+        "case_id": payment.case_id,
+        "code": payment.payment_code,
+        "title": payment.title,
+        "amount": float(payment.amount),
+        "amount_exact": str(payment.amount),
+        "currency": payment.currency,
+        "status": payment.status,
+        "provider": payment.provider,
+        "updated_at": payment.updated_at.isoformat(),
+        "case_status": case.status if case else None,
+        "case_updated_at": case.updated_at.isoformat() if case else None,
+        "manual_confirm_allowed": payment_can_be_manually_confirmed(payment),
+        "offline_receipt_allowed": offline_receipt_unavailable_reason(payment, case) is None,
+        "paid_at": payment.paid_at.isoformat() if payment.paid_at else None,
+        "confirmed_by": payment.confirmed_by,
+        "receipt_reference": payment.receipt_reference,
+        "confirmation_reason": payment.confirmation_reason,
+    }
+
+
+class M1OfflineReceiptPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    amount: Decimal = Field(gt=Decimal("0"), max_digits=14, decimal_places=2)
+    paid_at: AwareDatetime
+    reference: str = Field(min_length=1, max_length=255, strict=True)
+    reason: str = Field(min_length=5, max_length=2000, strict=True)
+    case_id: int = Field(gt=0, strict=True)
+    expected_payment_status: str = Field(min_length=1, max_length=100, strict=True)
+    expected_payment_updated_at: str = Field(min_length=1, max_length=80, strict=True)
+    expected_case_status: str = Field(min_length=1, max_length=100, strict=True)
+    expected_case_updated_at: str = Field(min_length=1, max_length=80, strict=True)
+
+
 @router.get("/dashboard")
 async def dashboard(
     db: AsyncSession = Depends(get_db),
@@ -75,10 +126,11 @@ async def dashboard(
 
 @router.get("/settings")
 async def settings_list(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    require_admin(x_admin_token)
+    await require_current_settings_admin(request, db, x_admin_token)
     items = await SettingsService(db).list_settings()
     return [
         {
@@ -96,10 +148,11 @@ async def settings_list(
 async def set_setting(
     key: str,
     payload: dict,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     x_admin_token: str | None = Header(default=None),
 ):
-    actor = require_admin(x_admin_token)
+    actor = await require_current_settings_admin(request, db, x_admin_token)
     try:
         setting = await SettingsService(db).set_value(
             key=key,
@@ -399,18 +452,7 @@ async def case_detail(
             if client
             else None
         ),
-        "payments": [
-            {
-                "id": payment.id,
-                "code": payment.payment_code,
-                "title": payment.title,
-                "amount": float(payment.amount),
-                "status": payment.status,
-                "provider": payment.provider,
-                "manual_confirm_allowed": payment_can_be_manually_confirmed(payment),
-            }
-            for payment in payments
-        ],
+        "payments": [admin_payment_row(payment, case) for payment in payments],
         "documents": [
             {
                 "id": document.id,
@@ -706,6 +748,46 @@ async def manual_confirm_payment(
         raise
 
 
+@router.post("/payments/{payment_id}/record-receipt")
+async def record_payment_receipt(
+    payment_id: int,
+    payload: M1OfflineReceiptPayload,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    token = x_admin_token or request.cookies.get(settings.admin_session_cookie)
+    actor = await require_current_staff_token(
+        db, token, allowed_roles={ROLE_ADMIN}, allow_test_legacy=False,
+    )
+    try:
+        payment, case = await M1OfflineReceiptService(db).record_receipt(
+            payment_id=payment_id,
+            actor_id=int(actor["uid"]),
+            **payload.model_dump(),
+        )
+        await db.commit()
+        return {
+            "ok": True,
+            "payment_id": payment.id,
+            "status": payment.status,
+            "case_id": case.id,
+            "case_status": case.status,
+            "amount": str(payment.amount),
+            "paid_at": payment.paid_at.isoformat(),
+            "confirmed_by": payment.confirmed_by,
+        }
+    except LookupError as error:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except (M1OfflineReceiptError, CaseTransitionError) as error:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except Exception:
+        await db.rollback()
+        raise
+
+
 @router.get("/payments")
 async def all_payments(
     db: AsyncSession = Depends(get_db),
@@ -713,20 +795,13 @@ async def all_payments(
 ):
     require_admin(x_admin_token)
     result = await db.execute(
-        select(Payment).order_by(Payment.created_at.desc()).limit(200)
+        select(Payment, Case)
+        .outerjoin(Case, Case.id == Payment.case_id)
+        .order_by(Payment.created_at.desc()).limit(200)
     )
     return [
-        {
-            "id": payment.id,
-            "case_id": payment.case_id,
-            "code": payment.payment_code,
-            "title": payment.title,
-            "amount": float(payment.amount),
-            "status": payment.status,
-            "provider": payment.provider,
-            "manual_confirm_allowed": payment_can_be_manually_confirmed(payment),
-        }
-        for payment in result.scalars().all()
+        admin_payment_row(payment, case)
+        for payment, case in result.all()
     ]
 
 

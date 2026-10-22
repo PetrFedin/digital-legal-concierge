@@ -123,10 +123,9 @@ def test_contract_and_poa_handlers_persist_legal_milestone_dates():
     )
     assert "case.poa_instruction_sent_at = datetime.now(timezone.utc)" in instruction
     assert "await db.commit()" in instruction
-    assert "case.poa_received_at = datetime.now(timezone.utc)" in poa
-    assert poa.index("case.poa_received_at") < poa.index(
-        "next_status=CaseStatus.M1_POA_RECEIVED"
-    )
+    assert "case.poa_client_confirmed_at = datetime.now(timezone.utc)" in poa
+    assert "case.poa_received_at =" not in poa
+    assert "next_status=CaseStatus.M1_POA_RECEIVED" not in poa
 
 
 def test_court_status_renders_full_spec_stage_chain_without_early_payment():

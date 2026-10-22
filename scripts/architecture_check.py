@@ -99,10 +99,11 @@ def check_calculator_clock_boundary() -> list[str]:
 
 
 def check_runtime_routes() -> list[str]:
+    from fastapi.routing import iter_route_contexts
     from app.main import create_app
 
     seen = defaultdict(list)
-    for route in create_app().routes:
+    for route in iter_route_contexts(create_app().routes):
         path = getattr(route, "path", None)
         methods = getattr(route, "methods", None) or set()
         if not path:

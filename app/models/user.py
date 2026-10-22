@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, String, Boolean
+from sqlalchemy import BigInteger, String, Boolean, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base, TimestampMixin
 
@@ -11,4 +11,6 @@ class User(Base, TimestampMixin):
     phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Client-selected matter. CaseService verifies ownership before every switch.
+    active_case_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     cases = relationship('Case', back_populates='client')

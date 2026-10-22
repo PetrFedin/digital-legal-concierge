@@ -5,10 +5,11 @@ import re
 from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from app.api.security_event_center import require_security_superadmin
+from app.security.current_admin import current_superadmin_gateway
 from app.config import settings
 from app.security.backup_encryption import (
     BACKUP_SUFFIX,
@@ -29,7 +30,7 @@ from app.security.backup_restore_fence import (
 )
 from app.security.security_events import record_security_event_best_effort
 
-router = APIRouter(tags=["backup-center"])
+router = APIRouter(tags=["backup-center"], dependencies=[Depends(current_superadmin_gateway)])
 ARCHIVE_NAME_RE = re.compile(
     r"^legal_concierge_[0-9]{8}_[0-9]{6}(?:_[0-9]+)?\.dlcbak$"
 )

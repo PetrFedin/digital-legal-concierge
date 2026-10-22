@@ -346,6 +346,7 @@ main{max-width:1240px;margin:auto;padding:22px}
       <p>Дела и сроки — консультации ведутся в отдельной рабочей очереди</p>
     </div>
     <div class="links">
+      <a class="button secondary" href="/lawyer/ui">Этапы сопровождения M1</a>
       <a class="button green" href="/lawyer/consultation-desk/ui">Консультации</a>
       <a class="button secondary" href="/document-access/review/ui">Проверка документов</a>
       <a class="button secondary" href="/message-center/ui">Сообщения</a>

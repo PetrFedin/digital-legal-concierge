@@ -5,6 +5,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.security.current_admin import current_admin_gateway
 from app.db.session import get_db
 from app.domain.consultations.slot_service import SlotService, SlotUnavailableError
 from app.domain.payments.payment_review_service import (
@@ -23,6 +24,7 @@ from app.security.access_control import ROLE_ADMIN, decode_access_token, has_rol
 router = APIRouter(
     prefix="/admin/payment-reviews",
     tags=["admin", "payment-reviews"],
+    dependencies=[Depends(current_admin_gateway)],
 )
 
 

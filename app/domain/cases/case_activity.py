@@ -9,7 +9,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.cases.case_timeline import get_client_visible_status
+from app.domain.retention.content_visibility import private_case_content_unavailable
 from app.models.audit_log import AuditLog
+from app.models.case import Case
 
 ActivityAudience = Literal["client", "staff"]
 
@@ -41,6 +43,8 @@ CLIENT_VISIBLE_ACTIONS = frozenset(
         "PAYMENT_REFUND_REQUESTED",
         "CONTRACT_READY",
         "CONTRACT_SIGNED",
+        "POA_READY_REPORTED",
+        "POA_RECEIVED",
         "POWER_OF_ATTORNEY_RECEIVED",
         "CLAIM_PREPARED",
         "CLAIM_SENT",
@@ -99,6 +103,8 @@ TITLE_BY_ACTION = {
     "PAYMENT_REFUND_REQUESTED": "Запрошен возврат оплаты",
     "CONTRACT_READY": "Договор готов",
     "CONTRACT_SIGNED": "Договор подписан",
+    "POA_READY_REPORTED": "Сообщение о готовности доверенности сохранено",
+    "POA_RECEIVED": "Получение доверенности подтверждено",
     "POWER_OF_ATTORNEY_RECEIVED": "Доверенность получена",
     "CLAIM_PREPARED": "Претензия подготовлена",
     "CLAIM_SENT": "Претензия направлена",
@@ -139,6 +145,8 @@ CATEGORY_BY_ACTION = {
     "PAYMENT_REFUND_REQUESTED": "payments",
     "CONTRACT_READY": "contract",
     "CONTRACT_SIGNED": "contract",
+    "POA_READY_REPORTED": "documents",
+    "POA_RECEIVED": "documents",
     "POWER_OF_ATTORNEY_RECEIVED": "documents",
     "CLAIM_PREPARED": "legal_stage",
     "CLAIM_SENT": "legal_stage",
@@ -267,6 +275,14 @@ def _safe_detail(log: AuditLog, audience: ActivityAudience) -> str | None:
             return f"Передано новых файлов: {count}."
         return "Пакет передан юридической команде."
 
+    # POA audit comments describe internal receipt checks and logistics. The
+    # client timeline exposes the business fact, never those notes or raw JSON.
+    if action == "POA_READY_REPORTED":
+        return "Команда проверит получение доверенности и заверенных копий."
+
+    if action == "POA_RECEIVED":
+        return "Доверенность и заверенные копии получены юридической командой."
+
     if action == "DOCUMENT_REVIEW_DECISION":
         status = DOCUMENT_STATUS_LABELS.get(str(payload.get("status") or ""))
         detail = f"{_document_label(payload)}: {status}." if status else None
@@ -349,6 +365,10 @@ def present_case_activity(
     )
 
 
+class CaseActivityUnavailable(LookupError):
+    """Cannot reveal legacy sealed audit content for an erased/blocked Case."""
+
+
 class CaseActivityService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -361,6 +381,11 @@ class CaseActivityService:
         before_id: int | None = None,
         limit: int = 8,
     ) -> dict[str, object]:
+        # Authorize the source Case before querying legacy AuditLog JSON.
+        # Legal-hold/approval policies are evaluated on every history page.
+        case = await self.db.get(Case, int(case_id))
+        if case is None or await private_case_content_unavailable(self.db, case=case):
+            raise CaseActivityUnavailable("История дела недоступна.")
         bounded_limit = min(max(int(limit), 1), 20)
         actions = CLIENT_VISIBLE_ACTIONS | (
             STAFF_ONLY_ACTIONS if audience == "staff" else frozenset()

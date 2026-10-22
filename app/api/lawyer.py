@@ -14,11 +14,14 @@ from app.domain.consultations.outcome_service import (
     ConsultationOutcomeService,
 )
 from app.domain.notifications.notification_engine import NotificationEngine
+from app.domain.payments.payment_types import PaymentCode
 from app.domain.statuses.case_statuses import CaseStatus
+from app.domain.statuses.payment_statuses import PaymentStatus
 from app.lawyer.lawyer_decisions import LawyerDecisionService
 from app.models.case import Case
 from app.models.consultation import Consultation
 from app.models.consultation_slot import ConsultationSlot
+from app.models.payment import Payment
 from app.models.user import User
 from app.security.lawyer_access import require_lawyer_actor
 
@@ -92,6 +95,21 @@ async def lawyer_cases(
             .limit(200)
         )
     ).all()
+    poa_case_ids = [
+        case.id for case, _user in rows
+        if case.status == CaseStatus.M1_POWER_OF_ATTORNEY
+    ]
+    paid_poa_case_ids = set()
+    if poa_case_ids:
+        paid_poa_case_ids = set(
+            (await db.scalars(
+                select(Payment.case_id).where(
+                    Payment.case_id.in_(poa_case_ids),
+                    Payment.payment_code == PaymentCode.M1_INITIAL_PAYMENT,
+                    Payment.status == PaymentStatus.PAID,
+                )
+            )).all()
+        )
     return [
         {
             "case_id": case.id,
@@ -138,6 +156,14 @@ async def lawyer_cases(
                 if case.success_fee_amount is not None
                 else None
             ),
+            "poa_client_confirmed_at": (
+                case.poa_client_confirmed_at.isoformat()
+                if case.poa_client_confirmed_at
+                else None
+            ),
+            "poa_received_at": (
+                case.poa_received_at.isoformat() if case.poa_received_at else None
+            ),
             "claim_sent_at": (
                 case.claim_sent_at.isoformat() if case.claim_sent_at else None
             ),
@@ -156,6 +182,10 @@ async def lawyer_cases(
             ),
             "can_update_enforcement": case.status == CaseStatus.M1_ENFORCEMENT,
             "can_record_money_received": case.status == CaseStatus.M1_ENFORCEMENT,
+            "can_confirm_poa": (
+                case.status == CaseStatus.M1_POWER_OF_ATTORNEY
+                and case.id in paid_poa_case_ids
+            ),
             "can_send_claim": case.status in {
                 CaseStatus.M1_POA_RECEIVED,
                 CaseStatus.M1_CLAIM_PREPARATION,
@@ -194,6 +224,7 @@ async def advance_m1_process(
     expected_updated_at = payload.get("expected_updated_at")
     service = M1ProcessService(db)
     handlers = {
+        "poa_received": service.mark_poa_received,
         "claim_sent": service.mark_claim_sent,
         "lawsuit_preparation": service.start_lawsuit_preparation,
         "lawsuit_filed": service.mark_lawsuit_filed,
@@ -211,6 +242,13 @@ async def advance_m1_process(
             actor.lawyer.id,
             for_update=True,
         )
+        if action == "poa_received" and (
+            not expected_status or not expected_updated_at
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Для подтверждения получения доверенности обновите список дел",
+            )
         assert_case_snapshot(
             case,
             expected_status=expected_status,
@@ -259,6 +297,9 @@ async def advance_m1_process(
         "route": case.route,
         "next_action": case.next_action,
         "closure_reason": case.closure_reason,
+        "poa_received_at": (
+            case.poa_received_at.isoformat() if case.poa_received_at else None
+        ),
         "updated_at": case.updated_at.isoformat(),
     }
 
@@ -838,7 +879,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;ba
 </style>
 </head>
 <body>
-<header><b>⚖ Кабинет юриста</b><a href="/admin-ui" style="color:white">Админка</a></header>
+<header><b>⚖ Кабинет юриста</b><a href="/lawyer/workspace/ui" style="color:white">Рабочий кабинет</a></header>
 <main><div class="card"><h2>Мои дела</h2><div id="casesContent">Загрузка…</div></div><div class="card"><h2>Мои консультации</h2><div id="consultationsContent">Загрузка…</div></div><div id="message" class="muted" role="status" aria-live="polite"></div></main>
 <script>
 let token='';let loadController=null;const pendingConsultations=new Set(),pendingCases=new Set();
@@ -854,17 +895,18 @@ function dt(v){return v?new Date(v).toLocaleString('ru-RU'):'—'}
 function slaClass(v){return String(v||'').includes('OVERDUE')?'badge overdue':'badge'}
 function decisionOptions(id){return `<select data-consultation-id="${id}" id="decision_${id}"><option value="">Выберите итоговое решение</option><option value="close">Закрыть обращение</option><option value="to_m1">Перевести в маршрут М1</option><option value="follow_up">Нужна следующая консультация</option><option value="other">Иное решение</option></select>`}
 function decisionLabel(value){return {close:'закрыть обращение',to_m1:'перевести дело в маршрут М1',follow_up:'назначить следующую консультацию',other:'зафиксировать иное решение'}[value]||value}
+function poaSummary(x){if(x.status!=='M1_POWER_OF_ATTORNEY')return '';const reported=x.poa_client_confirmed_at?'Клиент сообщил о готовности '+esc(dt(x.poa_client_confirmed_at))+'. ':'';return `<div class="muted">${reported}Подтвердите фактическое получение доверенности и заверенных копий.</div>`}
 function enforcementSummary(x){const parts=[];if(x.claim_waiting_until)parts.push('30 дней до '+esc(dt(x.claim_waiting_until)));if(x.lawsuit_filed_at)parts.push('иск '+esc(dt(x.lawsuit_filed_at)));if(x.decision_date)parts.push('решение '+esc(dt(x.decision_date)));if(x.enforcement_number)parts.push('ИП '+esc(x.enforcement_number));if(x.enforcement_status)parts.push(esc(x.enforcement_status));if(x.received_amount)parts.push('поступило '+esc(x.received_amount)+' ₽');return parts.length?`<div class="muted">${parts.join(' · ')}</div>`:''}
-function caseActions(x){const items=[];const attrs=`data-case-id="${x.case_id}" data-expected-status="${esc(x.status)}" data-expected-updated-at="${esc(x.updated_at)}"`;if(x.can_accept)items.push(`<button ${attrs} class="green" onclick="acceptCase(${x.case_id},this)">Принять дело</button>`);if(x.can_request_documents)items.push(`<button ${attrs} class="amber" onclick="requestDocuments(${x.case_id},this)">Запросить документы</button>`);if(x.can_transfer_to_m2)items.push(`<button ${attrs} onclick="transferToM2(${x.case_id},this)">Перевести в консультацию</button>`);if(x.can_close_review)items.push(`<button ${attrs} class="red" onclick="m1Process(${x.case_id},this,'close_review','Закрыть обращение',10)">Закрыть обращение</button>`);if(x.can_send_claim)items.push(`<button ${attrs} onclick="m1Process(${x.case_id},this,'claim_sent','Претензия направлена',5)">Претензия направлена</button>`);if(x.can_start_lawsuit)items.push(`<button ${attrs} onclick="m1Process(${x.case_id},this,'lawsuit_preparation','Начать подготовку иска',5)">Готовить иск</button>`);if(x.can_file_lawsuit)items.push(`<button ${attrs} onclick="m1Process(${x.case_id},this,'lawsuit_filed','Иск подан',5)">Иск подан</button>`);if(x.can_start_court)items.push(`<button ${attrs} onclick="m1Process(${x.case_id},this,'court_started','Открыть судебный этап',5)">Судебный этап</button>`);if(x.can_add_court_event)items.push(`<button ${attrs} onclick="courtEvent(${x.case_id},this,false)">Судебное событие</button>`);if(x.can_record_court_decision)items.push(`<button ${attrs} class="green" onclick="courtEvent(${x.case_id},this,true)">Решение суда</button>`);if(x.can_update_enforcement)items.push(`<button ${attrs} onclick="updateEnforcement(${x.case_id},this)">Данные ИП</button>`);if(x.can_record_money_received){items.push(`<button ${attrs} class="amber" onclick="recordReceipt(${x.case_id},this,false)">Частичное поступление</button>`);items.push(`<button ${attrs} class="green" onclick="recordReceipt(${x.case_id},this,true)">Деньги поступили</button>`)}if(x.can_close_after_success_fee)items.push(`<button ${attrs} class="green" onclick="m1Process(${x.case_id},this,'close_success','Закрыть дело',10)">Закрыть дело</button>`);return items.join('')||'—'}
+function caseActions(x){const items=[];const attrs=`data-case-id="${x.case_id}" data-expected-status="${esc(x.status)}" data-expected-updated-at="${esc(x.updated_at)}"`;if(x.can_accept)items.push(`<button ${attrs} class="green" onclick="acceptCase(${x.case_id},this)">Принять дело</button>`);if(x.can_request_documents)items.push(`<button ${attrs} class="amber" onclick="requestDocuments(${x.case_id},this)">Запросить документы</button>`);if(x.can_transfer_to_m2)items.push(`<button ${attrs} onclick="transferToM2(${x.case_id},this)">Перевести в консультацию</button>`);if(x.can_close_review)items.push(`<button ${attrs} class="red" onclick="m1Process(${x.case_id},this,'close_review','Закрыть обращение',10)">Закрыть обращение</button>`);if(x.can_confirm_poa)items.push(`<button ${attrs} class="green" onclick="m1Process(${x.case_id},this,'poa_received','Доверенность и заверенные копии получены',5)">Доверенность получена</button>`);if(x.can_send_claim)items.push(`<button ${attrs} onclick="m1Process(${x.case_id},this,'claim_sent','Претензия направлена',5)">Претензия направлена</button>`);if(x.can_start_lawsuit)items.push(`<button ${attrs} onclick="m1Process(${x.case_id},this,'lawsuit_preparation','Начать подготовку иска',5)">Готовить иск</button>`);if(x.can_file_lawsuit)items.push(`<button ${attrs} onclick="m1Process(${x.case_id},this,'lawsuit_filed','Иск подан',5)">Иск подан</button>`);if(x.can_start_court)items.push(`<button ${attrs} onclick="m1Process(${x.case_id},this,'court_started','Открыть судебный этап',5)">Судебный этап</button>`);if(x.can_add_court_event)items.push(`<button ${attrs} onclick="courtEvent(${x.case_id},this,false)">Судебное событие</button>`);if(x.can_record_court_decision)items.push(`<button ${attrs} class="green" onclick="courtEvent(${x.case_id},this,true)">Решение суда</button>`);if(x.can_update_enforcement)items.push(`<button ${attrs} onclick="updateEnforcement(${x.case_id},this)">Данные ИП</button>`);if(x.can_record_money_received){items.push(`<button ${attrs} class="amber" onclick="recordReceipt(${x.case_id},this,false)">Частичное поступление</button>`);items.push(`<button ${attrs} class="green" onclick="recordReceipt(${x.case_id},this,true)">Деньги поступили</button>`)}if(x.can_close_after_success_fee)items.push(`<button ${attrs} class="green" onclick="m1Process(${x.case_id},this,'close_success','Закрыть дело',10)">Закрыть дело</button>`);return items.join('')||'—'}
 async function boot(){const r=await fetch('/auth/session',{credentials:'same-origin',cache:'no-store'});if(!r.ok){location.href='/login';return}const s=await r.json();if(!(s.roles||[s.role]).includes('lawyer')){casesContent.innerHTML='Недостаточно прав: требуется роль юриста.';consultationsContent.innerHTML='';return}token=s.api_token;try{await load()}catch(e){feedback(e.message,'bad')}}
 async function load(){if(loadController)loadController.abort();const controller=new AbortController();loadController=controller;casesContent.innerHTML='Загрузка…';consultationsContent.innerHTML='Загрузка…';try{await Promise.all([loadCases(controller),loadConsultations(controller)])}catch(e){if(e.name!=='AbortError')throw e}finally{if(loadController===controller)loadController=null}}
-async function loadCases(controller){const rows=await api('/lawyer/cases',{signal:controller.signal});casesContent.innerHTML=rows.length?`<table><tr><th>Дело / клиент</th><th>Маршрут</th><th>Статус / SLA</th><th>Следующее действие</th><th>Решение</th></tr>${rows.map(x=>`<tr><td><b>${esc(x.case_number)}</b><br>${esc(x.client_name)}<br><span class="muted">TG ${esc(x.telegram_id)} · обновлено ${esc(dt(x.updated_at))}</span></td><td>${esc(x.route||'—')}</td><td><span class="badge">${esc(x.status)}</span><br><span class="${slaClass(x.sla_status)}">${esc(x.sla_status||'NOT_STARTED')}</span><br><span class="muted">до ${esc(dt(x.sla_due_at))}<br>эскалация ${esc(x.escalation_level)}</span></td><td>${esc(x.next_action||'—')}${enforcementSummary(x)}</td><td><div class="actions">${caseActions(x)}</div></td></tr>`).join('')}</table>`:'Назначенных активных дел нет.'}
+async function loadCases(controller){const rows=await api('/lawyer/cases',{signal:controller.signal});casesContent.innerHTML=rows.length?`<table><tr><th>Дело / клиент</th><th>Маршрут</th><th>Статус / SLA</th><th>Следующее действие</th><th>Решение</th></tr>${rows.map(x=>`<tr><td><b>${esc(x.case_number)}</b><br>${esc(x.client_name)}<br><span class="muted">TG ${esc(x.telegram_id)} · обновлено ${esc(dt(x.updated_at))}</span></td><td>${esc(x.route||'—')}</td><td><span class="badge">${esc(x.status)}</span><br><span class="${slaClass(x.sla_status)}">${esc(x.sla_status||'NOT_STARTED')}</span><br><span class="muted">до ${esc(dt(x.sla_due_at))}<br>эскалация ${esc(x.escalation_level)}</span></td><td>${esc(x.next_action||'—')}${poaSummary(x)}${enforcementSummary(x)}</td><td><div class="actions">${caseActions(x)}</div></td></tr>`).join('')}</table>`:'Назначенных активных дел нет.'}
 async function loadConsultations(controller){const rows=await api('/lawyer/consultations',{signal:controller.signal});consultationsContent.innerHTML=rows.length?`<table><tr><th>Встреча</th><th>Дело / клиент</th><th>Вопрос</th><th>Статус / SLA</th><th>Действия</th></tr>${rows.map(x=>`<tr><td>${esc(dt(x.scheduled_at))}<br><span class="muted">${esc(x.slot_status||'')}</span></td><td><b>${esc(x.case_number)}</b><br>${esc(x.client_name)}<br><span class="muted">TG ${esc(x.telegram_id)}</span></td><td>${esc(x.subject||'не указан')}</td><td><span class="badge">${esc(x.status)}</span><br><span class="${slaClass(x.case_sla_status)}">${esc(x.case_sla_status||'NOT_STARTED')}</span><br><span class="muted">до ${esc(dt(x.case_sla_due_at))}<br>эскалация ${esc(x.case_escalation_level)}</span></td><td><div class="actions">${x.status==='BOOKED'?`${decisionOptions(x.consultation_id)}<button data-consultation-id="${x.consultation_id}" onclick="completeConsultation(${x.consultation_id},this)">Зафиксировать результат</button><button data-consultation-id="${x.consultation_id}" class="red" onclick="noShow(${x.consultation_id},this)">Клиент не явился</button>`:'—'}</div></td></tr>`).join('')}</table>`:'Консультаций нет.'}
 async function acceptCase(id,button){const expectedStatus=button.dataset.expectedStatus||'',expectedUpdatedAt=button.dataset.expectedUpdatedAt||'';const comment=prompt('Укажите основание принятия дела (минимум 5 символов):');if(comment===null)return;if(comment.trim().length<5){feedback('Комментарий должен содержать не менее 5 символов','bad');return}if(!confirm(`Принять дело #${id} и открыть этап подготовки договора?`))return;return withCaseAction(id,button,async()=>{try{const response=await api('/lawyer/cases/'+id+'/accept',{method:'POST',body:JSON.stringify({comment:comment.trim(),expected_status:expectedStatus,expected_updated_at:expectedUpdatedAt})});feedback(`Дело #${response.case_id} принято: ${response.status}`,'ok');try{await load()}catch(e){feedback(`Дело принято, но список не обновился: ${e.message}`,'warn')}}catch(e){feedback(`Дело #${id} не принято: ${e.message}`,'bad')}})}
 async function requestDocuments(id,button){const expectedStatus=button.dataset.expectedStatus||'',expectedUpdatedAt=button.dataset.expectedUpdatedAt||'';const comment=prompt('Перечислите недостающие документы (минимум 5 символов):');if(comment===null)return;if(comment.trim().length<5){feedback('Комментарий должен содержать не менее 5 символов','bad');return}if(!confirm(`Запросить дополнительные документы по делу #${id}? Клиент получит новое следующее действие.`))return;return withCaseAction(id,button,async()=>{try{const response=await api('/lawyer/cases/'+id+'/request-documents',{method:'POST',body:JSON.stringify({comment:comment.trim(),expected_status:expectedStatus,expected_updated_at:expectedUpdatedAt})});feedback(`Запрос документов по делу #${response.case_id} сохранён`,'ok');try{await load()}catch(e){feedback(`Запрос сохранён, но список не обновился: ${e.message}`,'warn')}}catch(e){feedback(`Запрос документов по делу #${id} не сохранён: ${e.message}`,'bad')}})}
 async function transferToM2(id,button){const expectedStatus=button.dataset.expectedStatus||'',expectedUpdatedAt=button.dataset.expectedUpdatedAt||'';const reason=prompt('Укажите причину перевода в консультационный маршрут (минимум 10 символов):');if(reason===null)return;if(reason.trim().length<10){feedback('Причина должна содержать не менее 10 символов','bad');return}if(!confirm(`Перевести дело #${id} из полного сопровождения M1 в консультационный маршрут M2? Действие изменит клиентский сценарий.`))return;return withCaseAction(id,button,async()=>{try{const response=await api('/lawyer/cases/'+id+'/transfer-to-m2',{method:'POST',body:JSON.stringify({reason:reason.trim(),expected_status:expectedStatus,expected_updated_at:expectedUpdatedAt})});feedback(`Дело #${response.case_id} переведено в маршрут ${response.route}: ${response.status}`,'ok');try{await load()}catch(e){feedback(`Перевод сохранён, но список не обновился: ${e.message}`,'warn')}}catch(e){feedback(`Дело #${id} не переведено: ${e.message}`,'bad')}})}
 
-async function m1Process(id,button,action,label,minLength){const expectedStatus=button.dataset.expectedStatus||'',expectedUpdatedAt=button.dataset.expectedUpdatedAt||'';const comment=prompt(label+': укажите основание/детали действия:');if(comment===null)return;if(comment.trim().length<minLength){feedback('Комментарий должен содержать не менее '+minLength+' символов','bad');return}if(!confirm(label+' по делу #'+id+'?'))return;return withCaseAction(id,button,async()=>{try{const response=await api('/lawyer/cases/'+id+'/m1-process',{method:'POST',body:JSON.stringify({action:action,comment:comment.trim(),expected_status:expectedStatus,expected_updated_at:expectedUpdatedAt})});feedback('Дело #'+response.case_id+': '+response.status,'ok');try{await load()}catch(e){feedback('Действие сохранено, но список не обновился: '+e.message,'warn')}}catch(e){feedback(label+' не выполнено: '+e.message,'bad')}})}
+async function m1Process(id,button,action,label,minLength){const expectedStatus=button.dataset.expectedStatus||'',expectedUpdatedAt=button.dataset.expectedUpdatedAt||'';const comment=prompt(action==='poa_received'?'Укажите способ получения доверенности и заверенных копий (минимум 5 символов):':label+': укажите основание/детали действия:');if(comment===null)return;if(comment.trim().length<minLength){feedback('Комментарий должен содержать не менее '+minLength+' символов','bad');return}if(!confirm(label+' по делу #'+id+'?'))return;return withCaseAction(id,button,async()=>{try{const response=await api('/lawyer/cases/'+id+'/m1-process',{method:'POST',body:JSON.stringify({action:action,comment:comment.trim(),expected_status:expectedStatus,expected_updated_at:expectedUpdatedAt})});feedback('Дело #'+response.case_id+': '+response.status,'ok');try{await load()}catch(e){feedback('Действие сохранено, но список не обновился: '+e.message,'warn')}}catch(e){feedback(label+' не выполнено: '+e.message,'bad')}})}
 async function courtEvent(id,button,decision){const expectedStatus=button.dataset.expectedStatus||'',expectedUpdatedAt=button.dataset.expectedUpdatedAt||'';const type=decision?'decision':(prompt('Тип события: hearing / court_started / other:')||'').trim();if(!type)return;const eventDate=prompt('Дата и время события в формате YYYY-MM-DD или YYYY-MM-DDTHH:MM:');if(eventDate===null||!eventDate.trim())return;const courtName=prompt('Суд (необязательно):')||'';const courtNumber=prompt('Номер дела (необязательно):')||'';const result=prompt('Внутренний результат/заметка юриста (необязательно):')||'';const clientComment=prompt('Комментарий, который можно показать клиенту (необязательно):')||'';const attachmentsNote=prompt('Приложения/ссылки на материалы (необязательно):')||'';if(decision&&!clientComment.trim()&&!result.trim()){feedback('Для решения суда укажите клиентский комментарий или результат','bad');return}if(!confirm((decision?'Зафиксировать решение суда':'Сохранить судебное событие')+' по делу #'+id+'?'))return;return withCaseAction(id,button,async()=>{try{const response=await api('/lawyer/cases/'+id+'/court-events',{method:'POST',body:JSON.stringify({event_type:type,event_date:eventDate.trim(),court_name:courtName.trim(),court_number:courtNumber.trim(),result:result.trim(),client_comment:clientComment.trim(),attachments_note:attachmentsNote.trim(),expected_status:expectedStatus,expected_updated_at:expectedUpdatedAt})});feedback('Судебное событие #'+response.court_event_id+' сохранено: '+response.status,'ok');try{await load()}catch(e){feedback('Событие сохранено, но список не обновился: '+e.message,'warn')}}catch(e){feedback('Судебное событие не сохранено: '+e.message,'bad')}})}
 async function updateEnforcement(id,button){const expectedStatus=button.dataset.expectedStatus||'',expectedUpdatedAt=button.dataset.expectedUpdatedAt||'';const number=prompt('Номер исполнительного производства (можно оставить пустым, если номера ещё нет):');if(number===null)return;const status=prompt('Текущий статус исполнительного производства:');if(status===null)return;if(!number.trim()&&!status.trim()){feedback('Укажите номер ИП или статус исполнения','bad');return}const comment=prompt('Комментарий к обновлению (необязательно):')||'';if(!confirm(`Сохранить данные исполнительного производства по делу #${id}?`))return;return withCaseAction(id,button,async()=>{try{const response=await api('/lawyer/cases/'+id+'/enforcement',{method:'POST',body:JSON.stringify({enforcement_number:number.trim(),enforcement_status:status.trim(),comment:comment.trim(),expected_status:expectedStatus,expected_updated_at:expectedUpdatedAt})});feedback(`Исполнительное производство по делу #${response.case_id} обновлено`,'ok');try{await load()}catch(e){feedback(`Данные ИП сохранены, но список не обновился: ${e.message}`,'warn')}}catch(e){feedback(`Данные ИП по делу #${id} не сохранены: ${e.message}`,'bad')}})}
 async function recordReceipt(id,button,final){const expectedStatus=button.dataset.expectedStatus||'',expectedUpdatedAt=button.dataset.expectedUpdatedAt||'';const raw=prompt(final?'Сумма последнего поступления клиенту, ₽:':'Сумма частичного поступления клиенту, ₽:');if(raw===null)return;const normalized=raw.trim().replace(',','.');const amount=Number(normalized);if(!Number.isFinite(amount)||amount<=0){feedback('Укажите сумму поступления больше нуля','bad');return}const comment=prompt('Комментарий/основание поступления (необязательно):')||'';const action=final?'зафиксировать окончательное поступление и открыть финальный платёж 10%':'зафиксировать частичное поступление без смены этапа';if(!confirm(`По делу #${id}: ${action}. Сумма этого поступления ${normalized} ₽?`))return;return withCaseAction(id,button,async()=>{try{const response=await api('/lawyer/cases/'+id+'/enforcement/receipt',{method:'POST',body:JSON.stringify({amount:normalized,final:final,comment:comment.trim(),expected_status:expectedStatus,expected_updated_at:expectedUpdatedAt})});feedback(`Поступление по делу #${response.case_id} сохранено. Всего: ${response.received_amount} ₽`,'ok');try{await load()}catch(e){feedback(`Поступление сохранено, но список не обновился: ${e.message}`,'warn')}}catch(e){feedback(`Поступление по делу #${id} не сохранено: ${e.message}`,'bad')}})}

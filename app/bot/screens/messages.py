@@ -10,7 +10,7 @@ from aiogram.types import CallbackQuery, Message
 
 from app.bot.context import BotContextService
 from app.bot.keyboards import one
-from app.domain.messages.message_service import MessageService
+from app.domain.messages.message_service import ClientMessageAccessDenied, MessageService
 from app.domain.notifications.immediate_delivery import deliver_selected_notifications
 from app.domain.notifications.notification_engine import NotificationEngine
 from app.domain.payments.mode import payments_disabled
@@ -370,6 +370,8 @@ async def message_create(
     case = await ctx.case_service.get_active_case_for_user(user.id)
     await state.update_data(
         case_number=str(case.case_number) if case else None,
+        # Preserve the target matter across edits, retries and other-tab switches.
+        case_id=int(case.id) if case else None,
     )
     await state.set_state(MessageStates.choosing_category)
     data = await state.get_data()
@@ -622,6 +624,39 @@ async def message_submit(callback: CallbackQuery, state: FSMContext, db):
         ctx = BotContextService(db)
         user = await ctx.get_user_from_callback(callback)
         case = await ctx.case_service.get_active_case_for_user(user.id)
+        intended_case_id = data.get("case_id")
+        if intended_case_id is not None and (
+            case is None or int(case.id) != int(intended_case_id)
+        ):
+            await _replace_or_send(
+                callback,
+                "⚠️ Вы переключили активное дело после создания черновика. "
+                "Вопрос не отправлен, текст сохранён. Выберите исходное дело "
+                "или создайте вопрос заново для нового обращения.",
+                reply_markup=one(
+                    ("📂 Выбрать исходное дело", "cases_list"),
+                    ("↩️ Вернуться к черновику", "message_review_return"),
+                    ("✖️ Отменить черновик", "message_discard_confirm"),
+                ),
+            )
+            await callback.answer("Дело изменилось. Вопрос не отправлен.")
+            return
+        if intended_case_id is None and case is not None:
+            # Draft started as a new inquiry. Another session may have opened
+            # a Case meanwhile. Never silently attach it to that new matter.
+            await _replace_or_send(
+                callback,
+                "⚠️ Пока вы готовили вопрос, появилось активное дело. "
+                "Вопрос не отправлен, текст сохранён. Чтобы не перепутать "
+                "обращения, выберите дело и начните отправку для него заново.",
+                reply_markup=one(
+                    ("📂 Выбрать обращение", "cases_list"),
+                    ("↩️ Вернуться к черновику", "message_review_return"),
+                    ("✖️ Отменить черновик", "message_discard_confirm"),
+                ),
+            )
+            await callback.answer("Активное дело изменилось. Вопрос не отправлен.")
+            return
         if not case:
             case = await ctx.get_or_create_active_case_for_user(user)
 
@@ -658,6 +693,22 @@ async def message_submit(callback: CallbackQuery, state: FSMContext, db):
         case_number = str(case.case_number)
         lawyer_assigned = bool(case.assigned_lawyer_id)
         await db.commit()
+    except ClientMessageAccessDenied:
+        await db.rollback()
+        # Do not keep a stale, case-bound draft after the server has denied
+        # write access. It must not later be submitted to another legal matter.
+        await state.clear()
+        await _replace_or_send(
+            callback,
+            "⚠️ Вопрос не отправлен. Дело недоступно для новых сообщений. "
+            "Выберите действующее обращение и создайте новый вопрос.",
+            reply_markup=one(
+                ("📂 Выбрать обращение", "cases_list"),
+                ("🏠 Главная", "nav_home"),
+            ),
+        )
+        await callback.answer("Отправка по делу недоступна.")
+        return
     except Exception:
         await db.rollback()
         await state.set_state(MessageStates.confirming_message)

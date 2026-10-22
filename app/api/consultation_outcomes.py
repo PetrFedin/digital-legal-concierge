@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.security.current_admin import current_admin_gateway
 from app.db.session import get_db
 from app.domain.consultations.no_show_resolution_service import (
     NoShowResolutionError,
@@ -28,6 +29,7 @@ from app.security.access_control import ROLE_ADMIN, decode_access_token, has_rol
 router = APIRouter(
     prefix="/admin/consultation-outcomes",
     tags=["admin", "consultation-outcomes"],
+    dependencies=[Depends(current_admin_gateway)],
 )
 
 CONSULTATION_STATUS_LABELS = {

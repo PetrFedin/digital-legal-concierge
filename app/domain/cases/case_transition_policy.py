@@ -215,6 +215,13 @@ def validate_transition(
                 "Для принудительного изменения статуса нужен содержательный комментарий"
             )
         return source, destination
+    if (
+        destination == CaseStatus.M1_POA_RECEIVED
+        and actor_type not in {"admin", "lawyer"}
+    ):
+        raise CaseTransitionError(
+            "Получение доверенности подтверждает только администратор или юрист"
+        )
     if destination not in allowed_next_statuses(source):
         allowed = ", ".join(
             item.value
