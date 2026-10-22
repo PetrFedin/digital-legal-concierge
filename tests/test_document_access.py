@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.document_access import router as document_access_router
+from app.api.auth import router as auth_router
 from app.config import settings
 from app.db.session import get_db
 from app.models import Base
@@ -31,7 +32,7 @@ from app.security.document_access import (
 from app.security.document_encryption import ENCRYPTION_STATUS, FORMAT_V2, encrypt_file
 from app.storage import LocalStorageService
 from app.security.document_access import grant_cookie_name, grant_download_path
-from app.security.token_revocation import revoke_token
+from app.security.token_revocation import is_token_revoked
 
 SESSION_KEY = "session-document-access-" + "a" * 40
 HMAC_KEY = "hmac-document-access-" + "b" * 40
@@ -447,18 +448,8 @@ async def test_logout_revocation_prevents_document_grant_issuance_and_binary_tra
             doc_id = document.id
             await db.commit()
 
-            assert await revoke_token(db, token, reason="logout") is True
-            await db.commit()
-
-            still_active = await db.get(AdminUser, staff.id)
-            assert still_active.is_active is True
-            assert still_active.session_version == 1
-            with pytest.raises(DocumentAccessError) as denied:
-                await resolve_document_actor(db, token)
-            assert denied.value.status_code == 401
-            assert denied.value.reason == "session_revoked"
-
         app = FastAPI()
+        app.include_router(auth_router)
         app.include_router(document_access_router)
 
         async def override_db():
@@ -473,22 +464,48 @@ async def test_logout_revocation_prevents_document_grant_issuance_and_binary_tra
         ) as client:
             client.cookies.set(settings.admin_session_cookie, token)
             client.cookies.set(grant_cookie_name(grant_public_id), grant_secret)
-            cannot_read_case = await client.get(
+            before_logout = await client.get(
                 f"/document-access/cases/{case.id}/documents"
+            )
+            assert before_logout.status_code == 200
+
+            signed_logout = await client.post("/logout")
+            assert signed_logout.status_code == 303
+            assert signed_logout.headers["location"] == "/login"
+
+            # The browser cookie has been deleted. Replay the exact JWT as a
+            # stale header, proving that server-side revocation is effective.
+            stale = {"x-admin-token": token}
+            cannot_read_case = await client.get(
+                f"/document-access/cases/{case.id}/documents",
+                headers=stale,
             )
             assert cannot_read_case.status_code == 401
 
             cannot_issue = await client.post(
-                f"/document-access/documents/{doc_id}/grant"
+                f"/document-access/documents/{doc_id}/grant",
+                headers=stale,
             )
             assert cannot_issue.status_code == 401
             assert "download_url" not in cannot_issue.text
 
-            cannot_transfer = await client.get(grant_download_path(grant_public_id))
+            cannot_transfer = await client.get(
+                grant_download_path(grant_public_id),
+                headers=stale,
+            )
             assert cannot_transfer.status_code == 401
             assert plaintext not in cannot_transfer.content
 
         async with factory() as db:
+            assert await is_token_revoked(db, token) is True
+            still_active = await db.get(AdminUser, staff.id)
+            assert still_active.is_active is True
+            assert still_active.session_version == 1
+            with pytest.raises(DocumentAccessError) as denied:
+                await resolve_document_actor(db, token)
+            assert denied.value.status_code == 401
+            assert denied.value.reason == "session_revoked"
+
             existing_grant = await db.get(DocumentAccessGrant, grant_id)
             assert existing_grant is not None
             assert existing_grant.used_at is None
