@@ -4,10 +4,14 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
 import pytest
+from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.api.document_access import router as document_access_router
 from app.config import settings
+from app.db.session import get_db
 from app.models import Base
 from app.models.admin_user import AdminUser
 from app.models.case import Case
@@ -26,6 +30,8 @@ from app.security.document_access import (
 )
 from app.security.document_encryption import ENCRYPTION_STATUS, FORMAT_V2, encrypt_file
 from app.storage import LocalStorageService
+from app.security.document_access import grant_cookie_name, grant_download_path
+from app.security.token_revocation import revoke_token
 
 SESSION_KEY = "session-document-access-" + "a" * 40
 HMAC_KEY = "hmac-document-access-" + "b" * 40
@@ -390,3 +396,101 @@ async def test_expired_and_used_grants_are_cleaned_up(tmp_path, monkeypatch):
         assert await db.get(DocumentAccessGrant, issued.grant.id) is None
 
     await engine.dispose()
+
+
+
+@pytest.mark.asyncio
+async def test_logout_revocation_prevents_document_grant_issuance_and_binary_transfer(
+    tmp_path, monkeypatch,
+):
+    """A signed and otherwise valid admin token is invalid immediately on logout.
+
+    The staff account and session_version intentionally stay unchanged, proving
+    that the check consults the DB-backed revocation ledger, not merely JWT.
+    """
+    configure_security(monkeypatch, tmp_path)
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'revoked-document.db'}")
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+
+        async with factory() as db:
+            staff = AdminUser(
+                full_name="Synthetic revoked staff",
+                username="revoked-staff-doc",
+                email="revoked-doc@example.test",
+                password_hash="unused",
+                role="admin",
+                is_active=True,
+                session_version=1,
+            )
+            db.add(staff)
+            await db.flush()
+            case, document, plaintext = await seed_document(db, tmp_path)
+            token = create_access_token(
+                staff.id, staff.username, staff.role,
+                session_version=staff.session_version,
+            )
+            actor = await resolve_document_actor(db, token)
+            authorized, owner_case = await load_authorized_document(
+                db, actor=actor, document_id=document.id,
+            )
+            grant = await issue_document_grant(
+                db,
+                actor=actor, document=authorized, case=owner_case,
+                client_address="127.0.0.1",
+            )
+            grant_id = grant.grant.id
+            grant_public_id = grant.grant.public_id
+            grant_secret = grant.secret
+            doc_id = document.id
+            await db.commit()
+
+            assert await revoke_token(db, token, reason="logout") is True
+            await db.commit()
+
+            still_active = await db.get(AdminUser, staff.id)
+            assert still_active.is_active is True
+            assert still_active.session_version == 1
+            with pytest.raises(DocumentAccessError) as denied:
+                await resolve_document_actor(db, token)
+            assert denied.value.status_code == 401
+            assert denied.value.reason == "session_revoked"
+
+        app = FastAPI()
+        app.include_router(document_access_router)
+
+        async def override_db():
+            async with factory() as session:
+                yield session
+
+        app.dependency_overrides[get_db] = override_db
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            follow_redirects=False,
+        ) as client:
+            client.cookies.set(settings.admin_session_cookie, token)
+            client.cookies.set(grant_cookie_name(grant_public_id), grant_secret)
+            cannot_read_case = await client.get(
+                f"/document-access/cases/{case.id}/documents"
+            )
+            assert cannot_read_case.status_code == 401
+
+            cannot_issue = await client.post(
+                f"/document-access/documents/{doc_id}/grant"
+            )
+            assert cannot_issue.status_code == 401
+            assert "download_url" not in cannot_issue.text
+
+            cannot_transfer = await client.get(grant_download_path(grant_public_id))
+            assert cannot_transfer.status_code == 401
+            assert plaintext not in cannot_transfer.content
+
+        async with factory() as db:
+            existing_grant = await db.get(DocumentAccessGrant, grant_id)
+            assert existing_grant is not None
+            assert existing_grant.used_at is None
+    finally:
+        await engine.dispose()
