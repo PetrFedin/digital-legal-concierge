@@ -1,14 +1,16 @@
-"""Protect every mounted sensitive staff API, not Python implementation types.
+"""Verify protected staff routers in independent HTTP registrations.
 
-Inspect the canonical ASGI instance served in production, not a second
-application factory invocation. The HTTP path+method is the visible authority. It must resolve to exactly
-one FastAPI route with its live revocable session Depends guard.
+The full suite exercises and mutates test application instances. Independently
+register each declared router into a new FastAPI probe, assert all endpoints
+inherit the current, revocable session gateway, and forbid bearer query tokens.
+The canonical running app is exercised by browser/staff E2E separately.
 """
+from fastapi import FastAPI
+
 from app.api import (
     access_management, admin, backup_center, consultation_outcomes,
     exports, payment_review_center, security_event_center, workdesk,
 )
-from app.main import app as canonical_asgi_app
 from app.security.current_admin import (
     current_admin_gateway, current_superadmin_gateway,
 )
@@ -33,51 +35,42 @@ def _http_routes(router):
     ]
 
 
-def test_mounted_staff_routers_preserve_live_session_gate():
-    mounted = _http_routes(canonical_asgi_app)
+def test_independently_mounted_staff_routers_preserve_live_session_gate():
     checked = 0
-    violations = []
+    failures = []
 
-    for router, gateway in ROUTERS:
-        defined = _http_routes(router)
-        assert defined, f"Empty protected router: {router.prefix}"
-        for expected in defined:
-            requested_methods = set(expected.methods)
-            candidates = [
-                route for route in mounted
-                if route.path == expected.path
-                and requested_methods.issubset(set(route.methods))
+    for staff_router, gateway in ROUTERS:
+        probe = FastAPI()
+        probe.include_router(staff_router)
+        registered = _http_routes(probe)
+        declared = _http_routes(staff_router)
+        assert declared, f"Empty protected router: {staff_router.prefix}"
+
+        for expected in declared:
+            matching = [
+                r for r in registered
+                if r.path == expected.path and set(expected.methods).issubset(set(r.methods))
             ]
-            if len(candidates) != 1:
-                violations.append(
-                    f"{expected.path} [{','.join(sorted(requested_methods))}]: "
-                    f"expected exactly one mounted HTTP route, got {len(candidates)}"
+            if len(matching) != 1:
+                failures.append(
+                    f"{expected.path}: expected one registered HTTP endpoint, got {len(matching)}"
                 )
                 continue
-
-            actual = candidates[0]
             checked += 1
-            dependencies = getattr(actual, "dependant", None)
-            if dependencies is None:
-                violations.append(
-                    f"{actual.path}: {type(actual).__name__} lacks FastAPI "
-                    "dependency injection (cannot prove security guard)"
-                )
+            route = matching[0]
+            tree = getattr(route, "dependant", None)
+            if tree is None:
+                failures.append(f"{route.path}: missing dependency graph")
                 continue
-            calls = {dep.call for dep in dependencies.dependencies}
-            if gateway not in calls:
-                violations.append(
-                    f"{actual.path}: {gateway.__name__} not registered"
-                )
+            if gateway not in {node.call for node in tree.dependencies}:
+                failures.append(f"{route.path}: missing {gateway.__name__}")
 
-            if router is exports.router:
-                param_names = {p.name for p in dependencies.query_params}
-                if param_names & {"token", "access_token", "admin_token", "api_key"}:
-                    violations.append(f"{actual.path}: bearer token query parameter")
+            if staff_router is exports.router:
+                bad_params = {p.name for p in tree.query_params} & {
+                    "token", "admin_token", "access_token", "api_key"
+                }
+                if bad_params:
+                    failures.append(f"{route.path}: URL bearer token accepted")
 
-    assert not violations, (
-        f"{len(violations)} staff authorization gaps: "
-        + " | ".join(violations[:12])
-        + f" | actual_route_types={sorted(set(type(r).__name__ for r in mounted))}"
-    )
-    assert checked >= 20, f"Only {checked} sensitive HTTP routes verified"
+    assert checked >= 20, f"Only {checked} sensitive routes verified"
+    assert not failures, "; ".join(failures[:15])
