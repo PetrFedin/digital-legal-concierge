@@ -21,6 +21,7 @@ from app.security.access_control import (
     verify_password,
 )
 from app.security.login_throttle import LoginRateLimitError, LoginThrottleService
+from app.security.current_admin import require_current_staff_token
 from app.security.security_events import record_security_event
 from app.security.token_revocation import is_token_revoked, revoke_token
 
@@ -236,9 +237,10 @@ async def login(
 @router.get("/auth/session")
 async def auth_session(request: Request, db: AsyncSession = Depends(get_db)):
     token = request.cookies.get(settings.admin_session_cookie)
-    payload = decode_access_token(token)
-    if not payload or await is_token_revoked(db, token):
-        raise HTTPException(status_code=401, detail="Требуется вход")
+    payload = await require_current_staff_token(
+        db, token, allowed_roles={"admin", "superadmin", "lawyer", "operator", "tester"},
+        allow_test_legacy=False,
+    )
     return {
         "authenticated": True,
         "username": payload.get("username"),

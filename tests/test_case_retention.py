@@ -27,6 +27,7 @@ from app.models.case_retention import CaseRetentionRecord
 from app.models.consultation import Consultation
 from app.models.document import Document
 from app.models.document_access_grant import DocumentAccessGrant
+from app.models.client_document_grant import ClientDocumentGrant
 from app.models.message import Message
 from app.models.notification import Notification
 from app.models.payment import Payment
@@ -203,6 +204,15 @@ async def test_four_eyes_execution_deletes_content_but_preserves_ledger_and_audi
     engine, factory = await create_database(tmp_path, "retention-execute.db")
     async with factory() as db:
         context = await seed_closed_case(db, tmp_path, suffix=1)
+        db.add(ClientDocumentGrant(
+            public_id="c" * 32, user_id=context["user"].id,
+            case_id=context["case"].id, document_id=context["document"].id,
+            document_version=1, document_sha256=context["document"].sha256,
+            channel="PRIVATE_PORTAL", approval_reference="SECURITY-TEST-ONLY",
+            token_key_id="test-key", token_digest="d" * 64, status="CLAIMED",
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=2),
+            claimed_at=datetime.now(timezone.utc),
+        ))
         await db.commit()
         service = CaseRetentionService(db)
         record = await service.request_deletion(
@@ -262,6 +272,11 @@ async def test_four_eyes_execution_deletes_content_but_preserves_ledger_and_audi
                 )
             )
         ).scalar_one() == 0
+        assert await db.scalar(
+            select(func.count(ClientDocumentGrant.id)).where(
+                ClientDocumentGrant.case_id == context["case"].id
+            )
+        ) == 0
         assert (
             await db.execute(
                 select(func.count(Calculation.id)).where(

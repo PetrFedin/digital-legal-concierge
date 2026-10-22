@@ -6,6 +6,7 @@ from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 
 from app.config import settings
+from app.domain.release_admission import runtime_release_admission
 
 router = APIRouter(tags=["go-live-center"])
 
@@ -37,10 +38,16 @@ def build_go_live_status() -> dict:
             ok = False
         checks.append({"code": code, "title": title, "ok": ok})
     done = sum(1 for item in checks if item["ok"])
+    configuration_ready = done == len(checks)
+    admission = runtime_release_admission()
     return {
         "version": "v27-go-live",
-        "ready": done == len(checks),
+        # A file/configuration checklist can never attest to real client UAT.
+        "ready": admission["release_authorized"],
+        "configuration_ready": configuration_ready,
         "score": round(done / len(checks) * 100, 1),
+        "score_scope": "LOCAL_CONFIGURATION_ONLY",
+        "release_admission": admission,
         "checks": checks,
         "operator_urls": {
             "Главная оператора": "/operator",
@@ -82,7 +89,7 @@ async def go_live_ui():
     )
     launch_order = "".join(f"<li>{step}</li>" for step in data["launch_order"])
     badge_cls = "ok" if data["ready"] else "warn"
-    badge_text = "ГОТОВО К ЗАПУСКУ" if data["ready"] else "ЕСТЬ ЧТО ПРОВЕРИТЬ"
+    badge_text = "ВЫПУСК РАЗРЕШЁН" if data["ready"] else "ВЫПУСК ЗАБЛОКИРОВАН"
     return f"""
     <html><head><meta charset='utf-8'><title>Go Live Center</title>
     <style>
@@ -97,8 +104,9 @@ async def go_live_ui():
       code {{ background:#111; color:#fff; border-radius:6px; padding:4px 7px; }}
     </style></head><body>
       <h1>Go Live Center v27</h1>
-      <div class='badge {badge_cls}'>{badge_text}: {data['score']}%</div>
-      <p>Финальный экран перед запуском: показывает, что связано, что готово и куда идти оператору.</p>
+      <div class='badge {badge_cls}'>{badge_text}</div>
+      <p>Готовность локальной конфигурации: {data['score']}%. Это не является приёмкой клиента или разрешением на запуск.</p>
+      <p>Статус приёмки: {data['release_admission']['status']}. Не подтверждены реальные Telegram, платежи, юридические документы и подписанный UAT.</p>
       <h2>Порядок запуска</h2><ol>{launch_order}</ol>
       <h2>Рабочие разделы</h2><div class='grid'>{links}</div>
       <h2>Чек-лист готовности</h2><table><tr><th>Код</th><th>Проверка</th><th>Статус</th></tr>{rows}</table>

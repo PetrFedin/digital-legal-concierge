@@ -147,6 +147,16 @@ async def test_committed_calculation_result_falls_back_to_new_message():
     assert callback.callback_answers[-1][0] == "Изменение сохранено. Результат открыт новым сообщением."
 
 
+def test_actual_transfer_screen_allows_early_handover_and_rejects_future_date():
+    from app.bot.screens.calculator import actual
+
+    source = inspect.getsource(actual)
+    assert "actual_date < planned_date" not in source
+    assert "actual_date > date.today()" in source
+    assert "actual_transfer_date=actual_date.isoformat()" in source
+    assert "await calculate_show_message(message, state, db)" in source
+
+
 def test_callback_calculation_commits_before_clearing_state_and_rendering():
     source = inspect.getsource(calculate_show_callback)
 
