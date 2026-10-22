@@ -43,8 +43,11 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: Install
-        run: pip install -e ".[test]"
+      - name: Install against approved release constraints
+        run: |
+          pip install -c constraints.txt -e ".[test]"
+          python scripts/verify_constraints.py --require-all
+          pip check
 
       - name: Compile source
         run: python -m compileall -q app scripts migrations tests
@@ -70,6 +73,9 @@ jobs:
         run: |
           DATABASE_URL=sqlite+aiosqlite:///./migration_smoke.db alembic upgrade head
           DATABASE_URL=sqlite+aiosqlite:///./migration_smoke.db alembic upgrade head
+
+      - name: Run Telegram client-to-lawyer golden path in isolation
+        run: pytest -q tests/test_telegram_lawyer_golden_path.py
 
       - name: Run tests
         run: pytest -q
@@ -121,7 +127,9 @@ jobs:
 
       - name: Install application and PostgreSQL client
         run: |
-          pip install -e ".[test]"
+          pip install -c constraints.txt -e ".[test]"
+          python scripts/verify_constraints.py --require-all
+          pip check
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends postgresql-client
 
@@ -161,6 +169,21 @@ jobs:
 
       - name: Verify PostgreSQL consent concurrency on the real database
         run: pytest -q tests/test_postgresql_m2_concurrency_gate.py
+
+      - name: Verify PostgreSQL multiple-matter race and isolation
+        run: pytest -q tests/test_postgresql_multicase_gate.py
+
+      - name: Verify PostgreSQL client archive grant race and revocation
+        run: pytest -q tests/test_postgresql_client_grant_gate.py
+
+      - name: Verify PostgreSQL sealed audit privacy after deletion approval
+        run: pytest -q tests/test_postgresql_audit_visibility_gate.py
+
+      - name: Verify PostgreSQL client read privacy immediately after retention approval
+        run: pytest -q tests/test_postgresql_client_retention_read_boundary.py
+
+      - name: Verify PostgreSQL client-grant issuance and claim concurrency
+        run: pytest -q tests/test_postgresql_client_grant_concurrency.py
 
       - name: Seed disaster recovery probe
         run: |

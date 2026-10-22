@@ -8,11 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.admin_user import AdminUser
 from app.models.lawyer import Lawyer
-from app.security.access_control import (
-    ROLE_LAWYER,
-    decode_access_token,
-    has_role,
-)
+from app.security.access_control import ROLE_LAWYER
+from app.security.current_admin import require_current_staff_token
 
 
 @dataclass(frozen=True)
@@ -30,12 +27,9 @@ async def require_lawyer_actor(
     db: AsyncSession,
     token: str | None,
 ) -> LawyerActor:
-    payload = decode_access_token(token)
-    if not payload or not has_role(payload.get("roles"), ROLE_LAWYER):
-        raise HTTPException(
-            status_code=403,
-            detail="Доступ только для пользователя с ролью юриста",
-        )
+    payload = await require_current_staff_token(
+        db, token, allowed_roles={ROLE_LAWYER}, allow_test_legacy=False,
+    )
 
     try:
         account_id = int(payload.get("uid") or 0)

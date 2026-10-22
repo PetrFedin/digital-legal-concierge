@@ -2,50 +2,77 @@ from __future__ import annotations
 
 import csv
 import io
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app.security.current_admin import current_admin_gateway
 from app.db.session import get_db
 from app.models.case import Case
 from app.models.payment import Payment
 from app.models.document import Document
 from app.models.user import User
 
-router = APIRouter(prefix="/admin/export", tags=["admin-export"])
+router = APIRouter(prefix="/admin/export", tags=["admin-export"], dependencies=[Depends(current_admin_gateway)])
 
 
-def check(token: str | None, query_token: str | None = None) -> None:
-    final_token = token or (query_token if settings.allow_token_query else None)
-    if final_token != settings.admin_api_token:
-        raise HTTPException(status_code=401, detail="bad token")
+# CSV is intended for spreadsheet viewing, not a lossless raw-data API.
+# Excel/LibreOffice may interpret client-provided strings as executable formulae.
+# See OWASP CSV Injection: https://owasp.org/www-community/attacks/CSV_Injection
+_FORMULA_PREFIXES = "=+-@＝＋－＠"
+_LEADING_SPREADSHEET_WHITESPACE = " \t\r\n\v\f\ufeff"
+
+
+def safe_spreadsheet_cell(value: object) -> object:
+    """Escape only risky text, leaving typed IDs and amounts numeric.
+
+    The apostrophe is an intentional presentation escape. No single CSV
+    mitigation protects every spreadsheet application's save/reopen behavior;
+    never treat this as the authoritative raw value stored in the database.
+    """
+    if not isinstance(value, str) or not value:
+        return value
+    trimmed = value.lstrip(_LEADING_SPREADSHEET_WHITESPACE)
+    if value[0] in "\t\r\n" or (
+        trimmed and trimmed[0] in _FORMULA_PREFIXES
+    ):
+        return "'" + value
+    return value
 
 
 def csv_response(filename: str, rows: list[dict]) -> StreamingResponse:
-    buffer = io.StringIO()
+    buffer = io.StringIO(newline="")
     if rows:
-        writer = csv.DictWriter(buffer, fieldnames=list(rows[0].keys()))
+        columns = list(rows[0].keys())
+        writer = csv.DictWriter(
+            buffer, fieldnames=columns, quoting=csv.QUOTE_ALL,
+            lineterminator="\r\n",
+        )
         writer.writeheader()
-        writer.writerows(rows)
+        for row in rows:
+            writer.writerow({
+                column: safe_spreadsheet_cell(row.get(column))
+                for column in columns
+            })
     else:
-        buffer.write("empty\n")
+        buffer.write("empty\r\n")
     buffer.seek(0)
     return StreamingResponse(
         iter([buffer.getvalue()]),
         media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}",
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 
 @router.get("/cases.csv")
 async def export_cases(
     db: AsyncSession = Depends(get_db),
-    x_admin_token: str | None = Header(default=None),
-    token: str | None = Query(default=None),
 ):
-    check(x_admin_token, token)
     result = await db.execute(select(Case).order_by(Case.created_at.desc()).limit(5000))
     rows = [
         {
@@ -64,11 +91,11 @@ async def export_cases(
                 else ""
             ),
             "received_amount": (
-                str(c.received_amount) if c.received_amount is not None else ""
+                c.received_amount if c.received_amount is not None else ""
             ),
             "received_at": c.received_at.isoformat() if c.received_at else "",
             "success_fee_amount": (
-                str(c.success_fee_amount)
+                c.success_fee_amount
                 if c.success_fee_amount is not None
                 else ""
             ),
@@ -83,10 +110,7 @@ async def export_cases(
 @router.get("/clients.csv")
 async def export_clients(
     db: AsyncSession = Depends(get_db),
-    x_admin_token: str | None = Header(default=None),
-    token: str | None = Query(default=None),
 ):
-    check(x_admin_token, token)
     result = await db.execute(select(User).order_by(User.created_at.desc()).limit(5000))
     rows = [
         {
@@ -106,10 +130,7 @@ async def export_clients(
 @router.get("/payments.csv")
 async def export_payments(
     db: AsyncSession = Depends(get_db),
-    x_admin_token: str | None = Header(default=None),
-    token: str | None = Query(default=None),
 ):
-    check(x_admin_token, token)
     result = await db.execute(select(Payment).order_by(Payment.created_at.desc()).limit(5000))
     rows = [
         {
@@ -132,10 +153,7 @@ async def export_payments(
 @router.get("/documents.csv")
 async def export_documents(
     db: AsyncSession = Depends(get_db),
-    x_admin_token: str | None = Header(default=None),
-    token: str | None = Query(default=None),
 ):
-    check(x_admin_token, token)
     result = await db.execute(select(Document).order_by(Document.created_at.desc()).limit(5000))
     rows = [
         {
