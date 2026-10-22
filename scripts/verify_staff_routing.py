@@ -7,7 +7,7 @@ missing live session dependency or bearer query param fails closed.
 """
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from importlib.metadata import version
 import json
 
@@ -93,6 +93,24 @@ def audit_staff_routes() -> dict[str, object]:
         "asgi_app_routes": len(app.routes),
         "asgi_router_routes": len(app.router.routes),
         "asgi_router_class": type(app.router).__name__,
+        "asgi_route_classes": dict(Counter(
+            type(item).__module__ + "." + type(item).__name__
+            for item in app.routes
+        )),
+        "admin_declaration_classes": dict(Counter(
+            type(item).__module__ + "." + type(item).__name__
+            for item in admin.router.routes
+        )),
+        "admin_first_route_fields": {
+            "path": getattr(admin.router.routes[0], "path", None),
+            "methods": sorted(getattr(admin.router.routes[0], "methods", []) or []),
+            "has_dependant": hasattr(admin.router.routes[0], "dependant"),
+            "has_endpoint": hasattr(admin.router.routes[0], "endpoint"),
+            "name": getattr(admin.router.routes[0], "name", None),
+        },
+        "asgi_paths_sample": [
+            str(getattr(item, "path", "?")) for item in app.routes[:22]
+        ],
         "asgi_http_paths_sample": [
             path for path, _method in sorted(mounted)[:10]
         ],
