@@ -8,8 +8,10 @@ missing live session dependency or bearer query param fails closed.
 from __future__ import annotations
 
 from collections import defaultdict
+from importlib.metadata import version
 import json
 
+from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
 from app.api import (
@@ -75,8 +77,25 @@ def audit_staff_routes() -> dict[str, object]:
 
     if len(checked) < 20:
         defects.append(f"Unexpected verified staff route count: {len(checked)}")
+
+    # Diagnostic-only metadata, never credentials or case data.
+    probe = FastAPI()
+    probe.include_router(admin.router)
     return {
         "ok": not defects,
+        "fastapi_version": version("fastapi"),
+        "starlette_version": version("starlette"),
+        "pydantic_version": version("pydantic"),
+        "admin_router_declarations": len(admin.router.routes),
+        "admin_probe_routes": len([
+            item for item in probe.routes if isinstance(item, APIRoute)
+        ]),
+        "asgi_app_routes": len(app.routes),
+        "asgi_router_routes": len(app.router.routes),
+        "asgi_router_class": type(app.router).__name__,
+        "asgi_http_paths_sample": [
+            path for path, _method in sorted(mounted)[:10]
+        ],
         "tested_staff_endpoints": len(checked),
         "all_http_endpoints": len(mounted),
         "expected_router_families": len(GATED_ROUTERS),
