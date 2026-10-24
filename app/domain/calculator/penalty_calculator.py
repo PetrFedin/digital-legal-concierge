@@ -4,8 +4,11 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
+from app.domain.calculator.legal_periods import PeriodRules
+
 
 FORMULA_VERSION = "ddu-214fz-v2"
+DATED_FORMULA_VERSION = "ddu-214fz-v3-326-2227"
 MONEY_QUANT = Decimal("0.01")
 RATE_QUANT = Decimal("0.000001")
 
@@ -19,6 +22,7 @@ class PenaltyCalculationInput:
     actual_transfer_date: date | None = None
     key_rate: Decimal = Decimal("0.16")
     consumer_multiplier: Decimal = Decimal("2")
+    legal_rules: PeriodRules | None = None
 
 
 @dataclass(frozen=True)
@@ -37,6 +41,9 @@ class PenaltyCalculationResult:
     recommended_route: str
     is_preliminary: bool = True
     warning: str | None = None
+    excluded_days: int = 0
+    chargeable_days: int | None = None
+    legal_rules_version: str | None = None
 
 
 class PenaltyCalculationError(ValueError):
@@ -90,23 +97,38 @@ class PenaltyCalculator:
         # дат уже даёт точное число календарных дней такого периода включительно
         # по конечную дату.
         delay_days = max((end_date - data.planned_transfer_date).days, 0)
+        excluded_days = 0
+        chargeable_days = delay_days
+        legal_rules_version = None
+        if data.legal_rules is not None:
+            breakdown = data.legal_rules.breakdown(data.planned_transfer_date, end_date)
+            excluded_days = breakdown.excluded_days
+            chargeable_days = breakdown.accrual_days
+            legal_rules_version = breakdown.rules_version
+
         amount = (
             price
             * rate
             / Decimal("300")
-            * Decimal(delay_days)
+            * Decimal(chargeable_days)
             * multiplier
         ).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
 
         formula = (
             f"{price.quantize(MONEY_QUANT)} × {rate} / 300 × "
-            f"{delay_days} × {multiplier}"
+            f"{chargeable_days} × {multiplier}"
         )
         warning = None
         if delay_days == 0:
             warning = "Просрочка на выбранную дату не обнаружена."
+        elif excluded_days:
+            warning = (
+                f"Из {delay_days} календарных дней исключено {excluded_days} дней "
+                "по специальным правилам. Сумма предварительная, "
+                "требует проверки юристом."
+            )
         elif rate == 0:
-            warning = "Ключевая ставка равна нулю; проверьте исходные данные."
+            warning = "Применимая ставка не установлена; проверьте исходные данные."
 
         return PenaltyCalculationResult(
             contract_price=price.quantize(MONEY_QUANT, rounding=ROUND_HALF_UP),
@@ -118,10 +140,13 @@ class PenaltyCalculator:
             key_rate=rate,
             consumer_multiplier=multiplier,
             penalty_amount=amount,
-            formula_version=FORMULA_VERSION,
+            formula_version=(DATED_FORMULA_VERSION if data.legal_rules else FORMULA_VERSION),
             formula=formula,
-            recommended_route="M1" if delay_days > 0 and amount > 0 else "M2",
+            recommended_route="M1" if chargeable_days > 0 and amount > 0 else "M2",
             warning=warning,
+            excluded_days=excluded_days,
+            chargeable_days=chargeable_days,
+            legal_rules_version=legal_rules_version,
         )
 
 
