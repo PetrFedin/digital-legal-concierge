@@ -16,6 +16,7 @@ from app.domain.cases.new_object_service import NewObjectSaveService, NewObjectS
 from app.domain.calculator.calculator_result_formatter import format_calculation_result
 from app.domain.calculator.calculator_service import CalculatorService
 from app.domain.calculator.preview_receipt import preview_receipt, preview_receipt_fingerprint
+from app.domain.calculator.legal_periods import ManualLegalReviewRequired
 from app.domain.calculator.penalty_calculator import parse_money
 from app.domain.statuses.case_statuses import CaseStatus
 
@@ -367,6 +368,35 @@ async def calc_result(state, db, case):
     )
 
 
+
+def _legal_review_result_keyboard(*, separate_preview: bool):
+    """A historic/unverified calculation must not show a fabricated amount."""
+    if separate_preview:
+        return one(
+            ("💬 Задать вопрос по действующему делу", "message_create"),
+            ("🧮 Повторить расчёт другого объекта", "calc_preview_start"),
+            ("📁 Моё дело", "my_case_open"),
+            ("🏠 Главная", "nav_home"),
+        )
+    return one(
+        ("💬 Перейти к консультации", "calc_to_m2"),
+        ("🧮 Исправить данные", "calc_start"),
+        ("🏠 Главная", "nav_home"),
+    )
+
+
+def _legal_review_text(error: ManualLegalReviewRequired, *, separate_preview: bool) -> str:
+    prefix = (
+        "Действующее дело, его документы и платежи не изменены. "
+        if separate_preview
+        else "Неподтверждённая сумма в дело не сохранена. "
+    )
+    return (
+        "По выбранному периоду нельзя надёжно рассчитать неустойку автоматически.\n\n"
+        f"{error}\n\n{prefix}"
+        "Юрист проверит специальные периоды, дату исполнения и применимую ставку."
+    )
+
 async def calculate_show_message(message: Message, state: FSMContext, db):
     try:
         ctx = BotContextService(db)
@@ -380,6 +410,16 @@ async def calculate_show_message(message: Message, state: FSMContext, db):
         result = await calc_result(state, db, case)
         is_preview = data.get("preview_case_id") is not None
         await db.commit()
+    except ManualLegalReviewRequired as error:
+        await db.rollback()
+        draft = await state.get_data()
+        separate_preview = draft.get("preview_case_id") is not None
+        await state.set_state(None)
+        await message.answer(
+            _legal_review_text(error, separate_preview=separate_preview),
+            reply_markup=_legal_review_result_keyboard(separate_preview=separate_preview),
+        )
+        return
     except Exception:
         await db.rollback()
         logger.exception("Calculator result could not be saved from message flow")
@@ -422,6 +462,16 @@ async def calculate_show_callback(callback: CallbackQuery, state: FSMContext, db
         result = await calc_result(state, db, case)
         is_preview = data.get("preview_case_id") is not None
         await db.commit()
+    except ManualLegalReviewRequired as error:
+        await db.rollback()
+        draft = await state.get_data()
+        separate_preview = draft.get("preview_case_id") is not None
+        await state.set_state(None)
+        await callback.message.edit_text(
+            _legal_review_text(error, separate_preview=separate_preview),
+            reply_markup=_legal_review_result_keyboard(separate_preview=separate_preview),
+        )
+        return
     except Exception:
         await db.rollback()
         logger.exception("Calculator result could not be saved from callback flow")
