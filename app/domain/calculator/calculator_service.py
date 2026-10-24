@@ -6,7 +6,11 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app.domain.calculator.legal_periods import (
+    ManualLegalReviewRequired,
+    PRELIMINARY_2026_RULES,
+)
+from app.domain.calculator.legal_rate_snapshot import key_rate_for_execution_date
 from app.domain.calculator.penalty_calculator import (
     PenaltyCalculationInput,
     PenaltyCalculator,
@@ -43,11 +47,24 @@ class CalculatorService:
         consumer_multiplier: Decimal = Decimal("2"),
     ):
         """Same validated calculation without touching Case or Calculation."""
-        effective_rate = (
-            Decimal(str(settings.legal_key_rate))
-            if key_rate is None
-            else Decimal(str(key_rate))
+        # Determine chargeable days before rate selection. For a wholly excluded
+        # or zero-delay period, a numeric CBR rate is not needed.
+        end_date = (
+            actual_transfer_date if object_transferred and actual_transfer_date is not None
+            else calculation_date
         )
+        period = PRELIMINARY_2026_RULES.breakdown(planned_transfer_date, end_date)
+        observed_rate = (
+            key_rate_for_execution_date(end_date)
+            if period.accrual_days > 0
+            else Decimal("0")
+        )
+        if key_rate is not None and Decimal(str(key_rate)) != observed_rate:
+            raise ManualLegalReviewRequired(
+                "Переданная ставка не совпадает с подтверждённой ставкой Банка России "
+                "на дату исполнения. Требуется повторный расчёт."
+            )
+        effective_rate = observed_rate
         return self.calculator.calculate(
             PenaltyCalculationInput(
                 contract_price=contract_price,
@@ -57,6 +74,7 @@ class CalculatorService:
                 actual_transfer_date=actual_transfer_date,
                 key_rate=effective_rate,
                 consumer_multiplier=consumer_multiplier,
+                legal_rules=PRELIMINARY_2026_RULES,
             )
         )
 
@@ -120,6 +138,9 @@ class CalculatorService:
             new_value={
                 "penalty_amount": str(result.penalty_amount),
                 "delay_days": result.delay_days,
+                "excluded_days": result.excluded_days,
+                "chargeable_days": result.chargeable_days,
+                "legal_rules_version": result.legal_rules_version,
                 "calculation_date": result.calculation_date.isoformat(),
                 "key_rate": str(result.key_rate),
                 "consumer_multiplier": str(result.consumer_multiplier),
